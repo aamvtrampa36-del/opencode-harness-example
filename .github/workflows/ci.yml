@@ -27,6 +27,8 @@ jobs:
         run: bun install
       - name: Unit tests
         run: bun test
+      - name: Test real static preview server
+        run: bun scripts/test-preview.mjs
       - name: Typecheck
         run: bun run typecheck
       - name: Build both Worker and web client

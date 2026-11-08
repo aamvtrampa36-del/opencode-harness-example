@@ -27,6 +27,12 @@ export const MODEL_PRESETS = {
     providerID: "openrouter",
     id: "google/gemini-3.8-flash",
     tier: "creative"
+  },
+  review: {
+    label: "Revisión · GLM 5.3 Flash",
+    providerID: "openrouter",
+    id: "z-ai/glm-5.3-flash",
+    tier: "review"
   }
 } as const;
 

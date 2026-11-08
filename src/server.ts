@@ -100,21 +100,47 @@ export class OpenCodeAgent extends DurableObject<Env> {
 }
 
 export default {
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    // A temporary one-time smoke invoked by a short-lived cron trigger.
-    // Durable Object stores a marker before spending; repeated cron events
-    // cannot re-run the test or create another Container.
-    ctx.waitUntil((async () => {
-      const result = await env.DEV.getByName("personal").smokeOnce();
-      console.log("OPENCODE_LINUX_SMOKE_V1", JSON.stringify(result));
-    })());
-  },
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
       if (url.pathname === "/api/dev/status" && request.method === "GET") {
         return Response.json(await env.DEV.getByName("personal").status(), {
           headers: { "Cache-Control": "no-store" }
+        });
+      }
+      const downloadMatch = url.pathname.match(/^\/api\/dev\/download\/([a-z][a-z0-9-]{0,39})$/);
+      if (downloadMatch) {
+        if (request.method !== "GET") return new Response("GET only", { status: 405 });
+        const project = downloadMatch[1];
+        const file = await env.DEV.getByName("personal").download(project);
+        const headers = new Headers(file.headers);
+        headers.set("Content-Type", "application/gzip");
+        headers.set("Content-Disposition", 'attachment; filename="' + project + '.tar.gz"');
+        headers.set("X-Content-Type-Options", "nosniff");
+        headers.set("Cache-Control", "no-store");
+        return new Response(file.body, { status: file.status, headers });
+      }
+      const previewMatch = url.pathname.match(/^\/api\/dev\/preview\/([a-z][a-z0-9-]{0,39})(?:\/(.*))?$/);
+      if (previewMatch) {
+        if (request.method !== "GET" && request.method !== "HEAD") {
+          return new Response("GET only", { status: 405 });
+        }
+        const project = previewMatch[1];
+        const path = previewMatch[2] || "index.html";
+        const result = await env.DEV.getByName("personal").preview(project, path);
+        const headers = new Headers(result.headers);
+        // A generated application must not inherit the authenticated
+        // OpenCode origin or invoke /api/dev/run from its own scripts.
+        // CSP sandbox applies even when a preview URL is opened directly.
+        headers.set("Content-Security-Policy",
+          "sandbox allow-scripts; default-src https: data: blob:; script-src https: 'unsafe-inline' blob: data:; style-src https: 'unsafe-inline'; connect-src https:; img-src https: data: blob:; font-src https: data:; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'");
+        headers.set("X-Content-Type-Options", "nosniff");
+        headers.set("Referrer-Policy", "no-referrer");
+        headers.set("Cache-Control", "no-store");
+        headers.set("Access-Control-Allow-Origin", "*");
+        return new Response(request.method === "HEAD" ? null : result.body, {
+          status: result.status,
+          headers
         });
       }
       if (url.pathname === "/api/dev/run" && request.method === "POST") {

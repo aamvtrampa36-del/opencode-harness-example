@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { MAX_SHELL_OUTPUT, validateCommand, validateProject } from "./dev-guard";
+import { PREVIEW_SOURCE } from "./preview-server";
 
 /**
  * Opt-in Linux computer. There is exactly ONE named instance ("personal")
@@ -16,6 +17,8 @@ const INACTIVITY_MS = 15 * 60_000;
 const IDLE_MS = 5 * 60_000;
 const CHECK_MS = 60_000;
 const CHECKPOINT_MS = 2 * 60_000;
+const SNAPSHOT_TTL_MS = 30 * 24 * 60 * 60_000;
+const PREVIEW_PORT = 4321;
 
 export type LinuxResult = {
   project: string;
@@ -28,6 +31,7 @@ export type LinuxResult = {
 
 export class DevContainer extends DurableObject<Env> {
   private busy = 0;
+  private previewStarting?: Promise<void>;
   private commandQueue: Promise<void> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -43,6 +47,10 @@ export class DevContainer extends DurableObject<Env> {
     if (!container) throw new Error("Linux Container binding is not deployed");
     if (!container.running) {
       const snapshotId = await this.ctx.storage.get<string>("snapshotId");
+      const savedAt = await this.ctx.storage.get<number>("savedAt");
+      if (snapshotId && (!savedAt || Date.now() - savedAt >= SNAPSHOT_TTL_MS)) {
+        throw new Error("Linux snapshot is over 30 days old; verified recovery is required before continuing.");
+      }
       container.start({
         ...(snapshotId
           ? { containerSnapshot: { id: snapshotId } }
@@ -64,7 +72,12 @@ export class DevContainer extends DurableObject<Env> {
   }
 
   async status() {
+    const savedAt = (await this.ctx.storage.get<number>("savedAt")) ?? null;
+    const smoke = await this.ctx.storage.get<unknown>("smokeReportV1");
     return {
+      smoke,
+      savedAt,
+      snapshotExpiresAt: savedAt ? new Date(savedAt + SNAPSHOT_TTL_MS).toISOString() : null,
       running: this.ctx.container?.running ?? false,
       saved: Boolean(await this.ctx.storage.get<string>("snapshotId")),
       lastActivity: (await this.ctx.storage.get<number>("lastActivity")) ?? null,
@@ -72,7 +85,7 @@ export class DevContainer extends DurableObject<Env> {
       instance: "basic",
       shell: "bash",
       git: "install-on-demand",
-      persistMode: "Cloudflare container snapshots (beta)"
+      persistMode: "Cloudflare container snapshots (beta, 30-day TTL)"
     };
   }
 
@@ -160,63 +173,58 @@ export class DevContainer extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
   }
 
-  /** Single bounded live smoke: create & test an app, snapshot, stop and restore. */
-  async smokeOnce(): Promise<unknown> {
-    const prior = await this.ctx.storage.get("smokeReportV1");
-    if (prior) return prior;
-    const alreadyStarted = await this.ctx.storage.get("smokeStartedV1");
-    if (alreadyStarted) return { status: "already-started", startedAt: alreadyStarted };
-    await this.ctx.storage.put("smokeStartedV1", Date.now());
-    const project = "opencode-smoke-20261108";
-    const command = [
-      "node --version",
-      "npm --version",
-      "cat > package.json <<'JSON'",
-      '{"name":"opencode-smoke","version":"1.0.0","type":"module","scripts":{"test":"node --test"}}',
-      "JSON",
-      "cat > app.mjs <<'JS'",
-      "export const double = n => n * 2;",
-      "JS",
-      "cat > app.test.mjs <<'JS'",
-      'import test from "node:test";',
-      'import assert from "node:assert/strict";',
-      'import { double } from "./app.mjs";',
-      'test("the sample application works", () => assert.equal(double(21), 42));',
-      "JS",
-      "npm install --ignore-scripts --no-audit --no-fund",
-      "npm test"
-    ].join("\n");
-    try {
-      const first = await this.run(project, command);
-      if (first.exitCode !== 0) {
-        const report = { status: "fail", stage: "first-run", exitCode: first.exitCode, stderr: first.stderr.slice(-500) };
-        await this.ctx.storage.put("smokeReportV1", report);
-        return report;
-      }
-      const container = this.ctx.container;
-      if (!container) throw new Error("Missing Container");
-      const snapshot = await container.snapshotContainer({ name: "smoke-recovery" });
-      await this.ctx.storage.put({ snapshotId: snapshot.id, savedAt: Date.now() });
-      await container.destroy("smoke-check-restart");
-      const second = await this.run(project, "test -f app.mjs && test -f app.test.mjs && npm test");
-      const report = {
-        status: second.exitCode === 0 ? "pass" : "fail",
-        stage: "snapshot-restore",
-        createExitCode: first.exitCode,
-        restoreExitCode: second.exitCode,
-        snapshotCreated: Boolean(snapshot.id),
-        nodeNpmReady: true,
-        sampleAppTestPassed: second.exitCode === 0,
-        stdoutExcerpt: second.stdout.slice(-300),
-        stderrExcerpt: second.stderr.slice(-300)
-      };
-      await this.ctx.storage.put("smokeReportV1", report);
-      return report;
-    } catch (error) {
-      const report = { status: "fail", stage: "exception", error: error instanceof Error ? error.message.slice(0,400) : "unknown" };
-      await this.ctx.storage.put("smokeReportV1", report);
-      return report;
+  /** HTTP-only static preview; isolation headers are applied by the Worker. */
+  async preview(project: string, relativePath: string): Promise<Response> {
+    const id = validateProject(project);
+    if (relativePath.includes("\\") || relativePath.split("/").includes("..")) {
+      return new Response("Invalid preview path", { status: 400 });
     }
+    return this.proxyHttp("/" + id + "/" + relativePath.replace(/^\/+/, ""));
+  }
+
+  /** Stream a source backup to the owner without a model or external token. */
+  async download(project: string): Promise<Response> {
+    const id = validateProject(project);
+    return this.proxyHttp("/__archive/" + id);
+  }
+
+  private async proxyHttp(path: string): Promise<Response> {
+    const container = await this.ensureRunning();
+    this.busy++;
+    try {
+      this.previewStarting ??= this.ensurePreviewService(container).finally(() => {
+        this.previewStarting = undefined;
+      });
+      await this.previewStarting;
+      return await container.getTcpPort(PREVIEW_PORT).fetch("http://container" + path, {
+        method: "GET",
+        signal: AbortSignal.timeout(30_000)
+      });
+    } finally {
+      this.busy--;
+      await this.ctx.storage.put("lastActivity", Date.now());
+      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+    }
+  }
+
+  private async ensurePreviewService(container: NonNullable<DurableObjectState["container"]>): Promise<void> {
+    const port = container.getTcpPort(PREVIEW_PORT);
+    const healthy = async () => {
+      try {
+        const response = await port.fetch("http://container/__health", {
+          signal: AbortSignal.timeout(1500)
+        });
+        await response.body?.cancel();
+        return response.ok;
+      } catch { return false; }
+    };
+    if (await healthy()) return;
+    await container.exec(["node", "--input-type=module", "-e", PREVIEW_SOURCE]);
+    for (let n = 0; n < 40; n++) {
+      if (await healthy()) return;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error("Project preview server did not become ready");
   }
 
 }
