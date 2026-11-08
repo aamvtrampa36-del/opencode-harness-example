@@ -1,4 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
+import { PersonalSettings } from "./personal-settings";
+export { PersonalSettings };
 import { DevContainer } from "./dev-container";
 export { DevContainer };
 import { Workspace, type DurableObjectStorageLike } from "@cloudflare/computer";
@@ -17,14 +19,34 @@ import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
 
-export const MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
 /** A playable OpenCode instance backed by one Durable Object. */
 export class OpenCodeAgent extends DurableObject<Env> {
-  // The optional secret is read only in the Worker runtime, never in React.
-  private readonly openRouterKey = (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY;
-  private readonly githubToken = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN;
-  private readonly github = this.githubToken ? new GitHubBridge(this.githubToken) : undefined;
+  // Credentials are resolved server-side. All browsers share one owner config.
+  private readonly personalConfig = this.env.SETTINGS.getByName("personal");
+  private readonly providerConnection: {
+    connect?: (key: string) => Promise<void>;
+  } = {};
+  private readonly githubRunner = {
+    execute: async (input: Parameters<GitHubBridge["execute"]>[0]) => {
+      const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
+        || await this.personalConfig.getGitHubKey();
+      if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
+      return new GitHubBridge(key).execute(input);
+    }
+  };
+  async isOpenRouterConfigured(): Promise<boolean> {
+    const envKey = (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY;
+    return Boolean(envKey || await this.personalConfig.getOpenRouterKey());
+  }
+  async refreshOpenRouter(): Promise<{ active: boolean }> {
+    const key = (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
+      || await this.personalConfig.getOpenRouterKey();
+    if (!key || !this.providerConnection.connect) return { active: false };
+    await this.providerConnection.connect(key);
+    return { active: true };
+  }
   // Workers AI over the AI binding, as an OpenCode provider plugin.
   readonly ai = createAI({ binding: this.env.AI });
   // Files in the object's own storage. `exec` runs JavaScript in a Worker
@@ -58,7 +80,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         config: { default_agent: "build" },
         // Native OpenRouter discovery is opt-in and only activated when
         // the private Cloudflare Secret is available.
-        models: { fetch: Boolean(this.openRouterKey) },
+        models: { fetch: true },
         // OpenCode is silent unless given a log writer.
         log: {
           level: "warn",
@@ -71,16 +93,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
         },
         plugins: [
           this.ai.plugin,
-          ...(this.openRouterKey ? [openRouterCredentialPlugin(this.openRouterKey)] : []),
-          workspacePlugin(this.workspace, {}, this.linuxRunner, this.github)
+          openRouterCredentialPlugin(
+            async () => (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
+              || await this.personalConfig.getOpenRouterKey(),
+            (connect) => { this.providerConnection.connect = connect; }
+          ),
+          workspacePlugin(this.workspace, {}, this.linuxRunner, this.githubRunner)
         ]
       }),
     // Low effort: with more, the model sometimes writes its whole answer
     // into its reasoning.
     defaults: {
-      model: this.openRouterKey
-        ? { providerID: MODEL_PRESETS.economy.providerID, id: MODEL_PRESETS.economy.id }
-        : this.ai(MODEL_ID),
+      model: this.ai(MODEL_ID),
       agent: "build"
     }
   });
@@ -89,7 +113,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   readonly sockets = new OpenCodeSessionSockets(
     this.harness,
     (tag) => this.ctx.getWebSockets(tag),
-    Boolean(this.openRouterKey)
+    () => this.isOpenRouterConfigured()
   );
   readonly webSockets = new WebSockets(this.sockets.options());
   readonly lifecycle = Lifecycle.install(this)
@@ -106,6 +130,72 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
+      const personal = env.SETTINGS.getByName("personal");
+      const settingsOriginAllowed =
+        request.headers.get("Origin") === url.origin &&
+        request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json");
+      if (url.pathname === "/api/settings" && request.method === "GET") {
+        const existing = await personal.status();
+        return Response.json({
+          ...existing,
+          openRouterConfigured: existing.openRouterConfigured ||
+            Boolean((env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY),
+          githubConfigured: existing.githubConfigured ||
+            Boolean((env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN)
+        }, { headers: { "Cache-Control": "no-store" } });
+      }
+      if (url.pathname === "/api/settings/openrouter/usage" && request.method === "GET") {
+        const usage = await personal.openRouterUsage();
+        return Response.json({ usage }, { headers: { "Cache-Control": "no-store" } });
+      }
+      if ((url.pathname === "/api/settings/openrouter" ||
+           url.pathname === "/api/settings/github") && request.method === "POST") {
+        if (!settingsOriginAllowed) {
+          return Response.json({ error: "Solicitud de origen no permitido." }, { status: 403 });
+        }
+        const raw = await request.text();
+        if (raw.length > 1500) return Response.json({ error: "Solicitud demasiado grande." }, { status: 413 });
+        const body = JSON.parse(raw) as { key?: string; workspace?: string };
+        if (url.pathname.endsWith("/openrouter")) {
+          const result = await personal.connectOpenRouter(body.key);
+          // Apply to the currently open browser's host. Other hosts receive
+          // the credential on their next OpenCode initialization.
+          const workspace = body.workspace;
+          let applied = false;
+          if (workspace && /^[a-f0-9-]{36}$/i.test(workspace)) {
+            try {
+              const state = await env.OpenCodeAgent.getByName(workspace).refreshOpenRouter();
+              applied = state.active;
+            } catch {
+              // Safe fallback: the next session host initialization connects it.
+            }
+          }
+          return Response.json({ ...result, activeOnCurrentHost: applied },
+            { headers: { "Cache-Control": "no-store" } });
+        }
+        return Response.json(await personal.connectGitHub(body.key),
+          { headers: { "Cache-Control": "no-store" } });
+      }
+      if ((url.pathname === "/api/settings/openrouter" ||
+           url.pathname === "/api/settings/github") && request.method === "DELETE") {
+        // The UI labels removal as disconnecting from this app; the provider
+        // key itself must be revoked upstream to prevent stale stored hosts.
+        if (request.headers.get("Origin") !== url.origin) {
+          return Response.json({ error: "Origen no permitido." }, { status: 403 });
+        }
+        if (url.pathname.endsWith("/openrouter")) {
+          await personal.disconnectOpenRouter();
+        } else {
+          await personal.disconnectGitHub();
+        }
+        return Response.json({ configured: false, revokeAtProvider: true },
+          { headers: { "Cache-Control": "no-store" } });
+      }
+      if (url.pathname === "/api/dev/projects" && request.method === "GET") {
+        return Response.json({
+          projects: await env.DEV.getByName("personal").listProjects()
+        }, { headers: { "Cache-Control": "no-store" } });
+      }
       if (url.pathname === "/api/dev/status" && request.method === "GET") {
         return Response.json(await env.DEV.getByName("personal").status(), {
           headers: { "Cache-Control": "no-store" }
@@ -167,8 +257,8 @@ export default {
           {
             status: "ok",
             runtime: "workerd",
-            openRouterConfigured: Boolean((env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY),
-            githubConfigured: Boolean((env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN),
+            openRouterConfigured: Boolean((env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY) || (await personal.status()).openRouterConfigured,
+            githubConfigured: Boolean((env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN) || (await personal.status()).githubConfigured,
             features: {
               durableSessions: true,
               workspaceFiles: true,
@@ -176,7 +266,7 @@ export default {
               gitClone: true,
               linuxShell: Boolean(env.DEV),
               npm: Boolean(env.DEV),
-              githubWrite: Boolean((env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN)
+              githubWrite: Boolean((env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN) || (await personal.status()).githubConfigured
             }
           },
           { headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } }

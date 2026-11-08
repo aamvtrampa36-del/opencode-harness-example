@@ -1,24 +1,24 @@
 import type { Plugin } from "@opencode/plugin";
 
 /**
- * Attach OpenRouter using the V2 integration API. Never serialize the key to
- * source, logs, UI props, model metadata, or a browser response.
- *
- * The credential is saved inside OpenCode's Durable Object-backed credential
- * store. Cloudflare Worker Secrets are the source of truth for initial setup.
+ * This plugin uses the native OpenCode integration API. The credential lives
+ * exclusively in Cloudflare's server-side Durable Object or Worker Secrets.
+ * The active host can be updated without creating another agent instance.
  */
-export function openRouterCredentialPlugin(key: string): Plugin.Plugin {
+export function openRouterCredentialPlugin(
+  loadKey: () => Promise<string | undefined>,
+  registerConnector: (connect: (key: string) => Promise<void>) => void
+): Plugin.Plugin {
   return {
     id: "cdf.openrouter-credential",
     async setup(ctx) {
-      // Repeated Durable Object wakeups must not create a new connection.
-      const existing = await ctx.integration.connection.active("openrouter");
-      if (!existing) {
-        await ctx.integration.connect.key({
-          integrationID: "openrouter",
-          key
-        });
-      }
+      const connect = async (key: string) => {
+        await ctx.integration.connect.key({ integrationID: "openrouter", key });
+        await ctx.model.reload();
+      };
+      registerConnector(connect);
+      const key = await loadKey();
+      if (key) await connect(key);
     }
   };
 }

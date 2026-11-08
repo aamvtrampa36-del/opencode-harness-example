@@ -90,7 +90,7 @@ function parse(raw: WebSocketMessage): ClientMessage | undefined {
 export class OpenCodeSessionSockets {
   readonly #harness: OpenCodeHarness;
   readonly #getWebSockets: (tag?: string) => WebSocket[];
-  readonly #openRouterAvailable: boolean;
+  readonly #openRouterAvailable: () => Promise<boolean>;
   /** One event stream per running session, or its opening. */
   readonly #watches = new Map<
     OpenCodeSessionId,
@@ -102,7 +102,7 @@ export class OpenCodeSessionSockets {
   constructor(
     harness: OpenCodeHarness,
     getWebSockets: (tag?: string) => WebSocket[],
-    openRouterAvailable = false
+    openRouterAvailable: () => Promise<boolean> = async () => false
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
@@ -154,7 +154,7 @@ export class OpenCodeSessionSockets {
       // socket has no session tag, so it gets no session's events.
       return;
     }
-    send(connection, { type: "hello", session, openRouterAvailable: this.#openRouterAvailable });
+    send(connection, { type: "hello", session, openRouterAvailable: await this.#openRouterAvailable() });
     send(connection, { type: "sessions", sessions });
     const snapshot = await this.#snapshot(session);
     send(connection, { type: "snapshot", ...snapshot });
@@ -213,13 +213,22 @@ export class OpenCodeSessionSockets {
             throw new Error("Unknown model preset");
           }
           const preset = MODEL_PRESETS[message.model];
-          if (preset.providerID === "openrouter" && !this.#openRouterAvailable) {
-            throw new Error("OpenRouter is not configured. Add OPENROUTER_API_KEY as a private Cloudflare Worker Secret.");
+          if (preset.providerID === "openrouter" && !(await this.#openRouterAvailable())) {
+            throw new Error("Conecta OpenRouter desde Configuración antes de seleccionar ese modelo.");
           }
           await handle.setModel({ providerID: preset.providerID, id: preset.id });
         }
+        const mode = message.mode ?? "build";
+        if (!["build", "plan", "review", "creative"].includes(mode)) {
+          throw new Error("Modo de agente no reconocido");
+        }
+        await handle.setAgent(mode === "build" ? "build" : "plan");
+        const prefixed =
+          mode === "review" ? "Revisa críticamente este trabajo. Identifica problemas con evidencia y no modifiques archivos ni producción.\\n\\n" :
+          mode === "creative" ? "Trabaja como editor literario: planifica, escribe o revisa borradores NO CANÓNICOS. No cambies fuentes oficiales sin autorización.\\n\\n" :
+          "";
         this.#watch(session);
-        const receipt = await handle.submit(message.text, {
+        const receipt = await handle.submit(prefixed + message.text, {
           whenBusy: message.whenBusy === "steer" ? "steer" : "followUp"
         });
         await this.#broadcastSnapshot(session);
@@ -238,6 +247,23 @@ export class OpenCodeSessionSockets {
         await handle.abort();
         await this.#settle(session);
         return true;
+      case "delegate": {
+        if (typeof message.project !== "string" ||
+            !/^[a-z][a-z0-9-]{0,39}$/.test(message.project)) {
+          throw new Error("Primero selecciona un proyecto válido");
+        }
+        const fork = await this.#harness.sessions.fork(session);
+        await fork.setAgent("plan");
+        await fork.setModel({ providerID: MODEL_PRESETS.cloudflare.providerID, id: MODEL_PRESETS.cloudflare.id });
+        const review = "Eres un agente revisor independiente. Inspecciona el proyecto " +
+          message.project + " con la herramienta linux SOLO para leer archivos y ejecutar pruebas no destructivas. " +
+          "Comprueba riesgos, calidad y errores. NO edites, publiques ni modifiques producción. " +
+          "Devuelve hallazgos y sugerencias concretas con el resultado real de las herramientas.";
+        await fork.submit(review);
+        const all = await this.#harness.sessions.list();
+        for (const socket of this.#getWebSockets()) send(socket, { type: "sessions", sessions: all });
+        return { session: fork.id };
+      }
       case "create": {
         const created = await this.#harness.sessions.create();
         const sessions = await this.#harness.sessions.list();

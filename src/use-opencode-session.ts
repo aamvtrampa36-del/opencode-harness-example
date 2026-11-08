@@ -1,3 +1,4 @@
+import type { AgentMode } from "./protocol";
 import type { ModelPresetID } from "./model-presets";
 import type {
   OpenCodeMessage,
@@ -213,9 +214,9 @@ export function useOpenCodeSession(
 
   /** Idle: starts a run. Busy: queued as a follow-up, or steers the run. */
   const submit = useCallback(
-    (text: string, whenBusy: "followUp" | "steer" = "followUp", model: ModelPresetID = "cloudflare") => {
+    (text: string, whenBusy: "followUp" | "steer" = "followUp", model: ModelPresetID = "cloudflare", mode: AgentMode = "build") => {
       setState((current) => ({ ...current, error: undefined }));
-      send({ type: "submit", id: crypto.randomUUID(), text, whenBusy, model });
+      send({ type: "submit", id: crypto.randomUUID(), text, whenBusy, model, mode });
     },
     [send]
   );
@@ -230,7 +231,7 @@ export function useOpenCodeSession(
    * rejects if the socket closes first or no answer comes in 30 seconds.
    */
   const create = useCallback(
-    () =>
+    (delegation?: { project: string }) =>
       new Promise<string>((resolve, reject) => {
         const id = crypto.randomUUID();
         const done = () => {
@@ -264,7 +265,7 @@ export function useOpenCodeSession(
         }, 30_000);
         agent.addEventListener("message", onMessage);
         agent.addEventListener("close", onClose);
-        send({ type: "create", id });
+        send(delegation ? { type: "delegate", id, project: delegation.project } : { type: "create", id });
       }),
     [agent, send]
   );

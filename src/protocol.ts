@@ -1,3 +1,4 @@
+export type AgentMode = "build" | "plan" | "review" | "creative";
 import type { ModelPresetID } from "./model-presets";
 import type {
   OpenCodeMessage,
@@ -22,9 +23,11 @@ export type ClientMessage =
       readonly text: string;
       readonly whenBusy?: OpenCodeWhenBusy;
       readonly model?: ModelPresetID;
+      readonly mode?: AgentMode;
     }
   | { readonly type: "abort"; readonly id?: string }
   | { readonly type: "create"; readonly id?: string }
+  | { readonly type: "delegate"; readonly id?: string; readonly project: string }
   | { readonly type: "resync"; readonly id?: string };
 
 /** One session's state: what a client renders. */
