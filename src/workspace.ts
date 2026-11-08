@@ -10,9 +10,20 @@ import type { Plugin } from "@opencode/plugin";
  * OpenCode's tools that need a local filesystem or process. The Workers
  * profile has neither, so the Workspace's tools replace them.
  */
+export type LinuxRunner = {
+  run(project: string, command: string): Promise<{
+    project: string;
+    exitCode: number | null;
+    stdout: string;
+    stderr: string;
+    truncated: boolean;
+    persistence: string;
+  }>;
+};
+
 const LOCAL_TOOLS = ["read", "write", "edit", "patch", "glob", "grep", "shell"];
 
-const SYSTEM = `You are OpenCode running in a Cloudflare Durable Object, not the user's computer. You have a durable /workspace with file tools and an isolated JavaScript ES-module exec backend; you can clone public Git repositories via codemode:git. No Linux shell, npm, compilers or Docker exist here. Never claim to have run tools or tests you could not actually run.\n\nDEVELOPMENT: Understand requirements, use small reversible changes, inspect diffs, report tests actually performed and unresolved issues. Create proposals or drafts first. Do not delete important data, write to production, merge to main, change credentials or deploy services without explicit approval. Never make up tool results or source contents.\n\nCDF NARRATIVE: You may plan, draft, edit and review narrative, but the author alone approves canon. NEVER CANONIZE, integrate definitive chapters, overwrite official CDF sources or publish narrative without explicit authorization for the exact operation. Keep drafts distinguishable from canon.\n\nCOST/SECURITY: Prefer inexpensive models for ordinary tasks. Never print API secrets. Do not disable authentication or launch billable infrastructure without informed authorization.\n\nOPERATIONS: State the actual available tools and constraints. If a requested task requires Linux, explain that a separate Cloudflare Sandbox or container is needed; do not fake npm or shell results. Paths for workspace tools are absolute. Prefer read/write/edit for text files. Concise Spanish unless the user requests otherwise.`;
+const SYSTEM = `You are OpenCode running in a Cloudflare Durable Object, not the user's computer. You have a durable /workspace with file tools and an isolated JavaScript ES-module exec backend; you can clone public Git repositories via codemode:git. You ALSO have a separate cloud Linux computer via the `linux` tool (Debian, Node.js and npm; Git can be installed on demand). The Durable Object file tools are a separate storage area; use `linux` for actual application projects under /workspace/projects/{project-slug}, compilation, package installation and tests. The Linux container automatically checkpoints files before idle suspension. Never claim a command passed until its returned exitCode is zero. Never claim to have run tools or tests you could not actually run.\n\nDEVELOPMENT: Understand requirements, use small reversible changes, inspect diffs, report tests actually performed and unresolved issues. Create proposals or drafts first. Do not delete important data, write to production, merge to main, change credentials or deploy services without explicit approval. Never make up tool results or source contents.\n\nCDF NARRATIVE: You may plan, draft, edit and review narrative, but the author alone approves canon. NEVER CANONIZE, integrate definitive chapters, overwrite official CDF sources or publish narrative without explicit authorization for the exact operation. Keep drafts distinguishable from canon.\n\nCOST/SECURITY: Prefer inexpensive models for ordinary tasks. Never print API secrets. Do not disable authentication or launch billable infrastructure without informed authorization.\n\nOPERATIONS: State the actual available tools and constraints. If a requested task requires Linux, explain that a separate Cloudflare Sandbox or container is needed; do not fake npm or shell results. Paths for workspace tools are absolute. Prefer read/write/edit for text files. Concise Spanish unless the user requests otherwise.`;
 
 /**
  * The shared `exec` description is written for a choice of shell backends.
@@ -94,7 +105,8 @@ function describeExec(tool: PiTool): PiTool {
  */
 export function workspacePlugin(
   workspace: Workspace,
-  options: Omit<CreatePiToolsOptions, "workspace" | "exec" | "shell"> = {}
+  options: Omit<CreatePiToolsOptions, "workspace" | "exec" | "shell"> = {},
+  linux?: LinuxRunner
 ): Plugin.Plugin {
   const { tools, execute } = createPiTools({
     ...options,
@@ -119,6 +131,27 @@ export function workspacePlugin(
       });
       await ctx.tool.transform((editor) => {
         for (const id of LOCAL_TOOLS) editor.remove(id);
+        if (linux) {
+          editor.add({
+            name: "linux",
+            description: "Run ONE real Linux shell command inside an isolated Cloudflare Container (Debian, Node.js 24, npm). Can install dependencies, create apps, run tests and inspect git. Project is a 1–40 char lowercase slug under /workspace/projects/. Commands run for up to 180 seconds. Output includes real exitCode. Files are checkpointed automatically by container snapshots before idle suspend. Do not use it for secrets, production deploys, deleting unrelated projects, or canonizing CDF.",
+            input: {
+              type: "object",
+              properties: {
+                project: { type: "string", description: "Project ID, e.g. primera-app (lowercase letters, digits, hyphen)" },
+                command: { type: "string", description: "Shell script to execute INSIDE the project directory; no more than 12000 characters" }
+              },
+              required: ["project", "command"],
+              additionalProperties: false
+            },
+            options: { codemode: false },
+            async execute(input) {
+              const p = input as { project: string; command: string };
+              const result = await linux.run(p.project, p.command);
+              return { content: JSON.stringify(result) };
+            }
+          });
+        }
         for (const declared of tools) {
           const tool =
             declared.name === "exec" ? describeExec(declared) : declared;
