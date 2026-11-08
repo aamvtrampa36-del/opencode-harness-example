@@ -18,6 +18,7 @@ import { workspacePlugin } from "./workspace";
 import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
+import { guardedProviderFetch } from "./provider-fetch";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -81,6 +82,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
         // Native OpenRouter discovery is opt-in and only activated when
         // the private Cloudflare Secret is available.
         models: { fetch: true },
+        // Control paid provider egress even for old sessions that retain
+        // an earlier native credential after the user disconnects it.
+        fetch: guardedProviderFetch(async () => [
+          (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY,
+          await this.personalConfig.getOpenRouterKey()
+        ].filter((key): key is string => typeof key === "string" && key.length > 0)),
         // OpenCode is silent unless given a log writer.
         log: {
           level: "warn",
