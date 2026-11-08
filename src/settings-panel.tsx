@@ -56,7 +56,7 @@ export function SettingsPanel({
       setKey("");
       setNotice("Credencial verificada y almacenada en el servidor.");
       if (provider === "openrouter") {
-        setReloadNeeded(!result.activeOnCurrentHost);
+        setReloadNeeded(true);
         setUsage(result.usage ?? null);
       }
       await load();
