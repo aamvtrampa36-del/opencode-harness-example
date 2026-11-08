@@ -55,6 +55,17 @@ async function checkProvider(url: string, token: string): Promise<KeyUsage> {
 }
 
 export class PersonalSettings extends DurableObject<Env> {
+  /** Bound AI inference expense: at most two optional tool-loop checks per UTC day. */
+  async reserveAgentCheck(): Promise<boolean> {
+    const day = new Date().toISOString().slice(0, 10);
+    const usage = (await this.ctx.storage.get<{ day: string; count: number }>("agent-check-quota-v1")) ??
+      { day, count: 0 };
+    const count = usage.day === day ? usage.count : 0;
+    if (count >= 2) return false;
+    await this.ctx.storage.put("agent-check-quota-v1", { day, count: count + 1 });
+    return true;
+  }
+
   async status(): Promise<ProviderStatus> {
     const [router, github] = await Promise.all([
       this.ctx.storage.get<string>("openrouter-api-key"),

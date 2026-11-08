@@ -19,6 +19,7 @@ import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
 import { remoteMcpPlugin } from "./mcp-plugin";
+import { assessAgentToolEvidence } from "./agent-check";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -54,6 +55,79 @@ export class OpenCodeAgent extends DurableObject<Env> {
     await this.providerConnection.connect(key);
     return { active: true };
   }
+  /** Explicit owner-initiated real-model/tool test, never a recurring cron. */
+  async startAgentCheck(): Promise<{ status: string; session?: string; project?: string; message?: string }> {
+    const previous = await this.ctx.storage.get<{
+      session: string; project: string; token: string; startedAt: number; error?: string
+    }>("agent-check-v1");
+    if (previous) return { status: "existing", session: previous.session, project: previous.project };
+    if (!(await this.personalConfig.reserveAgentCheck())) {
+      return { status: "daily-limit", message: "Límite de dos verificaciones diarias para evitar gastos de IA" };
+    }
+    const token = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+    const project = "agent-check-" + token;
+    const created = await this.harness.sessions.create();
+    const state = { session: created.id, project, token, startedAt: Date.now() };
+    await this.ctx.storage.put("agent-check-v1", state);
+    try {
+      const handle = this.harness.session(created.id);
+      await handle.setAgent("build");
+      await handle.setModel(this.ai(MODEL_ID));
+      const command = "printf '" + token + "' > proof.txt && node -e " +
+        JSON.stringify("const fs=require('node:fs');if(fs.readFileSync('proof.txt','utf8')!==" +
+          JSON.stringify(token) + ")process.exit(2);console.log('AGENT_PROOF_OK:" + token + "')");
+      const prompt = "Esta es una autoprueba REAL de herramientas, no una tarea de conversación. " +
+        "Usa la herramienta linux con project=" + project + " y command=" +
+        JSON.stringify(command) + ". Debes CREAR el archivo proof.txt en el Container y VERIFICARLO con Node. " +
+        "No generes código solamente en tu respuesta. Espera el resultado real de linux " +
+        "y describe su exitCode. No alteres ningún otro proyecto.";
+      await handle.submit(prompt, { whenBusy: "followUp" });
+      return { status: "started", session: created.id, project };
+    } catch (error) {
+      const failed = {
+        ...state, error: error instanceof Error ? error.message.slice(0, 250) : "No se pudo iniciar"
+      };
+      await this.ctx.storage.put("agent-check-v1", failed);
+      return { status: "failed", message: failed.error };
+    }
+  }
+
+  async agentCheckStatus(): Promise<unknown> {
+    const saved = await this.ctx.storage.get<{
+      status: string; toolCalls: number; fileVerified: boolean; project: string; reason?: string
+    }>("agent-check-result-v1");
+    if (saved) return saved;
+    const state = await this.ctx.storage.get<{
+      session: string; project: string; token: string; startedAt: number; error?: string
+    }>("agent-check-v1");
+    if (!state) return { status: "not-started" };
+    if (state.error) return { status: "failed", reason: state.error, project: state.project };
+    const handle = this.harness.session(state.session);
+    const [running, history] = await Promise.all([handle.busy(), handle.history()]);
+    const evidence = assessAgentToolEvidence(history, state.project, state.token);
+    if (running) return { status: "running", toolCalls: evidence.requestedTools, project: state.project };
+    if (!history.some(message => message.type === "assistant") &&
+        Date.now() - state.startedAt < 5 * 60_000) {
+      return { status: "queued", toolCalls: 0, project: state.project };
+    }
+    let fileVerified = false;
+    if (evidence.correctLinuxResult) {
+      try {
+        const actual = await this.env.DEV.getByName("personal").inspect(state.project, "read", "proof.txt") as
+          { contents?: string };
+        fileVerified = actual.contents === state.token;
+      } catch { /* An absent file or failed restore is NOT a successful test. */ }
+    }
+    const outcome = {
+      status: evidence.correctLinuxResult && fileVerified ? "passed" : "failed",
+      toolCalls: evidence.requestedTools,
+      fileVerified, project: state.project,
+      ...(!evidence.correctLinuxResult ? { reason: "OpenCode no devolvió una ejecución Linux verificada" } : {})
+    };
+    await this.ctx.storage.put("agent-check-result-v1", outcome);
+    return outcome;
+  }
+
   // Workers AI over the AI binding, as an OpenCode provider plugin.
   readonly ai = createAI({ binding: this.env.AI });
   // Files in the object's own storage. `exec` runs JavaScript in a Worker
@@ -279,6 +353,24 @@ export default {
             return Response.json({ error: error instanceof Error ? error.message : "Invalid repository" },
               { status: 422, headers: { "Cache-Control": "no-store" } });
           }
+        }
+        return new Response("Method not allowed", { status: 405 });
+      }
+      if (url.pathname === "/api/dev/agent-check") {
+        const workspace = request.method === "GET"
+          ? url.searchParams.get("workspace")
+          : (request.headers.get("Origin") === url.origin &&
+             request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")
+            ? ((await request.json()) as { workspace?: string }).workspace : null);
+        if (!workspace || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(workspace)) {
+          return Response.json({ error: "Se requiere un espacio autenticado válido" }, { status: 403 });
+        }
+        const host = env.OpenCodeAgent.getByName(workspace);
+        if (request.method === "GET") {
+          return Response.json(await host.agentCheckStatus(), { headers: { "Cache-Control": "no-store" } });
+        }
+        if (request.method === "POST") {
+          return Response.json(await host.startAgentCheck(), { headers: { "Cache-Control": "no-store" } });
         }
         return new Response("Method not allowed", { status: 405 });
       }
