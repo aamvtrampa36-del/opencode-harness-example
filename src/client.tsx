@@ -411,14 +411,23 @@ function App() {
     setSession(next);
     setProject(localStorage.getItem(PROJECT_PREFIX + next) ?? "");
   };
-  /** Create a project and attach its slug to the conversation automatically. */
-  const startNewApp = () => {
+  /** One guided new-project entrypoint for web and native Android work. */
+  const startNewApp = (kind: "web" | "android" = "web") => {
     create().then((next) => {
-      const slug = "app-" + Date.now().toString(36);
+      const slug = (kind === "android" ? "apk-" : "app-") + Date.now().toString(36);
       choose(next);
       localStorage.setItem(PROJECT_PREFIX + next, slug);
       setProject(slug);
-      setPrompt(
+      setPrompt(kind === "android" ?
+        "Crea una app Android nativa para esta idea: [describe aquí tu app]. " +
+        "Usa la herramienta linux con project=" + slug + ". " +
+        "Genera los archivos Android completos en Java y Gradle, incluidas pruebas. " +
+        "Prefiere funcionamiento offline y almacenamiento local. " +
+        "No presupongas que Android SDK o Gradle están instalados en el Container. " +
+        "Para crear una APK utiliza el flujo GitHub Actions android-apk.yml del repositorio autorizado cuando tengas la herramienta github conectada. " +
+        "Si no puedes publicar a GitHub, deja el proyecto en Linux para descargarlo, indica el paso pendiente y no afirmes haber creado una APK. " +
+        "No modifiques servicios de producción."
+        :
         "Crea una aplicación web a partir de esta idea: [describe aquí tu app]. " +
         "Usa la herramienta linux con project=" + slug + " para crear archivos, instalar dependencias, " +
         "probar el código, corregir errores y compilar una versión de producción. " +
@@ -550,7 +559,7 @@ function App() {
                 size="sm"
                 variant="secondary"
                 disabled={!connected}
-                onClick={startNewApp}
+                onClick={() => startNewApp("web")}
                 aria-label="Crear nueva aplicación"
                 title="Crea una sesión nueva y redacta tu idea de aplicación"
               >
@@ -676,6 +685,15 @@ function App() {
                   description="Describe una aplicación, trabaja sobre un proyecto o prepara una escena de CDF."
                 />
                 <div className="mt-6 flex flex-wrap justify-center gap-2">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    icon={<CodeIcon size={15} />}
+                    disabled={!connected}
+                    onClick={() => startNewApp("android")}
+                  >
+                    Crear APK Android
+                  </Button>
                   {SUGGESTIONS.map((suggestion) => (
                     <Button
                       key={suggestion.label}
