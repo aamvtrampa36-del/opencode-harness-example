@@ -350,7 +350,8 @@ function App() {
         if (!response.ok) throw new Error("Health check unavailable");
         return response.json();
       })
-      .then((data: { openRouterConfigured?: boolean; githubConfigured?: boolean }) => {
+      .then((value: unknown) => {
+        const data = value as { openRouterConfigured?: boolean; githubConfigured?: boolean };
         setIntegrations({
           openRouterConfigured: Boolean(data.openRouterConfigured),
           githubConfigured: Boolean(data.githubConfigured)
