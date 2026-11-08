@@ -90,7 +90,7 @@ function parse(raw: WebSocketMessage): ClientMessage | undefined {
 export class OpenCodeSessionSockets {
   readonly #harness: OpenCodeHarness;
   readonly #getWebSockets: (tag?: string) => WebSocket[];
-  readonly #openRouterAvailable: boolean;
+  readonly #openRouterAvailable: () => Promise<boolean>;
   /** One event stream per running session, or its opening. */
   readonly #watches = new Map<
     OpenCodeSessionId,
@@ -102,7 +102,7 @@ export class OpenCodeSessionSockets {
   constructor(
     harness: OpenCodeHarness,
     getWebSockets: (tag?: string) => WebSocket[],
-    openRouterAvailable = false
+    openRouterAvailable: () => Promise<boolean> = async () => false
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
@@ -154,7 +154,7 @@ export class OpenCodeSessionSockets {
       // socket has no session tag, so it gets no session's events.
       return;
     }
-    send(connection, { type: "hello", session, openRouterAvailable: this.#openRouterAvailable });
+    send(connection, { type: "hello", session, openRouterAvailable: await this.#openRouterAvailable() });
     send(connection, { type: "sessions", sessions });
     const snapshot = await this.#snapshot(session);
     send(connection, { type: "snapshot", ...snapshot });
@@ -213,8 +213,8 @@ export class OpenCodeSessionSockets {
             throw new Error("Unknown model preset");
           }
           const preset = MODEL_PRESETS[message.model];
-          if (preset.providerID === "openrouter" && !this.#openRouterAvailable) {
-            throw new Error("OpenRouter is not configured. Add OPENROUTER_API_KEY as a private Cloudflare Worker Secret.");
+          if (preset.providerID === "openrouter" && !(await this.#openRouterAvailable())) {
+            throw new Error("Conecta OpenRouter desde Configuración antes de seleccionar ese modelo.");
           }
           await handle.setModel({ providerID: preset.providerID, id: preset.id });
         }
