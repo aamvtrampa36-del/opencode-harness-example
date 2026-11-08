@@ -76,7 +76,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
   });
   readonly linuxRunner = {
     run: (project: string, command: string) =>
-      this.env.DEV.getByName("personal").run(project, command)
+      this.env.DEV.getByName("personal").run(project, command),
+    inspect: (project: string, action: "list" | "read", path: string) =>
+      this.env.DEV.getByName("personal").inspect(project, action, path)
   };
 
   readonly harness = new OpenCodeHarness({

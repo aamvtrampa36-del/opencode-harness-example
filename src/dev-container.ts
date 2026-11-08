@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { MAX_SHELL_OUTPUT, validateCommand, validateProject } from "./dev-guard";
 import { PREVIEW_SOURCE } from "./preview-server";
+import { INSPECT_SOURCE, validateInspectionPath } from "./linux-inspect";
 
 /**
  * Opt-in Linux computer. There is exactly ONE named instance ("personal")
@@ -99,6 +100,30 @@ export class DevContainer extends DurableObject<Env> {
     const rows = (await this.ctx.storage.get<{ name: string; lastUsedAt: number }[]>("projectInventory")) ?? [];
     const next = [{ name, lastUsedAt: Date.now() }, ...rows.filter((x) => x.name !== name)];
     await this.ctx.storage.put("projectInventory", next.slice(0, 100));
+  }
+
+  /** Read-only project inspection for Plan and Review without a shell. */
+  async inspect(project: string, action: "list" | "read", relativePath: string): Promise<unknown> {
+    const id = validateProject(project);
+    if (action !== "list" && action !== "read") throw new Error("Invalid inspection action");
+    const target = validateInspectionPath(relativePath, action);
+    const container = await this.ensureRunning();
+    this.busy++;
+    await this.ctx.storage.put("lastActivity", Date.now());
+    try {
+      const process = await container.exec(["node", "-e", INSPECT_SOURCE, id, action, target]);
+      const output = await process.output();
+      const decoder = new TextDecoder();
+      if (output.exitCode !== 0) {
+        throw new Error("No se pudo inspeccionar el archivo: " +
+          decoder.decode(output.stderr).slice(-250));
+      }
+      return JSON.parse(decoder.decode(output.stdout));
+    } finally {
+      this.busy--;
+      await this.ctx.storage.put("lastActivity", Date.now());
+      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+    }
   }
 
   async run(project: string, command: string): Promise<LinuxResult> {
