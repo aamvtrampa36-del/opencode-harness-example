@@ -1,3 +1,4 @@
+import { McpPanel } from "./mcp-panel";
 import { SpecializationsPanel } from "./specializations-panel";
 import { useEffect, useState } from "react";
 import { MODEL_PRESETS } from "./model-presets";
@@ -217,6 +218,7 @@ export function SettingsPanel({
         </p>
       )}
       <SpecializationsPanel onChanged={onChanged} />
+      <McpPanel workspace={workspace} />
     </section>
   );
 }
