@@ -1,3 +1,4 @@
+import { AgentCheckPanel } from "./agent-check-panel";
 import { McpPanel } from "./mcp-panel";
 import { SpecializationsPanel } from "./specializations-panel";
 import { useEffect, useState } from "react";
@@ -219,6 +220,7 @@ export function SettingsPanel({
       )}
       <SpecializationsPanel onChanged={onChanged} />
       <McpPanel workspace={workspace} />
+      <AgentCheckPanel workspace={workspace} />
     </section>
   );
 }
