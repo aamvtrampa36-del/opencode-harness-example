@@ -7,7 +7,7 @@ on:
       - .github/workflows/one-time-native-probe.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   verify:
@@ -15,6 +15,8 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
@@ -30,6 +32,19 @@ jobs:
           path: bun.lock
           if-no-files-found: error
           retention-days: 2
+      - name: Commit verified dependency lock to this same-repo PR branch
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          set -euo pipefail
+          if git ls-files --error-unmatch bun.lock >/dev/null 2>&1; then
+            echo "Lockfile already tracked; no write required"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add bun.lock
+            git commit -m "chore: track reproducible Bun dependency lock"
+            git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+          fi
       - name: Verify native OpenCode CLI is separately runnable
         run: |
           set -euo pipefail
