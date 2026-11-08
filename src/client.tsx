@@ -18,6 +18,7 @@ import {
   InfoIcon,
   ListIcon,
   LinkIcon,
+  DownloadSimpleIcon,
   MoonIcon,
   PaperPlaneRightIcon,
   PlusIcon,
@@ -360,6 +361,17 @@ function App() {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, live, busy]);
 
+  const exportSession = () => {
+    const data = { format: "opencode-harness-session-v1", exportedAt: new Date().toISOString(), session, messages };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const objectURL = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectURL;
+    anchor.download = `opencode-session-${session}.json`;
+    anchor.click();
+    URL.revokeObjectURL(objectURL);
+  };
+
   const connected = status === "open";
   const queued = pending.filter((operation) => operation.status === "queued");
 
@@ -445,6 +457,19 @@ function App() {
               </button>
             ))}
           </nav>
+          <div className="border-t border-kumo-line p-3">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={!connected}
+              onClick={exportSession}
+              aria-label="Exportar conversación actual como copia local"
+            >
+              <DownloadSimpleIcon size={16} />
+              Exportar sesión
+            </Button>
+          </div>
         </aside>
       ) : null}
 
