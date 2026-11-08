@@ -100,6 +100,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
 }
 
 export default {
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    // A temporary one-time smoke invoked by a short-lived cron trigger.
+    // Durable Object stores a marker before spending; repeated cron events
+    // cannot re-run the test or create another Container.
+    ctx.waitUntil((async () => {
+      const result = await env.DEV.getByName("personal").smokeOnce();
+      console.log("OPENCODE_LINUX_SMOKE_V1", JSON.stringify(result));
+    })());
+  },
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
