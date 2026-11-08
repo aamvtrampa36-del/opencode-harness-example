@@ -19,6 +19,7 @@ import {
   ListIcon,
   LinkIcon,
   DownloadSimpleIcon,
+  EyeIcon,
   MoonIcon,
   PaperPlaneRightIcon,
   PlusIcon,
@@ -43,6 +44,7 @@ const OBJECT_KEY = "opencode-harness-object";
 const SESSION_KEY = "opencode-harness-session";
 const ROOT_SESSION = "ses_root";
 const MODEL_KEY = "opencode-model-preset";
+const PROJECT_PREFIX = "opencode-active-project:";
 
 const SUGGESTIONS = [
   {
@@ -328,6 +330,7 @@ function App() {
     () => localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION
   );
   const [prompt, setPrompt] = useState("");
+  const [project, setProject] = useState(() => localStorage.getItem(PROJECT_PREFIX + (localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION)) ?? "");
   const [linkCopied, setLinkCopied] = useState(false);
   const [modelPreset, setModelPreset] = useState<ModelPresetID>(() => {
     const stored = localStorage.getItem(MODEL_KEY);
@@ -378,17 +381,22 @@ function App() {
   const choose = (next: string) => {
     localStorage.setItem(SESSION_KEY, next);
     setSession(next);
+    setProject(localStorage.getItem(PROJECT_PREFIX + next) ?? "");
   };
-  /** One click creates a clean session and opens an editable app brief. */
+  /** Create a project and attach its slug to the conversation automatically. */
   const startNewApp = () => {
     create().then((next) => {
+      const slug = "app-" + Date.now().toString(36);
       choose(next);
+      localStorage.setItem(PROJECT_PREFIX + next, slug);
+      setProject(slug);
       setPrompt(
-        "Crea una nueva aplicación web a partir de esta idea: [describe aquí tu app]. " +
-        "Primero elige un nombre corto de proyecto y explica qué construirás. " +
-        "Usa la herramienta linux para crear archivos, instalar dependencias, probar y corregir errores reales. " +
-        "Trabaja dentro de /workspace/projects/<nombre>. No modifiques producción. " +
-        "Cuando termines, resume pruebas, archivos y cómo verla."
+        "Crea una aplicación web a partir de esta idea: [describe aquí tu app]. " +
+        "Usa la herramienta linux con project=" + slug + " para crear archivos, instalar dependencias, " +
+        "probar el código, corregir errores y compilar una versión de producción. " +
+        "Usa rutas relativas para recursos (por ejemplo Vite base='./'). " +
+        "La vista previa debe quedar en una carpeta dist/ con index.html. " +
+        "No modifiques producción ni otros proyectos. Explica brevemente el resultado y las pruebas."
       );
     }, fail);
   };
@@ -521,6 +529,23 @@ function App() {
                 <PlusIcon size={14} />
                 <span className="hidden sm:inline">Crear app</span>
               </Button>
+              {project ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  title={"Ver versión compilada del proyecto " + project}
+                  aria-label="Vista previa de la aplicación"
+                  onClick={() => window.open(
+                    "/api/dev/preview/" + project + "/dist/",
+                    "_blank",
+                    "noopener,noreferrer"
+                  )}
+                >
+                  <EyeIcon size={16} />
+                  <span className="hidden sm:inline">Ver app</span>
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 variant="ghost"
