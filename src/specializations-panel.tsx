@@ -25,7 +25,7 @@ export function SpecializationsPanel({ onChanged }: { onChanged: () => void }) {
   };
   useEffect(() => { void refresh().catch(e => setMessage(String(e))); }, []);
 
-  async function request(method: "POST" | "DELETE", body: unknown) {
+  async function request(method: "POST" | "DELETE", body: unknown): Promise<boolean> {
     setBusy(true);
     setMessage("");
     try {
@@ -38,8 +38,10 @@ export function SpecializationsPanel({ onChanged }: { onChanged: () => void }) {
       if (!response.ok) throw new Error(result.error ?? "No se pudo guardar");
       await refresh();
       setMessage(method === "POST" ? "Especialización guardada." : "Especialización retirada.");
+      return true;
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "Error en la configuración");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -76,7 +78,7 @@ export function SpecializationsPanel({ onChanged }: { onChanged: () => void }) {
         placeholder="Describe qué debe hacer el agente, cómo revisar los resultados y qué límites mantener. Nunca pegues claves API."
         value={instructions} onChange={e => setInstructions(e.target.value)} />
       <button className={button} type="button" disabled={busy || !name.trim() || !instructions.trim()}
-        onClick={() => void request("POST", { id: slug(name), name, instructions, enabled: true }).then(() => { setName(""); setInstructions(""); })}>
+        onClick={() => void request("POST", { id: slug(name), name, instructions, enabled: true }).then(saved => { if (saved) { setName(""); setInstructions(""); } })}>
         Guardar especialización
       </button>
       {message ? <p role="status" className="text-xs">{message}</p> : null}
