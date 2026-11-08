@@ -2,6 +2,14 @@
 
 **Aplicación:** https://opencode-harness-example.cdf-cloud-mvp-20261019.workers.dev
 
+## Arquitectura y límites de producto
+
+**Esta web no es la interfaz nativa del OpenCode CLI.** Es una integración personal del motor **OpenCode 2.0.24 Workerd** mediante el **OpenCodeHarness experimental** de Cloudflare. La ejecución Linux, el panel web, GitHub, la administración de proyectos y los respaldos pequeños son módulos propios. OpenCode gestiona el ciclo del agente y sus sesiones, pero **aún no existe una prueba satisfactoria de extremo a extremo de modelo → herramienta → código → corrección**.
+
+En un ensayo separado, el ejecutable nativo **OpenCode CLI 1.19.5** arrancó mediante `opencode serve` y expuso `/doc` en GitHub Actions. Esto verifica la viabilidad inicial de su servidor, **no** una migración ni la equivalencia de los SDK 1.x y 2.x, y tampoco valida herramientas de IA en un proyecto real. La instalación actual sigue intacta.
+
+Para reproducibilidad, el repositorio debe mantener `bun.lock` y ejecutar `bun install --frozen-lockfile`. Las dependencias directas deben permanecer fijadas a versiones probadas; las actualizaciones se realizan en PR separados, con regresiones, nunca en cada despliegue incidental.
+
 ## Primera aplicación desde el teléfono o PC
 
 1. Entra por Cloudflare Access con tu cuenta autorizada.
@@ -45,7 +53,7 @@ La prueba de GitHub nativo por ahora utiliza un HTTP simulado: **no es una conex
 - Mensajes y herramientas del OpenCode Harness: Durable Objects SQLite.
 - Archivos de proyecto Linux: snapshots del sistema de archivos (beta), guardados periódicamente antes de suspender el Container.
 - **Advertencia importante:** Cloudflare indica que las instantáneas caducan a los **30 días** desde creación o última restauración; no constituyen una copia independiente permanente.
-- La opción **Descargar** es una copia manual recuperable, no un servicio de respaldo periódico.
+- **Descargar** exporta el proyecto manualmente. En **Proyectos → Guardar respaldo** existe una copia adicional en Durable Object para archivos de hasta 2 MiB comprimidos. No incluye restauración automática, no reemplaza el respaldo fuera de Cloudflare ni protege proyectos mayores.
 - Todas las URL principales permanecen bajo Cloudflare Access; las URLs de previsualización Worker independientes están deshabilitadas.
 - El Container no recibe las claves de OpenRouter ni GitHub desde el Worker.
 
@@ -58,6 +66,6 @@ La prueba de GitHub nativo por ahora utiliza un HTTP simulado: **no es una conex
 - Ejemplo **solo ilustrativo** si el *basic* fuera el único Container: ~25 h/mes puede caber en las asignaciones de RAM/disco; ~240 h/mes a CPU activa 20% podrían añadir ~US$2.5 por memoria/disco/CPU, mientras al 100% CPU añadirían ~US$6; no incluye red/modelos ni otros servicios.
 - Cada instrucción de Linux tiene tope de 180 s: los trabajos prolongados necesitan dividirse y no hay todavía una cola totalmente autónoma persistente.
 - OpenRouter y GitHub se conectan mediante **Configurar** usando claves del usuario. No hace falta editar Cloudflare manualmente; las llamadas autenticadas todavía requieren prueba con credenciales.
-- Todavía no hay integración MCP propia con CDF CLOUD/WorkBench, ni copia periódica independiente, ni prueba de navegación en dos dispositivos. Los modos de agentes son sesiones nativas, no orquestación completa ni caché de repositorios versionada.
+- Hay registro opcional de servidores MCP remotos en **Configurar**, pero no se ha validado una conexión real a CDF CLOUD/WorkBench. Tampoco hay respaldo automático de proyectos grandes ni prueba de navegación en dos dispositivos. Los modos de agentes utilizan sesiones nativas; no constituyen una orquestación completa ni caché de repositorios versionada.
 
 La plataforma está mejorada y demostrada para ejecución de código, pruebas, vista previa, Git local y recuperación básica, **pero todavía no es una sustitución completa de Codex Cloud**. No presentar como "100%" hasta completar y probar conectores, modelo, navegación y recuperación prolongada.
