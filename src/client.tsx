@@ -342,6 +342,9 @@ function App() {
   const [project, setProject] = useState(() => localStorage.getItem(PROJECT_PREFIX + (localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION)) ?? "");
   const [linkCopied, setLinkCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [projectsOpen, setProjectsOpen] = useState(false);
+  const [availableProjects, setAvailableProjects] = useState<{ name: string; lastUsedAt: number }[]>([]);
+  const [projectError, setProjectError] = useState("");
   const [agentMode, setAgentMode] = useState<AgentMode>("build");
   const [integrations, setIntegrations] = useState<{
     openRouterConfigured: boolean;
@@ -412,6 +415,25 @@ function App() {
     setSession(next);
     setProject(localStorage.getItem(PROJECT_PREFIX + next) ?? "");
   };
+  const loadProjects = async () => {
+    try {
+      const response = await fetch("/api/dev/projects", { cache: "no-store" });
+      if (!response.ok) throw new Error("No se pudieron consultar los proyectos.");
+      const result = await response.json() as {
+        projects?: { name: string; lastUsedAt: number }[];
+      };
+      setAvailableProjects(result.projects ?? []);
+      setProjectError("");
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : "Error consultando proyectos.");
+    }
+  };
+  const chooseProject = (name: string) => {
+    localStorage.setItem(PROJECT_PREFIX + session, name);
+    setProject(name);
+    setProjectsOpen(false);
+  };
+
   /** One guided new-project entrypoint for web and native Android work. */
   const startNewApp = (kind: "web" | "android" = "web") => {
     create().then((next) => {
@@ -556,6 +578,12 @@ function App() {
               </div>
             </div>
             <div className="flex w-full min-w-0 items-center gap-1.5 overflow-x-auto pb-1 sm:w-auto sm:shrink-0 sm:pb-0">
+              <Button type="button" variant="ghost" size="sm"
+                aria-label="Gestionar mis proyectos" title="Ver proyectos creados"
+                onClick={() => { setProjectsOpen(v => !v); void loadProjects(); }}>
+                <CodeIcon size={16} />
+                <span className="hidden sm:inline">Proyectos</span>
+              </Button>
               <Button
                 type="button"
                 size="sm"
@@ -672,6 +700,28 @@ function App() {
 
         <main className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-3xl space-y-5 px-5 py-6">
+            {projectsOpen ? (
+              <section className="rounded-xl border border-kumo-line bg-kumo-base p-4" aria-label="Mis proyectos">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-base font-semibold">Proyectos del entorno Linux</h2>
+                  <button className="rounded border border-kumo-line px-2 py-1 text-xs" type="button"
+                    onClick={() => void loadProjects()}>Actualizar</button>
+                </div>
+                <p className="mt-1 text-xs text-kumo-subtle">Consultar esta lista no enciende el Container. Seleccionar un proyecto permite ver su compilación y descargar sus archivos.</p>
+                {projectError ? <p role="alert" className="mt-2 text-sm">{projectError}</p> : null}
+                {availableProjects.length ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {availableProjects.map(row => (
+                      <button key={row.name} type="button"
+                        className="rounded-md border border-kumo-line px-3 py-2 text-xs hover:bg-kumo-elevated"
+                        onClick={() => chooseProject(row.name)}>
+                        {row.name}{project === row.name ? " ✓" : ""}
+                      </button>
+                    ))}
+                  </div>
+                ) : <p className="mt-2 text-sm text-kumo-subtle">No hay proyectos registrados todavía.</p>}
+              </section>
+            ) : null}
             {settingsOpen ? (
               <SettingsPanel workspace={object} onClose={() => setSettingsOpen(false)}
                 onChanged={() => { void refreshIntegrations(); }} />
