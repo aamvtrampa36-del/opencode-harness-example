@@ -1,3 +1,4 @@
+import { SpecializationsPanel } from "./specializations-panel";
 import { useEffect, useState } from "react";
 import { MODEL_PRESETS } from "./model-presets";
 
@@ -215,6 +216,7 @@ export function SettingsPanel({
           ) : null}
         </p>
       )}
+      <SpecializationsPanel onChanged={onChanged} />
     </section>
   );
 }
