@@ -33,7 +33,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
         || await this.personalConfig.getGitHubKey();
       if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
-      return new GitHubBridge(key).execute(input);
+      return new GitHubBridge(key, fetch, await this.personalConfig.getAllowedRepositories()).execute(input);
     }
   };
   async isOpenRouterConfigured(): Promise<boolean> {
@@ -190,6 +190,30 @@ export default {
         }
         return Response.json({ configured: false, revokeAtProvider: true },
           { headers: { "Cache-Control": "no-store" } });
+      }
+      if (url.pathname === "/api/settings/repositories") {
+        if (request.method === "GET") {
+          return Response.json({ repositories: await personal.getAllowedRepositories() },
+            { headers: { "Cache-Control": "no-store" } });
+        }
+        if (request.method === "POST" || request.method === "DELETE") {
+          if (!settingsOriginAllowed) return Response.json({ error: "Origin and JSON required" }, { status: 403 });
+          const raw = await request.text();
+          if (raw.length > 600) return Response.json({ error: "Request too large" }, { status: 413 });
+          const body = JSON.parse(raw) as { repository?: string };
+          try {
+            if (request.method === "POST") {
+              const result = await personal.authorizeRepository(body.repository);
+              return Response.json(result, { headers: { "Cache-Control": "no-store" } });
+            }
+            await personal.revokeRepository(body.repository);
+            return Response.json({ removed: true }, { headers: { "Cache-Control": "no-store" } });
+          } catch (error) {
+            return Response.json({ error: error instanceof Error ? error.message : "Invalid repository" },
+              { status: 422, headers: { "Cache-Control": "no-store" } });
+          }
+        }
+        return new Response("Method not allowed", { status: 405 });
       }
       if (url.pathname === "/api/dev/projects" && request.method === "GET") {
         return Response.json({
