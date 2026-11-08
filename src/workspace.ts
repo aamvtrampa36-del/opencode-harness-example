@@ -153,7 +153,10 @@ export function workspacePlugin(
               additionalProperties: false
             },
             options: { codemode: false },
-            async execute(input) {
+            async execute(input, context) {
+              if (context.agent === "plan") {
+                throw new Error("Planificación y Revisión no pueden ejecutar comandos Linux. Cambia a Desarrollar para modificar o ejecutar archivos.");
+              }
               const p = input as { project: string; command: string };
               const result = await linux.run(p.project, p.command);
               return { content: JSON.stringify(result) };
@@ -181,7 +184,11 @@ export function workspacePlugin(
               additionalProperties: false
             },
             options: { codemode: false },
-            async execute(input) {
+            async execute(input, context) {
+              const action = (input as { action?: string }).action;
+              if (context.agent === "plan" && action !== "repo" && action !== "read") {
+                throw new Error("Planificación y Revisión solo pueden consultar repositorios. Cambia a Desarrollar para crear ramas, commits o PR.");
+              }
               const result = await github.execute(input as GitHubAction);
               return { content: JSON.stringify(result) };
             }
@@ -198,6 +205,9 @@ export function workspacePlugin(
             // plugin tools in its `execute` code-mode tool.
             options: { codemode: false },
             async execute(input, context) {
+              if (context.agent === "plan" && !["read", "glob", "grep"].includes(tool.name)) {
+                throw new Error("La revisión solo permite leer y buscar archivos. Cambia a Desarrollar para hacer modificaciones.");
+              }
               const { content, isError } = await execute(
                 { id: context.id, name: tool.name, arguments: input },
                 { abortSignal: context.signal }
