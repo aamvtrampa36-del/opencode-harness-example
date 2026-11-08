@@ -121,7 +121,7 @@ export default {
         // OpenCode origin or invoke /api/dev/run from its own scripts.
         // CSP sandbox applies even when a preview URL is opened directly.
         headers.set("Content-Security-Policy",
-          "sandbox allow-scripts; default-src 'self' data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'");
+          "sandbox allow-scripts; default-src https: data: blob:; script-src https: 'unsafe-inline' blob: data:; style-src https: 'unsafe-inline'; connect-src https:; img-src https: data: blob:; font-src https: data:; object-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'");
         headers.set("X-Content-Type-Options", "nosniff");
         headers.set("Referrer-Policy", "no-referrer");
         headers.set("Cache-Control", "no-store");
