@@ -546,6 +546,23 @@ function App() {
                   <span className="hidden sm:inline">Ver app</span>
                 </Button>
               ) : null}
+              {project ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  title={"Descargar archivos del proyecto " + project}
+                  aria-label="Descargar proyecto"
+                  onClick={() => window.open(
+                    "/api/dev/download/" + project,
+                    "_blank",
+                    "noopener,noreferrer"
+                  )}
+                >
+                  <DownloadSimpleIcon size={16} />
+                  <span className="hidden sm:inline">Descargar</span>
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 variant="ghost"
