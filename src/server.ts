@@ -18,6 +18,7 @@ import { workspacePlugin } from "./workspace";
 import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
+import { remoteMcpPlugin } from "./mcp-plugin";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -28,6 +29,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
   private readonly providerConnection: {
     connect?: (key: string) => Promise<void>;
   } = {};
+  private readonly mcpLifecycle: { reload?: () => Promise<void> } = {};
+  async refreshMcps(): Promise<{ refreshed: boolean }> {
+    if (!this.mcpLifecycle.reload) return { refreshed: false };
+    await this.mcpLifecycle.reload();
+    return { refreshed: true };
+  }
   private readonly githubRunner = {
     execute: async (input: Parameters<GitHubBridge["execute"]>[0]) => {
       const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
@@ -97,6 +104,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
             async () => (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
               || await this.personalConfig.getOpenRouterKey(),
             (connect) => { this.providerConnection.connect = connect; }
+          ),
+          remoteMcpPlugin(
+            () => this.personalConfig.getRemoteMcps(),
+            (reload) => { this.mcpLifecycle.reload = reload; }
           ),
           workspacePlugin(this.workspace, {}, this.linuxRunner, this.githubRunner)
         ]
@@ -191,6 +202,35 @@ export default {
         }
         return Response.json({ configured: false, revokeAtProvider: true },
           { headers: { "Cache-Control": "no-store" } });
+      }
+      if (url.pathname === "/api/settings/mcp") {
+        if (request.method === "GET") {
+          return Response.json({ servers: await personal.listPublicMcps() },
+            { headers: { "Cache-Control": "no-store" } });
+        }
+        if (request.method === "POST" || request.method === "DELETE") {
+          if (!settingsOriginAllowed) return Response.json({ error: "Origin and JSON required" }, { status: 403 });
+          const raw = await request.text();
+          if (raw.length > 1_800) return Response.json({ error: "Request too large" }, { status: 413 });
+          try {
+            const body = JSON.parse(raw) as { id?: string; workspace?: string };
+            const result = request.method === "POST"
+              ? await personal.saveRemoteMcp(body)
+              : await personal.removeRemoteMcp(body.id ?? "");
+            let live = false;
+            if (body.workspace && /^[a-f0-9-]{36}$/i.test(body.workspace)) {
+              try {
+                live = (await env.OpenCodeAgent.getByName(body.workspace).refreshMcps()).refreshed;
+              } catch { /* Next session host initialization picks up settings. */ }
+            }
+            return Response.json({ ...(result ?? {}), refreshedCurrentHost: live },
+              { headers: { "Cache-Control": "no-store" } });
+          } catch (error) {
+            return Response.json({ error: error instanceof Error ? error.message : "Invalid MCP request" },
+              { status: 422, headers: { "Cache-Control": "no-store" } });
+          }
+        }
+        return new Response("Method not allowed", { status: 405 });
       }
       if (url.pathname === "/api/settings/specializations") {
         if (request.method === "GET") {
