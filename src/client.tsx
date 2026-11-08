@@ -1,3 +1,4 @@
+import type { AgentMode } from "./protocol";
 import { SettingsPanel } from "./settings-panel";
 import { MODEL_PRESETS, isModelPreset, type ModelPresetID } from "./model-presets";
 import {
@@ -341,6 +342,7 @@ function App() {
   const [project, setProject] = useState(() => localStorage.getItem(PROJECT_PREFIX + (localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION)) ?? "");
   const [linkCopied, setLinkCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [agentMode, setAgentMode] = useState<AgentMode>("build");
   const [integrations, setIntegrations] = useState<{
     openRouterConfigured: boolean;
     githubConfigured: boolean;
@@ -413,6 +415,7 @@ function App() {
   /** One guided new-project entrypoint for web and native Android work. */
   const startNewApp = (kind: "web" | "android" = "web") => {
     create().then((next) => {
+      setAgentMode("build");
       const slug = (kind === "android" ? "apk-" : "app-") + Date.now().toString(36);
       choose(next);
       localStorage.setItem(PROJECT_PREFIX + next, slug);
@@ -443,7 +446,7 @@ function App() {
     const text = prompt.trim();
     if (!text || !connected) return;
     setPrompt("");
-    submitPrompt(text, whenBusy, openRouterAvailable ? modelPreset : "cloudflare");
+    submitPrompt(text, whenBusy, openRouterAvailable ? modelPreset : "cloudflare", agentMode);
   };
 
   // Live text for an assistant message no snapshot has yet.
@@ -618,6 +621,14 @@ function App() {
                 <LinkIcon size={16} />
                 <span className="hidden sm:inline">{linkCopied ? "Copiado" : "Vincular"}</span>
               </Button>
+              <select aria-label="Modo de agente" title="Los roles de revisión y narrativa no modifican archivos"
+                value={agentMode} onChange={(event) => setAgentMode(event.target.value as AgentMode)}
+                className="max-w-[128px] rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 text-xs text-kumo-default">
+                <option value="build">Desarrollar</option>
+                <option value="plan">Planificar</option>
+                <option value="review">Revisar</option>
+                <option value="creative">Narrativa CDF</option>
+              </select>
               <select
                 aria-label="Modelo de IA"
                 title={openRouterAvailable ? "Seleccionar modelo" : "Conecta OpenRouter desde Configuración"}
@@ -674,6 +685,18 @@ function App() {
                     Crea aplicaciones con Linux, consulta conversaciones anteriores o prepara borradores narrativos.
                     Los proyectos pueden descargarse; las copias automáticas externas aún no están configuradas.
                   </p>
+                  {project ? (
+                    <button className="mt-1 rounded-md border border-kumo-line px-3 py-1.5 text-xs"
+                      type="button" disabled={!connected}
+                      title="Crea otra sesión de revisión independiente; utiliza tokens de IA"
+                      onClick={() => create({ project }).then(next => {
+                        localStorage.setItem(PROJECT_PREFIX + next, project);
+                        choose(next);
+                        setAgentMode("review");
+                      }, fail)}>
+                      Delegar revisión independiente (consume tokens)
+                    </button>
+                  ) : null}
                   {integrations ? (
                     <p className="text-xs text-kumo-subtle">
                       OpenRouter: {integrations.openRouterConfigured ? "configurado" : "pendiente"} ·
