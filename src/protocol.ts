@@ -1,3 +1,4 @@
+import type { ModelPresetID } from "./model-presets";
 import type {
   OpenCodeMessage,
   OpenCodePendingOperation,
@@ -20,6 +21,7 @@ export type ClientMessage =
       readonly id?: string;
       readonly text: string;
       readonly whenBusy?: OpenCodeWhenBusy;
+      readonly model?: ModelPresetID;
     }
   | { readonly type: "abort"; readonly id?: string }
   | { readonly type: "create"; readonly id?: string }
@@ -36,7 +38,7 @@ export type SessionSnapshot = {
 
 /** Server → client. */
 export type ServerMessage =
-  | { readonly type: "hello"; readonly session: OpenCodeSessionId }
+  | { readonly type: "hello"; readonly session: OpenCodeSessionId; readonly openRouterAvailable: boolean }
   | {
       readonly type: "sessions";
       readonly sessions: readonly OpenCodeSessionInfo[];
