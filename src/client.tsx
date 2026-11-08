@@ -77,8 +77,18 @@ function getObject(): string {
   const linked = url.searchParams.get("object");
   // Only UUIDs may be accepted as session containers. Access still authenticates the user.
   if (linked && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(linked)) {
+    const sharedSession = url.searchParams.get("session");
+    const sharedProject = url.searchParams.get("project");
+    if (sharedSession && /^ses[A-Za-z0-9_]{1,64}$/.test(sharedSession)) {
+      localStorage.setItem(SESSION_KEY, sharedSession);
+      if (sharedProject && /^[a-z][a-z0-9-]{0,39}$/.test(sharedProject)) {
+        localStorage.setItem(PROJECT_PREFIX + sharedSession, sharedProject);
+      }
+    }
     localStorage.setItem(OBJECT_KEY, linked);
     url.searchParams.delete("object");
+    url.searchParams.delete("session");
+    url.searchParams.delete("project");
     window.history.replaceState(null, "", url);
     return linked;
   }
@@ -332,6 +342,26 @@ function App() {
   const [prompt, setPrompt] = useState("");
   const [project, setProject] = useState(() => localStorage.getItem(PROJECT_PREFIX + (localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION)) ?? "");
   const [linkCopied, setLinkCopied] = useState(false);
+  const [integrations, setIntegrations] = useState<{
+    openRouterConfigured: boolean;
+    githubConfigured: boolean;
+  } | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/health", { signal: controller.signal, cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Health check unavailable");
+        return response.json();
+      })
+      .then((data: { openRouterConfigured?: boolean; githubConfigured?: boolean }) => {
+        setIntegrations({
+          openRouterConfigured: Boolean(data.openRouterConfigured),
+          githubConfigured: Boolean(data.githubConfigured)
+        });
+      })
+      .catch(() => { /* The chat continues even when diagnostics are unavailable. */ });
+    return () => controller.abort();
+  }, []);
   const [modelPreset, setModelPreset] = useState<ModelPresetID>(() => {
     const stored = localStorage.getItem(MODEL_KEY);
     return isModelPreset(stored) ? stored : "economy";
@@ -497,7 +527,7 @@ function App() {
 
       <section className="flex min-h-0 min-w-0 flex-col" aria-label="Chat">
         <header className="shrink-0 border-b border-kumo-line bg-kumo-base">
-          <div className="mx-auto flex h-[68px] max-w-3xl items-center justify-between gap-3 px-5">
+          <div className="mx-auto flex min-h-[68px] max-w-3xl flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-5">
             <div className="flex min-w-0 items-center gap-3">
               <Button
                 variant="ghost"
@@ -516,7 +546,7 @@ function App() {
                 </p>
               </div>
             </div>
-            <div className="flex shrink-0 items-center gap-1.5">
+            <div className="flex w-full min-w-0 items-center gap-1.5 overflow-x-auto pb-1 sm:w-auto sm:shrink-0 sm:pb-0">
               <Button
                 type="button"
                 size="sm"
@@ -572,6 +602,8 @@ function App() {
                 onClick={() => {
                   const shared = new URL(window.location.origin);
                   shared.searchParams.set("object", object);
+                  shared.searchParams.set("session", session);
+                  if (project) shared.searchParams.set("project", project);
                   navigator.clipboard.writeText(shared.toString())
                     .then(() => setLinkCopied(true))
                     .catch(() => setLinkCopied(false));
