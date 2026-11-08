@@ -271,9 +271,10 @@ export class OpenCodeSessionSockets {
         await fork.setAgent("plan");
         await fork.setModel({ providerID: MODEL_PRESETS.cloudflare.providerID, id: MODEL_PRESETS.cloudflare.id });
         const review = "Eres un agente revisor independiente. Inspecciona el proyecto " +
-          message.project + " con la herramienta linux SOLO para leer archivos y ejecutar pruebas no destructivas. " +
-          "Comprueba riesgos, calidad y errores. NO edites, publiques ni modifiques producción. " +
-          "Devuelve hallazgos y sugerencias concretas con el resultado real de las herramientas.";
+          message.project + " con inspect_linux para listar carpetas y leer archivos. " +
+          "No tienes permiso para ejecutar comandos, instalar dependencias ni escribir archivos. " +
+          "Comprueba calidad y riesgos a partir de los archivos reales. NO edites, publiques ni modifiques producción. " +
+          "Devuelve hallazgos concretos y especifica qué no se pudo comprobar.";
         await fork.submit(review);
         const all = await this.#harness.sessions.list();
         for (const socket of this.#getWebSockets()) send(socket, { type: "sessions", sessions: all });
