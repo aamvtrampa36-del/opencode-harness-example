@@ -244,4 +244,38 @@ export class DevContainer extends DurableObject<Env> {
     }
     throw new Error("Project preview server did not become ready");
   }
+
+  /** Temporary one-time test. Removed after live log is verified. */
+  async gitBootstrapOnce(): Promise<unknown> {
+    const cached = await this.ctx.storage.get("gitBootstrapReportV1");
+    if (cached) return cached;
+    const started = await this.ctx.storage.get("gitBootstrapStartedV1");
+    if (started) return { status: "already-started" };
+    await this.ctx.storage.put("gitBootstrapStartedV1", Date.now());
+    try {
+      const result = await this.run("opencode-git-check", [
+        "git --version",
+        "git init -q",
+        "printf 'real git test\\n' > README.md",
+        "git add README.md",
+        "git -c user.name='OpenCode Test' -c user.email='test@example.invalid' commit -qm 'smoke'",
+        "git log -1 --format=%h",
+        "git status --porcelain"
+      ].join("\n"));
+      const report = {
+        status: result.exitCode === 0 && /git version /.test(result.stdout) ? "pass" : "fail",
+        gitAvailable: /git version /.test(result.stdout),
+        exitCode: result.exitCode,
+        stdoutExcerpt: result.stdout.slice(-220),
+        stderrExcerpt: result.stderr.slice(-300)
+      };
+      await this.ctx.storage.put("gitBootstrapReportV1", report);
+      return report;
+    } catch (error) {
+      const report = {status:"fail",error:error instanceof Error?error.message.slice(0,350):"unknown"};
+      await this.ctx.storage.put("gitBootstrapReportV1", report);
+      return report;
+    }
+  }
+
 }
