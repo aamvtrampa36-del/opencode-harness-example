@@ -24,7 +24,7 @@ jobs:
         with:
           bun-version: 1.4.4
       - name: Install
-        run: bun install --frozen-lockfile
+        run: bun install
       - name: Typecheck
         run: bun run typecheck
       - name: Build both Worker and web client
