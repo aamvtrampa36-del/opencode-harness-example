@@ -4,16 +4,65 @@
   "preview_urls": false,
   "main": "src/server.ts",
   "compatibility_date": "2026-06-11",
-  "compatibility_flags": ["nodejs_compat"],
-  "ai": { "binding": "AI", "remote": true },
-  "worker_loaders": [{ "binding": "LOADER" }],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "ai": {
+    "binding": "AI",
+    "remote": true
+  },
+  "worker_loaders": [
+    {
+      "binding": "LOADER"
+    }
+  ],
   "assets": {
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/agents/*", "/api/health"]
+    "run_worker_first": [
+      "/agents/*",
+      "/api/health",
+      "/api/dev/*"
+    ]
   },
   "durable_objects": {
-    "bindings": [{ "name": "OpenCodeAgent", "class_name": "OpenCodeAgent" }]
+    "bindings": [
+      {
+        "name": "OpenCodeAgent",
+        "class_name": "OpenCodeAgent"
+      },
+      {
+        "name": "DEV",
+        "class_name": "DevContainer"
+      }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OpenCodeAgent"] }],
-  "observability": { "enabled": true }
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "OpenCodeAgent"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "DevContainer"
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "containers": [
+    {
+      "class_name": "DevContainer",
+      "scheduling_policy": "durable_object"
+    }
+  ],
+  "exports": {
+    "DevContainer": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  }
 }
