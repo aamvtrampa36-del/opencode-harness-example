@@ -21,28 +21,4 @@ export function validateInspectionPath(input: unknown, action: "list" | "read"):
  * No shell, and no writes. realpath checks stop symlink escapes.
  * The returned text is bounded before returning to OpenCode.
  */
-export const INSPECT_SOURCE = String.rawconst fs = require("node:fs");
-const path = require("node:path");
-const [project, action, requested] = process.argv.slice(1);
-const rootParent = fs.realpathSync("/workspace/projects");
-const root = fs.realpathSync(path.join(rootParent, project));
-if (!root.startsWith(rootParent + "/")) throw Error("Project escapes the project root");
-const resolved = fs.realpathSync(path.resolve(root, requested || "."));
-if (resolved !== root && !resolved.startsWith(root + "/")) throw Error("Path escapes the current project");
-if (action === "list") {
-  if (!fs.statSync(resolved).isDirectory()) throw Error("Not a directory");
-  const hidden = (name) => name === ".git" || name === "node_modules" || /^\.env/i.test(name) ||
-    /\.(?:key|pem|p12|pfx)$/i.test(name) || /(?:credentials|secrets)\.json$/i.test(name);
-  const entries = fs.readdirSync(resolved, { withFileTypes: true })
-    .filter(e => !e.isSymbolicLink() && !hidden(e.name))
-    .slice(0, 100)
-    .map(e => ({ name: e.name, type: e.isDirectory() ? "directory" : e.isFile() ? "file" : "other" }));
-  process.stdout.write(JSON.stringify({ path: requested || ".", entries }));
-} else if (action === "read") {
-  const stat = fs.statSync(resolved);
-  if (!stat.isFile() || stat.size > 32768) throw Error("Not a readable text file of up to 32 KiB");
-  const contents = fs.readFileSync(resolved, "utf8");
-  process.stdout.write(JSON.stringify({ path: requested, size: stat.size, contents }));
-} else {
-  throw Error("Unsupported read-only operation");
-};
+export const INSPECT_SOURCE = "const fs = require(\"node:fs\");\nconst path = require(\"node:path\");\nconst [project, action, requested] = process.argv.slice(1);\nconst rootParent = fs.realpathSync(\"/workspace/projects\");\nconst root = fs.realpathSync(path.join(rootParent, project));\nif (!root.startsWith(rootParent + \"/\")) throw Error(\"Project escapes the project root\");\nconst resolved = fs.realpathSync(path.resolve(root, requested || \".\"));\nif (resolved !== root && !resolved.startsWith(root + \"/\")) throw Error(\"Path escapes the current project\");\nif (action === \"list\") {\n  if (!fs.statSync(resolved).isDirectory()) throw Error(\"Not a directory\");\n  const hidden = (name) => name === \".git\" || name === \"node_modules\" || /^\\.env/i.test(name) ||\n    /\\.(?:key|pem|p12|pfx)$/i.test(name) || /(?:credentials|secrets)\\.json$/i.test(name);\n  const entries = fs.readdirSync(resolved, { withFileTypes: true })\n    .filter(e => !e.isSymbolicLink() && !hidden(e.name))\n    .slice(0, 100)\n    .map(e => ({ name: e.name, type: e.isDirectory() ? \"directory\" : e.isFile() ? \"file\" : \"other\" }));\n  process.stdout.write(JSON.stringify({ path: requested || \".\", entries }));\n} else if (action === \"read\") {\n  const stat = fs.statSync(resolved);\n  if (!stat.isFile() || stat.size > 32768) throw Error(\"Not a readable text file of up to 32 KiB\");\n  const contents = fs.readFileSync(resolved, \"utf8\");\n  process.stdout.write(JSON.stringify({ path: requested, size: stat.size, contents }));\n} else {\n  throw Error(\"Unsupported read-only operation\");\n}";
