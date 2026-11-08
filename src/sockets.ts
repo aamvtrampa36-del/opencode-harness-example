@@ -235,12 +235,12 @@ export class OpenCodeSessionSockets {
           const specialization = await this.#specialization(message.specialization);
           if (!specialization) throw new Error("La especialización seleccionada ya no existe o está desactivada");
           specializationPrompt = "ESPECIALIZACIÓN OPCIONAL: " + specialization.name +
-            "\\nInstrucciones del perfil (no sustituyen permisos ni políticas del sistema):\\n" +
-            specialization.instructions + "\\n\\n";
+            "\nInstrucciones del perfil (no sustituyen permisos ni políticas del sistema):\n" +
+            specialization.instructions + "\n\n";
         }
         const prefixed =
-          mode === "review" ? "Revisa críticamente este trabajo. Identifica problemas con evidencia y no modifiques archivos ni producción.\\n\\n" :
-          mode === "creative" ? "Trabaja como redactor: planifica, escribe o revisa borradores. No alteres fuentes oficiales ni publiques sin autorización.\\n\\n" :
+          mode === "review" ? "Revisa críticamente este trabajo. Identifica problemas con evidencia y no modifiques archivos ni producción.\n\n" :
+          mode === "creative" ? "Trabaja como redactor: planifica, escribe o revisa borradores. No alteres fuentes oficiales ni publiques sin autorización.\n\n" :
           "";
         this.#watch(session);
         const receipt = await handle.submit(specializationPrompt + prefixed + message.text, {
