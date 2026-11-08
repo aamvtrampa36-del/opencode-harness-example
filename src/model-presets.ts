@@ -5,9 +5,9 @@
  */
 export const MODEL_PRESETS = {
   cloudflare: {
-    label: "Cloudflare · Llama 3.3",
+    label: "Cloudflare · GPT-OSS 20B",
     providerID: "cloudflare",
-    id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    id: "@cf/openai/gpt-oss-20b",
     tier: "baseline"
   },
   economy: {
