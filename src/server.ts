@@ -103,12 +103,6 @@ export class OpenCodeAgent extends DurableObject<Env> {
 }
 
 export default {
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil((async () => {
-      const report = await env.DEV.getByName("personal").gitBootstrapOnce();
-      console.log("OPENCODE_GIT_SMOKE_V1", JSON.stringify(report));
-    })());
-  },
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
