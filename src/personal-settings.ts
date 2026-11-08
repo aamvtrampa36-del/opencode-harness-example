@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { ALLOWED_REPOS, normalizeOwnedRepository } from "./github";
 import { MAX_SPECIALIZATIONS, validateSpecialization, type Specialization } from "./specializations";
+import { publicMcp, validateRemoteMcp, type PublicMcpConfig, type RemoteMcpConfig } from "./mcp-config";
 
 /**
  * One owner-scoped, persisted settings object shared by all browser workspaces.
@@ -68,6 +69,35 @@ export class PersonalSettings extends DurableObject<Env> {
 
   async getGitHubKey(): Promise<string | undefined> {
     return this.ctx.storage.get<string>("github-api-key");
+  }
+
+  async getRemoteMcps(): Promise<RemoteMcpConfig[]> {
+    return (await this.ctx.storage.get<RemoteMcpConfig[]>("remote-mcps-v1")) ?? [];
+  }
+
+  async listPublicMcps(): Promise<PublicMcpConfig[]> {
+    return (await this.getRemoteMcps()).map(publicMcp);
+  }
+
+  async saveRemoteMcp(value: unknown): Promise<PublicMcpConfig> {
+    const input = validateRemoteMcp(value);
+    const current = await this.getRemoteMcps();
+    const existing = current.find(e => e.id === input.id);
+    if (!existing && current.length >= 12) throw new Error("MCP limit reached (12 servers)");
+    const raw = value as Record<string, unknown>;
+    const token = input.token || (raw.clearToken === true ? undefined : existing?.token);
+    const updated: RemoteMcpConfig = {
+      id: input.id, url: input.url, enabled: input.enabled, ...(token ? { token } : {})
+    };
+    await this.ctx.storage.put("remote-mcps-v1",
+      [...current.filter(e => e.id !== updated.id), updated].sort((a, b) => a.id.localeCompare(b.id)));
+    return publicMcp(updated);
+  }
+
+  async removeRemoteMcp(id: string): Promise<void> {
+    if (!/^[a-z][a-z0-9-]{1,39}$/.test(id)) throw new Error("Invalid MCP ID");
+    await this.ctx.storage.put("remote-mcps-v1",
+      (await this.getRemoteMcps()).filter(config => config.id !== id));
   }
 
   async listSpecializations(): Promise<Specialization[]> {
