@@ -33,3 +33,12 @@ jobs:
         run: bun run build
       - name: Validate security and project invariants
         run: bun scripts/check-invariants.mjs
+      - name: Run real local Worker HTTP and WebSocket smoke tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun run start --host 127.0.0.1 --port 8788 > /tmp/opencode-dev.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; cat /tmp/opencode-dev.log | tail -n 100' EXIT
+          node scripts/smoke.mjs
+
