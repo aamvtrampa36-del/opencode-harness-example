@@ -5,7 +5,7 @@
  *
  * No dependencies, no git, no package manager.
  */
-export const PREVIEW_SOURCE = String.raw\`
+export const PREVIEW_SOURCE = String.raw`
 import http from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { resolve, sep, extname } from "node:path";
@@ -29,7 +29,7 @@ http.createServer(async (req, res) => {
       return;
     }
     const relative = decodeURIComponent(url.pathname);
-    if (relative.includes("\\\\") || relative.includes("\\0")) {
+    if (relative.includes("\\") || relative.includes("\0")) {
       res.writeHead(400).end(); return;
     }
     let file = resolve(ROOT, "." + relative);
@@ -52,4 +52,4 @@ http.createServer(async (req, res) => {
     res.writeHead(code, { "Content-Type": "text/plain" }).end(code === 404 ? "Preview not found" : "Preview error");
   }
 }).listen(4321, "0.0.0.0");
-\`;
+`;
