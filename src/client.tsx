@@ -330,7 +330,7 @@ function App() {
   const [linkCopied, setLinkCopied] = useState(false);
   const [modelPreset, setModelPreset] = useState<ModelPresetID>(() => {
     const stored = localStorage.getItem(MODEL_KEY);
-    return isModelPreset(stored) ? stored : "cloudflare";
+    return isModelPreset(stored) ? stored : "economy";
   });
   const [sessionsOpen, setSessionsOpen] = useState(
     () => window.matchMedia("(min-width: 1100px)").matches
