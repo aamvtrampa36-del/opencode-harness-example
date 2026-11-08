@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { gunzipSync } from "node:zlib";
 import { PREVIEW_SOURCE } from "../src/preview-server.ts";
 
 const temp = mkdtempSync(join(tmpdir(), "opencode-preview-"));
@@ -11,6 +12,9 @@ mkdirSync(join(folder, "assets"), { recursive: true });
 writeFileSync(join(folder, "index.html"), "<!doctype html><title>Preview OK</title><h1>Preview OK</h1>");
 writeFileSync(join(folder, "assets", "app.js"), "console.log('preview OK')");
 symlinkSync("/etc/passwd", join(folder, "secret.txt"));
+writeFileSync(join(temp, "preview-check", ".env"), "SECRET_DO_NOT_ARCHIVE=untrusted");
+mkdirSync(join(temp, "preview-check", "node_modules"));
+writeFileSync(join(temp, "preview-check", "node_modules", "private.txt"), "PRIVATE_DEPENDENCY_DATA");
 
 const child = spawn("node", ["--input-type=module", "-e", PREVIEW_SOURCE], {
   env: { ...process.env, PREVIEW_ROOT: temp },
@@ -49,10 +53,17 @@ try {
   const unsafe = await fetch(endpoint + "/%2e%2e/%2e%2e/etc/passwd");
   assert.notEqual(unsafe.status, 200, "preview must not serve files outside project root");
 
+  const archive = await fetch(endpoint + "/__archive/preview-check");
+  assert.equal(archive.status, 200);
+  assert.match(archive.headers.get("content-type") || "", /gzip/);
+  const tarText = gunzipSync(new Uint8Array(await archive.arrayBuffer())).toString("utf8");
+  assert.match(tarText, /Preview OK/, "archive must contain source and build");
+  assert.doesNotMatch(tarText, /SECRET_DO_NOT_ARCHIVE|PRIVATE_DEPENDENCY_DATA/,
+    "archive must not contain .env or node_modules");
   const rejectedPost = await fetch(endpoint + "/preview-check/dist/", { method: "POST" });
   assert.equal(rejectedPost.status, 405);
 
-  console.log("PASS: Node static preview, compiled project URL, assets, 404, source and symlink isolation and POST rejection");
+  console.log("PASS: Node static preview, compiled project URL, assets, 404, source and symlink isolation, safe project archive and POST rejection");
 } finally {
   child.kill("SIGTERM");
   rmSync(temp, { recursive: true, force: true });
