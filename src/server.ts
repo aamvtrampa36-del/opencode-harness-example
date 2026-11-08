@@ -100,6 +100,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
 }
 
 export default {
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil((async () => {
+      const report = await env.DEV.getByName("personal").liveIntegrationOnce();
+      console.log("OPENCODE_LIVE_PREVIEW_V1", JSON.stringify(report));
+    })());
+  },
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
