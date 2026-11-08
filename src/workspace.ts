@@ -1,3 +1,4 @@
+import { assertAgentToolPermission } from "./tool-permissions";
 import type { Workspace } from "@cloudflare/computer";
 import {
   createPiTools,
@@ -153,7 +154,8 @@ export function workspacePlugin(
               additionalProperties: false
             },
             options: { codemode: false },
-            async execute(input) {
+            async execute(input, context) {
+              assertAgentToolPermission(context.agent, "linux");
               const p = input as { project: string; command: string };
               const result = await linux.run(p.project, p.command);
               return { content: JSON.stringify(result) };
@@ -181,7 +183,9 @@ export function workspacePlugin(
               additionalProperties: false
             },
             options: { codemode: false },
-            async execute(input) {
+            async execute(input, context) {
+              const action = (input as { action?: string }).action;
+              assertAgentToolPermission(context.agent, "github", { action });
               const result = await github.execute(input as GitHubAction);
               return { content: JSON.stringify(result) };
             }
@@ -198,6 +202,7 @@ export function workspacePlugin(
             // plugin tools in its `execute` code-mode tool.
             options: { codemode: false },
             async execute(input, context) {
+              assertAgentToolPermission(context.agent, "workspace", { tool: tool.name });
               const { content, isError } = await execute(
                 { id: context.id, name: tool.name, arguments: input },
                 { abortSignal: context.signal }
