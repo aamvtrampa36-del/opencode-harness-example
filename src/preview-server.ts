@@ -7,7 +7,7 @@
  */
 export const PREVIEW_SOURCE = String.raw`
 import http from "node:http";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, realpath } from "node:fs/promises";
 import { resolve, sep, extname } from "node:path";
 const ROOT = process.env.PREVIEW_ROOT || "/workspace/projects";
 const MIME = {
@@ -32,10 +32,22 @@ http.createServer(async (req, res) => {
     if (relative.includes("\\") || relative.includes("\0")) {
       res.writeHead(400).end(); return;
     }
+    const parts = relative.split("/").filter(Boolean);
+    if (!/^[a-z][a-z0-9-]{0,39}$/.test(parts[0] || "") || parts[1] !== "dist") {
+      res.writeHead(403).end(); return;
+    }
+    const projectRoot = resolve(ROOT, parts[0], "dist");
     let file = resolve(ROOT, "." + relative);
-    if (!file.startsWith(ROOT + sep)) { res.writeHead(403).end(); return; }
+    if (file !== projectRoot && !file.startsWith(projectRoot + sep)) {
+      res.writeHead(403).end(); return;
+    }
     let info = await stat(file);
     if (info.isDirectory()) { file = resolve(file, "index.html"); info = await stat(file); }
+    const realFile = await realpath(file);
+    const realRoot = await realpath(projectRoot);
+    if (!realFile.startsWith(realRoot + sep)) {
+      res.writeHead(403).end(); return;
+    }
     if (!info.isFile() || info.size > 10 * 1024 * 1024) {
       res.writeHead(413).end(); return;
     }
