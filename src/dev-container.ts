@@ -159,4 +159,64 @@ export class DevContainer extends DurableObject<Env> {
     await container.setInactivityTimeout(INACTIVITY_MS);
     await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
   }
+
+  /** Single bounded live smoke: create & test an app, snapshot, stop and restore. */
+  async smokeOnce(): Promise<unknown> {
+    const prior = await this.ctx.storage.get("smokeReportV1");
+    if (prior) return prior;
+    const alreadyStarted = await this.ctx.storage.get("smokeStartedV1");
+    if (alreadyStarted) return { status: "already-started", startedAt: alreadyStarted };
+    await this.ctx.storage.put("smokeStartedV1", Date.now());
+    const project = "opencode-smoke-20261108";
+    const command = [
+      "node --version",
+      "npm --version",
+      "cat > package.json <<'JSON'",
+      '{"name":"opencode-smoke","version":"1.0.0","type":"module","scripts":{"test":"node --test"}}',
+      "JSON",
+      "cat > app.mjs <<'JS'",
+      "export const double = n => n * 2;",
+      "JS",
+      "cat > app.test.mjs <<'JS'",
+      'import test from "node:test";',
+      'import assert from "node:assert/strict";',
+      'import { double } from "./app.mjs";',
+      'test("the sample application works", () => assert.equal(double(21), 42));',
+      "JS",
+      "npm install --ignore-scripts --no-audit --no-fund",
+      "npm test"
+    ].join("\n");
+    try {
+      const first = await this.run(project, command);
+      if (first.exitCode !== 0) {
+        const report = { status: "fail", stage: "first-run", exitCode: first.exitCode, stderr: first.stderr.slice(-500) };
+        await this.ctx.storage.put("smokeReportV1", report);
+        return report;
+      }
+      const container = this.ctx.container;
+      if (!container) throw new Error("Missing Container");
+      const snapshot = await container.snapshotContainer({ name: "smoke-recovery" });
+      await this.ctx.storage.put({ snapshotId: snapshot.id, savedAt: Date.now() });
+      await container.destroy("smoke-check-restart");
+      const second = await this.run(project, "test -f app.mjs && test -f app.test.mjs && npm test");
+      const report = {
+        status: second.exitCode === 0 ? "pass" : "fail",
+        stage: "snapshot-restore",
+        createExitCode: first.exitCode,
+        restoreExitCode: second.exitCode,
+        snapshotCreated: Boolean(snapshot.id),
+        nodeNpmReady: true,
+        sampleAppTestPassed: second.exitCode === 0,
+        stdoutExcerpt: second.stdout.slice(-300),
+        stderrExcerpt: second.stderr.slice(-300)
+      };
+      await this.ctx.storage.put("smokeReportV1", report);
+      return report;
+    } catch (error) {
+      const report = { status: "fail", stage: "exception", error: error instanceof Error ? error.message.slice(0,400) : "unknown" };
+      await this.ctx.storage.put("smokeReportV1", report);
+      return report;
+    }
+  }
+
 }
