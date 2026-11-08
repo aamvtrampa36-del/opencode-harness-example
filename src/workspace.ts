@@ -132,6 +132,10 @@ export function workspacePlugin(
         editor.update("build", (agent) => {
           agent.system = SYSTEM;
         });
+        editor.update("plan", (agent) => {
+          agent.system = SYSTEM +
+            "\n\nPLAN/REVIEW MODE: Only analyze and inspect. Do not modify files, change Git branches, perform deployments, publish narrative or install packages. Provide grounded observations and a concise plan. The user must switch to Develop before implementing changes.";
+        });
       });
       await ctx.tool.transform((editor) => {
         for (const id of LOCAL_TOOLS) editor.remove(id);
