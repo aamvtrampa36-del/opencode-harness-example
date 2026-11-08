@@ -120,49 +120,6 @@ export class OpenCodeAgent extends DurableObject<Env> {
     .use(this.webSockets)
     .use(this.harness);
 
-  /** Temporary synthetic acceptance test. Does not touch owner projects. */
-  async runAgentAcceptanceOnce() {
-    const existing = await this.ctx.storage.get<string>("acceptanceSession20261108");
-    if (existing) return { status: "already-submitted", session: existing };
-    const handle = await this.harness.sessions.create();
-    await this.ctx.storage.put("acceptanceSession20261108", handle.id);
-    await handle.setModel(this.ai(MODEL_ID));
-    await handle.setAgent("build");
-    const input =
-      "Prueba real y económica de herramientas. En la herramienta linux ejecuta " +
-      "EXACTAMENTE project=agent-verify-nov y command=\"printf 'agent-success' > proof.txt; " +
-      "node -e 'const fs=require(\\\"fs\\\"); if(fs.readFileSync(\\\"proof.txt\\\",\\\"utf8\\\")!==\\\"agent-success\\\") process.exit(1); console.log(\\\"PASS_VERIFIED\\\")'\". " +
-      "No escribas código en tu respuesta como sustituto. Llama a la herramienta y revisa exitCode; " +
-      "solo si retorna 0 indica que tuvo éxito. No toques otros proyectos.";
-    try {
-      const receipt = await handle.submit(input);
-      return { status: "submitted", session: handle.id, operation: receipt.operationId };
-    } catch (error) {
-      return { status: "submit-failed", session: handle.id, error: error instanceof Error ? error.message.slice(0,200) : "unknown" };
-    }
-  }
-
-  async agentAcceptanceStatus() {
-    const id = await this.ctx.storage.get<string>("acceptanceSession20261108");
-    if (!id) return { status: "not-started" };
-    const handle = this.harness.session(id);
-    const [busy, history] = await Promise.all([handle.busy(), handle.history()]);
-    const assistant = history.filter((m) => m.type === "assistant");
-    const tools = assistant.flatMap((m) => m.content
-      .filter((p) => p.type === "tool")
-      .map((p) => ({
-        name: p.name,
-        status: p.state.status,
-        result: p.state.status === "completed" ? JSON.stringify(p.state).slice(0,300) : undefined,
-        error: p.state.status === "error" ? p.state.error.message.slice(0,300) : undefined
-      })));
-    const text = assistant.flatMap((m) => m.content
-      .filter((p) => p.type === "text")
-      .map((p) => p.text.slice(-280))).slice(-2);
-    return { status: busy ? "running" : "idle", session: id,
-      messages: history.length, assistantMessages: assistant.length, tools, text };
-  }
-
   /** Host startup, after the harness has opened OpenCode. */
   async onStart(): Promise<void> {
     await this.sockets.reattach();
@@ -170,15 +127,6 @@ export class OpenCodeAgent extends DurableObject<Env> {
 }
 
 export default {
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil((async () => {
-      const stub = env.OpenCodeAgent.getByName("acceptance-gptoss-nov08");
-      const submission = await stub.runAgentAcceptanceOnce();
-      console.log("OPENCODE_AGENT_ACCEPT_SUBMISSION", JSON.stringify(submission));
-      const result = await stub.agentAcceptanceStatus();
-      console.log("OPENCODE_AGENT_ACCEPT_RESULT", JSON.stringify(result));
-    })());
-  },
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
