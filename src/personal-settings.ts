@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { ALLOWED_REPOS, normalizeOwnedRepository } from "./github";
+import { MAX_SPECIALIZATIONS, validateSpecialization, type Specialization } from "./specializations";
 
 /**
  * One owner-scoped, persisted settings object shared by all browser workspaces.
@@ -67,6 +68,32 @@ export class PersonalSettings extends DurableObject<Env> {
 
   async getGitHubKey(): Promise<string | undefined> {
     return this.ctx.storage.get<string>("github-api-key");
+  }
+
+  async listSpecializations(): Promise<Specialization[]> {
+    return (await this.ctx.storage.get<Specialization[]>("specializations-v1")) ?? [];
+  }
+
+  async getSpecialization(id: string): Promise<Specialization | undefined> {
+    const found = (await this.listSpecializations()).find(p => p.id === id);
+    return found?.enabled ? found : undefined;
+  }
+
+  async saveSpecialization(input: unknown): Promise<Specialization> {
+    const next = validateSpecialization(input);
+    const all = await this.listSpecializations();
+    if (!all.some(p => p.id === next.id) && all.length >= MAX_SPECIALIZATIONS) {
+      throw new Error("The specialization limit has been reached");
+    }
+    await this.ctx.storage.put("specializations-v1",
+      [...all.filter(p => p.id !== next.id), next].sort((a,b) => a.id.localeCompare(b.id)));
+    return next;
+  }
+
+  async removeSpecialization(id: string): Promise<void> {
+    if (!/^[a-z][a-z0-9-]{1,39}$/.test(id)) throw new Error("Invalid specialization ID");
+    const all = await this.listSpecializations();
+    await this.ctx.storage.put("specializations-v1", all.filter(p => p.id !== id));
   }
 
   async connectOpenRouter(raw: unknown): Promise<{ configured: true; usage: KeyUsage }> {

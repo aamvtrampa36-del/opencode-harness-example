@@ -113,7 +113,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
   readonly sockets = new OpenCodeSessionSockets(
     this.harness,
     (tag) => this.ctx.getWebSockets(tag),
-    () => this.isOpenRouterConfigured()
+    () => this.isOpenRouterConfigured(),
+    (id: string) => this.personalConfig.getSpecialization(id)
   );
   readonly webSockets = new WebSockets(this.sockets.options());
   readonly lifecycle = Lifecycle.install(this)
@@ -190,6 +191,30 @@ export default {
         }
         return Response.json({ configured: false, revokeAtProvider: true },
           { headers: { "Cache-Control": "no-store" } });
+      }
+      if (url.pathname === "/api/settings/specializations") {
+        if (request.method === "GET") {
+          return Response.json({ specializations: await personal.listSpecializations() },
+            { headers: { "Cache-Control": "no-store" } });
+        }
+        if (request.method === "POST" || request.method === "DELETE") {
+          if (!settingsOriginAllowed) return Response.json({ error: "Origin and JSON required" }, { status: 403 });
+          const raw = await request.text();
+          if (raw.length > 5_000) return Response.json({ error: "Request too large" }, { status: 413 });
+          try {
+            const body = JSON.parse(raw) as { id?: string };
+            if (request.method === "POST") {
+              return Response.json({ specialization: await personal.saveSpecialization(body) },
+                { headers: { "Cache-Control": "no-store" } });
+            }
+            await personal.removeSpecialization(body.id ?? "");
+            return Response.json({ removed: true }, { headers: { "Cache-Control": "no-store" } });
+          } catch (error) {
+            return Response.json({ error: error instanceof Error ? error.message : "Invalid specialization" },
+              { status: 422, headers: { "Cache-Control": "no-store" } });
+          }
+        }
+        return new Response("Method not allowed", { status: 405 });
       }
       if (url.pathname === "/api/settings/repositories") {
         if (request.method === "GET") {

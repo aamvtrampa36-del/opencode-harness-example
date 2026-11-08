@@ -214,9 +214,9 @@ export function useOpenCodeSession(
 
   /** Idle: starts a run. Busy: queued as a follow-up, or steers the run. */
   const submit = useCallback(
-    (text: string, whenBusy: "followUp" | "steer" = "followUp", model: ModelPresetID = "cloudflare", mode: AgentMode = "build") => {
+    (text: string, whenBusy: "followUp" | "steer" = "followUp", model: ModelPresetID = "cloudflare", mode: AgentMode = "build", specialization?: string) => {
       setState((current) => ({ ...current, error: undefined }));
-      send({ type: "submit", id: crypto.randomUUID(), text, whenBusy, model, mode });
+      send({ type: "submit", id: crypto.randomUUID(), text, whenBusy, model, mode, ...(specialization ? { specialization } : {}) });
     },
     [send]
   );

@@ -10,6 +10,7 @@ assert.equal(config.preview_urls, false, "Public preview URLs must remain disabl
 assert.ok(config.durable_objects?.bindings?.some((item) => item.name === "OpenCodeAgent"), "Persistent agent binding missing");
 assert.ok(config.ai?.binding === "AI", "Existing Workers AI fallback removed");
 assert.ok(!/sk-or-v1-[A-Za-z0-9]{16,}|sk-proj-[A-Za-z0-9]{16,}/.test(server+workspace), "Possible hardcoded API secret");
-assert.ok(workspace.includes("CANON"), "Editorial approval guardrail missing from agent system");
+assert.ok(workspace.includes("OFFICIAL SOURCES") && workspace.includes("canonize"), "Official content approval guardrail missing from agent system");
 assert.ok(workspace.includes("production"), "Production safety guardrail missing from agent system");
+assert.ok(!workspace.includes("CDF NARRATIVE:"), "Project-specific narrative mode must be optional");
 console.log("Static invariants passed. These checks do NOT replace runtime testing.");

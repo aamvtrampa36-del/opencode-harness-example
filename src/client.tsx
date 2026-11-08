@@ -47,12 +47,13 @@ const SESSION_KEY = "opencode-harness-session";
 const ROOT_SESSION = "ses_root";
 const MODEL_KEY = "opencode-model-preset";
 const PROJECT_PREFIX = "opencode-active-project:";
+const SPECIALIZATION_KEY = "opencode-specialization";
 
 const SUGGESTIONS = [
   {
     icon: <FilePlusIcon size={15} />,
-    label: "Escribir borrador CDF",
-    value: "Ayúdame a desarrollar un borrador narrativo NO CANÓNICO para Cenizas del Futuro. Primero pregunta por la escena; no cambies ninguna fuente oficial."
+    label: "Escribir borrador",
+    value: "Ayúdame a preparar un borrador de texto. Pregunta el tema y el propósito antes de escribir; no sobrescribas fuentes oficiales."
   },
   {
     icon: <CodeIcon size={15} />,
@@ -346,10 +347,20 @@ function App() {
   const [availableProjects, setAvailableProjects] = useState<{ name: string; lastUsedAt: number }[]>([]);
   const [projectError, setProjectError] = useState("");
   const [agentMode, setAgentMode] = useState<AgentMode>("build");
+  const [specializations, setSpecializations] = useState<{ id: string; name: string; enabled: boolean }[]>([]);
+  const [specialization, setSpecialization] = useState(() => localStorage.getItem(SPECIALIZATION_KEY) ?? "");
   const [integrations, setIntegrations] = useState<{
     openRouterConfigured: boolean;
     githubConfigured: boolean;
   } | null>(null);
+  const refreshSpecializations = async () => {
+    try {
+      const response = await fetch("/api/settings/specializations", { cache: "no-store" });
+      if (!response.ok) return;
+      const result = await response.json() as { specializations?: { id: string; name: string; enabled: boolean }[] };
+      setSpecializations((result.specializations ?? []).filter(item => item.enabled));
+    } catch { /* Optional profiles do not prevent normal development. */ }
+  };
   const refreshIntegrations = async () => {
     try {
       const response = await fetch("/api/settings", { cache: "no-store" });
@@ -363,7 +374,7 @@ function App() {
       // The chat continues when diagnostics are unavailable.
     }
   };
-  useEffect(() => { void refreshIntegrations(); }, []);
+  useEffect(() => { void refreshIntegrations(); void refreshSpecializations(); }, []);
   const [modelPreset, setModelPreset] = useState<ModelPresetID>(() => {
     const stored = localStorage.getItem(MODEL_KEY);
     return isModelPreset(stored) ? stored : "economy";
@@ -468,7 +479,7 @@ function App() {
     const text = prompt.trim();
     if (!text || !connected) return;
     setPrompt("");
-    submitPrompt(text, whenBusy, openRouterAvailable ? modelPreset : "cloudflare", agentMode);
+    submitPrompt(text, whenBusy, openRouterAvailable ? modelPreset : "cloudflare", agentMode, specialization || undefined);
   };
 
   // Live text for an assistant message no snapshot has yet.
@@ -649,13 +660,24 @@ function App() {
                 <LinkIcon size={16} />
                 <span className="hidden sm:inline">{linkCopied ? "Copiado" : "Vincular"}</span>
               </Button>
+              <select aria-label="Especialización opcional" title="Perfil de instrucciones seleccionable"
+                value={specialization} onChange={(e) => {
+                  localStorage.setItem(SPECIALIZATION_KEY, e.target.value);
+                  setSpecialization(e.target.value);
+                }}
+                className="max-w-[132px] rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 text-xs text-kumo-default">
+                <option value="">Sin especialización</option>
+                {specializations.map(item => (
+                  <option key={item.id} value={item.id}>{item.name}</option>
+                ))}
+              </select>
               <select aria-label="Modo de agente" title="Los roles de revisión y narrativa no modifican archivos"
                 value={agentMode} onChange={(event) => setAgentMode(event.target.value as AgentMode)}
                 className="max-w-[128px] rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 text-xs text-kumo-default">
                 <option value="build">Desarrollar</option>
                 <option value="plan">Planificar</option>
                 <option value="review">Revisar</option>
-                <option value="creative">Narrativa CDF</option>
+                <option value="creative">Escritura</option>
               </select>
               <select
                 aria-label="Modelo de IA"
@@ -724,7 +746,7 @@ function App() {
             ) : null}
             {settingsOpen ? (
               <SettingsPanel workspace={object} onClose={() => setSettingsOpen(false)}
-                onChanged={() => { void refreshIntegrations(); }} />
+                onChanged={() => { void refreshIntegrations(); void refreshSpecializations(); }} />
             ) : null}
             <Surface className="rounded-xl p-3 ring ring-kumo-line">
               <div className="flex gap-3">
