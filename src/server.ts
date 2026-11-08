@@ -191,6 +191,11 @@ export default {
         return Response.json({ configured: false, revokeAtProvider: true },
           { headers: { "Cache-Control": "no-store" } });
       }
+      if (url.pathname === "/api/dev/projects" && request.method === "GET") {
+        return Response.json({
+          projects: await env.DEV.getByName("personal").listProjects()
+        }, { headers: { "Cache-Control": "no-store" } });
+      }
       if (url.pathname === "/api/dev/status" && request.method === "GET") {
         return Response.json(await env.DEV.getByName("personal").status(), {
           headers: { "Cache-Control": "no-store" }
