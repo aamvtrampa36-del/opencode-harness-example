@@ -17,7 +17,7 @@ import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
 
-export const MODEL_ID = "@cf/moonshotai/kimi-k2.7-code";
+export const MODEL_ID = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 /** A playable OpenCode instance backed by one Durable Object. */
 export class OpenCodeAgent extends DurableObject<Env> {
@@ -80,7 +80,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     defaults: {
       model: this.openRouterKey
         ? { providerID: MODEL_PRESETS.economy.providerID, id: MODEL_PRESETS.economy.id }
-        : this.ai(MODEL_ID, { reasoningEffort: "low" }),
+        : this.ai(MODEL_ID),
       agent: "build"
     }
   });
@@ -102,12 +102,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
    * marker prevents repeatedly paying for inference.
    */
   async startAndroidDemoOnce() {
-    const previous = await this.ctx.storage.get<string>("androidDemoSession20261108");
+    const previous = await this.ctx.storage.get<string>("androidDemoSession20261108V2");
     if (previous) return { status: "existing", session: previous };
     const created = await this.harness.sessions.create();
-    await this.ctx.storage.put("androidDemoSession20261108", created.id);
+    await this.ctx.storage.put("androidDemoSession20261108V2", created.id);
     const prompt = [
-      "Eres OpenCode Cloud ejecutando una prueba REAL de desarrollo Android con tu modelo de IA.",
+      "Eres OpenCode Cloud en una prueba de desarrollo Android REAL. Usa herramientas, no solo razonamiento.",
       "Crea una aplicacion Android de tareas, simple y SIN INTERNET, en el Linux tool, project=apk-tareas-demo.",
       "Usa Java y Gradle Groovy (NO Kotlin, NO Compose, NO Android SDK en este Container).",
       "Usa nombre Tareas Nube, applicationId com.example.tareasnube, minSdk 23, targetSdk/compileSdk 35.",
@@ -126,7 +126,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     ].join("\n");
     try {
       const receipt = await this.harness.session(created.id).submit(prompt, { whenBusy: "followUp" });
-      await this.ctx.storage.put("androidDemoOperation20261108", receipt.operationId);
+      await this.ctx.storage.put("androidDemoOperation20261108V2", receipt.operationId);
       return { status: "submitted", session: created.id, operation: receipt.operationId };
     } catch (error) {
       return { status: "submission-failed", session: created.id, error: error instanceof Error ? error.message.slice(0,250) : String(error).slice(0,250) };
@@ -134,7 +134,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async androidDemoStatus() {
-    const session = await this.ctx.storage.get<string>("androidDemoSession20261108");
+    const session = await this.ctx.storage.get<string>("androidDemoSession20261108V2");
     if (!session) return { status: "not-started" };
     const handle = this.harness.session(session);
     const [busy, messages] = await Promise.all([handle.busy(), handle.history()]);
