@@ -109,6 +109,7 @@ export class DevContainer extends DurableObject<Env> {
     this.busy++;
     await this.ctx.storage.put("lastActivity", Date.now());
     try {
+      await this.ensureGitAvailable(container);
       // Pass the command as a positional argument: no injection into wrapper.
       // GNU timeout bounds one foreground command to 180 s. Jobs that need
       // longer must be broken into resumable steps.
@@ -134,6 +135,23 @@ export class DevContainer extends DurableObject<Env> {
       this.busy--;
       await this.ctx.storage.put("lastActivity", Date.now());
       await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+    }
+  }
+
+
+  /** Debian's minimal managed image does not include git by default.
+   * Install once on demand and keep it through the existing filesystem
+   * checkpoint, rather than adding a second image or build pipeline. */
+  private async ensureGitAvailable(container: NonNullable<DurableObjectState["container"]>): Promise<void> {
+    const script = "command -v git >/dev/null 2>&1 || " +
+      "timeout --signal=TERM 150s bash -lc " +
+      "'apt-get update -qq -o Acquire::Retries=2 && " +
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git ca-certificates'";
+    const handle = await container.exec(["bash", "-lc", script]);
+    const outcome = await handle.output();
+    if (outcome.exitCode !== 0) {
+      const error = new TextDecoder().decode(outcome.stderr).slice(-350);
+      throw new Error("Git bootstrap failed in the Linux container: " + (error || "package installation failed"));
     }
   }
 
@@ -226,4 +244,38 @@ export class DevContainer extends DurableObject<Env> {
     }
     throw new Error("Project preview server did not become ready");
   }
+
+  /** Temporary one-time test. Removed after live log is verified. */
+  async gitBootstrapOnce(): Promise<unknown> {
+    const cached = await this.ctx.storage.get("gitBootstrapReportV1");
+    if (cached) return cached;
+    const started = await this.ctx.storage.get("gitBootstrapStartedV1");
+    if (started) return { status: "already-started" };
+    await this.ctx.storage.put("gitBootstrapStartedV1", Date.now());
+    try {
+      const result = await this.run("opencode-git-check", [
+        "git --version",
+        "git init -q",
+        "printf 'real git test\\n' > README.md",
+        "git add README.md",
+        "git -c user.name='OpenCode Test' -c user.email='test@example.invalid' commit -qm 'smoke'",
+        "git log -1 --format=%h",
+        "git status --porcelain"
+      ].join("\n"));
+      const report = {
+        status: result.exitCode === 0 && /git version /.test(result.stdout) ? "pass" : "fail",
+        gitAvailable: /git version /.test(result.stdout),
+        exitCode: result.exitCode,
+        stdoutExcerpt: result.stdout.slice(-220),
+        stderrExcerpt: result.stderr.slice(-300)
+      };
+      await this.ctx.storage.put("gitBootstrapReportV1", report);
+      return report;
+    } catch (error) {
+      const report = {status:"fail",error:error instanceof Error?error.message.slice(0,350):"unknown"};
+      await this.ctx.storage.put("gitBootstrapReportV1", report);
+      return report;
+    }
+  }
+
 }
