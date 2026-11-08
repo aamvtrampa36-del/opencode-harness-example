@@ -58,11 +58,5 @@
       "class_name": "DevContainer",
       "scheduling_policy": "durable_object"
     }
-  ],
-  "exports": {
-    "DevContainer": {
-      "type": "durable-object",
-      "storage": "sqlite"
-    }
-  }
+  ]
 }
