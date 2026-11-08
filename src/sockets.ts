@@ -240,7 +240,7 @@ export class OpenCodeSessionSockets {
         }
         const prefixed =
           mode === "review" ? "Revisa críticamente este trabajo. Identifica problemas con evidencia y no modifiques archivos ni producción.\\n\\n" :
-          mode === "creative" ? "Trabaja como editor literario: planifica, escribe o revisa borradores NO CANÓNICOS. No cambies fuentes oficiales sin autorización.\\n\\n" :
+          mode === "creative" ? "Trabaja como redactor: planifica, escribe o revisa borradores. No alteres fuentes oficiales ni publiques sin autorización.\\n\\n" :
           "";
         this.#watch(session);
         const receipt = await handle.submit(specializationPrompt + prefixed + message.text, {
