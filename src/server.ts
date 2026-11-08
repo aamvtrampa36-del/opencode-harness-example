@@ -96,6 +96,61 @@ export class OpenCodeAgent extends DurableObject<Env> {
     .use(this.webSockets)
     .use(this.harness);
 
+  /**
+   * One-time, model-driven Android app experiment. No public HTTP endpoint.
+   * A scheduled event calls this only after deployment, and the durable
+   * marker prevents repeatedly paying for inference.
+   */
+  async startAndroidDemoOnce() {
+    const previous = await this.ctx.storage.get<string>("androidDemoSession20261108");
+    if (previous) return { status: "existing", session: previous };
+    const created = await this.harness.sessions.create();
+    await this.ctx.storage.put("androidDemoSession20261108", created.id);
+    const prompt = [
+      "Eres OpenCode Cloud ejecutando una prueba REAL de desarrollo Android con tu modelo de IA.",
+      "Crea una aplicacion Android de tareas, simple y SIN INTERNET, en el Linux tool, project=apk-tareas-demo.",
+      "Usa Java y Gradle Groovy (NO Kotlin, NO Compose, NO Android SDK en este Container).",
+      "Usa nombre Tareas Nube, applicationId com.example.tareasnube, minSdk 23, targetSdk/compileSdk 35.",
+      "La app debe permitir AGREGAR tareas, marcarlas como COMPLETADAS, ELIMINAR y persistir localmente en SharedPreferences usando JSON.",
+      "Interfaz Android programatica en MainActivity.java, sin dependencias de UI externas, sin permiso INTERNET.",
+      "Genera: settings.gradle, build.gradle, gradle.properties, app/build.gradle, app/src/main/AndroidManifest.xml,",
+      "app/src/main/java/com/example/tareasnube/MainActivity.java y al menos una clase de logica de tareas pura Java.",
+      "Incluye app/src/test/java/com/example/tareasnube/TaskLogicTest.java con una prueba JUnit4 de logica sin Android runtime.",
+      "Gradle Android plugin com.android.application 8.10.1, Google Maven/Maven Central; Java 17.",
+      "Usa herramienta linux para crear los archivos de verdad con heredocs y verificar find/git status.",
+      "NO necesitas instalar Gradle ni Android SDK ahora: GitHub Actions compilara la APK tras exportar el codigo.",
+      "Trabaja SOLO en el proyecto apk-tareas-demo. No escribas en CDF, produccion ni otros repositorios.",
+      "Reduce llamadas: usa una sola herramienta linux con un script bash si es viable.",
+      "Tras guardar archivos, informa las rutas y los resultados observados. Si alguna herramienta falla, dilo.",
+      "IMPORTANT: The code must be complete and buildable; use no secrets."
+    ].join("\n");
+    try {
+      const receipt = await this.harness.session(created.id).submit(prompt, { whenBusy: "followUp" });
+      await this.ctx.storage.put("androidDemoOperation20261108", receipt.operationId);
+      return { status: "submitted", session: created.id, operation: receipt.operationId };
+    } catch (error) {
+      return { status: "submission-failed", session: created.id, error: error instanceof Error ? error.message.slice(0,250) : String(error).slice(0,250) };
+    }
+  }
+
+  async androidDemoStatus() {
+    const session = await this.ctx.storage.get<string>("androidDemoSession20261108");
+    if (!session) return { status: "not-started" };
+    const handle = this.harness.session(session);
+    const [busy, messages] = await Promise.all([handle.busy(), handle.history()]);
+    const assistants = messages.filter((m) => m.type === "assistant");
+    const last = assistants.slice(-2).map((m) => ({
+      error: m.error?.message?.slice(0,250) ?? null,
+      completed: m.time.completed !== undefined,
+      parts: m.content.map((p) => p.type === "tool"
+        ? { kind: "tool", name: p.name, status: p.state.status,
+          result: p.state.status === "error" ? p.state.error?.message?.slice(0,500) : undefined }
+        : p.type === "text" ? { kind: "text", value: p.text.slice(-800) }
+        : { kind: p.type })
+    }));
+    return { status: busy ? "running" : "idle", session, messageCount: messages.length, assistants: assistants.length, last };
+  }
+
   /** Host startup, after the harness has opened OpenCode. */
   async onStart(): Promise<void> {
     await this.sockets.reattach();
@@ -103,6 +158,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
 }
 
 export default {
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil((async () => {
+      const agent = env.OpenCodeAgent.getByName("7c86f9c3-331d-418e-a58c-269cde16fc23");
+      const started = await agent.startAndroidDemoOnce();
+      console.log("ANDROID_AGENT_SUBMISSION_V1", JSON.stringify(started));
+      const progress = await agent.androidDemoStatus();
+      console.log("ANDROID_AGENT_STATUS_V1", JSON.stringify(progress));
+    })());
+  },
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
