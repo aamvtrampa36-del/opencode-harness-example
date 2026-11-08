@@ -2,7 +2,7 @@
 
 ## Estado y arquitectura
 - **Runtime existente:** OpenCode v2 experimental embebido en un Cloudflare Durable Object SQLite, con Workers AI y herramientas de Workspace. No hay sistema Linux, shell, npm ni ejecutor de compiladores.
-- **Interfaz:** Worker y React; sesión WebSocket; reanudación y persistencia mediante el SDK. Los objetos se asignan actualmente por UUID aleatoria de cada navegador guardada en localStorage: **no sincroniza automáticamente sesiones entre distintos dispositivos**.
+- **Interfaz:** Worker y React; sesión WebSocket; reanudación y persistencia mediante el SDK. Los objetos se asignan por UUID almacenada en el navegador. La interfaz incluye el botón **Vincular** para copiar una URL privada con el ID del mismo Durable Object; al abrirla desde otro dispositivo autenticado en Cloudflare Access, ese navegador conserva el ID en su almacenamiento y recupera el mismo espacio de trabajo. No equivale a una sincronización general de cuentas.
 - **Producción:** `opencode-harness-example.cdf-cloud-mvp-20261019.workers.dev`; protegido por Cloudflare Access para el propietario, sesión 720 h y rutas de prueba deshabilitadas.
 - **Modelo gratuito preexistente:** `@cf/moonshotai/kimi-k2.7-code` por el binding Workers AI. El uso de Workers AI puede cobrarse y no debe considerarse gratis.
 - **Propuesta en esta rama:** secreto privado opcional para OpenRouter, descubrimiento nativo de modelos cuando hay secreto, selección desde interfaz, validación de presets en el servidor y condiciones de seguridad para CDF.
@@ -33,7 +33,7 @@ Las tarifas son variables: consulta el catálogo real de OpenRouter antes de amp
 - `bun scripts/check-invariants.mjs`
 - Validar a través de navegador autenticado: creación de archivo, lectura, modificación, ejecución de módulo JavaScript y clonación de repositorio público permitido.
 - Validar la selección OpenRouter únicamente después de configurar el secreto: una llamada económica, una herramienta de lectura y comparación de saldo antes/después.
-- Recargar la página y verificar continuidad de sesión. Probar desde el mismo navegador, **no otro dispositivo**, hasta implementar migración/compartición segura de identidad de Durable Object.
+- Recargar la página y verificar continuidad de sesión. Pulsar **Vincular**, copiar el enlace y abrirlo en otro navegador autenticado por Cloudflare Access; comprobar que ambos ven el mismo espacio. **No compartir ese enlace con terceros.**
 - Confirmar que el Worker de OpenCode y las aplicaciones productivas CDF WorkBench/CDF CLOUD no cambien por accidente.
 
 ## Límites y próximas mejoras
@@ -41,7 +41,7 @@ Las tarifas son variables: consulta el catálogo real de OpenRouter antes de amp
 - Compilar proyectos y ejecutar shells/npm/test suites reales → hace falta **Sandbox/Containers** separado; estimar gasto real antes de desplegar.
 - Push a repositorios privados, ramas y pull requests desde el agente → crear credenciales GitHub con permisos mínimos y un conector de escritura con aprobaciones, no introducir tokens personales en prompts.
 - MCP CDF CLOUD y WorkBench → identificar URLs, tipo de autenticación y permisos del MCP. No asumir que los conectores disponibles en ChatGPT están automáticamente disponibles en OpenCode.
-- Sincronización entre móviles/PC y acceso vía CLI a la misma sesión → requiere diseño explícito de identidad y migración para no perder las sesiones ya creadas.
+- Vinculación entre móvil y PC → se ofrece mediante enlace del espacio de trabajo, pero la **sincronización automática basada en identidad** y el acceso desde OpenCode CLI siguen pendientes. El enlace de vinculación no concede acceso sin Cloudflare Access.
 - Presupuesto, contadores de costo y hard caps dentro de OpenCode → actualmente la protección exigible es un límite por clave OpenRouter. Evaluar telemetría agregada sin registrar contenido privado.
 - Backups exportables de Durable Object y documentos → requiere un flujo verificado de snapshot a almacenamiento separado.
 
