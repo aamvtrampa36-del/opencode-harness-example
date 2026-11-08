@@ -1,3 +1,4 @@
+import type { ModelPresetID } from "./model-presets";
 import type {
   OpenCodeMessage,
   OpenCodePendingOperation,
@@ -61,6 +62,7 @@ export function partTexts(
 
 type State = {
   readonly status: ConnectionStatus;
+  readonly openRouterAvailable: boolean;
   readonly messages: readonly OpenCodeMessage[];
   readonly busy: boolean;
   readonly pending: readonly OpenCodePendingOperation[];
@@ -72,6 +74,7 @@ type State = {
 
 const INITIAL_STATE: State = {
   status: "connecting",
+  openRouterAvailable: false,
   messages: [],
   busy: false,
   pending: [],
@@ -139,6 +142,9 @@ export function useOpenCodeSession(
         return;
       }
       switch (message.type) {
+        case "hello":
+          setState((current) => ({ ...current, openRouterAvailable: message.openRouterAvailable }));
+          return;
         case "sessions":
           setState((current) => ({ ...current, sessions: message.sessions }));
           return;
@@ -207,9 +213,9 @@ export function useOpenCodeSession(
 
   /** Idle: starts a run. Busy: queued as a follow-up, or steers the run. */
   const submit = useCallback(
-    (text: string, whenBusy: "followUp" | "steer" = "followUp") => {
+    (text: string, whenBusy: "followUp" | "steer" = "followUp", model: ModelPresetID = "cloudflare") => {
       setState((current) => ({ ...current, error: undefined }));
-      send({ type: "submit", id: crypto.randomUUID(), text, whenBusy });
+      send({ type: "submit", id: crypto.randomUUID(), text, whenBusy, model });
     },
     [send]
   );
