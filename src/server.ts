@@ -106,6 +106,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const [running, history] = await Promise.all([handle.busy(), handle.history()]);
     const evidence = assessAgentToolEvidence(history, state.project, state.token);
     if (running) return { status: "running", toolCalls: evidence.requestedTools, project: state.project };
+    if (!history.some(message => message.type === "assistant") &&
+        Date.now() - state.startedAt < 5 * 60_000) {
+      return { status: "queued", toolCalls: 0, project: state.project };
+    }
     let fileVerified = false;
     if (evidence.correctLinuxResult) {
       try {
