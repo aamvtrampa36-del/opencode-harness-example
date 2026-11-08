@@ -153,7 +153,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       .map((p) => ({
         name: p.name,
         status: p.state.status,
-        result: p.state.status === "completed" ? JSON.stringify(p.state.output).slice(0,300) : undefined,
+        result: p.state.status === "completed" ? JSON.stringify(p.state).slice(0,300) : undefined,
         error: p.state.status === "error" ? p.state.error.message.slice(0,300) : undefined
       })));
     const text = assistant.flatMap((m) => m.content
