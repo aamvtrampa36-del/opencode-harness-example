@@ -1,4 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
+import { DevContainer } from "./dev-container";
+export { DevContainer };
 import { Workspace, type DurableObjectStorageLike } from "@cloudflare/computer";
 import { CodemodeBackend } from "@cloudflare/computer/backends/codemode";
 import { createGitClient } from "@cloudflare/computer/git";
@@ -40,6 +42,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       })
     ]
   });
+  readonly linuxRunner = {
+    run: (project: string, command: string) =>
+      this.env.DEV.getByName("personal").run(project, command)
+  };
+
   readonly harness = new OpenCodeHarness({
     opencode: ({ storage }) =>
       OpenCodeWorkerd.create({
@@ -62,7 +69,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         plugins: [
           this.ai.plugin,
           ...(this.openRouterKey ? [openRouterCredentialPlugin(this.openRouterKey)] : []),
-          workspacePlugin(this.workspace)
+          workspacePlugin(this.workspace, {}, this.linuxRunner)
         ]
       }),
     // Low effort: with more, the model sometimes writes its whole answer
@@ -95,7 +102,29 @@ export class OpenCodeAgent extends DurableObject<Env> {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
-      if (new URL(request.url).pathname === "/api/health") {
+      const url = new URL(request.url);
+      if (url.pathname === "/api/dev/status" && request.method === "GET") {
+        return Response.json(await env.DEV.getByName("personal").status(), {
+          headers: { "Cache-Control": "no-store" }
+        });
+      }
+      if (url.pathname === "/api/dev/run" && request.method === "POST") {
+        // Cloudflare Access protects this same-origin endpoint. A third-party
+        // website cannot drive the private container with a cross-site POST.
+        if (request.headers.get("Origin") !== url.origin ||
+            !request.headers.get("Content-Type")?.startsWith("application/json")) {
+          return Response.json({ error: "Same-origin JSON request required" }, { status: 403 });
+        }
+        const body = await request.text();
+        if (body.length > 16_000) {
+          return Response.json({ error: "Request too large" }, { status: 413 });
+        }
+        const { project, command } = JSON.parse(body) as { project: string; command: string };
+        return Response.json(await env.DEV.getByName("personal").run(project, command), {
+          headers: { "Cache-Control": "no-store" }
+        });
+      }
+      if (url.pathname === "/api/health") {
         return Response.json(
           {
             status: "ok",
@@ -106,8 +135,8 @@ export default {
               workspaceFiles: true,
               javascriptExec: true,
               gitClone: true,
-              linuxShell: false,
-              npm: false,
+              linuxShell: Boolean(env.DEV),
+              npm: Boolean(env.DEV),
               githubWrite: false
             }
           },

@@ -379,6 +379,20 @@ function App() {
     localStorage.setItem(SESSION_KEY, next);
     setSession(next);
   };
+  /** One click creates a clean session and opens an editable app brief. */
+  const startNewApp = () => {
+    create().then((next) => {
+      choose(next);
+      setPrompt(
+        "Crea una nueva aplicación web a partir de esta idea: [describe aquí tu app]. " +
+        "Primero elige un nombre corto de proyecto y explica qué construirás. " +
+        "Usa la herramienta linux para crear archivos, instalar dependencias, probar y corregir errores reales. " +
+        "Trabaja dentro de /workspace/projects/<nombre>. No modifiques producción. " +
+        "Cuando termines, resume pruebas, archivos y cómo verla."
+      );
+    }, fail);
+  };
+
 
   /** While a run is going, Enter queues a follow-up and Steer joins the run. */
   const submit = (whenBusy: "followUp" | "steer" = "followUp") => {
@@ -487,7 +501,7 @@ function App() {
               />
               <div className="min-w-0">
                 <h1 className="truncate text-base font-semibold">
-                  OpenCode harness
+                  OpenCode Cloud
                 </h1>
                 <p className="truncate text-xs text-kumo-subtle">
                   Session <code>{session}</code>
@@ -495,6 +509,18 @@ function App() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={!connected}
+                onClick={startNewApp}
+                aria-label="Crear nueva aplicación"
+                title="Crea una sesión nueva y redacta tu idea de aplicación"
+              >
+                <PlusIcon size={14} />
+                <span className="hidden sm:inline">Crear app</span>
+              </Button>
               <Button
                 type="button"
                 variant="ghost"
