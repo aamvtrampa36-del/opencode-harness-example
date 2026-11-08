@@ -49,21 +49,18 @@ const PROJECT_PREFIX = "opencode-active-project:";
 const SUGGESTIONS = [
   {
     icon: <FilePlusIcon size={15} />,
-    label: "Write a file",
-    value:
-      "Write a haiku about Durable Objects to /workspace/haiku.txt, then read it back."
+    label: "Escribir borrador CDF",
+    value: "Ayúdame a desarrollar un borrador narrativo NO CANÓNICO para Cenizas del Futuro. Primero pregunta por la escena; no cambies ninguna fuente oficial."
   },
   {
     icon: <CodeIcon size={15} />,
-    label: "Run JavaScript",
-    value:
-      "Use exec to run JavaScript that lists /workspace and returns the size of each file."
+    label: "Explorar herramientas",
+    value: "Explícame brevemente qué herramientas tienes disponibles ahora mismo para crear apps, ejecutar Linux, trabajar con archivos y usar GitHub. Distingue las que funcionan de las que necesitan configuración."
   },
   {
     icon: <GitBranchIcon size={15} />,
-    label: "Clone a repo",
-    value:
-      "Clone https://github.com/octocat/Hello-World into /workspace/hello, then show its git log."
+    label: "Revisar un proyecto",
+    value: "Ayúdame a revisar un proyecto existente. Primero pídeme el repositorio o nombre de proyecto; analiza antes de modificar y no cambies producción."
   }
 ] satisfies Array<{ icon: ReactNode; label: string; value: string }>;
 
@@ -114,7 +111,7 @@ function ModeToggle() {
     <Button
       variant="ghost"
       shape="square"
-      aria-label="Toggle theme"
+      aria-label="Cambiar tema"
       onClick={() => setMode((value) => (value === "light" ? "dark" : "light"))}
       icon={mode === "light" ? <MoonIcon size={16} /> : <SunIcon size={16} />}
     />
@@ -161,7 +158,7 @@ function ToolCard({ part }: { part: ToolPart }) {
           ) : null}
         </span>
         <Badge variant={failed ? "destructive" : "secondary"}>
-          {failed ? "Failed" : done ? "Done" : "Running"}
+          {failed ? "Error" : done ? "Terminado" : "En curso"}
         </Badge>
       </summary>
       <div className="space-y-3 border-t border-kumo-line px-3 py-3">
@@ -317,16 +314,16 @@ function Message({
       return (
         <p className="text-center text-xs text-kumo-inactive">
           {message.status === "running"
-            ? "Summarizing earlier messages…"
+            ? "Resumiendo los mensajes anteriores…"
             : message.status === "failed"
-              ? "Summarizing earlier messages failed"
-              : "Earlier messages were summarized for the model"}
+              ? "No se pudieron resumir los mensajes anteriores"
+              : "Se resumió el contexto anterior"}
         </p>
       );
     case "idle":
       return message.outcome === "succeeded" ? null : (
         <p className="text-center text-xs text-kumo-inactive">
-          Run {message.outcome}
+          Ejecución: {message.outcome}
         </p>
       );
     default:
@@ -467,14 +464,14 @@ function App() {
       {sessionsOpen ? (
         <aside
           className="flex min-h-0 flex-col border-r border-kumo-line bg-kumo-base"
-          aria-label="Sessions"
+          aria-label="Conversaciones"
         >
           <div className="flex h-[68px] shrink-0 items-center justify-between gap-2 border-b border-kumo-line px-4">
-            <span className="text-sm font-semibold">Sessions</span>
+            <span className="text-sm font-semibold">Conversaciones</span>
             <Button
               variant="ghost"
               shape="square"
-              aria-label="New session"
+              aria-label="Nueva conversación"
               disabled={!connected}
               onClick={() => {
                 create().then(choose, fail);
@@ -501,10 +498,10 @@ function App() {
                 )}
                 <span className="truncate">
                   {info.title ??
-                    (info.id === ROOT_SESSION ? "root" : info.id.slice(-10))}
+                    (info.id === ROOT_SESSION ? "Principal" : info.id.slice(-10))}
                 </span>
                 {info.parent ? (
-                  <span className="text-kumo-inactive">fork</span>
+                  <span className="text-kumo-inactive">derivada</span>
                 ) : null}
               </button>
             ))}
@@ -532,7 +529,7 @@ function App() {
               <Button
                 variant="ghost"
                 shape="square"
-                aria-label="Sessions"
+                aria-label="Conversaciones"
                 aria-expanded={sessionsOpen}
                 onClick={() => setSessionsOpen((open) => !open)}
                 icon={<ListIcon size={16} />}
@@ -542,7 +539,7 @@ function App() {
                   OpenCode Cloud
                 </h1>
                 <p className="truncate text-xs text-kumo-subtle">
-                  Session <code>{session}</code>
+                  Sesión <code>{session}</code>
                 </p>
               </div>
             </div>
@@ -636,10 +633,10 @@ function App() {
               </select>
               <Badge variant={connected ? "success" : "secondary"}>
                 {connected
-                  ? "Live"
+                  ? "En línea"
                   : status === "connecting"
-                    ? "Connecting"
-                    : "Reconnecting"}
+                    ? "Conectando"
+                    : "Reconectando"}
               </Badge>
               <ModeToggle />
             </div>
@@ -648,27 +645,24 @@ function App() {
 
         <main className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-3xl space-y-5 px-5 py-6">
-            <Surface className="rounded-xl p-4 ring ring-kumo-line">
+            <Surface className="rounded-xl p-3 ring ring-kumo-line">
               <div className="flex gap-3">
-                <InfoIcon
-                  size={20}
-                  weight="bold"
-                  className="mt-0.5 shrink-0 text-kumo-accent"
-                />
-                <div>
-                  <Text size="sm" bold>
-                    OpenCode in a Durable Object
-                  </Text>
-                  <span className="mt-1 block">
-                    <Text size="xs" variant="secondary">
-                      OpenCode v2 runs inside this Durable Object with
-                      OpenCodeHarness, on Workers AI through the AI binding.
-                      Sessions keep running when you close the tab, and a run
-                      cut off by an eviction resumes on its own. Queue a
-                      follow-up or steer while a run is going, and open more
-                      sessions from the sidebar.
-                    </Text>
-                  </span>
+                <InfoIcon size={18} weight="bold" className="mt-0.5 shrink-0 text-kumo-accent" />
+                <div className="min-w-0 space-y-1">
+                  <Text size="sm" bold>Tu espacio de desarrollo</Text>
+                  <p className="text-xs text-kumo-subtle">
+                    Crea aplicaciones con Linux, consulta conversaciones anteriores o prepara borradores narrativos.
+                    Los proyectos pueden descargarse; las copias automáticas externas aún no están configuradas.
+                  </p>
+                  {integrations ? (
+                    <p className="text-xs text-kumo-subtle">
+                      OpenRouter: {integrations.openRouterConfigured ? "configurado" : "pendiente"} ·
+                      GitHub: {integrations.githubConfigured ? "configurado" : "pendiente"}.
+                      {(!integrations.openRouterConfigured || !integrations.githubConfigured) ? (
+                        <> <a className="underline" href="https://github.com/aamvtrampa36-del/opencode-harness-example/blob/main/docs/OPEN_CODE_USE.md" target="_blank" rel="noreferrer">Cómo conectarlos</a></>
+                      ) : null}
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </Surface>
@@ -677,8 +671,8 @@ function App() {
               <div className="py-10 sm:py-16">
                 <Empty
                   icon={<BrainIcon size={32} />}
-                  title="OpenCode, in a Durable Object"
-                  description="Sessions survive eviction; text and tool calls stream in as they happen."
+                  title="¿Qué te gustaría crear?"
+                  description="Describe una aplicación, trabaja sobre un proyecto o prepara una escena de CDF."
                 />
                 <div className="mt-6 flex flex-wrap justify-center gap-2">
                   {SUGGESTIONS.map((suggestion) => (
@@ -722,7 +716,7 @@ function App() {
                 <Surface className="rounded-xl px-4 py-3 ring ring-kumo-line">
                   <div className="flex items-center gap-2 text-sm text-kumo-subtle">
                     <GearIcon size={15} className="animate-spin" />
-                    Waiting for the model
+                    El modelo está trabajando
                   </div>
                 </Surface>
               </div>
@@ -730,7 +724,7 @@ function App() {
 
             {queued.length > 0 ? (
               <p className="ml-11 text-xs text-kumo-subtle">
-                {queued.length} queued behind this run
+                {queued.length} mensajes en espera
               </p>
             ) : null}
 
@@ -767,10 +761,10 @@ function App() {
                 }}
                 placeholder={
                   busy
-                    ? "Queue a follow-up, or steer the running turn"
-                    : "Ask OpenCode something"
+                    ? "Escribe una instrucción para continuar la tarea"
+                    : "Describe qué quieres hacer con OpenCode"
                 }
-                aria-label="Message OpenCode"
+                aria-label="Escribir a OpenCode"
                 disabled={!connected}
                 rows={2}
                 className="flex-1 !bg-transparent !shadow-none !ring-0 !outline-none focus:!ring-0"
@@ -781,7 +775,7 @@ function App() {
                     type="button"
                     variant="secondary"
                     size="sm"
-                    aria-label="Steer"
+                    aria-label="Intervenir en tarea"
                     disabled={prompt.trim() === ""}
                     onClick={() => submit("steer")}
                   >
@@ -791,7 +785,7 @@ function App() {
                     type="button"
                     variant="secondary"
                     shape="square"
-                    aria-label="Stop"
+                    aria-label="Detener"
                     onClick={abort}
                     icon={<StopIcon size={18} weight="fill" />}
                   />
@@ -801,7 +795,7 @@ function App() {
                   type="submit"
                   variant="primary"
                   shape="square"
-                  aria-label="Send message"
+                  aria-label="Enviar mensaje"
                   disabled={!connected || prompt.trim() === ""}
                   icon={<PaperPlaneRightIcon size={18} />}
                   className="mb-0.5"
@@ -811,7 +805,7 @@ function App() {
           </form>
           <div className="flex items-center justify-center gap-2 px-5 py-3">
             <span className="hidden text-[10px] text-kumo-inactive sm:inline">
-              Enter to send · Shift+Enter for a new line
+              Enter para enviar · Shift+Enter para salto de línea
             </span>
             <span className="hidden text-kumo-line sm:inline">·</span>
             <PoweredByCloudflare href="https://developers.cloudflare.com/agents/" />
