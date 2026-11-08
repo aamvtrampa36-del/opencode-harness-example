@@ -15,6 +15,7 @@ import { OpenCodeSessionSockets } from "./sockets";
 import { workspacePlugin } from "./workspace";
 import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
+import { GitHubBridge } from "./github";
 
 export const MODEL_ID = "@cf/moonshotai/kimi-k2.7-code";
 
@@ -22,6 +23,8 @@ export const MODEL_ID = "@cf/moonshotai/kimi-k2.7-code";
 export class OpenCodeAgent extends DurableObject<Env> {
   // The optional secret is read only in the Worker runtime, never in React.
   private readonly openRouterKey = (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY;
+  private readonly githubToken = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN;
+  private readonly github = this.githubToken ? new GitHubBridge(this.githubToken) : undefined;
   // Workers AI over the AI binding, as an OpenCode provider plugin.
   readonly ai = createAI({ binding: this.env.AI });
   // Files in the object's own storage. `exec` runs JavaScript in a Worker
@@ -69,7 +72,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         plugins: [
           this.ai.plugin,
           ...(this.openRouterKey ? [openRouterCredentialPlugin(this.openRouterKey)] : []),
-          workspacePlugin(this.workspace, {}, this.linuxRunner)
+          workspacePlugin(this.workspace, {}, this.linuxRunner, this.github)
         ]
       }),
     // Low effort: with more, the model sometimes writes its whole answer
@@ -171,6 +174,7 @@ export default {
             status: "ok",
             runtime: "workerd",
             openRouterConfigured: Boolean((env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY),
+            githubConfigured: Boolean((env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN),
             features: {
               durableSessions: true,
               workspaceFiles: true,
