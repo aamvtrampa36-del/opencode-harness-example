@@ -172,4 +172,50 @@ export class DevContainer extends DurableObject<Env> {
     await container.setInactivityTimeout(INACTIVITY_MS);
     await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
   }
+
+  /** HTTP-only static preview; isolation headers are applied by the Worker. */
+  async preview(project: string, relativePath: string): Promise<Response> {
+    const id = validateProject(project);
+    if (relativePath.includes("\\") || relativePath.split("/").includes("..")) {
+      return new Response("Invalid preview path", { status: 400 });
+    }
+    const container = await this.ensureRunning();
+    this.busy++;
+    try {
+      this.previewStarting ??= this.ensurePreviewService(container).finally(() => {
+        this.previewStarting = undefined;
+      });
+      await this.previewStarting;
+      const url = "http://container/" + id + "/" + relativePath.replace(/^\/+/, "");
+      return await container.getTcpPort(PREVIEW_PORT).fetch(url, {
+        method: "GET",
+        signal: AbortSignal.timeout(30_000)
+      });
+    } finally {
+      this.busy--;
+      await this.ctx.storage.put("lastActivity", Date.now());
+      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+    }
+  }
+
+  private async ensurePreviewService(container: NonNullable<DurableObjectState["container"]>): Promise<void> {
+    const port = container.getTcpPort(PREVIEW_PORT);
+    const healthy = async () => {
+      try {
+        const response = await port.fetch("http://container/__health", {
+          signal: AbortSignal.timeout(1500)
+        });
+        await response.body?.cancel();
+        return response.ok;
+      } catch { return false; }
+    };
+    if (await healthy()) return;
+    await container.exec(["node", "--input-type=module", "-e", PREVIEW_SOURCE]);
+    for (let n = 0; n < 40; n++) {
+      if (await healthy()) return;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error("Project preview server did not become ready");
+  }
+
 }
