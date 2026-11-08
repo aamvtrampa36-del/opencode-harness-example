@@ -24,6 +24,7 @@ export type ClientMessage =
       readonly whenBusy?: OpenCodeWhenBusy;
       readonly model?: ModelPresetID;
       readonly mode?: AgentMode;
+      readonly specialization?: string;
     }
   | { readonly type: "abort"; readonly id?: string }
   | { readonly type: "create"; readonly id?: string }
