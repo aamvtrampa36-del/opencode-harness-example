@@ -14,7 +14,7 @@ describe("model authorization", () => {
   test("the baseline can run without an OpenRouter secret", () => {
     expect(MODEL_PRESETS.cloudflare.providerID).toBe("cloudflare");
     expect(MODEL_PRESETS.cloudflare.tier).toBe("baseline");
-    expect(MODEL_PRESETS.cloudflare.id).toStartWith("@cf/");
+    expect(MODEL_PRESETS.cloudflare.id.startsWith("@cf/")).toBe(true);
   });
 
   test("every optional model is a native OpenRouter model", () => {
