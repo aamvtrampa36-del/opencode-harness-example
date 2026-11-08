@@ -9,6 +9,7 @@ export const PREVIEW_SOURCE = String.raw`
 import http from "node:http";
 import { readFile, stat, realpath } from "node:fs/promises";
 import { resolve, sep, extname } from "node:path";
+import { spawn } from "node:child_process";
 const ROOT = process.env.PREVIEW_ROOT || "/workspace/projects";
 const MIME = {
   ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8",
@@ -26,6 +27,30 @@ http.createServer(async (req, res) => {
     const url = new URL(req.url || "/", "http://container");
     if (url.pathname === "/__health") {
       res.writeHead(200, { "Content-Type": "text/plain" }).end("ready");
+      return;
+    }
+    if (url.pathname.startsWith("/__archive/")) {
+      const project = url.pathname.slice("/__archive/".length);
+      if (!/^[a-z][a-z0-9-]{0,39}$/.test(project)) {
+        res.writeHead(400).end(); return;
+      }
+      const source = resolve(ROOT, project);
+      const dir = await stat(source);
+      if (!dir.isDirectory()) { res.writeHead(404).end(); return; }
+      // Archive source and build output, not heavy dependencies, Git internals
+      // or typical local secrets. The user must still review any generated code.
+      const proc = spawn("tar", [
+        "--exclude=node_modules", "--exclude=.git", "--exclude=.env",
+        "--exclude=.env.*", "--exclude=*.pem", "--exclude=*.key",
+        "-czf", "-", "-C", ROOT, project
+      ], { stdio: ["ignore", "pipe", "ignore"] });
+      res.writeHead(200, {
+        "Content-Type": "application/gzip",
+        "Content-Disposition": 'attachment; filename="' + project + '.tar.gz"',
+        "Cache-Control": "no-store"
+      });
+      proc.stdout.pipe(res);
+      proc.on("error", () => res.destroy());
       return;
     }
     const relative = decodeURIComponent(url.pathname);
