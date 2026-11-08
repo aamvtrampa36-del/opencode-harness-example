@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { ALLOWED_REPOS, normalizeOwnedRepository } from "./github";
 
 /**
  * One owner-scoped, persisted settings object shared by all browser workspaces.
@@ -97,6 +98,53 @@ export class PersonalSettings extends DurableObject<Env> {
       limit: info.limit, limit_remaining: info.limit_remaining,
       limit_reset: info.limit_reset
     };
+  }
+
+  /** Repository authorizations are owned by the user, not compiled into tool code. */
+  async getAllowedRepositories(): Promise<string[]> {
+    const additions = (await this.ctx.storage.get<string[]>("approved-repositories-v1")) ?? [];
+    return [...new Set([...ALLOWED_REPOS, ...additions])];
+  }
+
+  async authorizeRepository(input: unknown): Promise<{ repository: string; defaultBranch: string }> {
+    const repo = normalizeOwnedRepository(input);
+    const key = await this.getGitHubKey();
+    if (!key) throw new Error("Conecta GitHub primero para verificar el acceso al repositorio.");
+    const response = await fetch("https://api.github.com/repos/" + repo, {
+      headers: {
+        Authorization: "Bearer " + key,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "OpenCode-Cloud",
+        "X-GitHub-Api-Version": "2022-11-28"
+      },
+      signal: AbortSignal.timeout(10_000)
+    });
+    if (!response.ok) throw new Error("El token no tiene acceso a este repositorio (HTTP " + response.status + ").");
+    const result = await response.json() as { full_name?: string; default_branch?: string };
+    if (result.full_name?.toLowerCase() !== repo.toLowerCase() || !result.default_branch) {
+      throw new Error("Los metadatos de GitHub no coinciden con el repositorio solicitado.");
+    }
+    const current = await this.getAllowedRepositories();
+    if (current.length >= 30 && !current.some(name => name.toLowerCase() === repo.toLowerCase())) {
+      throw new Error("Límite de 30 repositorios autorizados.");
+    }
+    if (!ALLOWED_REPOS.some(name => name.toLowerCase() === repo.toLowerCase())) {
+      const additions = (await this.ctx.storage.get<string[]>("approved-repositories-v1")) ?? [];
+      if (!additions.some(name => name.toLowerCase() === repo.toLowerCase())) {
+        await this.ctx.storage.put("approved-repositories-v1", [...additions, repo]);
+      }
+    }
+    return { repository: repo, defaultBranch: result.default_branch };
+  }
+
+  async revokeRepository(input: unknown): Promise<void> {
+    const repo = normalizeOwnedRepository(input);
+    if (ALLOWED_REPOS.some(name => name.toLowerCase() === repo.toLowerCase())) {
+      throw new Error("Los repositorios originales se mantienen autorizados para evitar romper proyectos existentes.");
+    }
+    const additions = (await this.ctx.storage.get<string[]>("approved-repositories-v1")) ?? [];
+    await this.ctx.storage.put("approved-repositories-v1",
+      additions.filter(name => name.toLowerCase() !== repo.toLowerCase()));
   }
 
   async connectGitHub(raw: unknown): Promise<{ configured: true; account: string }> {

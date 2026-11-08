@@ -29,8 +29,21 @@ const api = new GitHubBridge("dummy-test-key",fake);
 describe("GitHub scoped permissions",()=>{
   test("reject unknown repos before any HTTP request",async()=>{
     calls.length=0;
-    await expect(api.execute({action:"repo",repo:"other/production"})).rejects.toThrow("not authorized");
+    await expect(api.execute({action:"repo",repo:"other/production"})).rejects.toThrow("authorized GitHub account");
     expect(calls.length).toBe(0);
+  });
+  test("explicit additional repository is allowed, but only for this owner's account",async()=>{
+    calls.length=0;
+    const dynamic = new GitHubBridge("dummy-test-key",fake,["aamvtrampa36-del/new-project"]);
+    await expect(dynamic.execute({action:"repo",repo:"aamvtrampa36-del/cdf-cloud-engine"}))
+      .rejects.toThrow("not authorized");
+    await expect(dynamic.execute({action:"repo",repo:"other-account/new-project"}))
+      .rejects.toThrow("authorized GitHub account");
+    expect(calls.length).toBe(0);
+    // The grant bypasses only the local allowlist; GitHub still decides access.
+    await expect(dynamic.execute({action:"repo",repo:"aamvtrampa36-del/new-project"}))
+      .rejects.toThrow("GitHub API 404");
+    expect(calls.length).toBe(1);
   });
   test("block main/master or path traversal on all writes",async()=>{
     calls.length=0;

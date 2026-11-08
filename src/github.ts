@@ -23,11 +23,24 @@ export type GitHubAction =
 const BRANCH_RE = /^opencode\/[a-z0-9][a-z0-9._-]{0,59}$/;
 const MAX_FILE_BYTES = 100_000;
 
-function repoChecked(repo: unknown): string {
-  if (typeof repo !== "string" || !ALLOWED_REPOS.includes(repo as (typeof ALLOWED_REPOS)[number])) {
+const OWNER = "aamvtrampa36-del";
+const REPOSITORY_FORMAT = /^[A-Za-z0-9_.-]{1,100}$/;
+
+/** Authorization stays per-account and is checked at every tool execution. */
+export function normalizeOwnedRepository(value: unknown): string {
+  if (typeof value !== "string") throw new Error("Invalid repository name");
+  const [owner, name, extra] = value.trim().split("/");
+  if (extra || owner?.toLowerCase() !== OWNER || !name || !REPOSITORY_FORMAT.test(name) || name === "." || name === "..") {
+    throw new Error("Only repositories belonging to the authorized GitHub account are permitted");
+  }
+  return OWNER + "/" + name;
+}
+function repoChecked(repo: unknown, allowed: ReadonlySet<string>): string {
+  const canonical = normalizeOwnedRepository(repo);
+  if (![...allowed].some(item => item.toLowerCase() === canonical.toLowerCase())) {
     throw new Error("Repository is not authorized for OpenCode");
   }
-  return repo;
+  return canonical;
 }
 function branchChecked(branch: unknown): string {
   if (typeof branch !== "string" || !BRANCH_RE.test(branch) ||
@@ -63,8 +76,14 @@ function fromBase64(value: string): string {
 type GitHubFetch = typeof fetch;
 
 export class GitHubBridge {
-  constructor(private readonly token: string, private readonly http: GitHubFetch = fetch) {
+  private readonly allowed: ReadonlySet<string>;
+  constructor(
+    private readonly token: string,
+    private readonly http: GitHubFetch = fetch,
+    allowedRepos: readonly string[] = ALLOWED_REPOS
+  ) {
     if (!token) throw new Error("GITHUB_TOKEN is not configured in Cloudflare Secrets");
+    this.allowed = new Set(allowedRepos.map(normalizeOwnedRepository));
   }
 
   private async api(method: string, route: string, data?: unknown, allow404 = false): Promise<any> {
@@ -89,7 +108,7 @@ export class GitHubBridge {
   }
 
   async execute(input: GitHubAction): Promise<unknown> {
-    const repo = repoChecked(input.repo);
+    const repo = repoChecked(input.repo, this.allowed);
     const base = "/repos/" + repo;
     switch (input.action) {
       case "repo": {
