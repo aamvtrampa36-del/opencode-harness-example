@@ -9,7 +9,7 @@ export const PREVIEW_SOURCE = String.raw`
 import http from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { resolve, sep, extname } from "node:path";
-const ROOT = "/workspace/projects";
+const ROOT = process.env.PREVIEW_ROOT || "/workspace/projects";
 const MIME = {
   ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
