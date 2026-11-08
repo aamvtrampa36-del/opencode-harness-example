@@ -1,3 +1,4 @@
+import { MODEL_PRESETS, isModelPreset, type ModelPresetID } from "./model-presets";
 import {
   Badge,
   Button,
@@ -39,7 +40,7 @@ import "./styles.css";
 const OBJECT_KEY = "opencode-harness-object";
 const SESSION_KEY = "opencode-harness-session";
 const ROOT_SESSION = "ses_root";
-const MODEL = "@cf/moonshotai/kimi-k2.7-code";
+const MODEL_KEY = "opencode-model-preset";
 
 const SUGGESTIONS = [
   {
@@ -316,12 +317,17 @@ function App() {
     () => localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION
   );
   const [prompt, setPrompt] = useState("");
+  const [modelPreset, setModelPreset] = useState<ModelPresetID>(() => {
+    const stored = localStorage.getItem(MODEL_KEY);
+    return isModelPreset(stored) ? stored : "cloudflare";
+  });
   const [sessionsOpen, setSessionsOpen] = useState(
     () => window.matchMedia("(min-width: 1100px)").matches
   );
   const endRef = useRef<HTMLDivElement>(null);
   const {
     status,
+    openRouterAvailable,
     messages,
     busy,
     pending,
@@ -356,7 +362,7 @@ function App() {
     const text = prompt.trim();
     if (!text || !connected) return;
     setPrompt("");
-    submitPrompt(text, whenBusy);
+    submitPrompt(text, whenBusy, openRouterAvailable ? modelPreset : "cloudflare");
   };
 
   // Live text for an assistant message no snapshot has yet.
@@ -453,9 +459,28 @@ function App() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
-              <Badge variant="secondary" className="hidden sm:inline-flex">
-                {MODEL.split("/").at(-1)}
-              </Badge>
+              <select
+                aria-label="Modelo de IA"
+                title={openRouterAvailable ? "Seleccionar modelo" : "Configura OPENROUTER_API_KEY para habilitar OpenRouter"}
+                value={openRouterAvailable ? modelPreset : "cloudflare"}
+                onChange={(event) => {
+                  const next = event.currentTarget.value;
+                  if (!isModelPreset(next)) return;
+                  setModelPreset(next);
+                  localStorage.setItem(MODEL_KEY, next);
+                }}
+                className="max-w-[152px] rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 text-xs text-kumo-default sm:max-w-[240px]"
+              >
+                {Object.entries(MODEL_PRESETS).map(([id, preset]) => (
+                  <option
+                    key={id}
+                    value={id}
+                    disabled={preset.providerID === "openrouter" && !openRouterAvailable}
+                  >
+                    {preset.label}{preset.tier === "premium" ? " ($$)" : ""}
+                  </option>
+                ))}
+              </select>
               <Badge variant={connected ? "success" : "secondary"}>
                 {connected
                   ? "Live"
