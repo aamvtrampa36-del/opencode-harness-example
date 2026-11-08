@@ -19,7 +19,16 @@ export default defineConfig({
     },
     agents(),
     react(),
-    cloudflare(),
+    cloudflare({
+      config: (worker) => {
+        // CI has no Cloudflare token. Disable remote-only bindings for the
+        // local runtime smoke test; production and dev remain unchanged.
+        if (process.env.CI_LOCAL_SMOKE === "1") {
+          delete worker.ai;
+          delete worker.worker_loaders;
+        }
+      }
+    }),
     tailwindcss()
   ],
   resolve: {
