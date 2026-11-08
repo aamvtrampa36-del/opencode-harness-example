@@ -32,15 +32,45 @@ export function SettingsPanel({
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [reloadNeeded, setReloadNeeded] = useState(false);
+  const [repositories, setRepositories] = useState<string[]>([]);
+  const [newRepository, setNewRepository] = useState("");
 
   async function load() {
     const response = await fetch("/api/settings", { cache: "no-store" });
     if (!response.ok) throw new Error("No se pudo consultar la configuración.");
     setConnected(await response.json() as ConnectionState);
   }
+  async function loadRepositories() {
+    const response = await fetch("/api/settings/repositories", { cache: "no-store" });
+    if (response.ok) {
+      const body = await response.json() as { repositories: string[] };
+      setRepositories(body.repositories);
+    }
+  }
   useEffect(() => {
     void load().catch((err: unknown) => setNotice(String(err)));
+    void loadRepositories();
   }, []);
+  async function changeRepository(action: "POST" | "DELETE", repository: string) {
+    setBusy(true);
+    setNotice("");
+    try {
+      const response = await fetch("/api/settings/repositories", {
+        method: action,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repository })
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "No se pudo actualizar el repositorio.");
+      setNewRepository("");
+      setNotice(action === "POST" ? "Acceso autorizado y verificado con GitHub." : "Autorización retirada.");
+      await loadRepositories();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Error actualizando repositorios.");
+    } finally {
+      setBusy(false);
+    }
+  }
   async function save() {
     if (!key.trim() || busy) return;
     setBusy(true);
@@ -162,8 +192,27 @@ export function SettingsPanel({
         </div>
       ) : (
         <p className="mt-4 text-xs text-kumo-subtle">
-          Crea un token de acceso limitado a tus repositorios CDF y OpenCode con permisos de lectura/escritura de contenido y Pull requests.
+          Crea un token de acceso limitado a tus repositorios con permisos de lectura/escritura de contenido y Pull requests.
           {" "}<a className="underline" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">Crear token seguro de GitHub</a>
+          {ready ? (
+            <span className="mt-3 block space-y-2">
+              <span className="block font-medium">Repositorios autorizados</span>
+              {repositories.map(name => (
+                <span key={name} className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 break-all">{name}</span>
+                  {["aamvtrampa36-del/cdf-cloud-engine", "aamvtrampa36-del/CDF-WorkBench-", "aamvtrampa36-del/opencode-harness-example"].some(base => base.toLowerCase() === name.toLowerCase())
+                    ? null : <button className={buttonStyle} type="button" disabled={busy}
+                        onClick={() => void changeRepository("DELETE", name)}>Retirar</button>}
+                </span>
+              ))}
+              <label htmlFor="repository-name" className="block">Añadir otro repositorio propio</label>
+              <input id="repository-name" className={fieldStyle} value={newRepository}
+                placeholder="aamvtrampa36-del/mi-proyecto" onChange={e => setNewRepository(e.target.value)} />
+              <button className={buttonStyle} type="button" disabled={busy || !newRepository.trim()}
+                onClick={() => void changeRepository("POST", newRepository)}>Autorizar y verificar</button>
+              <span className="block">GitHub debe permitir el acceso a ese repositorio con el token conectado.</span>
+            </span>
+          ) : null}
         </p>
       )}
     </section>
