@@ -1,3 +1,4 @@
+import { SettingsPanel } from "./settings-panel";
 import { MODEL_PRESETS, isModelPreset, type ModelPresetID } from "./model-presets";
 import {
   Badge,
@@ -339,27 +340,25 @@ function App() {
   const [prompt, setPrompt] = useState("");
   const [project, setProject] = useState(() => localStorage.getItem(PROJECT_PREFIX + (localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION)) ?? "");
   const [linkCopied, setLinkCopied] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [integrations, setIntegrations] = useState<{
     openRouterConfigured: boolean;
     githubConfigured: boolean;
   } | null>(null);
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch("/api/health", { signal: controller.signal, cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Health check unavailable");
-        return response.json();
-      })
-      .then((value: unknown) => {
-        const data = value as { openRouterConfigured?: boolean; githubConfigured?: boolean };
-        setIntegrations({
-          openRouterConfigured: Boolean(data.openRouterConfigured),
-          githubConfigured: Boolean(data.githubConfigured)
-        });
-      })
-      .catch(() => { /* The chat continues even when diagnostics are unavailable. */ });
-    return () => controller.abort();
-  }, []);
+  const refreshIntegrations = async () => {
+    try {
+      const response = await fetch("/api/settings", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await response.json() as { openRouterConfigured?: boolean; githubConfigured?: boolean };
+      setIntegrations({
+        openRouterConfigured: Boolean(data.openRouterConfigured),
+        githubConfigured: Boolean(data.githubConfigured)
+      });
+    } catch {
+      // The chat continues when diagnostics are unavailable.
+    }
+  };
+  useEffect(() => { void refreshIntegrations(); }, []);
   const [modelPreset, setModelPreset] = useState<ModelPresetID>(() => {
     const stored = localStorage.getItem(MODEL_KEY);
     return isModelPreset(stored) ? stored : "economy";
@@ -621,7 +620,7 @@ function App() {
               </Button>
               <select
                 aria-label="Modelo de IA"
-                title={openRouterAvailable ? "Seleccionar modelo" : "Configura OPENROUTER_API_KEY para habilitar OpenRouter"}
+                title={openRouterAvailable ? "Seleccionar modelo" : "Conecta OpenRouter desde Configuración"}
                 value={openRouterAvailable ? modelPreset : "cloudflare"}
                 onChange={(event) => {
                   const next = event.currentTarget.value;
@@ -641,6 +640,13 @@ function App() {
                   </option>
                 ))}
               </select>
+              <Button type="button" variant="ghost" size="sm"
+                aria-label="Configurar conexiones y modelos"
+                title="OpenRouter, GitHub y presupuesto"
+                onClick={() => setSettingsOpen(open => !open)}>
+                <GearIcon size={17} />
+                <span className="hidden sm:inline">Configurar</span>
+              </Button>
               <Badge variant={connected ? "success" : "secondary"}>
                 {connected
                   ? "En línea"
@@ -655,6 +661,10 @@ function App() {
 
         <main className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-3xl space-y-5 px-5 py-6">
+            {settingsOpen ? (
+              <SettingsPanel workspace={object} onClose={() => setSettingsOpen(false)}
+                onChanged={() => { void refreshIntegrations(); }} />
+            ) : null}
             <Surface className="rounded-xl p-3 ring ring-kumo-line">
               <div className="flex gap-3">
                 <InfoIcon size={18} weight="bold" className="mt-0.5 shrink-0 text-kumo-accent" />
@@ -669,7 +679,7 @@ function App() {
                       OpenRouter: {integrations.openRouterConfigured ? "configurado" : "pendiente"} ·
                       GitHub: {integrations.githubConfigured ? "configurado" : "pendiente"}.
                       {(!integrations.openRouterConfigured || !integrations.githubConfigured) ? (
-                        <> <a className="underline" href="https://github.com/aamvtrampa36-del/opencode-harness-example/blob/main/docs/OPEN_CODE_USE.md" target="_blank" rel="noreferrer">Cómo conectarlos</a></>
+                        <> <button className="underline" type="button" onClick={() => setSettingsOpen(true)}>Conectar desde aquí</button></>
                       ) : null}
                     </p>
                   ) : null}
