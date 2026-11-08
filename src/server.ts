@@ -11,11 +11,14 @@ import { createAI } from "agents/models/opencode";
 import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
 import { workspacePlugin } from "./workspace";
+import { openRouterCredentialPlugin } from "./openrouter";
 
 export const MODEL_ID = "@cf/moonshotai/kimi-k2.7-code";
 
 /** A playable OpenCode instance backed by one Durable Object. */
 export class OpenCodeAgent extends DurableObject<Env> {
+  // The optional secret is read only in the Worker runtime, never in React.
+  private readonly openRouterKey = (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY;
   // Workers AI over the AI binding, as an OpenCode provider plugin.
   readonly ai = createAI({ binding: this.env.AI });
   // Files in the object's own storage. `exec` runs JavaScript in a Worker
@@ -42,9 +45,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
         // The object's storage, with OpenCode's tables under `opencode_`.
         storage,
         config: { default_agent: "build" },
-        // OpenCode refreshes its model catalog from models.dev; this app
-        // only uses the Workers AI models it names.
-        models: { fetch: false },
+        // Native OpenRouter discovery is opt-in and only activated when
+        // the private Cloudflare Secret is available.
+        models: { fetch: Boolean(this.openRouterKey) },
         // OpenCode is silent unless given a log writer.
         log: {
           level: "warn",
@@ -55,7 +58,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
               entry.cause
             )
         },
-        plugins: [this.ai.plugin, workspacePlugin(this.workspace)]
+        plugins: [
+          this.ai.plugin,
+          ...(this.openRouterKey ? [openRouterCredentialPlugin(this.openRouterKey)] : []),
+          workspacePlugin(this.workspace)
+        ]
       }),
     // Low effort: with more, the model sometimes writes its whole answer
     // into its reasoning.
@@ -66,8 +73,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
   });
 
   // App glue, not the harness: how this app puts sessions on a socket.
-  readonly sockets = new OpenCodeSessionSockets(this.harness, (tag) =>
-    this.ctx.getWebSockets(tag)
+  readonly sockets = new OpenCodeSessionSockets(
+    this.harness,
+    (tag) => this.ctx.getWebSockets(tag),
+    Boolean(this.openRouterKey)
   );
   readonly webSockets = new WebSockets(this.sockets.options());
   readonly lifecycle = Lifecycle.install(this)
