@@ -108,6 +108,18 @@ export default {
           headers: { "Cache-Control": "no-store" }
         });
       }
+      const downloadMatch = url.pathname.match(/^\/api\/dev\/download\/([a-z][a-z0-9-]{0,39})$/);
+      if (downloadMatch) {
+        if (request.method !== "GET") return new Response("GET only", { status: 405 });
+        const project = downloadMatch[1];
+        const file = await env.DEV.getByName("personal").download(project);
+        const headers = new Headers(file.headers);
+        headers.set("Content-Type", "application/gzip");
+        headers.set("Content-Disposition", 'attachment; filename="' + project + '.tar.gz"');
+        headers.set("X-Content-Type-Options", "nosniff");
+        headers.set("Cache-Control", "no-store");
+        return new Response(file.body, { status: file.status, headers });
+      }
       const previewMatch = url.pathname.match(/^\/api\/dev\/preview\/([a-z][a-z0-9-]{0,39})(?:\/(.*))?$/);
       if (previewMatch) {
         if (request.method !== "GET" && request.method !== "HEAD") {
