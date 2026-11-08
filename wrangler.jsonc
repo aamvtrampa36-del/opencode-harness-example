@@ -21,7 +21,9 @@
     "run_worker_first": [
       "/agents/*",
       "/api/health",
-      "/api/dev/*"
+      "/api/dev/*",
+      "/api/settings/*",
+      "/api/settings"
     ]
   },
   "durable_objects": {
@@ -33,6 +35,10 @@
       {
         "name": "DEV",
         "class_name": "DevContainer"
+      },
+      {
+        "name": "SETTINGS",
+        "class_name": "PersonalSettings"
       }
     ]
   },
@@ -47,6 +53,12 @@
       "tag": "v2",
       "new_sqlite_classes": [
         "DevContainer"
+      ]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": [
+        "PersonalSettings"
       ]
     }
   ],
