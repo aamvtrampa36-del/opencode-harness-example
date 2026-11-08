@@ -29,7 +29,7 @@ const api = new GitHubBridge("dummy-test-key",fake);
 describe("GitHub scoped permissions",()=>{
   test("reject unknown repos before any HTTP request",async()=>{
     calls.length=0;
-    await expect(api.execute({action:"repo",repo:"other/production"})).rejects.toThrow("not authorized");
+    await expect(api.execute({action:"repo",repo:"other/production"})).rejects.toThrow("authorized GitHub account");
     expect(calls.length).toBe(0);
   });
   test("explicit additional repository is allowed, but only for this owner's account",async()=>{
