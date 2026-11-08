@@ -95,6 +95,25 @@ export class OpenCodeAgent extends DurableObject<Env> {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
+      if (new URL(request.url).pathname === "/api/health") {
+        return Response.json(
+          {
+            status: "ok",
+            runtime: "workerd",
+            openRouterConfigured: Boolean((env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY),
+            features: {
+              durableSessions: true,
+              workspaceFiles: true,
+              javascriptExec: true,
+              gitClone: true,
+              linuxShell: false,
+              npm: false,
+              githubWrite: false
+            }
+          },
+          { headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } }
+        );
+      }
       return (
         (await routeAgentRequest(request, env, { cors: true })) ??
         new Response("Not found", { status: 404 })
