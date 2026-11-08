@@ -5,9 +5,9 @@
  */
 export const MODEL_PRESETS = {
   cloudflare: {
-    label: "Cloudflare · Kimi K2.7",
+    label: "Cloudflare · Llama 3.3",
     providerID: "cloudflare",
-    id: "@cf/moonshotai/kimi-k2.7-code",
+    id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     tier: "baseline"
   },
   economy: {
