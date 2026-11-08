@@ -89,6 +89,18 @@ export class DevContainer extends DurableObject<Env> {
     };
   }
 
+  /** Durable project inventory; listing never starts the billable Linux VM. */
+  async listProjects(): Promise<readonly { name: string; lastUsedAt: number }[]> {
+    const rows = (await this.ctx.storage.get<{ name: string; lastUsedAt: number }[]>("projectInventory")) ?? [];
+    return rows.slice().sort((a, b) => b.lastUsedAt - a.lastUsedAt);
+  }
+
+  private async recordProject(name: string): Promise<void> {
+    const rows = (await this.ctx.storage.get<{ name: string; lastUsedAt: number }[]>("projectInventory")) ?? [];
+    const next = [{ name, lastUsedAt: Date.now() }, ...rows.filter((x) => x.name !== name)];
+    await this.ctx.storage.put("projectInventory", next.slice(0, 100));
+  }
+
   async run(project: string, command: string): Promise<LinuxResult> {
     const id = validateProject(project);
     const cmd = validateCommand(command);
@@ -123,6 +135,7 @@ export class DevContainer extends DurableObject<Env> {
       const decoder = new TextDecoder();
       const stdout = decoder.decode(output.stdout);
       const stderr = decoder.decode(output.stderr);
+      await this.recordProject(project);
       return {
         project,
         exitCode: output.exitCode,
