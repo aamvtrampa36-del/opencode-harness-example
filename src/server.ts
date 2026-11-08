@@ -176,7 +176,7 @@ export default {
               gitClone: true,
               linuxShell: Boolean(env.DEV),
               npm: Boolean(env.DEV),
-              githubWrite: false
+              githubWrite: Boolean((env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN)
             }
           },
           { headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } }
