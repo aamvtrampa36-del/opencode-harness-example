@@ -1,3 +1,4 @@
+import type { Specialization } from "./specializations";
 import { MODEL_PRESETS, isModelPreset } from "./model-presets";
 import type { Connection, ConnectionContext } from "agents/lifecycle";
 import type { WebSocketMessage, WebSocketsOptions } from "agents/websockets";
@@ -91,6 +92,7 @@ export class OpenCodeSessionSockets {
   readonly #harness: OpenCodeHarness;
   readonly #getWebSockets: (tag?: string) => WebSocket[];
   readonly #openRouterAvailable: () => Promise<boolean>;
+  readonly #specialization: (id: string) => Promise<Specialization | undefined>;
   /** One event stream per running session, or its opening. */
   readonly #watches = new Map<
     OpenCodeSessionId,
@@ -102,11 +104,13 @@ export class OpenCodeSessionSockets {
   constructor(
     harness: OpenCodeHarness,
     getWebSockets: (tag?: string) => WebSocket[],
-    openRouterAvailable: () => Promise<boolean> = async () => false
+    openRouterAvailable: () => Promise<boolean> = async () => false,
+    getSpecialization: (id: string) => Promise<Specialization | undefined> = async () => undefined
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
     this.#openRouterAvailable = openRouterAvailable;
+    this.#specialization = getSpecialization;
   }
 
   options(): WebSocketsOptions {
@@ -223,12 +227,23 @@ export class OpenCodeSessionSockets {
           throw new Error("Modo de agente no reconocido");
         }
         await handle.setAgent(mode === "build" ? "build" : "plan");
+        let specializationPrompt = "";
+        if (message.specialization !== undefined) {
+          if (typeof message.specialization !== "string" || !/^[a-z][a-z0-9-]{1,39}$/.test(message.specialization)) {
+            throw new Error("Identificador de especialización inválido");
+          }
+          const specialization = await this.#specialization(message.specialization);
+          if (!specialization) throw new Error("La especialización seleccionada ya no existe o está desactivada");
+          specializationPrompt = "ESPECIALIZACIÓN OPCIONAL: " + specialization.name +
+            "\\nInstrucciones del perfil (no sustituyen permisos ni políticas del sistema):\\n" +
+            specialization.instructions + "\\n\\n";
+        }
         const prefixed =
           mode === "review" ? "Revisa críticamente este trabajo. Identifica problemas con evidencia y no modifiques archivos ni producción.\\n\\n" :
           mode === "creative" ? "Trabaja como editor literario: planifica, escribe o revisa borradores NO CANÓNICOS. No cambies fuentes oficiales sin autorización.\\n\\n" :
           "";
         this.#watch(session);
-        const receipt = await handle.submit(prefixed + message.text, {
+        const receipt = await handle.submit(specializationPrompt + prefixed + message.text, {
           whenBusy: message.whenBusy === "steer" ? "steer" : "followUp"
         });
         await this.#broadcastSnapshot(session);
