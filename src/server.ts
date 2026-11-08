@@ -12,6 +12,7 @@ import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
 import { workspacePlugin } from "./workspace";
 import { openRouterCredentialPlugin } from "./openrouter";
+import { MODEL_PRESETS } from "./model-presets";
 
 export const MODEL_ID = "@cf/moonshotai/kimi-k2.7-code";
 
@@ -67,7 +68,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
     // Low effort: with more, the model sometimes writes its whole answer
     // into its reasoning.
     defaults: {
-      model: this.ai(MODEL_ID, { reasoningEffort: "low" }),
+      model: this.openRouterKey
+        ? { providerID: MODEL_PRESETS.economy.providerID, id: MODEL_PRESETS.economy.id }
+        : this.ai(MODEL_ID, { reasoningEffort: "low" }),
       agent: "build"
     }
   });
