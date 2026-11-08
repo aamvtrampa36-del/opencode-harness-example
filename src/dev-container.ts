@@ -179,6 +179,16 @@ export class DevContainer extends DurableObject<Env> {
     if (relativePath.includes("\\") || relativePath.split("/").includes("..")) {
       return new Response("Invalid preview path", { status: 400 });
     }
+    return this.proxyHttp("/" + id + "/" + relativePath.replace(/^\/+/, ""));
+  }
+
+  /** Stream a source backup to the owner without a model or external token. */
+  async download(project: string): Promise<Response> {
+    const id = validateProject(project);
+    return this.proxyHttp("/__archive/" + id);
+  }
+
+  private async proxyHttp(path: string): Promise<Response> {
     const container = await this.ensureRunning();
     this.busy++;
     try {
@@ -186,8 +196,7 @@ export class DevContainer extends DurableObject<Env> {
         this.previewStarting = undefined;
       });
       await this.previewStarting;
-      const url = "http://container/" + id + "/" + relativePath.replace(/^\/+/, "");
-      return await container.getTcpPort(PREVIEW_PORT).fetch(url, {
+      return await container.getTcpPort(PREVIEW_PORT).fetch("http://container" + path, {
         method: "GET",
         signal: AbortSignal.timeout(30_000)
       });
