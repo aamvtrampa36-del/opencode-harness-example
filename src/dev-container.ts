@@ -109,6 +109,7 @@ export class DevContainer extends DurableObject<Env> {
     this.busy++;
     await this.ctx.storage.put("lastActivity", Date.now());
     try {
+      await this.ensureGitAvailable(container);
       // Pass the command as a positional argument: no injection into wrapper.
       // GNU timeout bounds one foreground command to 180 s. Jobs that need
       // longer must be broken into resumable steps.
@@ -134,6 +135,23 @@ export class DevContainer extends DurableObject<Env> {
       this.busy--;
       await this.ctx.storage.put("lastActivity", Date.now());
       await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+    }
+  }
+
+
+  /** Debian's minimal managed image does not include git by default.
+   * Install once on demand and keep it through the existing filesystem
+   * checkpoint, rather than adding a second image or build pipeline. */
+  private async ensureGitAvailable(container: NonNullable<DurableObjectState["container"]>): Promise<void> {
+    const script = "command -v git >/dev/null 2>&1 || " +
+      "timeout --signal=TERM 150s bash -lc " +
+      "'apt-get update -qq -o Acquire::Retries=2 && " +
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git ca-certificates'";
+    const handle = await container.exec(["bash", "-lc", script]);
+    const outcome = await handle.output();
+    if (outcome.exitCode !== 0) {
+      const error = new TextDecoder().decode(outcome.stderr).slice(-350);
+      throw new Error("Git bootstrap failed in the Linux container: " + (error || "package installation failed"));
     }
   }
 
