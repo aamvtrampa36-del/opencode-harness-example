@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { MAX_SHELL_OUTPUT, validateCommand, validateProject } from "./dev-guard";
 import { PREVIEW_SOURCE } from "./preview-server";
 import { INSPECT_SOURCE, validateInspectionPath } from "./linux-inspect";
+import { chunkBackup, joinBackup, sha256Hex, MAX_ARCHIVE_BYTES, type StoredBackup } from "./durable-backup";
 
 /**
  * Opt-in Linux computer. There is exactly ONE named instance ("personal")
@@ -242,6 +243,89 @@ export class DevContainer extends DurableObject<Env> {
   async download(project: string): Promise<Response> {
     const id = validateProject(project);
     return this.proxyHttp("/__archive/" + id);
+  }
+
+  /**
+   * On-demand, independent source backup stored in Durable Object SQLite.
+   * This is NOT a Container snapshot and survives its 30-day expiration.
+   * Up to 2 MiB compressed; large projects need an external store.
+   */
+  async saveBackup(project: string): Promise<StoredBackup> {
+    const id = validateProject(project);
+    const archive = await this.download(id);
+    if (!archive.ok || !archive.body) throw new Error("No se pudo archivar el proyecto");
+    const reader = archive.body.getReader();
+    const collected: Uint8Array[] = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_ARCHIVE_BYTES) {
+          await reader.cancel();
+          throw new Error("El proyecto supera 2 MiB comprimidos; usa Descargar y conserva el archivo fuera de Cloudflare.");
+        }
+        collected.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const part of collected) { bytes.set(part, offset); offset += part.byteLength; }
+    const parts = chunkBackup(bytes);
+    const version = crypto.randomUUID();
+    const previous = await this.ctx.storage.get<StoredBackup>("backup-meta:" + id);
+    const result: StoredBackup = {
+      project: id, version, createdAt: new Date().toISOString(),
+      bytes: total, chunks: parts.length, sha256: await sha256Hex(bytes)
+    };
+    // Versioned writes protect the last good backup if a new save fails.
+    for (let i = 0; i < parts.length; i++) {
+      await this.ctx.storage.put("backup-data:" + id + ":" + version + ":" + i, parts[i]);
+    }
+    await this.ctx.storage.put("backup-meta:" + id, result);
+    if (previous) {
+      for (let i = 0; i < previous.chunks; i++) {
+        await this.ctx.storage.delete("backup-data:" + id + ":" + previous.version + ":" + i);
+      }
+    }
+    return result;
+  }
+
+  /** Metadata only; this does not start the billable Linux Container. */
+  async listBackups(): Promise<StoredBackup[]> {
+    const map = await this.ctx.storage.list<StoredBackup>({ prefix: "backup-meta:" });
+    return [...map.values()].sort((a,b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  /** Recover source archive from DO storage even if the Container snapshot is gone. */
+  async downloadSavedBackup(project: string): Promise<Response> {
+    const id = validateProject(project);
+    const meta = await this.ctx.storage.get<StoredBackup>("backup-meta:" + id);
+    if (!meta) return new Response("No hay respaldo guardado", { status: 404 });
+    const parts: Uint8Array[] = [];
+    for (let i = 0; i < meta.chunks; i++) {
+      const data = await this.ctx.storage.get<Uint8Array>(
+        "backup-data:" + id + ":" + meta.version + ":" + i
+      );
+      if (!data) throw new Error("El respaldo está incompleto");
+      parts.push(data);
+    }
+    const bytes = joinBackup(parts, meta.bytes);
+    if (await sha256Hex(bytes) !== meta.sha256) {
+      throw new Error("El respaldo no superó la verificación SHA-256");
+    }
+    return new Response(bytes.buffer as ArrayBuffer, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/gzip",
+        "Content-Disposition": 'attachment; filename="' + id + '-respaldo.tar.gz"',
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff"
+      }
+    });
   }
 
   private async proxyHttp(path: string): Promise<Response> {

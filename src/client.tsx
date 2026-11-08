@@ -346,6 +346,8 @@ function App() {
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [availableProjects, setAvailableProjects] = useState<{ name: string; lastUsedAt: number }[]>([]);
   const [projectError, setProjectError] = useState("");
+  const [savedBackups, setSavedBackups] = useState<{ project: string; createdAt: string; bytes: number }[]>([]);
+  const [backupBusy, setBackupBusy] = useState(false);
   const [agentMode, setAgentMode] = useState<AgentMode>("build");
   const [specializations, setSpecializations] = useState<{ id: string; name: string; enabled: boolean }[]>([]);
   const [specialization, setSpecialization] = useState(() => localStorage.getItem(SPECIALIZATION_KEY) ?? "");
@@ -434,9 +436,33 @@ function App() {
         projects?: { name: string; lastUsedAt: number }[];
       };
       setAvailableProjects(result.projects ?? []);
+      const backups = await fetch("/api/dev/backups", { cache: "no-store" });
+      if (backups.ok) {
+        const saved = await backups.json() as { backups?: { project: string; createdAt: string; bytes: number }[] };
+        setSavedBackups(saved.backups ?? []);
+      }
       setProjectError("");
     } catch (error) {
       setProjectError(error instanceof Error ? error.message : "Error consultando proyectos.");
+    }
+  };
+  const saveProjectBackup = async (name: string) => {
+    setBackupBusy(true);
+    setProjectError("");
+    try {
+      const response = await fetch("/api/dev/backup/" + encodeURIComponent(name), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "No se pudo guardar el respaldo");
+      await loadProjects();
+      setProjectError("Respaldo recuperable guardado en Cloudflare para " + name + ".");
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : "No se pudo guardar el respaldo");
+    } finally {
+      setBackupBusy(false);
     }
   };
   const chooseProject = (name: string) => {
@@ -729,16 +755,25 @@ function App() {
                   <button className="rounded border border-kumo-line px-2 py-1 text-xs" type="button"
                     onClick={() => void loadProjects()}>Actualizar</button>
                 </div>
-                <p className="mt-1 text-xs text-kumo-subtle">Consultar esta lista no enciende el Container. Seleccionar un proyecto permite ver su compilación y descargar sus archivos.</p>
+                <p className="mt-1 text-xs text-kumo-subtle">Consultar esta lista no enciende el Container. Puedes guardar una copia de proyectos pequeños (máximo 2 MiB comprimidos) en Durable Object, independiente de las instantáneas de 30 días, y descargarla incluso si estas caducan. Los respaldos requieren acción manual y aún no tienen restauración automática.</p>
                 {projectError ? <p role="alert" className="mt-2 text-sm">{projectError}</p> : null}
                 {availableProjects.length ? (
                   <div className="mt-3 flex flex-wrap gap-2">
                     {availableProjects.map(row => (
-                      <button key={row.name} type="button"
-                        className="rounded-md border border-kumo-line px-3 py-2 text-xs hover:bg-kumo-elevated"
-                        onClick={() => chooseProject(row.name)}>
-                        {row.name}{project === row.name ? " ✓" : ""}
-                      </button>
+                      <div key={row.name} className="flex flex-wrap items-center gap-2 rounded-md border border-kumo-line px-2 py-2">
+                        <button type="button" className="text-xs font-medium underline"
+                          onClick={() => chooseProject(row.name)}>
+                          {row.name}{project === row.name ? " ✓" : ""}
+                        </button>
+                        <button type="button" disabled={backupBusy}
+                          className="rounded border border-kumo-line px-2 py-1 text-xs disabled:opacity-50"
+                          onClick={() => void saveProjectBackup(row.name)}>Guardar respaldo</button>
+                        {savedBackups.some(item => item.project === row.name) ? (
+                          <a className="text-xs underline" href={"/api/dev/backup/" + encodeURIComponent(row.name)}>
+                            Descargar respaldo conservado
+                          </a>
+                        ) : null}
+                      </div>
                     ))}
                   </div>
                 ) : <p className="mt-2 text-sm text-kumo-subtle">No hay proyectos registrados todavía.</p>}

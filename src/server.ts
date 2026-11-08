@@ -374,6 +374,30 @@ export default {
         }
         return new Response("Method not allowed", { status: 405 });
       }
+      if (url.pathname === "/api/dev/backups" && request.method === "GET") {
+        return Response.json({ backups: await env.DEV.getByName("personal").listBackups() },
+          { headers: { "Cache-Control": "no-store" } });
+      }
+      const durableBackup = url.pathname.match(/^\/api\/dev\/backup\/([a-z][a-z0-9-]{0,39})$/);
+      if (durableBackup) {
+        const dev = env.DEV.getByName("personal");
+        const project = durableBackup[1];
+        if (request.method === "GET") return await dev.downloadSavedBackup(project);
+        if (request.method === "POST") {
+          if (request.headers.get("Origin") !== url.origin ||
+              !request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
+            return Response.json({ error: "Origen no permitido" }, { status: 403 });
+          }
+          try {
+            return Response.json({ backup: await dev.saveBackup(project) },
+              { headers: { "Cache-Control": "no-store" } });
+          } catch (error) {
+            return Response.json({ error: error instanceof Error ? error.message : "Backup failed" },
+              { status: 422, headers: { "Cache-Control": "no-store" } });
+          }
+        }
+        return new Response("Method not allowed", { status: 405 });
+      }
       if (url.pathname === "/api/dev/projects" && request.method === "GET") {
         return Response.json({
           projects: await env.DEV.getByName("personal").listProjects()
