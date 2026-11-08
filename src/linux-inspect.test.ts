@@ -21,6 +21,8 @@ describe("read-only Linux file inspection", () => {
   test("uses a syntactically valid Node script and realpath symlink defense", () => {
     expect(() => new Function(INSPECT_SOURCE)).not.toThrow();
     expect(INSPECT_SOURCE).toContain("fs.realpathSync");
+    expect(INSPECT_SOURCE).toContain("relativeParts");
+    expect(INSPECT_SOURCE).toContain("Sensitive files are not readable");
     expect(INSPECT_SOURCE).not.toContain("writeFileSync");
     expect(INSPECT_SOURCE).not.toContain("execSync");
     expect(INSPECT_SOURCE).not.toContain("spawnSync");
