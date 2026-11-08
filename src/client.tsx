@@ -1,3 +1,4 @@
+import { MODEL_PRESETS, isModelPreset, type ModelPresetID } from "./model-presets";
 import {
   Badge,
   Button,
@@ -16,6 +17,8 @@ import {
   GitBranchIcon,
   InfoIcon,
   ListIcon,
+  LinkIcon,
+  DownloadSimpleIcon,
   MoonIcon,
   PaperPlaneRightIcon,
   PlusIcon,
@@ -39,7 +42,7 @@ import "./styles.css";
 const OBJECT_KEY = "opencode-harness-object";
 const SESSION_KEY = "opencode-harness-session";
 const ROOT_SESSION = "ses_root";
-const MODEL = "@cf/moonshotai/kimi-k2.7-code";
+const MODEL_KEY = "opencode-model-preset";
 
 const SUGGESTIONS = [
   {
@@ -66,8 +69,17 @@ type Assistant = Extract<OpenCodeMessage, { type: "assistant" }>;
 type AssistantPart = Assistant["content"][number];
 type ToolPart = Extract<AssistantPart, { type: "tool" }>;
 
-/** This browser's Durable Object: one per browser, kept across reloads. */
+/** Reuse this browser's existing Durable Object, or join one with an Access-protected link. */
 function getObject(): string {
+  const url = new URL(window.location.href);
+  const linked = url.searchParams.get("object");
+  // Only UUIDs may be accepted as session containers. Access still authenticates the user.
+  if (linked && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(linked)) {
+    localStorage.setItem(OBJECT_KEY, linked);
+    url.searchParams.delete("object");
+    window.history.replaceState(null, "", url);
+    return linked;
+  }
   const existing = localStorage.getItem(OBJECT_KEY);
   if (existing) return existing;
   const created = crypto.randomUUID();
@@ -316,12 +328,18 @@ function App() {
     () => localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION
   );
   const [prompt, setPrompt] = useState("");
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [modelPreset, setModelPreset] = useState<ModelPresetID>(() => {
+    const stored = localStorage.getItem(MODEL_KEY);
+    return isModelPreset(stored) ? stored : "economy";
+  });
   const [sessionsOpen, setSessionsOpen] = useState(
     () => window.matchMedia("(min-width: 1100px)").matches
   );
   const endRef = useRef<HTMLDivElement>(null);
   const {
     status,
+    openRouterAvailable,
     messages,
     busy,
     pending,
@@ -343,6 +361,17 @@ function App() {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, live, busy]);
 
+  const exportSession = () => {
+    const data = { format: "opencode-harness-session-v1", exportedAt: new Date().toISOString(), session, messages };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const objectURL = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectURL;
+    anchor.download = `opencode-session-${session}.json`;
+    anchor.click();
+    URL.revokeObjectURL(objectURL);
+  };
+
   const connected = status === "open";
   const queued = pending.filter((operation) => operation.status === "queued");
 
@@ -356,7 +385,7 @@ function App() {
     const text = prompt.trim();
     if (!text || !connected) return;
     setPrompt("");
-    submitPrompt(text, whenBusy);
+    submitPrompt(text, whenBusy, openRouterAvailable ? modelPreset : "cloudflare");
   };
 
   // Live text for an assistant message no snapshot has yet.
@@ -428,6 +457,19 @@ function App() {
               </button>
             ))}
           </nav>
+          <div className="border-t border-kumo-line p-3">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={!connected}
+              onClick={exportSession}
+              aria-label="Exportar conversación actual como copia local"
+            >
+              <DownloadSimpleIcon size={16} />
+              Exportar sesión
+            </Button>
+          </div>
         </aside>
       ) : null}
 
@@ -453,9 +495,45 @@ function App() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
-              <Badge variant="secondary" className="hidden sm:inline-flex">
-                {MODEL.split("/").at(-1)}
-              </Badge>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label="Copiar vínculo de mi espacio de trabajo"
+                title="Copia un enlace para abrir este mismo espacio de trabajo desde otro dispositivo. Requiere tu inicio de sesión de Cloudflare Access."
+                onClick={() => {
+                  const shared = new URL(window.location.origin);
+                  shared.searchParams.set("object", object);
+                  navigator.clipboard.writeText(shared.toString())
+                    .then(() => setLinkCopied(true))
+                    .catch(() => setLinkCopied(false));
+                }}
+              >
+                <LinkIcon size={16} />
+                <span className="hidden sm:inline">{linkCopied ? "Copiado" : "Vincular"}</span>
+              </Button>
+              <select
+                aria-label="Modelo de IA"
+                title={openRouterAvailable ? "Seleccionar modelo" : "Configura OPENROUTER_API_KEY para habilitar OpenRouter"}
+                value={openRouterAvailable ? modelPreset : "cloudflare"}
+                onChange={(event) => {
+                  const next = event.currentTarget.value;
+                  if (!isModelPreset(next)) return;
+                  setModelPreset(next);
+                  localStorage.setItem(MODEL_KEY, next);
+                }}
+                className="max-w-[152px] rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 text-xs text-kumo-default sm:max-w-[240px]"
+              >
+                {Object.entries(MODEL_PRESETS).map(([id, preset]) => (
+                  <option
+                    key={id}
+                    value={id}
+                    disabled={preset.providerID === "openrouter" && !openRouterAvailable}
+                  >
+                    {preset.label}{preset.tier === "premium" ? " ($$)" : ""}
+                  </option>
+                ))}
+              </select>
               <Badge variant={connected ? "success" : "secondary"}>
                 {connected
                   ? "Live"

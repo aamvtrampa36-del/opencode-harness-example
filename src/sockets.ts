@@ -1,3 +1,4 @@
+import { MODEL_PRESETS, isModelPreset } from "./model-presets";
 import type { Connection, ConnectionContext } from "agents/lifecycle";
 import type { WebSocketMessage, WebSocketsOptions } from "agents/websockets";
 import {
@@ -89,6 +90,7 @@ function parse(raw: WebSocketMessage): ClientMessage | undefined {
 export class OpenCodeSessionSockets {
   readonly #harness: OpenCodeHarness;
   readonly #getWebSockets: (tag?: string) => WebSocket[];
+  readonly #openRouterAvailable: boolean;
   /** One event stream per running session, or its opening. */
   readonly #watches = new Map<
     OpenCodeSessionId,
@@ -99,10 +101,12 @@ export class OpenCodeSessionSockets {
 
   constructor(
     harness: OpenCodeHarness,
-    getWebSockets: (tag?: string) => WebSocket[]
+    getWebSockets: (tag?: string) => WebSocket[],
+    openRouterAvailable = false
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
+    this.#openRouterAvailable = openRouterAvailable;
   }
 
   options(): WebSocketsOptions {
@@ -150,7 +154,7 @@ export class OpenCodeSessionSockets {
       // socket has no session tag, so it gets no session's events.
       return;
     }
-    send(connection, { type: "hello", session });
+    send(connection, { type: "hello", session, openRouterAvailable: this.#openRouterAvailable });
     send(connection, { type: "sessions", sessions });
     const snapshot = await this.#snapshot(session);
     send(connection, { type: "snapshot", ...snapshot });
@@ -201,6 +205,18 @@ export class OpenCodeSessionSockets {
           throw new Error(
             `Prompts are limited to ${MAX_PROMPT_LENGTH.toLocaleString()} characters`
           );
+        }
+        // A preset is an explicit selection. The normal baseline does not
+        // require an OpenRouter secret; other models fail closed.
+        if (message.model !== undefined) {
+          if (!isModelPreset(message.model)) {
+            throw new Error("Unknown model preset");
+          }
+          const preset = MODEL_PRESETS[message.model];
+          if (preset.providerID === "openrouter" && !this.#openRouterAvailable) {
+            throw new Error("OpenRouter is not configured. Add OPENROUTER_API_KEY as a private Cloudflare Worker Secret.");
+          }
+          await handle.setModel({ providerID: preset.providerID, id: preset.id });
         }
         this.#watch(session);
         const receipt = await handle.submit(message.text, {
