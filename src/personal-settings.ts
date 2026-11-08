@@ -112,7 +112,9 @@ export class PersonalSettings extends DurableObject<Env> {
     });
     if (!response.ok) throw new Error("GitHub rechazó el token. Comprueba sus permisos.");
     const user = (await response.json()) as { login?: string };
-    if (!user.login) throw new Error("GitHub no devolvió la cuenta.");
+    if (user.login?.toLowerCase() !== "aamvtrampa36-del") {
+      throw new Error("El token debe pertenecer a la cuenta de GitHub autorizada.");
+    }
     await this.ctx.storage.put("github-api-key", key);
     return { configured: true, account: user.login };
   }
