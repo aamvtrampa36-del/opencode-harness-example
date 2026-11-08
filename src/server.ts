@@ -100,21 +100,35 @@ export class OpenCodeAgent extends DurableObject<Env> {
 }
 
 export default {
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    // A temporary one-time smoke invoked by a short-lived cron trigger.
-    // Durable Object stores a marker before spending; repeated cron events
-    // cannot re-run the test or create another Container.
-    ctx.waitUntil((async () => {
-      const result = await env.DEV.getByName("personal").smokeOnce();
-      console.log("OPENCODE_LINUX_SMOKE_V1", JSON.stringify(result));
-    })());
-  },
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
       if (url.pathname === "/api/dev/status" && request.method === "GET") {
         return Response.json(await env.DEV.getByName("personal").status(), {
           headers: { "Cache-Control": "no-store" }
+        });
+      }
+      const previewMatch = url.pathname.match(/^\/api\/dev\/preview\/([a-z][a-z0-9-]{0,39})(?:\/(.*))?$/);
+      if (previewMatch) {
+        if (request.method !== "GET" && request.method !== "HEAD") {
+          return new Response("GET only", { status: 405 });
+        }
+        const project = previewMatch[1];
+        const path = previewMatch[2] || "index.html";
+        const result = await env.DEV.getByName("personal").preview(project, path);
+        const headers = new Headers(result.headers);
+        // A generated application must not inherit the authenticated
+        // OpenCode origin or invoke /api/dev/run from its own scripts.
+        // CSP sandbox applies even when a preview URL is opened directly.
+        headers.set("Content-Security-Policy",
+          "sandbox allow-scripts; default-src 'self' data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'");
+        headers.set("X-Content-Type-Options", "nosniff");
+        headers.set("Referrer-Policy", "no-referrer");
+        headers.set("Cache-Control", "no-store");
+        headers.set("Access-Control-Allow-Origin", "*");
+        return new Response(request.method === "HEAD" ? null : result.body, {
+          status: result.status,
+          headers
         });
       }
       if (url.pathname === "/api/dev/run" && request.method === "POST") {
