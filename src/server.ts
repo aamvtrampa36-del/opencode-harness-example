@@ -135,6 +135,89 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
 
 
+
+  /** G2 staging-only one-shot harness test. Never invoked by production configuration. */
+  async g2ProofTick(): Promise<unknown> {
+    if ((this.env as Env & { G1_DEV_UNLIMITED_CHECKS?: string }).G1_DEV_UNLIMITED_CHECKS !== "true") {
+      return { status: "disabled" };
+    }
+    const key = "g2-proof-v1-20261109";
+    type State = { session?: string; status: "started"|"queued"|"completed"|"blocked";
+      startedAt?: number; reason?: string; tools?: { name: string; status: string }[] };
+    const prior = await this.ctx.storage.get<State>(key);
+    if (prior?.status === "blocked" || prior?.status === "completed") {
+      return { status: prior.status, reason: prior.reason, tools: prior.tools, session: prior.session };
+    }
+    if (!prior) {
+      const githubKey = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
+        || await this.personalConfig.getGitHubKey();
+      if (!githubKey) {
+        const blocked: State = { status: "blocked", reason: "GitHub credential absent from staging settings" };
+        await this.ctx.storage.put(key, blocked);
+        return blocked;
+      }
+      try {
+        await this.githubRunner.execute({ action: "repo", repo: "aamvtrampa36-del/opencode-harness-example" });
+      } catch (error) {
+        const blocked: State = { status: "blocked", reason: error instanceof Error ? error.message.slice(0, 180) : "GitHub denied" };
+        await this.ctx.storage.put(key, blocked);
+        return blocked;
+      }
+      const created = await this.harness.sessions.create();
+      const state: State = { status: "started", session: created.id, startedAt: Date.now() };
+      await this.ctx.storage.put(key, state);
+      try {
+        const handle = this.harness.session(created.id);
+        await handle.setAgent("build");
+        await handle.setModel(this.ai(MODEL_ID));
+        const prompt = [
+          "G2 real OpenCode self-development test. You must MAKE AND COMMIT an authentic fix, not describe it.",
+          "Use ONLY real github and linux tools (do not use inspect_linux or local workspace tools).",
+          "Target public repository aamvtrampa36-del/opencode-harness-example, branch opencode/g2-base-ref-20261109.",
+          "Issue: src/github.ts GitHubBridge always creates review branches and draft PRs from defaultBranch; callers need an optional, safe ref/base branch.",
+          "The github tool already declares an optional ref property. Implement this change in src/github.ts and add regression tests in src/github.test.ts.",
+          "For actions branch and pr, accept optional ref in GitHubAction; validate branch ref strictly, resolve it through the GitHub REST API and use it in branch creation and PR base. Missing ref MUST retain current default behavior. Reject unsafe branch ref strings. Never write to main or any protected branch.",
+          "Start with github action repo, and github action read for both files on default branch main. Use linux with project g2-base-ref-20261109 to clone the public repository over HTTPS. Run the existing GitHub Bridge unit tests BEFORE changes via npx --yes bun@1.4.4 test src/github.test.ts. Record their real results.",
+          "Work in the isolated linux checkout: add a regression test for optional branch base and optional PR base; first demonstrate the new test failing against old source. Then implement the fix, run the tests again, and inspect the code diff. Use only the files src/github.ts and src/github.test.ts, do not modify any other project.",
+          "Use github action branch to create opencode/g2-base-ref-20261109 from main. Use github action write to commit the FULL edited contents of those two files to that review branch. Finally use github action pr with title 'fix: support explicit base refs in GitHubBridge' to open a DRAFT PR into main. Do not merge or deploy.",
+          "If cloning or testing fails, report the exact tool output instead of inventing success. Continue only with safe, useful actions. Never reveal credentials.",
+          "Do not stop after explaining or generating code in prose: perform real reads, edits, tests, commits and PR through tools."
+        ].join("\n");
+        await handle.submit(prompt, { whenBusy: "followUp" });
+        return { status: "started", session: created.id };
+      } catch (error) {
+        const blocked: State = { ...state, status: "blocked", reason: error instanceof Error ? error.message.slice(0, 180) : "Start failed" };
+        await this.ctx.storage.put(key, blocked);
+        return { status: "blocked", reason: blocked.reason };
+      }
+    }
+    const handle = this.harness.session(prior.session!);
+    try {
+      const [busy, history] = await Promise.all([handle.busy(), handle.history()]);
+      const tools = history.flatMap(message => message.type === "assistant" ?
+        (message.content ?? []).filter(part => part.type === "tool").map(part => ({
+          name: part.name ?? "unknown", status: part.state?.status ?? "unknown"
+        })) : []);
+      if (busy && Date.now() - (prior.startedAt ?? Date.now()) < 12 * 60_000) {
+        return { status: "running", session: prior.session, calls: tools.length, tools: tools.slice(-12) };
+      }
+      if (busy) {
+        try { await handle.abort(); } catch { /* G2 only: abort runaway session */ }
+      }
+      if (!history.some(message => message.type === "assistant") &&
+          Date.now() - (prior.startedAt ?? Date.now()) < 5 * 60_000) {
+        return { status: "queued", session: prior.session };
+      }
+      const completed: State = { ...prior, status: "completed", tools,
+        reason: busy ? "12-minute timeout" : undefined };
+      await this.ctx.storage.put(key, completed);
+      return { status: "completed", session: prior.session, tools, reason: completed.reason };
+    } catch (error) {
+      return { status: "running", session: prior.session, reason: error instanceof Error ? error.message.slice(0, 120) : "poll unavailable" };
+    }
+  }
+
+
   async agentCheckStatus(): Promise<unknown> {
     const saved = await this.ctx.storage.get<{
       status: string; toolCalls: number; fileVerified: boolean; project: string; model?: string; kind?: string; reason?: string
