@@ -104,7 +104,7 @@ describe("Isolated autonomous code-repair rehearsal", () => {
   test("seeded code is wrong and the seed runs a failing Node test", () => {
     expect(REPAIR_SOURCE_BROKEN).toContain("a - b");
     expect(REPAIR_TEST).toContain("assert.equal(add(2, 3), 5)");
-    expect(repairSeedCommand()).toContain("node --test calc.test.mjs");
+    expect(repairSeedCommand()).toContain("node --test --test-reporter=tap calc.test.mjs");
   });
   test("an AI claim alone, a weakened test, or unchanged code cannot pass", () => {
     expect(repairIsVerified(REPAIR_SOURCE_BROKEN, REPAIR_TEST, 0)).toBe(false);
