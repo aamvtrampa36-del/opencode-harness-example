@@ -1,0 +1,74 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "opencode-g1-staging",
+  "preview_urls": false,
+  "main": "src/server.ts",
+  "compatibility_date": "2026-06-11",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "ai": {
+    "binding": "AI",
+    "remote": true
+  },
+  "worker_loaders": [
+    {
+      "binding": "LOADER"
+    }
+  ],
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/agents/*",
+      "/api/health",
+      "/api/dev/*",
+      "/api/settings/*",
+      "/api/settings"
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "OpenCodeAgent",
+        "class_name": "OpenCodeAgent"
+      },
+      {
+        "name": "DEV",
+        "class_name": "DevContainer"
+      },
+      {
+        "name": "SETTINGS",
+        "class_name": "PersonalSettings"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "OpenCodeAgent"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "DevContainer"
+      ]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": [
+        "PersonalSettings"
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "containers": [
+    {
+      "class_name": "DevContainer",
+      "scheduling_policy": "durable_object"
+    }
+  ]
+}
