@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assessAgentToolEvidence, hasUnfinishedAgentCheck } from "./agent-check";
+import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isAgentCheckModel, explainAgentCheckFailure } from "./agent-check";
 
 const project = "agent-check-123";
 const token = "abcdef1234";
@@ -46,5 +46,23 @@ describe("Agent verification repeat policy", () => {
     expect(hasUnfinishedAgentCheck({ error: undefined }, { status: "failed" })).toBe(false);
     expect(hasUnfinishedAgentCheck({ error: "Provider unavailable" }, null)).toBe(false);
     expect(hasUnfinishedAgentCheck(null, null)).toBe(false);
+  });
+});
+
+
+describe("Diagnostic model selection and evidence explanations", () => {
+  test("offers only the baseline and economical provider models", () => {
+    expect(isAgentCheckModel("cloudflare")).toBe(true);
+    expect(isAgentCheckModel("economy")).toBe(true);
+    expect(isAgentCheckModel("review")).toBe(true);
+    expect(isAgentCheckModel("reasoning")).toBe(false);
+    expect(isAgentCheckModel("creative")).toBe(false);
+    expect(isAgentCheckModel("../secret")).toBe(false);
+  });
+  test("distinguishes provider/tool/non-persistent failures", () => {
+    expect(explainAgentCheckFailure({requestedTools:0,finishedLinuxTools:0,correctLinuxResult:false})).toContain("no solicitó herramientas");
+    expect(explainAgentCheckFailure({requestedTools:2,finishedLinuxTools:0,correctLinuxResult:false})).toContain("ninguna ejecución Linux");
+    expect(explainAgentCheckFailure({requestedTools:2,finishedLinuxTools:1,correctLinuxResult:false})).toContain("faltó la salida");
+    expect(explainAgentCheckFailure({requestedTools:2,finishedLinuxTools:1,correctLinuxResult:true})).toContain("archivo persistido");
   });
 });
