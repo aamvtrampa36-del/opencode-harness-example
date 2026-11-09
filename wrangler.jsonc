@@ -102,7 +102,8 @@
     },
     "containers": [
       {
-        "class_name": "DevContainer"
+        "class_name": "DevContainer",
+        "image": "cloudflare/debian-trixie"
       }
     ]
   }
