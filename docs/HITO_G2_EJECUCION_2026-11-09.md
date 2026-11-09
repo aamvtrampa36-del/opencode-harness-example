@@ -1,6 +1,6 @@
 # OpenCode Cloud — Ejecución del hito G2 (9 de noviembre de 2026)
 
-**Dictamen vigente: G2 BLOQUEADO, NO APROBADO.** El agente interno NO llegó a ejecutarse en la prueba G2, porque staging carece de credencial GitHub. No hay código desarrollado por ese agente, commit, PR ni pruebas finales atribuibles a G2. El bloqueo se detectó antes de consumir inferencia, se desactivó el disparador y se retiró la instrumentación temporal.
+**Dictamen vigente: G2 APROBADO (09-11-2026, 17:43 UTC).** La etapa histórica de este informe recoge el bloqueo original; el acta definitiva de cierre al final prevalece. El agente interno NO llegó a ejecutarse en la prueba G2, porque staging carece de credencial GitHub. No hay código desarrollado por ese agente, commit, PR ni pruebas finales atribuibles a G2. El bloqueo se detectó antes de consumir inferencia, se desactivó el disparador y se retiró la instrumentación temporal.
 
 ## 1. Fuentes y alcance
 
@@ -90,3 +90,55 @@ Se validó la limpieza posterior en la rama y en Cloudflare, sin inferir resulta
 - **PR #28:** abierta y en borrador, no fusionada. La PR específica de G2 **no existe** porque OpenCode jamás inició una sesión por falta de credencial. No se reclamó éxito.
 
 **Cierre seguro de la intervención:** la instrumentación temporal está retirada; el hito G2 permanece BLOQUEADO. La única acción previa a reintentarlo es conectar GitHub en el entorno protegido de staging. G3 no debe comenzar todavía.
+
+
+## Acta definitiva — G2 cerrado (9 de noviembre de 2026)
+
+**G2 APROBADO.** Se verificó la ejecución autónoma de OpenCode Cloud: GitHub y Linux usados por un modelo real, código y pruebas modificados por el agente, dos commits reales y una Pull Request borrador. La antigua falta de credencial y los fallos intermedios no son el estado vigente.
+
+### 1. Reanudación y eventos concretos
+
+- El informe integral `Informe_Integral_OpenCode_Cloud_V1.pdf` (21 páginas, 1524 líneas) y los cuatro documentos obligatorios se comprobaron disponibles y completos antes de intervenir. G1 permaneció cerrado.
+- GitHub y OpenRouter se configuraron por el usuario. En staging se verificó con `GitHubBridge` lectura autenticada del repositorio. Se detectó y corrigió en `src/server.ts` el error de Worker `Illegal invocation` sustituyendo el `fetch` sin receptor por una función envoltorio que invoca `globalThis.fetch` de forma válida. Esta reparación corresponde **al supervisor**, no al agente que desarrolló los dos archivos de la PR.
+- En un primer ensayo `@cf/openai/gpt-oss-20b` se obtuvo una ejecución sin herramientas. Se evitó repetirla sin cambios; en un ensayo posterior una instrucción breve consiguió `github: completed`, pero la instrucción de trabajo no continuó las herramientas.
+- Se utilizó un modelo económico con capacidades de herramientas: `providerID: "openrouter"`, modelo `z-ai/glm-5.3-flash`. La clave OpenRouter estaba configurada, pero `refreshOpenRouter().active` devolvió `false` en la comprobación de registro; por tanto **no se afirma que el conector quedara registrado como activo ni un costo facturado concreto**. La sesión y sus herramientas se verificaron en Cloudflare y GitHub.
+- **Sesión definitiva:** `ses_e3e9e8729ffatpooTEb0xeB1yi`. Iniciada a las **17:35:58 UTC** (fase de prueba con GitHub), paso a fase de desarrollo a las **17:36:51 UTC**, y registrada como `completed` a las **17:43:49 UTC** con **12 llamadas completadas**: seis `github` y seis `linux`.
+- El historial observable muestra lecturas GitHub y llamadas Linux durante el trabajo. La entrega resultante se encuentra en GitHub, y no se generó código equivalente por el supervisor.
+
+### 2. Contribución auténtica del agente
+
+- **Rama creada por OpenCode:** `opencode/g2-base-ref-20261109`, desde `main`, sin modificar `main`.
+- **PR #29:** [fix: selectable base refs in GitHubBridge](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/29), creada **17:43:10 UTC**, `draft=true`, `state=open`, `merged=false`; base `main`.
+- **Commit HEAD:** `d303dfe7c2edb6cad969023af07d014b1f091586`. Comparación independiente: **dos commits** respecto de `main`, cero commits por detrás, **dos archivos cambiados y ningún otro**:
+  - `src/github.ts`: 31 líneas añadidas y 9 eliminadas. La acción `branch` acepta una rama base opcional validada para obtener el SHA de origen; la acción `pr` acepta una rama base opcional validada. Si se omite, ambas preservan `default_branch`. La escritura continúa restringida a ramas `opencode/*`.
+  - `src/github.test.ts`: 33 líneas añadidas y una eliminada. Casos de rama base explícita, referencias inseguras rechazadas antes del HTTP y comportamiento predeterminado conservado.
+- Los blobs registrados en GitHub (`33bedaac03430aadb56e8a3f446cf37ff5b694c9` y `3d8bceb270a97c3c1357bad0f0bcf5365e50c244`) coinciden con las versiones presentes en la PR.
+- La descripción de la PR escrita por el agente documenta prueba previa **roja** (`5 pass / 1 fail`, salida 1) y prueba posterior **verde** (`6 pass / 0 fail`, 33 expectativas) ejecutadas con `npx --yes bun@1.4.4 test src/github.test.ts`. No se inventa una ejecución independiente del test rojo: esa evidencia se atribuye explícitamente a los comandos del agente y su registro de la PR.
+
+### 3. Comprobaciones independientes y seguridad
+
+- **GitHub Actions #147:** `completed/success` para el commit `d303dfe7c2edb6cad969023af07d014b1f091586`: pruebas unitarias, servidor de preview real, typecheck, compilación Worker/cliente e invariantes de seguridad, todos exitosos.
+- La comparación GitHub `main...opencode/g2-base-ref-20261109` confirma el diff acotado. El supervisor inspeccionó la validación de `refChecked()`, el uso de `input.ref`, la restricción de ramas de revisión y los tests añadidos; no escribió ni una línea de la corrección que se atribuye a OpenCode.
+- La PR permanece borrador, no fusionada, y no se desplegó en producción. Se respetó el techo externo configurado por el usuario de **US$2 diarios de OpenRouter**; no se modificó ni eludió ese control. El costo real exacto no fue recuperado.
+- El Cron temporal se desactivó por Cloudflare API (`schedules: []`) al recuperar la sesión terminada, que había continuado registrando `completed` cada minuto. Su eliminación previene invocaciones redundantes; el Container no tenía instancias activas.
+- La instrumentación de G2 fue eliminada de la rama de staging: `wrangler.g1.jsonc` restaurado a `main: "src/server.ts"` y `crons: []`, retirado `g2SelfDevTick()` de `src/server.ts` y eliminado `src/g2-selfdev-runner.ts`. Los cambios corresponden al supervisor y no a la rama `opencode/*`.
+- Se mantuvo `G1_DEV_UNLIMITED_CHECKS=true` exclusivamente en staging (sin cuotas internas diarias), junto a Cloudflare Access y controles de seguridad. Las conexiones GitHub y OpenRouter del usuario no se tocaron.
+- Después de la publicación de este documento se comprueba nuevamente CI, versión activa de staging, Cron, Containers, Access y versión de producción. No confundir un despliegue de documentación con una modificación de producción.
+
+### 4. Dictamen y transición
+
+| Requisito G2 | Dictamen |
+|---|---|
+| Modelo real en OpenCode y herramientas GitHub + Linux | **Aprobado**: 12 llamadas completadas |
+| Inspección de código, regresión roja y verde | **Aprobado**: evidencia del agente; resultado verde respaldado por CI |
+| Corrección real propia, sin simulación del supervisor | **Aprobado**: 2 commits y diff en rama creada por el agente |
+| PR borrador auténtica y no fusionada | **Aprobado**: [PR #29](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/29) |
+| Tests y validación independientes | **Aprobado**: GitHub Actions #147 |
+| Producción intacta y aislamiento | **Aprobado**: despliegue solo de staging, protección conservada |
+| Instrumental temporal retirado | **Completado en rama**, verificación final remota a continuación |
+
+**G2 queda cerrado.** La contribución del agente demuestra autodesarrollo real; la variabilidad de sesiones y el registro de OpenRouter se dejan como observaciones, no motivos para repetir G2 después de cumplir el criterio.
+
+**Siguiente hito único conforme a `docs/V1_EXECUTION_PLAN.md` y a la decisión arquitectónica:** **G3 — comparar Workerd/Harness con OpenCode nativo en un Container Linux aislado**. Ejecutar la misma tarea de reparación y contrastar herramientas, recuperabilidad, complejidad de mantenimiento, costo y reversibilidad. Elegir un motor por evidencias; no cambiar producción ni eliminar el actual sin una ruta de reversión validada.
+
+**Enlaces:** [PR #29](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/29) · [CI #147](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42667355172) · [Plan V1](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/V1_EXECUTION_PLAN.md).
