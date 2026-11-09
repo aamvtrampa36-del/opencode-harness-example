@@ -36,7 +36,6 @@ export class DevContainer extends DurableObject<Env> {
   private busy = 0;
   private previewStarting?: Promise<void>;
   private commandQueue: Promise<void> = Promise.resolve();
-  private g4ProofBusy = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -404,103 +403,6 @@ export class DevContainer extends DurableObject<Env> {
       }
     } finally {
       release();
-    }
-  }
-
-  /** G4 TEMPORARY: one controlled live proof, only in isolated staging DO. */
-  async g4IsolatedPilot(): Promise<unknown> {
-    if ((this.env as Env & { G1_DEV_UNLIMITED_CHECKS?: string }).G1_DEV_UNLIMITED_CHECKS !== "true") {
-      return { status: "disabled" };
-    }
-    const key = "g4-isolated-proof-v1";
-    const completed = await this.ctx.storage.get<unknown>(key);
-    if (completed) return completed;
-    if (this.g4ProofBusy) return { status: "running" };
-    this.g4ProofBusy = true;
-    const source = "g4-proof-source", target = "g4-proof-recovered";
-    let phase = "init";
-    try {
-      const inventory = await this.listProjects();
-      if (inventory.some(row => row.name !== source && row.name !== target)) {
-        throw new Error("Isolated proof DO contains an unrelated project; refusing");
-      }
-      phase = "seed";
-      const seed = await this.run(source, [
-        "printf 'export function add(a,b){return a+b}\\n' > calc.mjs",
-        "printf 'import {test} from \"node:test\"; import {strict as assert} from \"node:assert\"; import {add} from \"./calc.mjs\"; test(\"sum\",()=>assert.equal(add(2,3),5));\\n' > calc.test.mjs",
-        "printf '{\"sessionRef\":\"g4-proof-do-pointer\",\"project\":\"g4-proof-source\"}\\n' > session-context.json",
-        "git init -q -b opencode/g4-pilot",
-        "git -c user.email=g4-test@example.invalid -c user.name=G4Test add calc.mjs calc.test.mjs session-context.json",
-        "git -c user.email=g4-test@example.invalid -c user.name=G4Test commit -qm 'G4 isolated fixture'",
-        "printf 'uncommitted local change survives\\n' > pending-work.txt",
-        "node --test calc.test.mjs"
-      ].join("; "));
-      if (seed.exitCode !== 0) throw new Error("Seed/test failed: " + seed.stderr.slice(-250));
-      phase = "hash-original";
-      const before = await this.run(source, "sha256sum calc.mjs calc.test.mjs session-context.json pending-work.txt");
-      if (before.exitCode !== 0) throw new Error("Original hashes failed");
-      phase = "backup";
-      const meta = await this.saveBackup(source, "g4-proof-do-pointer");
-      if (meta.gitBranch !== "opencode/g4-pilot" || !meta.gitHead || meta.sessionRef !== "g4-proof-do-pointer") {
-        throw new Error("Git/session metadata missing from independent backup");
-      }
-      const stored = await this.listBackups();
-      if (!stored.some(row => row.version === meta.version && row.sha256 === meta.sha256)) {
-        throw new Error("Independent DO backup not listed");
-      }
-      phase = "destroy";
-      if (this.busy > 0) throw new Error("Cannot stop a busy Container");
-      const container = this.ctx.container;
-      if (!container?.running) throw new Error("Test Container is not running");
-      await container.destroy("G4 independent backup recovery proof");
-      // This DO is isolated and only contains disposable g4-* projects. A new
-      // Container must boot BLANK so this verifies DO backup, not snapshot.
-      await this.ctx.storage.delete("snapshotId");
-      await this.ctx.storage.delete("savedAt");
-      if (container.running) throw new Error("Container still running after destroy");
-      phase = "blank-start";
-      const fresh = await this.ensureRunning();
-      const blank = await (await fresh.exec(["bash", "-lc",
-        "test ! -e /workspace/projects/g4-proof-source && echo clean"])).output();
-      if (blank.exitCode !== 0 || !new TextDecoder().decode(blank.stdout).includes("clean")) {
-        throw new Error("Source still present in fresh Container: not a valid recovery proof");
-      }
-      phase = "restore";
-      const recovered = await this.restoreSavedBackup(source, target);
-      phase = "verify";
-      const after = await (await fresh.exec(["bash", "-lc",
-        "cd /workspace/projects/g4-proof-recovered && sha256sum calc.mjs calc.test.mjs session-context.json pending-work.txt && node --test calc.test.mjs"])).output();
-      if (after.exitCode !== 0) throw new Error("Restored test failed: " +
-        new TextDecoder().decode(after.stderr).slice(-270));
-      const actual = new TextDecoder().decode(after.stdout);
-      if (actual.split("\n").slice(0,4).join("\n") !== before.stdout.trimEnd()) {
-        throw new Error("File hashes differ after fresh Container restore");
-      }
-      if (recovered.archiveSha256 !== meta.sha256 || recovered.sessionRef !== meta.sessionRef ||
-          recovered.gitBranch !== meta.gitBranch || recovered.gitHead !== meta.gitHead) {
-        throw new Error("Recovered metadata does not match durable backup");
-      }
-      phase = "refuse-overwrite";
-      let overwriteBlocked = false;
-      try { await this.restoreSavedBackup(source, target); }
-      catch (error) { overwriteBlocked = String(error).includes("Restore target already exists"); }
-      if (!overwriteBlocked) throw new Error("Restoring onto existing target was not refused");
-      const result = {
-        status: "passed", source, target, archivedBytes: meta.bytes,
-        archiveSha256: meta.sha256, restoredManifestSha256: recovered.sha256,
-        fileHashes: before.stdout.trimEnd().split("\n"), testsPassed: true,
-        metadata: { sessionRef: meta.sessionRef, gitBranch: meta.gitBranch, gitHead: meta.gitHead },
-        freshContainerWasBlank: true, overwriteBlocked: true
-      };
-      await this.ctx.storage.put(key, result);
-      return result;
-    } catch (error) {
-      const failed = { status: "failed", phase,
-        reason: error instanceof Error ? error.message.slice(0,450) : "unknown" };
-      await this.ctx.storage.put(key, failed);
-      return failed;
-    } finally {
-      this.g4ProofBusy = false;
     }
   }
 
