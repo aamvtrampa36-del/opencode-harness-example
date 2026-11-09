@@ -50,3 +50,11 @@ export function assessAgentToolEvidence(
   }
   return { requestedTools, finishedLinuxTools, correctLinuxResult };
 }
+
+/** Reuse only a genuinely unfinished proof; terminal attempts are retryable. */
+export function hasUnfinishedAgentCheck(
+  previous: { error?: string } | null | undefined,
+  outcome: unknown
+): boolean {
+  return Boolean(previous && !previous.error && outcome == null);
+}
