@@ -197,3 +197,18 @@ Antes de nuevas operaciones se verificó lectura completa del **Informe técnico
 - [CI #119](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42571202805)
 - [Plan maestro de V1](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/V1_EXECUTION_PLAN.md)
 - [Decisión de arquitectura](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/ARCHITECTURE_DECISION_2026-11-08.md)
+
+### Verificación final de limpieza posterior al informe (06:14 UTC)
+
+Después de la primera publicación del dictamen, Workers Builds entregó fuera de orden otro despliegue antiguo: build `801068e7-184f-4374-a7f3-45866c1613f8` del commit `7b4d4055d27d4183299a3c6a5cc72fa591becc2c`. **Ese build reintrodujo temporalmente el código de auditoría y el Cron**, pese a que una versión limpia ya había sido publicada. Se desactivó nuevamente el Cron por API, se comprobó que no había builds pendientes anteriores y se lanzó un despliegue manual del commit documental más reciente `5e6b81473895029446f465300076cba9bb689b4d`.
+
+La ejecución final de Workers Builds `e1e3bcac-9a42-4d0e-92cf-3613a2f93ea8` concluyó **success**, dejando staging en versión `8cd802d7-6627-4284-b6a4-5beff4f169a2`.
+
+**Comprobación directa posterior, 06:14:13 UTC:**
+- `opencode-g1-staging/schedules`: **`[]`** (sin Cron).
+- Contenido del Worker publicado: **no** contiene `G1_STAGING` ni `g1SyntheticTrace`; **sí** contiene `malformedToolCall` y el verificador permanente.
+- Cloudflare Access conserva la aplicación protegida de staging y su política del propietario.
+- `opencode-harness-example` de producción continúa en `1d70eb77-316e-408d-bd14-5f19b171dedf`.
+- El riesgo de despliegues automáticos **fuera de orden** está documentado; el último despliegue fue fijado explícitamente al commit correcto. Antes de nuevas intervenciones con varios commits, verificar la cola de Workers Builds y no confiar únicamente en que el último build iniciado sea el último código publicado.
+
+**Dictamen inalterado:** G1 NO aprobado. Prioridad única: resolver la generación/interpretación del nombre de herramienta `inspect_linux<|channel|>commentary` y repetir `repair` auténtico con cuota disponible; no avanzar a G2 hasta test verde y verificación independiente.
