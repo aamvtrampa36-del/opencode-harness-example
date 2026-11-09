@@ -164,8 +164,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
         Date.now() - state.startedAt < 5 * 60_000) {
       return { status: "queued", toolCalls: 0, project: state.project, model: state.model, kind: state.kind };
     }
+    const toolSequenceVerified = state.kind === "repair"
+      ? evidence.verifiedRepairSequence : evidence.correctLinuxResult;
     let fileVerified = false;
-    if (evidence.correctLinuxResult) {
+    if (toolSequenceVerified) {
       try {
         const dev = this.env.DEV.getByName("personal");
         if (state.kind === "repair") {
@@ -184,10 +186,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       } catch { /* Failed inspection or test cannot count as a verified repair. */ }
     }
     const outcome = {
-      status: evidence.correctLinuxResult && fileVerified ? "passed" : "failed",
+      status: toolSequenceVerified && fileVerified ? "passed" : "failed",
       toolCalls: evidence.requestedTools,
+      observedFailingTest: state.kind === "repair" ? evidence.observedFailingTest : undefined,
       fileVerified, project: state.project, model: state.model, kind: state.kind,
-      ...(evidence.correctLinuxResult && fileVerified ? {} : { reason: explainAgentCheckFailure(evidence) })
+      ...(toolSequenceVerified && fileVerified ? {} : { reason: explainAgentCheckFailure(evidence, state.kind === "repair" ? "repair" : "linux") })
     };
     await this.ctx.storage.put("agent-check-result-v1", outcome);
     return outcome;
