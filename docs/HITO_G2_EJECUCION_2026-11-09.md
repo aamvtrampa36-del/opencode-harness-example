@@ -76,3 +76,17 @@ Después de confirmar el bloqueo:
 - [PR #28](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/28)
 - [Plan V1](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/V1_EXECUTION_PLAN.md)
 - [Historial de G1](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/HITO_G1_EJECUCION_2026-11-09.md)
+
+
+## 7. Verificación de cierre de la intervención (16:18 UTC)
+
+Se validó la limpieza posterior en la rama y en Cloudflare, sin inferir resultados a partir de CI solamente:
+
+- **GitHub Actions #139:** `validate` finalizó con `success` sobre el commit documental de cierre `b4c209cf3525d9dbc4925fa87e8e231386a6a52f`.
+- **Cloudflare Workers Builds:** compilación `94f474ab-2e82-4410-a23e-7be634e7dc7e` finalizó `success` para el mismo commit. La versión publicada verificada en staging fue `cb80f76c-7928-4d71-a9b5-0fdb4d94d11d`.
+- **Código publicado:** no contiene `G2_PROOF_20261109` ni `g2ProofTick`; mantiene `G1_DEV_UNLIMITED_CHECKS` y la integración GitHub normal.
+- **Cron:** `schedules=[]`. **Container:** `active=0`, `starting=0`. **Cloudflare Access:** sigue con una política `allow` en el dominio protegido, sin deshabilitar autenticación.
+- **Producción:** `opencode-harness-example` mantiene la versión `1d70eb77-316e-408d-bd14-5f19b171dedf`, sin modificaciones.
+- **PR #28:** abierta y en borrador, no fusionada. La PR específica de G2 **no existe** porque OpenCode jamás inició una sesión por falta de credencial. No se reclamó éxito.
+
+**Cierre seguro de la intervención:** la instrumentación temporal está retirada; el hito G2 permanece BLOQUEADO. La única acción previa a reintentarlo es conectar GitHub en el entorno protegido de staging. G3 no debe comenzar todavía.
