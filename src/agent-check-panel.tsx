@@ -12,6 +12,7 @@ type AgentStatus = {
   message?: string;
   model?: string;
   kind?: string;
+  observedFailingTest?: boolean;
 };
 
 /** Explicit owner-initiated test: no cron and no arbitrary user shell. */
@@ -58,7 +59,7 @@ export function AgentCheckPanel({ workspace }: { workspace: string }) {
       setBusy(false);
     }
   };
-  const stateText = status?.status === "passed" ? "Verificado: OpenCode ejecutó Linux y conservó el archivo."
+  const stateText = status?.status === "passed" ? (status?.kind === "repair" ? "Verificado: el agente observó el fallo, corrigió código y superó la prueba." : "Verificado: OpenCode ejecutó Linux y conservó el archivo.")
     : status?.status === "failed" ? "Falló: no se comprobó el ciclo del agente."
     : status?.status === "running" ? "Agente en ejecución…"
     : status?.status === "queued" ? "Tarea pendiente de ejecución…"
@@ -93,6 +94,8 @@ export function AgentCheckPanel({ workspace }: { workspace: string }) {
         onClick={() => void refresh().catch(err => setError(String(err)))}>Actualizar resultado</button>
       <p role="status" className="text-xs">{stateText}
         {typeof status?.toolCalls === "number" ? " · Llamadas a herramientas: " + status.toolCalls : ""}
+        {status?.kind === "repair" && typeof status.observedFailingTest === "boolean"
+          ? status.observedFailingTest ? " · Fallo inicial observado" : " · Sin observación de fallo" : ""}
         {status?.fileVerified ? " · Archivo comprobado" : ""}
       </p>
       {status?.kind ? <p className="text-xs text-kumo-subtle">Prueba ejecutada: {status.kind === "repair" ? "Reparación" : "Linux básico"}</p> : null}
