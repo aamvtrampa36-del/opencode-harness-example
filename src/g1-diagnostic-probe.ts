@@ -17,6 +17,18 @@ export default {
     try {
       const host = env.OpenCodeAgent.getByName(WORKSPACE);
       const current = await host.agentCheckStatus() as CheckState;
+      if (current.status === "failed" || current.status === "passed") {
+        const trace = await host.g1SyntheticTrace();
+        console.log("G1_TOOL_TRACE", JSON.stringify(trace));
+        if (current.project?.startsWith("agent-check-")) {
+          try {
+            const source = await env.DEV.getByName("personal").inspect(current.project, "read", "calc.mjs") as { contents?: string };
+            console.log("G1_SOURCE_AUDIT", JSON.stringify({project:current.project, source:source.contents?.slice(0,180)}));
+          } catch (error) {
+            console.log("G1_SOURCE_AUDIT", JSON.stringify({error:error instanceof Error ? error.message.slice(0,180) : "inspect failed"}));
+          }
+        }
+      }
       if (current.status !== "not-started") {
         console.log("G1_STAGING", JSON.stringify({
           phase:"status",status:current.status,project:current.project,model:current.model,kind:current.kind,
