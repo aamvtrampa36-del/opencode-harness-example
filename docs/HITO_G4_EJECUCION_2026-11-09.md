@@ -89,3 +89,18 @@ Referencias:
 - [PR #28 — staging](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/28)
 - [PR #29 — autodesarrollo](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/29)
 - [CI #169](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42710534163)
+
+
+## 7. Cierre operativo verificado (2026-11-09 22:24 UTC)
+
+Se comprobaron directamente los siguientes resultados después de retirar la infraestructura temporal:
+
+- **GitHub Actions #173**, run `42711351621`: job `validate` completado con `success` y cero etapas fallidas para el commit `34a5dfd7632c56cb8ee3501f4f8219d6afab10ce`.
+- **Cloudflare Workers Builds:** build `fa99056d-d7c2-4cae-bb28-2672f20b3741` completado con `success` para ese mismo commit.
+- **Staging:** versión activa `be5a8304-003a-4706-b2b7-0d339fc300fb` en la comprobación previa a este apéndice. El código publicado **sí** conserva `restoreSavedBackup`, **no** contiene `g4IsolatedPilot` ni `G4_PROOF_20261109` y mantiene `G1_DEV_UNLIMITED_CHECKS`.
+- **Cron:** `schedules=[]`. **Containers activos:** `active=0, starting=0` comprobados a las **22:24:30 UTC**. Se dejó de facturar tiempo activo de esos Containers.
+- **Cloudflare Access:** la aplicación de staging continúa protegida con política `allow`; no se cambió autenticación.
+- **Producción:** `opencode-harness-example` sigue en `1d70eb77-316e-408d-bd14-5f19b171dedf`, sin despliegue ni alteración.
+- Las PR #28 y #29 siguen sin fusionar, y no se cambió la configuración privada de GitHub/OpenRouter.
+
+Este apéndice es documental y puede originar una nueva versión de staging por el pipeline existente. **El dictamen G4 no depende de esa numeración**, sino de la evidencia real registrada y de CI. El siguiente y único trabajo autorizado por el plan es **G5 — Interfaz para vibe coding**.
