@@ -66,7 +66,7 @@ export function AgentCheckPanel({ workspace }: { workspace: string }) {
         intentará crear un archivo mediante Linux y comprobará que persiste realmente.
         Consume una pequeña cantidad de inferencia; no programa comprobaciones repetidas.
       </p>
-      <button type="button" disabled={busy || (status?.status !== "not-started" && status != null)}
+      <button type="button" disabled={busy || ["started", "running", "queued"].includes(status?.status ?? "")}
         className="rounded-md border border-kumo-line px-3 py-2 text-xs disabled:opacity-50"
         onClick={() => void start()}>Ejecutar autoprueba</button>
       <button type="button" className="ml-2 rounded-md border border-kumo-line px-3 py-2 text-xs"
