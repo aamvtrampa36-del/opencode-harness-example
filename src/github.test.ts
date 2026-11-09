@@ -11,8 +11,12 @@ const fake = (async (url: any, init: any = {}) => {
     body={full_name:"aamvtrampa36-del/cdf-cloud-engine",default_branch:"main",private:true};
   } else if (route.endsWith("/git/ref/heads/main")) {
     body={object:{sha:"basecommit"}};
+  } else if (route.includes("/git/ref/heads/")) {
+    body={object:{sha:"sha-from-custom-ref"}};
   } else if (route.endsWith("/git/refs")) {
-    status=201;body={ref:"refs/heads/opencode/new-feature",object:{sha:"basecommit"}};
+    status=201;
+    const req=init.body?JSON.parse(init.body):{};
+    body={ref:req.ref||"refs/heads/unknown",object:{sha:req.sha||"basecommit"}};
   } else if (route.includes("/contents/docs/test.md?ref=opencode%2Fnew-feature")) {
     status=404;body={message:"Not Found"};
   } else if (route.endsWith("/contents/docs/test.md")) {
@@ -70,5 +74,33 @@ describe("GitHub scoped permissions",()=>{
     expect(pr.draft).toBe(true);
     expect(calls.at(-1)?.body.base).toBe("main");
     expect(calls.at(-1)?.body.draft).toBe(true);
+  });
+  test("optional base ref selects branch source and PR target; missing ref keeps defaults",async()=>{
+    calls.length=0;
+    // Unsafe base refs are rejected locally before any HTTP request.
+    await expect(api.execute({action:"branch",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:"opencode/new-feature",ref:"../evil"}))
+      .rejects.toThrow("Invalid base ref");
+    await expect(api.execute({action:"pr",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:"opencode/new-feature",title:"x",ref:"main.lock"}))
+      .rejects.toThrow("Invalid base ref");
+    expect(calls.length).toBe(0);
+    // Explicit base ref: the new branch is created from that ref, not the default branch.
+    const r:any=await api.execute({action:"branch",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:"opencode/new-feature",ref:"release-1.2"});
+    expect(r.base).toBe("release-1.2");
+    expect(r.sha).toBe("sha-from-custom-ref");
+    expect(calls.find(x=>x.url.includes("/git/ref/heads/release-1.2"))).toBeTruthy();
+    expect(calls.find(x=>x.url.includes("/git/ref/heads/main"))).toBeFalsy();
+    // Explicit base ref: the draft PR targets that ref instead of the default branch.
+    const pr:any=await api.execute({action:"pr",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:"opencode/new-feature",title:"Base ref PR",ref:"develop"});
+    expect(pr.base).toBe("develop");
+    expect(calls.at(-1)?.body.base).toBe("develop");
+    // Missing ref retains the default behavior in both actions.
+    calls.length=0;
+    const r2:any=await api.execute({action:"branch",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:"opencode/new-feature"});
+    expect(r2.base).toBe("main");
+    expect(r2.sha).toBe("basecommit");
+    expect(calls.find(x=>x.url.includes("/git/ref/heads/main"))).toBeTruthy();
+    const pr2:any=await api.execute({action:"pr",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:"opencode/new-feature",title:"Default PR"});
+    expect(pr2.base).toBe("main");
+    expect(calls.at(-1)?.body.base).toBe("main");
   });
 });

@@ -5,7 +5,8 @@
  *
  * Deliberately narrow: a small allowlist of the owner's repositories, and
  * writes ONLY to opencode/* review branches. No merging, force-push, deletion,
- * releases or production deployments.
+ * releases or production deployments. The branch and pr actions accept an
+ * optional, validated base ref so reviews can fork from non-default refs.
  */
 export const ALLOWED_REPOS = [
   "aamvtrampa36-del/cdf-cloud-engine",
@@ -16,11 +17,12 @@ export const ALLOWED_REPOS = [
 export type GitHubAction =
   | { action: "repo"; repo: string }
   | { action: "read"; repo: string; path: string; ref?: string }
-  | { action: "branch"; repo: string; branch: string }
+  | { action: "branch"; repo: string; branch: string; ref?: string }
   | { action: "write"; repo: string; path: string; branch: string; content: string; message?: string }
-  | { action: "pr"; repo: string; branch: string; title: string; body?: string };
+  | { action: "pr"; repo: string; branch: string; title: string; body?: string; ref?: string };
 
 const BRANCH_RE = /^opencode\/[a-z0-9][a-z0-9._-]{0,59}$/;
+const REF_RE = /^[A-Za-z0-9._/-]{1,100}$/;
 const MAX_FILE_BYTES = 100_000;
 
 const OWNER = "aamvtrampa36-del";
@@ -48,6 +50,22 @@ function branchChecked(branch: unknown): string {
     throw new Error("Use an opencode/<name> review branch; production branches are read-only");
   }
   return branch;
+}
+/**
+ * Optional base refs are read-only sources/targets such as "main",
+ * "release-1.2" or "feature/x": the ref a new review branch is created from,
+ * or the ref a draft PR targets. Writes stay restricted to opencode/* review
+ * branches; this validation only keeps the selectable base safe.
+ */
+function refChecked(ref: unknown): string {
+  if (typeof ref !== "string" || !REF_RE.test(ref) ||
+      ref.startsWith(".") || ref.startsWith("/") ||
+      ref.includes("..") || ref.includes("//") ||
+      ref.endsWith(".") || ref.endsWith("/") || ref.endsWith(".lock") ||
+      ref.split("/").some(part => part.startsWith("."))) {
+    throw new Error("Invalid base ref name");
+  }
+  return ref;
 }
 function pathChecked(path: unknown): string {
   if (typeof path !== "string" || path.length > 180 || !path ||
@@ -128,12 +146,14 @@ export class GitHubBridge {
       }
       case "branch": {
         const branch = branchChecked(input.branch);
-        const info = await this.api("GET", base);
-        const from = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(info.default_branch));
+        const source = input.ref === undefined
+          ? (await this.api("GET", base)).default_branch
+          : refChecked(input.ref);
+        const from = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(source));
         const created = await this.api("POST", base + "/git/refs", {
           ref: "refs/heads/" + branch, sha: from.object.sha
         });
-        return { repo, branch, ref: created.ref, sha: created.object.sha };
+        return { repo, branch, ref: created.ref, sha: created.object.sha, base: source };
       }
       case "write": {
         const branch = branchChecked(input.branch);
@@ -153,12 +173,14 @@ export class GitHubBridge {
         if (typeof input.title !== "string" || !input.title.trim() || input.title.length > 160) {
           throw new Error("Pull request title must be between 1 and 160 characters");
         }
-        const info = await this.api("GET", base);
+        const target = input.ref === undefined
+          ? (await this.api("GET", base)).default_branch
+          : refChecked(input.ref);
         const created = await this.api("POST", base + "/pulls", {
           title: input.title, body: (input.body || "").slice(0, 5000),
-          head: branch, base: info.default_branch, draft: true
+          head: branch, base: target, draft: true
         });
-        return { repo, number: created.number, url: created.html_url, draft: created.draft, base: info.default_branch, head: branch };
+        return { repo, number: created.number, url: created.html_url, draft: created.draft, base: target, head: branch };
       }
       default:
         throw new Error("Unsupported GitHub action");
