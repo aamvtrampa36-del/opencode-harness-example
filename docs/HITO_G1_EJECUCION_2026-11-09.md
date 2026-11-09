@@ -79,3 +79,38 @@ La ejecución local del comando que prepara los archivos devolvió `exit_code=1`
 - [GitHub Actions #102](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42564565910)
 - [Cloudflare Workers Environments](https://developers.cloudflare.com/workers/wrangler/environments/)
 - [Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
+
+
+## Cierre de la intervención — G1 sigue pendiente de ejecución auténtica
+
+**Corte:** 2026-11-09 05:11 UTC · **Dictamen:** G1 **parcialmente completado**, con bloqueo operativo en la ejecución autenticada del agente.
+
+### Trabajo efectivamente terminado
+1. El despliegue separado `opencode-g1-staging` dejó de fallar en la configuración del Container después de usar `wrangler.g1.jsonc` como configuración de compilación y despliegue. Se conserva la configuración productiva original.
+2. Los namespaces `DEV`, `OpenCodeAgent` y `SETTINGS` están separados de producción. La aplicación `opencode-g1-staging-devcontainer` tiene política `durable_object` y cero instancias activas tras la comprobación.
+3. La URL de staging exige inicio de sesión de Cloudflare Access. Una solicitud no autenticada a `/api/health` devuelve la página de login, no información interna.
+4. Los builds `b2d1ce0b-0122-4234-95f0-10acccdfea3e` y `a9349655-1560-4346-ba2a-5ba607785828` acabaron correctamente. GitHub Actions #101 y #102 también aprobaron.
+5. Se desplegó temporalmente una envoltura `src/g1-probe-worker.ts` con un disparador programado interno para intentar `startAgentCheck("cloudflare","repair")` y consultar `agentCheckStatus()`. No se creó ruta HTTP pública ni se relajó Cloudflare Access.
+6. **No apareció ningún evento de ejecución `G1_EVIDENCE` ni invocación del Worker atribuible al disparador en los registros consultados durante la intervención.** Por tanto, no existe evidencia de que el modelo hubiera realizado llamadas a Linux, editado código o superado el test; no se atribuye éxito a OpenCode. La ausencia de eventos no demuestra por sí sola un defecto de la IA: los cambios de Cron pueden tardar en propagarse.
+7. Para no dejar una tarea recurrente en ejecución sin supervisión, se eliminaron los disparadores por API (`schedules: []`), se retiró `src/g1-probe-worker.ts` y se restauró `wrangler.g1.jsonc` a `main: src/server.ts` y `triggers.crons: []`. Los builds de limpieza `f64a31b7-d2ca-4356-9bc3-eaaf0624493b` y `2d902d91-edfe-41bb-ab77-9418e0d066f1` terminaron en `success`; GitHub Actions #104 también terminó en `success`.
+8. El Worker de staging quedó en versión `2e1026dd-b34d-4220-b30a-9072672f2c4d`, sin Cron y con el Container sin instancias activas. Producción conserva la versión `1d70eb77-316e-408d-bd14-5f19b171dedf`; CDF CLOUD y WorkBench no fueron modificados.
+
+### Distinción de evidencias
+- **Implementado:** ensayo repetible de reparación, corrección de falsos positivos, configuración aislada de staging.
+- **CI:** pruebas automatizadas aprobadas en #104.
+- **Cloudflare:** despliegue completo de staging aprobado; aislamiento y protección de acceso comprobados.
+- **Modelo real dentro de OpenCode Cloud:** **sin ejecución verificable**.
+- **Linux iniciado por OpenCode:** **sin ejecución verificable**.
+- **Secuencia rojo→verde y repetibilidad:** **sin demostrar**.
+- **Costo:** no se obtuvo la facturación desglosada por operación. No se observó ninguna instancia Container activa en el corte final. Los builds y Worker pueden registrar consumo; no se declara gasto cero.
+- **Recursos de prueba no productivos restantes:** staging Worker protegido y su aplicación Container; existe además un Preview creado anteriormente sin despliegue y una aplicación Access para él, sin intervenir en esta limpieza.
+
+### Única siguiente prioridad según el plan V1
+**Ejecutar `repair` mediante la sesión del propietario en la aplicación staging protegida**, sin crear nuevos adaptadores ni Cron. El usuario autorizado deberá abrir `https://opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev`, autenticarse por Access, iniciar la autoprueba con `Cloudflare GPT-OSS 20B` y conservar el resultado y la traza de herramienta. Si G1 supera el test auténtico y su repetición, se pasa a **G2 — autodesarrollo del propio repositorio**; si falla, investigar el primer error verificable del modelo/Harness/Linux y aplicar la reparación mínima.
+
+**No se puede declarar G1 completado** con las evidencias disponibles, pero el bloqueo administrativo de despliegue identificado en la intervención anterior sí quedó resuelto.
+
+### Enlaces de verificación
+- [GitHub Actions #104](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42565660807)
+- [Rama y cambios de PR #28](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/28)
+- [Plan maestro de V1](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/V1_EXECUTION_PLAN.md)
