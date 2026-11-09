@@ -128,3 +128,18 @@ La ejecución local del comando que prepara los archivos devolvió `exit_code=1`
 - La segunda prueba todavía exige **su propia evidencia real de ejecución** y no debe declararse aprobada por el éxito del despliegue. El mecanismo temporal `scheduled` permanece solo en staging mientras se observa ese intento, y se retirará antes del cierre final.
 
 **Estado revisado:** infraestructura y Linux realmente invocados en una primera prueba; el modelo todavía no inició una reparación observable. El cierre del hito G1 sigue abierto y sujeto al resultado del reintento con TAP explícito.
+
+
+## Dictamen definitivo de esta intervención — 05:21 UTC
+
+**G1 = PARCIALMENTE COMPLETADO; no aprobado.** Se resolvió el despliegue completo de `opencode-g1-staging` y se obtuvo una primera invocación real de Linux desde el control de prueba del agente. Sin embargo, no existe aún evidencia de inferencia dentro de OpenCode y reparación autónoma rojo→verde.
+
+**Primera ejecución auténtica, observada posteriormente:** Cloudflare Workers Observability registró `OpenCodeAgent.jsrpc`, `PersonalSettings.jsrpc`, `DevContainer.jsrpc` y `G1_EVIDENCE phase=start status=failed` alrededor de 05:10 UTC. El fallo ocurrió en la preparación: el test Node no devolvió la representación que el verificador esperaba. La hipótesis de incompatibilidad del reporter Node.js 24 se corrigió fijando `--test-reporter=tap` en todos los comandos y añadiendo regresiones.
+
+**Reintento TAP:** GitHub Actions #107 aprobó; Workers Builds `37860877-8812-450f-96eb-539813937feb` también terminó en `success` y subió staging versión `b2aa474c-10bb-4533-b1a0-8cadc375e2b2`. Se preparó un segundo proyecto y un disparador interno temporal, pero hasta 2026-11-09 05:20:54 UTC **no apareció ningún evento `G1_TAP_RETRY` atribuible al segundo intento**. No puede afirmarse que la corrección ya haya pasado el ensayo remoto o que el modelo haya ejecutado herramientas.
+
+**Limpieza de seguridad:** se eliminó el Cron del Worker de staging con Cloudflare API, que confirmó `schedules: []`; se restauró `wrangler.g1.jsonc` a `main: src/server.ts`, `triggers.crons: []` y se eliminó `src/g1-probe-worker.ts`. Producción seguía en `1d70eb77-316e-408d-bd14-5f19b171dedf`. El build de limpieza se inició con ID `55915885-1b67-483c-892b-2356265698d4`; verificar su estado final antes de dar por desplegada la versión limpia. No queda programada una nueva ejecución ni se promete trabajo en segundo plano.
+
+**Siguiente acción única conforme a `docs/V1_EXECUTION_PLAN.md`:** abrir desde un navegador autorizado `https://opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev`, iniciar sesión mediante Cloudflare Access y ejecutar una vez la opción `repair` con `@cf/openai/gpt-oss-20b`. Recopilar la traza real del modelo y herramientas y solo entonces cerrar G1 si supera el ciclo fallido→edición→test verde→verificación independiente. Si falla, corregir la primera causa reproducible antes de agregar funciones. G2 sigue bloqueado hasta aprobar G1.
+
+**Enlaces:** [CI #107](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42566073996), [PR #28](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/28), [Plan V1](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/V1_EXECUTION_PLAN.md).
