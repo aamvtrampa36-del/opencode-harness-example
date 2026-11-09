@@ -19,7 +19,7 @@ import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
 import { remoteMcpPlugin } from "./mcp-plugin";
-import { assessAgentToolEvidence } from "./agent-check";
+import { assessAgentToolEvidence, hasUnfinishedAgentCheck } from "./agent-check";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -60,7 +60,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const previous = await this.ctx.storage.get<{
       session: string; project: string; token: string; startedAt: number; error?: string
     }>("agent-check-v1");
-    if (previous) return { status: "existing", session: previous.session, project: previous.project };
+    const outcome = await this.ctx.storage.get("agent-check-result-v1");
+    if (hasUnfinishedAgentCheck(previous, outcome)) {
+      return { status: "existing", session: previous!.session, project: previous!.project };
+    }
     if (!(await this.personalConfig.reserveAgentCheck())) {
       return { status: "daily-limit", message: "Límite de dos verificaciones diarias para evitar gastos de IA" };
     }
@@ -68,7 +71,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const project = "agent-check-" + token;
     const created = await this.harness.sessions.create();
     const state = { session: created.id, project, token, startedAt: Date.now() };
-    await this.ctx.storage.put("agent-check-v1", state);
+    // Atomically replace the previous terminal proof only after creating a new session.
+    // This keeps completed checks retryable without exposing stale pass results.
+    await this.ctx.storage.transaction(async (tx) => {
+      await tx.put("agent-check-v1", state);
+      await tx.delete("agent-check-result-v1");
+    });
     try {
       const handle = this.harness.session(created.id);
       await handle.setAgent("build");
