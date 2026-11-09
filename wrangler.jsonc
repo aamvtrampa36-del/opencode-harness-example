@@ -70,5 +70,41 @@
       "class_name": "DevContainer",
       "scheduling_policy": "durable_object"
     }
-  ]
+  ],
+  "previews": {
+    "vars": {
+      "G1_PREVIEW_HOST": "g1-autonomy-20261109-opencode-harness-example.cdf-cloud-mvp-20261019.workers.dev"
+    },
+    "ai": {
+      "binding": "AI",
+      "remote": true
+    },
+    "worker_loaders": [
+      {
+        "binding": "LOADER"
+      }
+    ],
+    "durable_objects": {
+      "bindings": [
+        {
+          "name": "OpenCodeAgent",
+          "class_name": "OpenCodeAgent"
+        },
+        {
+          "name": "DEV",
+          "class_name": "DevContainer"
+        },
+        {
+          "name": "SETTINGS",
+          "class_name": "PersonalSettings"
+        }
+      ]
+    },
+    "containers": [
+      {
+        "class_name": "DevContainer",
+        "scheduling_policy": "durable_object"
+      }
+    ]
+  }
 }
