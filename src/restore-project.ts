@@ -59,6 +59,8 @@ while(offset+512<=archive.length){
   entries.push({relative,type,data:body});
 }
 if(!entries.length||longName||paxPath)throw Error("Invalid backup contents");
+// A restored Container starts with an empty filesystem; recreate the project root first.
+await mkdir(ROOT,{recursive:true});
 const temporary=await mkdtemp(join(ROOT,".restore-"+target+"-")),root=join(temporary,target);
 try {
   await mkdir(root);
