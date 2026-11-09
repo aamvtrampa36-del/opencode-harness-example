@@ -6,7 +6,7 @@
 
 Priorizar un **agente que edite, ejecute, corrija, confirme y permita recuperar** antes que funciones avanzadas. Una tarea completa debe dejar un diff real, pruebas antes/después, códigos de salida y una rama Git reversible. El usuario solo elige proyecto, plantilla, modelo y escribe la tarea.
 
-**Arquitectura candidata**: conservar el Worker de acceso personal, un Container Linux activado bajo demanda, OpenCode nativo (CLI/web + herramientas propias), GitHub como historial de código y DO como coordinación mínima. La implementación Workerd/Harness existente sigue operativa hasta demostrar mejor funcionamiento y recuperación en el piloto nativo; nunca efectuar sustitución por suposición.
+**Arquitectura seleccionada para V1 (G3, 2026-11-09)**: conservar el Worker de acceso personal protegido por Cloudflare Access, **OpenCode Workerd/Harness** en Durable Objects, el Container Linux aislado bajo demanda mediante la herramienta actual, GitHub como historial de código y DO como coordinación. G1 y G2 demostraron reparaciones reales y una PR generada por el agente. El motor OpenCode nativo **no puede instalarse en el entorno disponible según la restricción operativa comunicada por el titular**; no se ha comparado ni se sostiene que Workerd sea técnicamente superior. No condicionar G4–G9 a instalar el nativo. Toda migración futura requiere prueba independiente y autorización.
 
 **No construir**: dos sistemas de agentes en producción, otro framework de autorización, un segundo ejecutor Linux, scheduler siempre activo, otra plataforma de logs, multitud de servicios o una interfaz propia que replique toda la interfaz oficial de OpenCode.
 
@@ -24,10 +24,10 @@ Priorizar un **agente que edite, ejecute, corrija, confirme y permita recuperar*
 | Responsabilidad | Solución prevista | Evitar |
 |---|---|---|
 | Acceso web, proxy y selección de proyecto | Worker actual con Access ya configurado | Nuevo registro de usuarios |
-| Ejecutar agente, herramientas y procesos | **Un OpenCode nativo en Linux**, piloto aislado | Reimplementar bash/read/edit/grep |
-| Configuración de modelos, agentes y MCP | Archivos/configuración de OpenCode + clave de proveedor protegida | Motor de enrutamiento LLM propio |
+| Ejecutar agente, herramientas y procesos | **Workerd/Harness vigente + herramienta Linux en Container aislado** | Migrar a motor nativo sin demostrar compatibilidad |
+| Configuración de modelos, agentes y MCP | Configuración vigente de OpenCode + claves protegidas; capacidades no verificadas se prueban en su hito | Motor de enrutamiento LLM propio |
 | Código y versiones | GitHub, ramas por tarea y PR borradores | Estado de código sin historial |
-| Contexto y sesiones | Persistencia documentada y verificada de OpenCode | Prometer migración Workerd→CLI no soportada |
+| Contexto y sesiones | Estado actual de Workerd/DO; **persistencia y recuperación aún pendientes de validar en G4** | Suponer durabilidad de archivos efímeros o migración no probada |
 | Recuperación del sistema de archivos | Exportación verificable fuera del Container y snapshots temporales | Confiar solo en snapshots beta de 30 días |
 | Plantillas | 7 perfiles declarativos, editables y con valores por defecto | 7 contenedores/servicios agentes |
 | Diagnóstico | Logs de Workers + eventos/resultado del agente + resumen por incidencia | Observabilidad duplicada |
@@ -55,11 +55,12 @@ Priorizar un **agente que edite, ejecute, corrija, confirme y permita recuperar*
 - El supervisor revisa diffs, ejecuciones, límites de herramientas, archivos tocados, dependencias y coste. Rechaza resultados basados en prosa.
 - **Hecho cuando**: el agente interno completa un cambio real; el supervisor comprueba diff y pruebas sin haber realizado él mismo el cambio atribuido al agente.
 
-### G3 — Piloto de motor nativo OpenCode
-- Preparar una instancia separada y temporal de `opencode web` o `opencode serve` en un Container; usar las herramientas nativas de shell, lectura, edición y Git sin los puentes custom.
-- Usar un único proyecto de prueba, un modelo económico con capacidades de herramientas verificadas y la entrada protegida existente.
-- Comparar A=Workerd/Harness vs B=nativo: bucle de reparación, latencia observable, reintentos, estado tras apagar/encender, consumo mensual estimado, complejidad neta.
-- **Hecho cuando**: seleccionar ganador por evidencia. Preferir B si pasa todos los gates; conservar A si B no cumple. Nunca cortar tráfico ni borrar datos sin respaldo verificado.
+### G3 — Validación y selección arquitectónica de V1 (alcance revisado; APROBADO 2026-11-09)
+- **Restricción operativa:** el titular comunica que no es posible instalar OpenCode nativo en el entorno disponible. El antiguo piloto A/B queda **no ejecutado/no evaluable**, no aprobado ni declarado favorable a ninguna arquitectura. Se conserva su propuesta como antecedente en la decisión histórica.
+- **Seleccionado para V1:** motor **Workerd/Harness** en Durable Objects, Worker con Cloudflare Access, herramienta `linux` en Container aislado, GitHub en ramas revisables y proveedores ya configurados. No crear otro motor ni nuevo servicio.
+- **Evidencias:** G1 cerró dos reparaciones autónomas verificadas; G2 produjo la PR borrador #29, dos commits de agente y CI #147 exitoso. Staging protegido, sin Cron ni Containers activos; producción sin cambios. No extrapolar estos resultados a recuperación, continuidad prolongada, consumo real ni MCP remotos.
+- **Hecho cuando:** la elección queda formalizada, el plan actualizado, seguridad y aislamiento verificados, y G4 habilitado sin dependencia de instalar motor nativo. **Estado: cumplido; ver `docs/HITO_G3_EJECUCION_2026-11-09.md`.**
+- **Reconsideración futura, no bloqueante:** únicamente si desaparece la restricción de instalación y existe una razón medible (compatibilidad, mantenimiento, costo o confiabilidad) para ensayar nativo aislado; nunca migrar producción sin pruebas y reversión.
 
 ### G4 — Persistencia y recuperación
 - Diseñar estructura simple por repositorio y sesión: identificación del proyecto, git checkout/rama, directorio y snapshots.
@@ -91,7 +92,7 @@ Priorizar un **agente que edite, ejecute, corrija, confirme y permita recuperar*
 - **Hecho cuando**: ambas pruebas muestran repositorio correcto, diff correcto, regresiones ausentes y recuperación.
 
 ### G9 — Endurecimiento mínimo y entrega
-- Eliminar adaptadores reemplazados por OpenCode nativo, código muerto, dependencias duplicadas, flags incompatibles y documentación temporal, **solo después** del reemplazo comprobado.
+- Eliminar código muerto, dependencias duplicadas, flags incompatibles y documentación temporal que se demuestre innecesaria. **Eliminar adaptadores solo si existe un reemplazo comprobado**; no exigir una migración a OpenCode nativo para completar la V1.
 - Ejecutar E2E de las 12 pruebas del encargo; registrar evidencia enlazable y límites conocidos.
 - **Hecho cuando**: una release/tag reversible supera los gates P0; el usuario puede desarrollar un cambio real sin intervención humana de administrador.
 
@@ -129,8 +130,8 @@ Fuentes:
 
 ## 7. Estado de la entrega / bloqueos
 
-**Implementado en rama**: comprobación repetible (PR #28), selección de modelos limitados, mensajes de fallo, timeout, fixture rojo→verde verificado externamente en lógica, tests y documentación de arquitectura.
+**Estado vigente a 2026-11-09:** G1 aprobado (dos reparaciones autónomas independientes), G2 aprobado ([PR #29](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/29) del agente y CI #147), G3 aprobado bajo la selección arquitectónica revisada (ver su acta). PR #28 y PR #29 siguen como borradores sin fusionar; la documentación de esta rama no afirma entrega a producción.
 
-**Validación pendiente**: ejecutar el fixture por el modelo en el Worker con sesión autenticada, registrar herramientas reales y demostrar desarrollo del repositorio. Ningún test de unidad sustituye esto.
+**Siguiente hito bloqueante: G4 — Persistencia y recuperación.** Demostrar respaldo externo al Container, integridad por hashes, reinicio/restauración y recuperación de estado útil, incluidos fallos durante la escritura. No asumir que las snapshots beta equivalen a respaldo duradero.
 
-**Prohibido declararse V1 completa** mientras falten G1, G2, G4, G8 y las pruebas E2E. Este archivo es una guía de ejecución y evidencia, no una afirmación de características terminadas.
+**No declarar V1 completa** mientras falten G4, G8 y los E2E finales de G9. G5–G7 continúan según sus gates propios. La imposibilidad comunicada de instalar OpenCode nativo no bloquea la V1 y no equivale a haberlo comparado.
