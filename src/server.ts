@@ -19,7 +19,7 @@ import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
 import { remoteMcpPlugin } from "./mcp-plugin";
-import { assessAgentToolEvidence, hasUnfinishedAgentCheck } from "./agent-check";
+import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isAgentCheckModel, explainAgentCheckFailure } from "./agent-check";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -56,13 +56,20 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return { active: true };
   }
   /** Explicit owner-initiated real-model/tool test, never a recurring cron. */
-  async startAgentCheck(): Promise<{ status: string; session?: string; project?: string; message?: string }> {
+  async startAgentCheck(model: unknown = "cloudflare"): Promise<{ status: string; session?: string; project?: string; model?: string; message?: string }> {
+    if (!isAgentCheckModel(model)) {
+      return { status: "rejected", message: "Solo se permiten modelos económicos en la autoprueba." };
+    }
+    const preset = MODEL_PRESETS[model];
+    if (preset.providerID === "openrouter" && !(await this.isOpenRouterConfigured())) {
+      return { status: "rejected", message: "Conecta OpenRouter antes de probar este modelo. No se consumió la cuota." };
+    }
     const previous = await this.ctx.storage.get<{
-      session: string; project: string; token: string; startedAt: number; error?: string
+      session: string; project: string; token: string; startedAt: number; model?: string; error?: string
     }>("agent-check-v1");
     const outcome = await this.ctx.storage.get("agent-check-result-v1");
     if (hasUnfinishedAgentCheck(previous, outcome)) {
-      return { status: "existing", session: previous!.session, project: previous!.project };
+      return { status: "existing", session: previous!.session, project: previous!.project, model: previous!.model ?? "cloudflare" };
     }
     if (!(await this.personalConfig.reserveAgentCheck())) {
       return { status: "daily-limit", message: "Límite de dos verificaciones diarias para evitar gastos de IA" };
@@ -70,7 +77,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const token = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
     const project = "agent-check-" + token;
     const created = await this.harness.sessions.create();
-    const state = { session: created.id, project, token, startedAt: Date.now() };
+    const state = { session: created.id, project, token, model, startedAt: Date.now() };
     // Atomically replace the previous terminal proof only after creating a new session.
     // This keeps completed checks retryable without exposing stale pass results.
     await this.ctx.storage.transaction(async (tx) => {
@@ -80,7 +87,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
     try {
       const handle = this.harness.session(created.id);
       await handle.setAgent("build");
-      await handle.setModel(this.ai(MODEL_ID));
+      await handle.setModel(model === "cloudflare" ? this.ai(MODEL_ID) : {
+        providerID: preset.providerID, id: preset.id
+      });
       const command = "printf '" + token + "' > proof.txt && node -e " +
         JSON.stringify("const fs=require('node:fs');if(fs.readFileSync('proof.txt','utf8')!==" +
           JSON.stringify(token) + ")process.exit(2);console.log('AGENT_PROOF_OK:" + token + "')");
@@ -90,33 +99,55 @@ export class OpenCodeAgent extends DurableObject<Env> {
         "No generes código solamente en tu respuesta. Espera el resultado real de linux " +
         "y describe su exitCode. No alteres ningún otro proyecto.";
       await handle.submit(prompt, { whenBusy: "followUp" });
-      return { status: "started", session: created.id, project };
+      return { status: "started", session: created.id, project, model };
     } catch (error) {
       const failed = {
         ...state, error: error instanceof Error ? error.message.slice(0, 250) : "No se pudo iniciar"
       };
       await this.ctx.storage.put("agent-check-v1", failed);
-      return { status: "failed", message: failed.error };
+      return { status: "failed", message: failed.error, model };
     }
   }
 
   async agentCheckStatus(): Promise<unknown> {
     const saved = await this.ctx.storage.get<{
-      status: string; toolCalls: number; fileVerified: boolean; project: string; reason?: string
+      status: string; toolCalls: number; fileVerified: boolean; project: string; model?: string; reason?: string
     }>("agent-check-result-v1");
     if (saved) return saved;
     const state = await this.ctx.storage.get<{
-      session: string; project: string; token: string; startedAt: number; error?: string
+      session: string; project: string; token: string; startedAt: number; model?: string; error?: string
     }>("agent-check-v1");
     if (!state) return { status: "not-started" };
-    if (state.error) return { status: "failed", reason: state.error, project: state.project };
+    if (state.error) return { status: "failed", reason: state.error, project: state.project, model: state.model };
     const handle = this.harness.session(state.session);
-    const [running, history] = await Promise.all([handle.busy(), handle.history()]);
+    let running: boolean;
+    let history: Awaited<ReturnType<typeof handle.history>>;
+    try {
+      [running, history] = await Promise.all([handle.busy(), handle.history()]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const reason = /ModelUnavailableError|Model unavailable/i.test(message)
+        ? "El modelo elegido no está disponible en el registro activo de OpenCode. Prueba otro modelo."
+        : "No se pudo recuperar la ejecución del agente; consulta los registros del servicio.";
+      const failed = { status: "failed", reason, toolCalls: 0, fileVerified: false,
+        project: state.project, model: state.model };
+      await this.ctx.storage.put("agent-check-result-v1", failed);
+      return failed;
+    }
     const evidence = assessAgentToolEvidence(history, state.project, state.token);
-    if (running) return { status: "running", toolCalls: evidence.requestedTools, project: state.project };
+    if (running) {
+      if (Date.now() - state.startedAt < 6 * 60_000) {
+        return { status: "running", toolCalls: evidence.requestedTools, project: state.project, model: state.model };
+      }
+      try { await handle.abort(); } catch { /* Preserve timeout as a failure. */ }
+      const timeout = { status: "failed", reason: "La autoprueba superó seis minutos y se detuvo para evitar consumo indefinido.",
+        toolCalls: evidence.requestedTools, fileVerified: false, project: state.project, model: state.model };
+      await this.ctx.storage.put("agent-check-result-v1", timeout);
+      return timeout;
+    }
     if (!history.some(message => message.type === "assistant") &&
         Date.now() - state.startedAt < 5 * 60_000) {
-      return { status: "queued", toolCalls: 0, project: state.project };
+      return { status: "queued", toolCalls: 0, project: state.project, model: state.model };
     }
     let fileVerified = false;
     if (evidence.correctLinuxResult) {
@@ -129,8 +160,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const outcome = {
       status: evidence.correctLinuxResult && fileVerified ? "passed" : "failed",
       toolCalls: evidence.requestedTools,
-      fileVerified, project: state.project,
-      ...(!evidence.correctLinuxResult ? { reason: "OpenCode no devolvió una ejecución Linux verificada" } : {})
+      fileVerified, project: state.project, model: state.model,
+      ...(evidence.correctLinuxResult && fileVerified ? {} : { reason: explainAgentCheckFailure(evidence) })
     };
     await this.ctx.storage.put("agent-check-result-v1", outcome);
     return outcome;
@@ -365,11 +396,11 @@ export default {
         return new Response("Method not allowed", { status: 405 });
       }
       if (url.pathname === "/api/dev/agent-check") {
-        const workspace = request.method === "GET"
-          ? url.searchParams.get("workspace")
-          : (request.headers.get("Origin") === url.origin &&
-             request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")
-            ? ((await request.json()) as { workspace?: string }).workspace : null);
+        const body = request.method === "POST" && request.headers.get("Origin") === url.origin &&
+          request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")
+          ? (await request.json()) as { workspace?: string; model?: string }
+          : null;
+        const workspace = request.method === "GET" ? url.searchParams.get("workspace") : body?.workspace;
         if (!workspace || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(workspace)) {
           return Response.json({ error: "Se requiere un espacio autenticado válido" }, { status: 403 });
         }
@@ -378,7 +409,7 @@ export default {
           return Response.json(await host.agentCheckStatus(), { headers: { "Cache-Control": "no-store" } });
         }
         if (request.method === "POST") {
-          return Response.json(await host.startAgentCheck(), { headers: { "Cache-Control": "no-store" } });
+          return Response.json(await host.startAgentCheck(body?.model), { headers: { "Cache-Control": "no-store" } });
         }
         return new Response("Method not allowed", { status: 405 });
       }
