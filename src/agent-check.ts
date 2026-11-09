@@ -58,3 +58,24 @@ export function hasUnfinishedAgentCheck(
 ): boolean {
   return Boolean(previous && !previous.error && outcome == null);
 }
+
+/** Restrict expensive diagnostic calls to the baseline and two low-cost presets. */
+export const AGENT_CHECK_MODELS = ["cloudflare", "economy", "review"] as const;
+export type AgentCheckModel = (typeof AGENT_CHECK_MODELS)[number];
+export function isAgentCheckModel(value: unknown): value is AgentCheckModel {
+  return typeof value === "string" && AGENT_CHECK_MODELS.some(model => model === value);
+}
+
+/** Human-actionable diagnostics, based on actual tool events rather than assistant text. */
+export function explainAgentCheckFailure(evidence: AgentCheckEvidence): string {
+  if (evidence.requestedTools === 0) {
+    return "El agente no solicitó herramientas. Es posible que el modelo no haya arrancado; revisa el proveedor y los registros de Cloudflare.";
+  }
+  if (evidence.finishedLinuxTools === 0) {
+    return "El agente solicitó herramientas, pero ninguna ejecución Linux terminó correctamente.";
+  }
+  if (!evidence.correctLinuxResult) {
+    return "Linux respondió, pero faltó la salida verificable del comando solicitado o su resultado fue incorrecto.";
+  }
+  return "Linux devolvió el resultado esperado, pero la comprobación independiente del archivo persistido falló.";
+}
