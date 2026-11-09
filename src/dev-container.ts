@@ -3,6 +3,7 @@ import { MAX_SHELL_OUTPUT, validateCommand, validateProject } from "./dev-guard"
 import { PREVIEW_SOURCE } from "./preview-server";
 import { INSPECT_SOURCE, validateInspectionPath } from "./linux-inspect";
 import { chunkBackup, joinBackup, sha256Hex, MAX_ARCHIVE_BYTES, type StoredBackup } from "./durable-backup";
+import { RESTORE_PROJECT_SOURCE } from "./restore-project";
 
 /**
  * Opt-in Linux computer. There is exactly ONE named instance ("personal")
@@ -250,8 +251,12 @@ export class DevContainer extends DurableObject<Env> {
    * This is NOT a Container snapshot and survives its 30-day expiration.
    * Up to 2 MiB compressed; large projects need an external store.
    */
-  async saveBackup(project: string): Promise<StoredBackup> {
+  async saveBackup(project: string, sessionRef?: string): Promise<StoredBackup> {
     const id = validateProject(project);
+    if (sessionRef !== undefined && (typeof sessionRef !== "string" ||
+        !/^[a-zA-Z0-9_:-]{1,100}$/.test(sessionRef))) {
+      throw new Error("Invalid session reference");
+    }
     const archive = await this.download(id);
     if (!archive.ok || !archive.body) throw new Error("No se pudo archivar el proyecto");
     const reader = archive.body.getReader();
@@ -275,11 +280,28 @@ export class DevContainer extends DurableObject<Env> {
     let offset = 0;
     for (const part of collected) { bytes.set(part, offset); offset += part.byteLength; }
     const parts = chunkBackup(bytes);
+    // Capture only Git identifiers: no remotes, tokens or .git internals.
+    let gitBranch: string | undefined;
+    let gitHead: string | undefined;
+    try {
+      const container = await this.ensureRunning();
+      const cmd = 'cd /workspace/projects/' + id +
+        ' && printf "%s\\n%s\\n" "$(git branch --show-current 2>/dev/null)" "$(git rev-parse --verify HEAD 2>/dev/null)"';
+      const gitResult = await (await container.exec(["bash", "-lc", cmd])).output();
+      if (gitResult.exitCode === 0) {
+        const [branch, head] = new TextDecoder().decode(gitResult.stdout).trim().split("\n");
+        if (branch && branch.length <= 160 && !/[\r\n\0]/.test(branch)) gitBranch = branch;
+        if (/^[a-f0-9]{40,64}$/.test(head ?? "")) gitHead = head;
+      }
+    } catch { /* A source-only project need not be a Git checkout. */ }
     const version = crypto.randomUUID();
     const previous = await this.ctx.storage.get<StoredBackup>("backup-meta:" + id);
     const result: StoredBackup = {
       project: id, version, createdAt: new Date().toISOString(),
-      bytes: total, chunks: parts.length, sha256: await sha256Hex(bytes)
+      bytes: total, chunks: parts.length, sha256: await sha256Hex(bytes),
+      ...(sessionRef ? { sessionRef } : {}),
+      ...(gitBranch ? { gitBranch } : {}),
+      ...(gitHead ? { gitHead } : {})
     };
     // Versioned writes protect the last good backup if a new save fails.
     for (let i = 0; i < parts.length; i++) {
@@ -326,6 +348,62 @@ export class DevContainer extends DurableObject<Env> {
         "X-Content-Type-Options": "nosniff"
       }
     });
+  }
+
+  /**
+   * G4: restore a verified independent backup into a NEW project, never overwrite.
+   * The backup remains stored in Durable Object SQLite, separate from the VM snapshot.
+   */
+  async restoreSavedBackup(sourceProject: string, newProject: string): Promise<{
+    source: string; target: string; files: number; sha256: string; bytes: number;
+    archiveSha256: string; sessionRef?: string; gitBranch?: string; gitHead?: string;
+  }> {
+    const source = validateProject(sourceProject);
+    const target = validateProject(newProject);
+    if (source === target) throw new Error("Restore target must be a new project");
+    // Serialize against shell writes; never destroy or overwrite an existing project.
+    const previous = this.commandQueue;
+    let release = () => {};
+    this.commandQueue = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      const meta = await this.ctx.storage.get<StoredBackup>("backup-meta:" + source);
+      if (!meta) throw new Error("No saved independent backup exists");
+      const response = await this.downloadSavedBackup(source);
+      if (!response.ok) throw new Error("The independent backup cannot be read");
+      const data = new Uint8Array(await response.arrayBuffer());
+      if (await sha256Hex(data) !== meta.sha256) throw new Error("Backup hash mismatch");
+      const container = await this.ensureRunning();
+      this.busy++;
+      await this.ctx.storage.put("lastActivity", Date.now());
+      try {
+        const stdin = new ReadableStream<Uint8Array>({
+          start(controller) { controller.enqueue(data); controller.close(); }
+        });
+        const process = await container.exec(["node", "-e", RESTORE_PROJECT_SOURCE, source, target], { stdin });
+        const output = await process.output();
+        const decoder = new TextDecoder();
+        if (output.exitCode !== 0) {
+          throw new Error("Restore refused: " + decoder.decode(output.stderr).slice(-500));
+        }
+        const restored = JSON.parse(decoder.decode(output.stdout)) as {
+          source: string; target: string; files: number; sha256: string; bytes: number
+        };
+        if (restored.source !== source || restored.target !== target ||
+            !/^[0-9a-f]{64}$/.test(restored.sha256)) throw new Error("Invalid restore receipt");
+        await this.recordProject(target);
+        return { ...restored, archiveSha256: meta.sha256,
+          ...(meta.sessionRef ? { sessionRef: meta.sessionRef } : {}),
+          ...(meta.gitBranch ? { gitBranch: meta.gitBranch } : {}),
+          ...(meta.gitHead ? { gitHead: meta.gitHead } : {}) };
+      } finally {
+        this.busy--;
+        await this.ctx.storage.put("lastActivity", Date.now());
+        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      }
+    } finally {
+      release();
+    }
   }
 
   private async proxyHttp(path: string): Promise<Response> {
