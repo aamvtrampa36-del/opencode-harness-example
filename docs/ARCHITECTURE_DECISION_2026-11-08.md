@@ -1,5 +1,42 @@
 # OpenCode Cloud — arquitectura y criterios de sustitución (2026-11-08)
 
+## Decisión vigente para la V1 — G3 (2026-11-09)
+
+**Seleccionada: arquitectura A = OpenCode Workerd/Harness + Durable Objects + Worker protegido por Cloudflare Access + herramienta `linux` en Container aislado bajo demanda + GitHub y proveedores de inferencia conectados.**
+
+**Motivo:** el entorno actual demostró un ciclo auténtico modelo→herramienta→reparación→prueba en G1 (dos reparaciones independientes verificadas) y un cambio al propio repositorio en G2 ([PR #29](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/29), dos commits del agente, seis llamadas `github` y seis `linux`, GitHub Actions #147 exitoso). Por tanto A es **suficientemente funcional para continuar la V1**, no una prueba de superioridad frente a otros motores.
+
+**Restricción:** el titular del proyecto comunica que **OpenCode CLI/servidor web nativo no puede instalarse en el entorno disponible**. No se repitió la instalación ni se ejecutó el antiguo piloto comparativo A/B; sus métricas no existen. La imposibilidad se registra como restricción operativa, **no como un diagnóstico de incompatibilidad técnica demostrado por G3**. B queda como alternativa futura no evaluada, y **no bloquea G4 ni la entrega V1**.
+
+### Fronteras operativas de A
+
+- **Worker + Cloudflare Access:** autenticación, interfaz y entradas protegidas; no abrir terminal ni rutas públicas sin autorización.
+- **Workerd/Harness + Durable Objects:** motor de agente y coordinación/sesiones vigentes. No presumir compatibilidad o transferencia de sesiones hacia CLI nativo.
+- **Container Linux existente:** lectura, edición, procesos, tests y Git a través de la herramienta aislada `linux`; encendido bajo demanda. No confundir su disco efímero con persistencia verificada.
+- **GitHub:** commits en ramas de revisión `opencode/*` y PR borrador; `main` y producción no se editan automáticamente.
+- **Inferencia:** conectar y utilizar proveedores permitidos; presupuesto externo OpenRouter **US$2/día** informado por el titular. **Sin cuotas internas diarias artificiales de pruebas en staging**; respetar gastos externos, permisos y detención de bucles sin progreso.
+
+### Evidencia, límites y condición de reconsideración
+
+| Área | Estado |
+|---|---|
+| Reparación autónoma con pruebas y comprobación externa | **Demostrada en G1** |
+| Autodesarrollo, commit y PR propios del agente | **Demostrado en G2** |
+| CI de contribución + staging protegido + producción no modificada | **Demostrado** |
+| Persistencia fiable de archivos/sesiones, reinicio y restauración por hash | **No demostrado: G4** |
+| Flujo móvil y UX de desarrollo, plantillas, diagnóstico estable | **G5–G7** |
+| Trabajo con CDF CLOUD y WorkBench, entrega E2E y rollback | **G8–G9** |
+| Comparación frente a motor OpenCode nativo | **No evaluable bajo la restricción actual** |
+
+**Reconsiderar B solo si** deja de existir la restricción de instalación **y** se identifica una razón material y verificable (compatibilidad, riesgo, costo o mantenimiento). Se exigiría prueba aislada, equivalencia funcional, recuperación y reversión antes de cualquier corte de tráfico. No crear un segundo motor o servicio como requisito para G4.
+
+**G3 cerrado por selección de A bajo alcance revisado. Siguiente prioridad: G4 — respaldar el proyecto fuera del Container, detener/restaurar el entorno y comprobar hashes, estado útil y tests.** La decisión completa queda en `docs/HITO_G3_EJECUCION_2026-11-09.md`. No fusionar ni desplegar a producción por esta decisión.
+
+---
+
+**Las secciones siguientes conservan la propuesta del 8 de noviembre como registro histórico. Donde hablan del “objetivo preferido B”, del CLI nativo o de migración, no prevalecen sobre la decisión vigente anterior.**
+
+
 ## Evidencia recuperada
 
 - `main` en `67b44a92177d176d177dc4607f580808102d36ff` (PR #27).
@@ -44,7 +81,7 @@ Levantar B **en paralelo** y sin reutilizar ni borrar recursos o datos productiv
 
 ## Congelación de complejidad
 
-Ninguna nueva funcionalidad avanzada antes del éxito del bucle de agente. Corregir primero fallos reproducibles y documentar el resultado. La autoprueba de agente debe permitir reintentos tras resultado terminal (sujeto a cuota); no tras una ejecución aún pendiente. No dejar Cron ni workflows temporales persistentes.
+Ninguna nueva funcionalidad avanzada antes del éxito del bucle de agente. Corregir primero fallos reproducibles y documentar el resultado. La autoprueba de agente debe permitir reintentos tras resultado terminal sin cuota interna diaria artificial en staging; no duplicar una ejecución aún pendiente ni eludir límites económicos externos. No dejar Cron ni workflows temporales persistentes.
 
 Fuentes técnicas:
 - https://opencode.ai/docs/cli/web/
