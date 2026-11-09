@@ -380,7 +380,7 @@ export class DevContainer extends DurableObject<Env> {
         const stdin = new ReadableStream<Uint8Array>({
           start(controller) { controller.enqueue(data); controller.close(); }
         });
-        const process = await container.exec(["node", "-e", RESTORE_PROJECT_SOURCE, source, target], { stdin });
+        const process = await container.exec(["node", "--input-type=module", "-e", RESTORE_PROJECT_SOURCE, source, target], { stdin });
         const output = await process.output();
         const decoder = new TextDecoder();
         if (output.exitCode !== 0) {
