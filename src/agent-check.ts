@@ -7,6 +7,8 @@ export type AgentCheckEvidence = {
   observedFailingTest: boolean;
   /** A successful tool result arrived only AFTER observing a failing test. */
   verifiedRepairSequence: boolean;
+  /** A model/provider emitted an invalid tool name containing protocol delimiters. */
+  malformedToolCall?: boolean;
 };
 
 export function assessAgentToolEvidence(
@@ -29,11 +31,15 @@ export function assessAgentToolEvidence(
   let correctLinuxResult = false;
   let observedFailingTest = false;
   let verifiedRepairSequence = false;
+  let malformedToolCall = false;
   for (const message of messages) {
     if (message.type !== "assistant") continue;
     for (const part of message.content ?? []) {
       if (part.type !== "tool") continue;
       requestedTools++;
+      if (typeof part.name === "string" && /<\|(?:channel|im_start|im_end|sep)\|>/.test(part.name)) {
+        malformedToolCall = true;
+      }
       if (part.name !== "linux" || part.state?.status !== "completed") continue;
       finishedLinuxTools++;
       const output = (part.state.content ?? [])
@@ -60,7 +66,7 @@ export function assessAgentToolEvidence(
       }
     }
   }
-  return { requestedTools, finishedLinuxTools, correctLinuxResult, observedFailingTest, verifiedRepairSequence };
+  return { requestedTools, finishedLinuxTools, correctLinuxResult, observedFailingTest, verifiedRepairSequence, malformedToolCall };
 }
 
 /** Reuse only a genuinely unfinished proof; terminal attempts are retryable. */
@@ -82,6 +88,9 @@ export function isAgentCheckModel(value: unknown): value is AgentCheckModel {
 export function explainAgentCheckFailure(evidence: AgentCheckEvidence, kind: AgentCheckKind = "linux"): string {
   if (evidence.requestedTools === 0) {
     return "El agente no solicitó herramientas. Es posible que el modelo no haya arrancado; revisa el proveedor y los registros de Cloudflare.";
+  }
+  if (evidence.malformedToolCall) {
+    return "El modelo o adaptador emitió un nombre de herramienta inválido con delimitadores de protocolo; revisa el formato de llamadas al proveedor antes de reintentar.";
   }
   if (evidence.finishedLinuxTools === 0) {
     return "El agente solicitó herramientas, pero ninguna ejecución Linux terminó correctamente.";
