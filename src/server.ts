@@ -138,7 +138,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (message.type !== "assistant") continue;
       for (const part of message.content ?? []) {
         if (part.type !== "tool") continue;
-        const raw = (part.state?.content ?? []).filter(x => x.type === "text")
+        if (part.state?.status !== "completed") {
+          events.push({ name: part.name, status: part.state?.status, output: "tool not completed" });
+          continue;
+        }
+        const raw = (part.state.content ?? []).filter(x => x.type === "text")
           .map(x => x.text ?? "").join("\n");
         let detail = "";
         try {
