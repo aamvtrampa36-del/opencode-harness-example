@@ -60,13 +60,40 @@ describe("Diagnostic model selection and evidence explanations", () => {
     expect(isAgentCheckModel("../secret")).toBe(false);
   });
   test("distinguishes provider/tool/non-persistent failures", () => {
-    expect(explainAgentCheckFailure({requestedTools:0,finishedLinuxTools:0,correctLinuxResult:false})).toContain("no solicitó herramientas");
-    expect(explainAgentCheckFailure({requestedTools:2,finishedLinuxTools:0,correctLinuxResult:false})).toContain("ninguna ejecución Linux");
-    expect(explainAgentCheckFailure({requestedTools:2,finishedLinuxTools:1,correctLinuxResult:false})).toContain("faltó la salida");
-    expect(explainAgentCheckFailure({requestedTools:2,finishedLinuxTools:1,correctLinuxResult:true})).toContain("archivo persistido");
+    expect(explainAgentCheckFailure({requestedTools:0,finishedLinuxTools:0,correctLinuxResult:false,observedFailingTest:false,verifiedRepairSequence:false})).toContain("no solicitó herramientas");
+    expect(explainAgentCheckFailure({requestedTools:2,finishedLinuxTools:0,correctLinuxResult:false,observedFailingTest:false,verifiedRepairSequence:false})).toContain("ninguna ejecución Linux");
+    expect(explainAgentCheckFailure({requestedTools:2,finishedLinuxTools:1,correctLinuxResult:false,observedFailingTest:false,verifiedRepairSequence:false})).toContain("faltó la salida");
+    expect(explainAgentCheckFailure({requestedTools:2,finishedLinuxTools:1,correctLinuxResult:true,observedFailingTest:false,verifiedRepairSequence:false})).toContain("archivo persistido");
   });
 });
 
+
+describe("Strict red-to-green tool evidence", () => {
+  const fail = tool(JSON.stringify({project,exitCode:1,stdout:"TAP version 13\\nnot ok 1 - sumar dos numeros"}));
+  const pass = tool(JSON.stringify({project,exitCode:0,stdout:"AGENT_PROOF_OK:"+token}));
+  test("a passing tool call alone does NOT prove the agent inspected the failure", () => {
+    const e = assessAgentToolEvidence([pass], project, token);
+    expect(e.correctLinuxResult).toBe(true);
+    expect(e.observedFailingTest).toBe(false);
+    expect(e.verifiedRepairSequence).toBe(false);
+    expect(explainAgentCheckFailure(e, "repair")).toContain("No se observó");
+  });
+  test("the failing test must be observed BEFORE a successful tool call", () => {
+    const wrong = assessAgentToolEvidence([pass,fail], project, token);
+    expect(wrong.observedFailingTest).toBe(true);
+    expect(wrong.verifiedRepairSequence).toBe(false);
+    const correct = assessAgentToolEvidence([fail,pass], project, token);
+    expect(correct.verifiedRepairSequence).toBe(true);
+  });
+  test("a failing test from another project does not count", () => {
+    const other = tool(JSON.stringify({project:"unrelated",exitCode:1,stdout:"not ok 1 - wrong"}));
+    expect(assessAgentToolEvidence([other,pass],project,token).verifiedRepairSequence).toBe(false);
+  });
+  test("non-Linux tool calls cannot establish the failure", () => {
+    const spoofed = tool(JSON.stringify({project,exitCode:1,stdout:"not ok"}), "completed", "text");
+    expect(assessAgentToolEvidence([spoofed,pass],project,token).verifiedRepairSequence).toBe(false);
+  });
+});
 
 describe("Isolated autonomous code-repair rehearsal", () => {
   test("only expected proof modes are supported", () => {
