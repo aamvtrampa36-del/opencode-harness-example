@@ -19,7 +19,7 @@ import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
 import { remoteMcpPlugin } from "./mcp-plugin";
-import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
+import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -76,7 +76,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
     // Staging-only development switch: retries are allowed without a daily counter.
     // Production keeps the existing quota unless its own environment opts in.
-    const unrestrictedDev = (this.env as Env & { G1_DEV_UNLIMITED_CHECKS?: string }).G1_DEV_UNLIMITED_CHECKS === "true";
+    const unrestrictedDev = isUnlimitedDevAgentCheck((this.env as Env & { G1_DEV_UNLIMITED_CHECKS?: string }).G1_DEV_UNLIMITED_CHECKS);
     if (!unrestrictedDev && !(await this.personalConfig.reserveAgentCheck())) {
       return { status: "daily-limit", message: "Límite de dos verificaciones diarias para evitar gastos de IA" };
     }
