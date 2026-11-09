@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "opencode-g1-staging",
   "preview_urls": false,
-  "main": "src/server.ts",
+  "main": "src/g1-diagnostic-probe.ts",
   "compatibility_date": "2026-06-11",
   "compatibility_flags": [
     "nodejs_compat"
@@ -63,7 +63,12 @@
     }
   ],
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
   },
   "containers": [
     {
@@ -72,6 +77,8 @@
     }
   ],
   "triggers": {
-    "crons": []
+    "crons": [
+      "* * * * *"
+    ]
   }
 }
