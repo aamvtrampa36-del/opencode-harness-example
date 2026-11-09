@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AGENT_CHECK_MODELS, isAgentCheckModel, type AgentCheckModel } from "./agent-check";
+import { AGENT_CHECK_MODELS, isAgentCheckModel, AGENT_CHECK_KINDS, isAgentCheckKind, type AgentCheckKind, type AgentCheckModel } from "./agent-check";
 import { MODEL_PRESETS } from "./model-presets";
 
 type AgentStatus = {
@@ -11,6 +11,7 @@ type AgentStatus = {
   error?: string;
   message?: string;
   model?: string;
+  kind?: string;
 };
 
 /** Explicit owner-initiated test: no cron and no arbitrary user shell. */
@@ -18,6 +19,7 @@ export function AgentCheckPanel({ workspace }: { workspace: string }) {
   const [status, setStatus] = useState<AgentStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [model, setModel] = useState<AgentCheckModel>("cloudflare");
+  const [kind, setKind] = useState<AgentCheckKind>("repair");
   const [error, setError] = useState("");
 
   const refresh = async () => {
@@ -44,7 +46,7 @@ export function AgentCheckPanel({ workspace }: { workspace: string }) {
       const response = await fetch("/api/dev/agent-check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspace, model })
+        body: JSON.stringify({ workspace, model, kind })
       });
       if (!response.ok) throw new Error("El servidor rechazó la autoprueba");
       const body = await response.json() as AgentStatus;
@@ -67,10 +69,16 @@ export function AgentCheckPanel({ workspace }: { workspace: string }) {
     <section className="mt-5 space-y-2 border-t border-kumo-line pt-4" aria-label="Autoprueba del agente">
       <h3 className="text-sm font-semibold">Comprobar autonomía real</h3>
       <p className="text-xs text-kumo-subtle">
-        Una prueba opcional, limitada a dos intentos diarios. OpenCode usará el modelo elegido,
-        intentará crear un archivo en Linux y comprobará su persistencia real.
+        Una prueba opcional, limitada a dos intentos diarios. El modo Reparación exige que la IA
+        corrija un programa con una prueba fallida; el servidor comprobará el resultado sin confiar en su respuesta.
         Consume una pequeña cantidad de inferencia; no programa comprobaciones repetidas.
       </p>
+      <label className="block text-xs" htmlFor="agent-check-kind">Qué comprobar</label>
+      <select id="agent-check-kind" value={kind} disabled={busy || ["started", "running", "queued"].includes(status?.status ?? "")}
+        onChange={event => { if (isAgentCheckKind(event.target.value)) setKind(event.target.value); }}
+        className="rounded-md border border-kumo-line bg-transparent px-2 py-2 text-xs">
+        {AGENT_CHECK_KINDS.map(id => <option key={id} value={id}>{id === "repair" ? "Reparación real de código" : "Herramienta Linux básica"}</option>)}
+      </select>
       <label className="block text-xs" htmlFor="agent-check-model">Modelo de prueba</label>
       <select id="agent-check-model" value={model} disabled={busy || ["started", "running", "queued"].includes(status?.status ?? "")}
         onChange={event => { if (isAgentCheckModel(event.target.value)) setModel(event.target.value); }}
@@ -87,6 +95,7 @@ export function AgentCheckPanel({ workspace }: { workspace: string }) {
         {typeof status?.toolCalls === "number" ? " · Llamadas a herramientas: " + status.toolCalls : ""}
         {status?.fileVerified ? " · Archivo comprobado" : ""}
       </p>
+      {status?.kind ? <p className="text-xs text-kumo-subtle">Prueba ejecutada: {status.kind === "repair" ? "Reparación" : "Linux básico"}</p> : null}
       {status?.model && isAgentCheckModel(status.model)
         ? <p className="text-xs text-kumo-subtle">Modelo ejecutado: {MODEL_PRESETS[status.model].label}</p> : null}
       {status?.reason || status?.message
