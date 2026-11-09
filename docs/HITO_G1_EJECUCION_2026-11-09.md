@@ -114,3 +114,17 @@ La ejecución local del comando que prepara los archivos devolvió `exit_code=1`
 - [GitHub Actions #104](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42565660807)
 - [Rama y cambios de PR #28](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/28)
 - [Plan maestro de V1](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/V1_EXECUTION_PLAN.md)
+
+
+## Corrección posterior a la primera comprobación de cierre (05:11 UTC)
+
+**Esta sección corrige el carácter provisional del cierre anterior.** Los eventos de Cron llegaron a Workers Observability después de la comprobación inicial y mostraron un fallo técnico **real**, que no estaba incluido en el diagnóstico previo.
+
+- 2026-11-09 05:10 UTC: evento `scheduled` del staging, llamadas RPC reales a `OpenCodeAgent`, `PersonalSettings` y `DevContainer`. El primer resultado `G1_EVIDENCE` fue `{phase:"start",status:"failed",kind:"repair",model:"cloudflare",message:"No se pudo preparar la prueba de reparación con un test fallido verificable."}`.
+- No había evidencia de un modelo trabajando todavía: el fallo ocurrió durante la **preparación de los archivos de prueba** en Linux. No se debe atribuir la reparación a OpenCode.
+- **Hipótesis técnica sustentada:** el Container ejecuta Node.js 24; el verificador esperaba el texto TAP `not ok`, pero Node.js 24 puede usar por defecto un reporter distinto. La prueba anterior del supervisor había usado Node.js 22 y no detectó esta diferencia. La documentación pública de Node confirma que `--test-reporter=tap` permite fijar el formato.
+- Se corrigieron `src/agent-check.ts`, `src/server.ts` y `src/agent-check.test.ts` para usar explícitamente `node --test --test-reporter=tap calc.test.mjs` en preparación, solicitud al agente, verificación y regresiones. Ahora el servidor también informa `exitCode` y si observó salida TAP cuando la preparación falla.
+- La corrección quedó en la PR #28; GitHub Actions #107 terminó satisfactoriamente. Una nueva prueba interna de staging usa el workspace aislado `d46c73a9-7e9d-4280-a0a9-1a7bf5cb3405`. El desplegue asociado a Workers Builds `37860877-8812-450f-96eb-539813937feb` terminó con `success` y versión `b2aa474c-10bb-4533-b1a0-8cadc375e2b2`.
+- La segunda prueba todavía exige **su propia evidencia real de ejecución** y no debe declararse aprobada por el éxito del despliegue. El mecanismo temporal `scheduled` permanece solo en staging mientras se observa ese intento, y se retirará antes del cierre final.
+
+**Estado revisado:** infraestructura y Linux realmente invocados en una primera prueba; el modelo todavía no inició una reparación observable. El cierre del hito G1 sigue abierto y sujeto al resultado del reintento con TAP explícito.
