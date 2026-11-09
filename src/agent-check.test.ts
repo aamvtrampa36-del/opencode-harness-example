@@ -89,6 +89,15 @@ describe("Strict red-to-green tool evidence", () => {
     const other = tool(JSON.stringify({project:"unrelated",exitCode:1,stdout:"not ok 1 - wrong"}));
     expect(assessAgentToolEvidence([other,pass],project,token).verifiedRepairSequence).toBe(false);
   });
+  test("malformed channel delimiters in model tool names receive a concrete diagnosis", () => {
+    const fail = tool(JSON.stringify({project,exitCode:1,stdout:"TAP version 13\\nnot ok 1 - sumar dos numeros"}));
+    const invalid = tool("Unknown tool", "error", "inspect_linux<|channel|>commentary");
+    const evidence = assessAgentToolEvidence([fail, invalid], project, token);
+    expect(evidence.observedFailingTest).toBe(true);
+    expect(evidence.verifiedRepairSequence).toBe(false);
+    expect(evidence.malformedToolCall).toBe(true);
+    expect(explainAgentCheckFailure(evidence, "repair")).toContain("nombre de herramienta inválido");
+  });
   test("non-Linux tool calls cannot establish the failure", () => {
     const spoofed = tool(JSON.stringify({project,exitCode:1,stdout:"not ok"}), "completed", "text");
     expect(assessAgentToolEvidence([spoofed,pass],project,token).verifiedRepairSequence).toBe(false);
