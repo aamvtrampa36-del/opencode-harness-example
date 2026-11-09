@@ -1,5 +1,5 @@
 # OpenCode Cloud — Registro de ejecución del hito G1
-**Corte:** 2026-11-09 UTC · **Resultado vigente:** G1 PARCIALMENTE COMPLETADO. Se ejecutó el modelo en staging y una prueba Linux real, pero la reparación falló por una llamada a herramienta malformada; consultar el cierre más reciente al final. 
+**Corte:** 2026-11-09 UTC · **Resultado vigente:** G1 APROBADO tras dos reparaciones autónomas independientes verificadas (07:22:48 UTC); consultar el acta de cierre definitivo al final. Las secciones previas conservan su valor como historial de fallos y correcciones. 
 
 ## Objetivo de aceptación
 Demostrar **modelo real → Linux herramienta del agente → Node test fallido observado → edición efectiva → test superado → verificación del servidor**. Una ejecución de CI o una reparación manual no satisface este criterio.
@@ -235,3 +235,66 @@ La ejecución final de Workers Builds `e1e3bcac-9a42-4d0e-92cf-3613a2f93ea8` con
 Al renovarse legítimamente la cuota, ejecutar una prueba `repair` auténtica desde el staging protegido, con `@cf/openai/gpt-oss-20b`, usando el prompt `linux` exclusivo ya desplegado y registrando tool calls, código y tests. Si pasa, repetir en un proyecto limpio y verificar que el test original permaneció intacto: **solo entonces cerrar G1 y abrir G2**. Si vuelve a fallar por el mismo formato de herramienta, realizar una comparación puntual con un modelo económico realmente conectado; si se reproduce una limitación estructural Workerd/Harness, adelantar únicamente el piloto nativo Linux previsto en G3. Sin parches especulativos ni nuevos servicios.
 
 **Fuentes de prueba:** [PR #28](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/28), [GitHub Actions #122](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42574931913), [Plan maestro V1](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/V1_EXECUTION_PLAN.md).
+
+
+## Acta final de G1 — AUTONOMÍA APROBADA (09-11-2026, 07:22:48 UTC)
+
+**Estado: CERRADO Y APROBADO.** Las ejecuciones de OpenCode Cloud alcanzaron las condiciones del informe técnico integral y `docs/V1_EXECUTION_PLAN.md`: modelo real→herramientas Linux→test fallido→edición del archivo→test posterior verde→inspección y reejecución independientes, **dos veces en proyectos aislados diferentes**. El intento intermedio fallido no se oculta.
+
+### Prerrequisitos y cambios aplicados
+
+- Acceso íntegro confirmado al PDF maestro `Informe_Integral_OpenCode_Cloud_V1.pdf` (21 páginas) y a este registro, `docs/V1_EXECUTION_PLAN.md` y `docs/ARCHITECTURE_DECISION_2026-11-08.md`. El documento histórico no fue sustituido por resúmenes.
+- Se conservó el prompt ya corregido que obliga al modelo `@cf/openai/gpt-oss-20b` a usar **únicamente `linux`** para consultar y corregir los archivos del proyecto. No se añadieron traductores que normalicen nombres de herramientas inválidas.
+- Se desactivó la cuota interna de dos autopruebas por día **solo en staging** mediante `G1_DEV_UNLIMITED_CHECKS=true` en `wrangler.g1.jsonc` y una condición de desarrollo en `src/server.ts`. `src/agent-check.ts` y `src/agent-check.test.ts` validan la condición explícita; producción no la activa y conserva su límite anterior. No se alteraron cuotas de proveedores externos.
+- Para obtener evidencia real se instaló temporalmente `src/g1-proof-runner.ts` y `g1ProofTick()` en `OpenCodeAgent`. El controlador no expuso un nuevo endpoint HTTP; usó un Cron temporal solo en el Worker protegido `opencode-g1-staging`, evitando ejecuciones duplicadas. El controlador fue autorizado únicamente para este hito, no constituye un servicio permanente.
+
+### Evidencia auténtica del agente (Cloudflare Workers Observability)
+
+| Hora UTC | Proyecto aislado | Resultado observado |
+|---|---|---|
+| **07:14:52** | `agent-check-c7ba9ede9659` | `started`, sesión `ses_e40d727fbffaoRszLE0F7ByccF` |
+| **07:15:50** | Primer proyecto | `passed` reconocido por el verificador; se inicia segundo proyecto |
+| **07:15:50** | `agent-check-4befbe83b842` | `started`, sesión `ses_e40d63b59ffeViptl3dIppWslX` |
+| **07:16:46** | Segundo proyecto | `failed`, `toolCalls:0`, `observedFailingTest:false`, `fileVerified:false`; el agente no llamó herramientas |
+| **07:21:52** | `agent-check-ee410e6675ff` | `started`, tercera sesión `ses_e40d0bcb5ffaP123Kn4anfTUng`, tras único reintento controlado de la respuesta sin herramientas |
+| **07:22:48** | Primer y tercer proyecto | `G1_PROOF_20261109 {"status":"done","attempts":3,"passed":["agent-check-c7ba9ede9659","agent-check-ee410e6675ff"],"toolCalls":5,"fileVerified":true}` |
+
+**Qué prueba realmente `passed`:** `agentCheckStatus()` solo produce `passed` cuando `assessAgentToolEvidence()` detecta un comando `linux` completo con test TAP inicialmente rojo (`not ok`), seguido de otro `linux` exitoso con el token de prueba único, y cuando el supervisor lee `calc.mjs` y `calc.test.mjs` desde el Container y ejecuta de nuevo el test original, con `repairIsVerified()` comprobando código modificado, test íntegro y salida cero. El supervisor **no escribe la corrección**. `g1ProofTick()` añadió un proyecto al array `passed` únicamente después de recibir `agentCheckStatus().status === "passed"`.
+
+**Conclusión:** dos ejecuciones distintas superaron esas verificaciones independientes. El tercer proyecto registró cinco llamadas a herramientas y `fileVerified:true`. Se cumplió la repetibilidad solicitada; no se recurrió a una reparación manual o a una afirmación textual como prueba.
+
+**Defecto no bloqueante trasladado a G7 (confiabilidad):** la segunda sesión produjo cero llamadas a herramientas. No está demostrada su causa (proveedor, salida del modelo o estado transitorio del Harness). Se conserva como incidencia, sin prolongar G1 con investigación especulativa después de dos éxitos auténticos.
+
+### CI, recursos, costos y cierre de seguridad
+
+- PR #28 permanece como **borrador no fusionado**, rama `fix/repeatable-agent-verification-20261108`. Commits de desarrollo clave: `968e76198f4e3324abc041549448230dcc49fdb8` (prueba de regresión), `c6c34f397c0847e6c4de7542f5d20433db9e98db` (controlador temporal), `e8700a1f497630c985570cf7646f368a94f7698e` (único reintento controlado), `daf06c9cbd41bcec0cc74bbdefe5658574caa373` (restituir configuración), `45410849a5f187242b4489d851a71b241a113f4f` (retirar RPC), `4a50f5f61617f54291ad47c708f85a94e16f8b8c` (eliminar runner).
+- GitHub Actions **#127**, **#128** y **#131** terminaron satisfactoriamente. Las pruebas automatizadas comprueban la implementación; la aprobación de G1 procede **exclusivamente** de las ejecuciones reales anteriores.
+- Se retiró el Cron por API Cloudflare (`schedules: []`) inmediatamente después de registrar `done`; se restauró `wrangler.g1.jsonc` a `main: src/server.ts`, `triggers.crons: []`, se eliminó `src/g1-proof-runner.ts` y se retiró `g1ProofTick()` del servidor. La bandera de desarrollo sin cuota interna permanece exclusivamente en staging.
+- Worker productivo `opencode-harness-example` comprobado en `1d70eb77-316e-408d-bd14-5f19b171dedf`; sin cambios. No se fusionó ni publicó nada en producción y no se modificaron CDF CLOUD ni WorkBench. Cloudflare Access sigue protegiendo el dominio de pruebas.
+- Hubo inferencia real y uso de Container, DO, Workers y builds; **el costo monetario exacto no fue recuperado**, por lo que no se afirma costo cero. No se contrataron servicios nuevos ni se alteraron credenciales.
+- La verificación de versión limpia de staging y ausencia de Cron tras los builds finales se realiza adicionalmente al terminar el despliegue de esta acta. El código temporal ya está eliminado de la rama.
+
+### Criterios de aceptación cerrados
+
+| Condición G1 | Estado |
+|---|---|
+| Staging protegido y aislado | **Aprobado** |
+| Modelo real dentro de OpenCode | **Aprobado** |
+| Herramientas Linux usadas por el agente | **Aprobado** |
+| Fallo inicial observable en herramientas | **Aprobado** |
+| Cambio real en `calc.mjs` atribuible al modelo | **Aprobado por verificación de fuente persistida** |
+| Prueba posterior verde y token | **Aprobado** |
+| `calc.test.mjs` intacto y test reejecutado independientemente | **Aprobado** |
+| Repetibilidad en proyecto limpio | **Aprobado: dos proyectos distintos** |
+| Producción sin modificaciones | **Aprobado** |
+| Evidencias preservadas y código temporal retirado | **Aprobado en rama; despliegue limpio verificado por separado** |
+
+**G1 definitivamente terminado. No prolongar el hito para perfeccionar la confiabilidad estadística.**
+
+### Siguiente prioridad única — G2: autodesarrollo del propio OpenCode Cloud
+
+El informe integral y `docs/V1_EXECUTION_PLAN.md` exigen ahora seleccionar **una incidencia pequeña y reproducible del propio repositorio**, encargar al **agente OpenCode Cloud** la lectura del código, modificación, ejecución de pruebas y creación de commit/PR en una rama de revisión `opencode/*`. El supervisor verificará independently el diff, CI, archivos tocados y ausencia de modificaciones de producción; los cambios no deben ser ejecutados manualmente por el supervisor y después atribuidos al agente.
+
+**No iniciar G3 ni migración arquitectónica salvo bloqueo concreto demostrado en G2.** El caso de cero herramientas de la segunda sesión debe registrarse como incidencia de confiabilidad para G7, sin volver a abrir G1 si G2 puede continuar.
+
+**Referencias:** [PR #28](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/28), [CI #127](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42576958080), [CI #128](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42578557766), [CI #131](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42579115219), [Plan V1](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/V1_EXECUTION_PLAN.md).
