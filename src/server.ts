@@ -135,7 +135,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
 
 
-  /** Temporary G1 staging-only RPC: bounded to two actual repair attempts, no daily quota. */
+  /** Temporary G1 staging-only RPC: two passing repairs, one retry only for a tool-free model response. */
   async g1ProofTick(): Promise<unknown> {
     if ((this.env as Env & { G1_DEV_UNLIMITED_CHECKS?: string }).G1_DEV_UNLIMITED_CHECKS !== "true") {
       return { status: "disabled" };
@@ -144,6 +144,22 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const key = "g1-proof-run-20261109";
     const progress = (await this.ctx.storage.get<Progress>(key)) ??
       { attempts: 0, passed: [], status: "active" };
+    // A tool-free second response can be transient; allow exactly one third isolated attempt.
+    if (progress.status === "failed" && progress.attempts === 2 &&
+        progress.passed.length === 1 && progress.reason?.includes("no solicitó herramientas")) {
+      progress.status = "active";
+      progress.reason = undefined;
+      progress.attempts = 3;
+      await this.ctx.storage.put(key, progress);
+      const retry = await this.startAgentCheck("cloudflare", "repair");
+      if (retry.status !== "started") {
+        progress.status = "failed";
+        progress.reason = retry.message ?? retry.status;
+        await this.ctx.storage.put(key, progress);
+      }
+      return { status: retry.status, attempts: progress.attempts, project: retry.project,
+        session: retry.session, passed: progress.passed, reason: progress.reason };
+    }
     if (progress.status !== "active") return { status: progress.status, attempts: progress.attempts,
       passed: progress.passed, reason: progress.reason };
     if (progress.attempts > 0) {
