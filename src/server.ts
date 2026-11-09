@@ -91,7 +91,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (kind === "repair") {
         const seed = await this.linuxRunner.run(project, repairSeedCommand());
         if (seed.exitCode !== 1 || !seed.stdout.includes("not ok")) {
-          throw new Error("No se pudo preparar la prueba de reparación con un test fallido verificable.");
+          throw new Error("Prueba inicial no verificable: exitCode=" + seed.exitCode + "; salida TAP=" + seed.stdout.includes("not ok") + "; stderr presente=" + Boolean(seed.stderr));
         }
       }
       const handle = this.harness.session(created.id);
@@ -109,9 +109,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
         "y describe su exitCode. No alteres ningún otro proyecto.";
       const repairPrompt = "Prueba REAL de reparación autónoma de código. Trabaja exclusivamente en Linux con project=" +
         project + ". Ya existen calc.mjs (contiene un bug) y calc.test.mjs (prueba que falla). " +
-        "Primero usa la herramienta linux para ejecutar node --test calc.test.mjs y ver el fallo. " +
+        "Primero usa la herramienta linux para ejecutar node --test --test-reporter=tap calc.test.mjs y ver el fallo. " +
         "Después inspecciona los archivos y CORRIGE calc.mjs; NO modifiques calc.test.mjs. " +
-        "Ejecuta de nuevo node --test calc.test.mjs y solo si pasa imprime AGENT_PROOF_OK:" + token +
+        "Ejecuta de nuevo node --test --test-reporter=tap calc.test.mjs y solo si pasa imprime AGENT_PROOF_OK:" + token +
         " desde esa misma herramienta Linux. No basta con describir la reparación ni modificar otros proyectos.";
       await handle.submit(kind === "repair" ? repairPrompt : prompt, { whenBusy: "followUp" });
       return { status: "started", session: created.id, project, model, kind };
@@ -176,7 +176,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
             dev.inspect(state.project, "read", "calc.test.mjs") as Promise<{ contents?: string }>
           ]);
           if (source.contents && test.contents === REPAIR_TEST && source.contents !== REPAIR_SOURCE_BROKEN) {
-            const run = await dev.run(state.project, "node --test calc.test.mjs");
+            const run = await dev.run(state.project, "node --test --test-reporter=tap calc.test.mjs");
             fileVerified = repairIsVerified(source.contents, test.contents, run.exitCode);
           }
         } else {
