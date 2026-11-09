@@ -62,11 +62,11 @@ Priorizar un **agente que edite, ejecute, corrija, confirme y permita recuperar*
 - **Hecho cuando:** la elección queda formalizada, el plan actualizado, seguridad y aislamiento verificados, y G4 habilitado sin dependencia de instalar motor nativo. **Estado: cumplido; ver `docs/HITO_G3_EJECUCION_2026-11-09.md`.**
 - **Reconsideración futura, no bloqueante:** únicamente si desaparece la restricción de instalación y existe una razón medible (compatibilidad, mantenimiento, costo o confiabilidad) para ensayar nativo aislado; nunca migrar producción sin pruebas y reversión.
 
-### G4 — Persistencia y recuperación
-- Diseñar estructura simple por repositorio y sesión: identificación del proyecto, git checkout/rama, directorio y snapshots.
-- Exportar contenido y metadatos valiosos fuera del Container. Confirmar lectura y hash después de restaurar; las snapshots beta expiran a los 30 días.
-- Probar detener el Container con un trabajo guardado y reanudarlo; probar fallo durante escritura.
-- **Hecho cuando**: la recuperación funciona de verdad y existe una ruta de reversión documentada.
+### G4 — Persistencia y recuperación (APROBADO 2026-11-09)
+- La copia independiente ya existente en SQLite de Durable Objects (hasta 2 MiB comprimidos) ahora tiene **restauración no destructiva**: `POST /api/dev/restore/{proyecto}` exige un destino **nuevo**, valida el archivo, comprueba SHA-256 y publica los archivos atómicamente. `POST /api/dev/backup/{proyecto}` puede guardar la referencia de sesión; se conserva rama y commit Git cuando están disponibles. Estas referencias no equivalen a respaldar el transcript ni a preservar `.git`.
+- **Prueba real:** Container aislado destruido, imagen nueva confirmada vacía, respaldo leído desde DO y cuatro archivos restaurados con hashes iguales; prueba Node verde y sobrescritura rechazada. Fallo durante escritura y reintento validados en CI; las snapshots beta (30 días) no fueron utilizadas como único respaldo.
+- El historial de sesión Workerd sigue en almacenamiento DO separado: se verificó que una sesión histórica de G2 continúa registrada con 20 mensajes. **No se afirma reanudación automática de una ejecución que estaba en progreso**, ni respaldo de dependencias, secretos o Git internals. La ampliación a proyectos mayores de 2 MiB queda para cuando exista necesidad demostrada.
+- **Hecho cuando:** existe restauración real, independiente de una snapshot, con integridad y reversión documentadas. **Cumplido en alcance V1 personal; evidencias y límites en `docs/HITO_G4_EJECUCION_2026-11-09.md`.** Siguiente: G5 (interfaz para vibe coding).
 
 ### G5 — Interfaz para vibe coding
 - Pantalla principal: proyecto → tarea → modelo automático/elegido → ejecutar. Mostrar eventos reales, archivos cambiados, coste aproximado, terminar/reanudar.
@@ -132,6 +132,6 @@ Fuentes:
 
 **Estado vigente a 2026-11-09:** G1 aprobado (dos reparaciones autónomas independientes), G2 aprobado ([PR #29](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/29) del agente y CI #147), G3 aprobado bajo la selección arquitectónica revisada (ver su acta). PR #28 y PR #29 siguen como borradores sin fusionar; la documentación de esta rama no afirma entrega a producción.
 
-**Siguiente hito bloqueante: G4 — Persistencia y recuperación.** Demostrar respaldo externo al Container, integridad por hashes, reinicio/restauración y recuperación de estado útil, incluidos fallos durante la escritura. No asumir que las snapshots beta equivalen a respaldo duradero.
+**G4 APROBADO:** recuperación no destructiva verificada en Linux nuevo desde respaldo persistente en DO, hashes iguales y pruebas verdes; el alcance y las limitaciones constan en su acta. **Siguiente hito G5 — Interfaz para vibe coding**, para que el usuario ejecute tareas, consulte respaldos y restaure sin terminal. No asumir que las snapshots beta equivalen a respaldo duradero.
 
-**No declarar V1 completa** mientras falten G4, G8 y los E2E finales de G9. G5–G7 continúan según sus gates propios. La imposibilidad comunicada de instalar OpenCode nativo no bloquea la V1 y no equivale a haberlo comparado.
+**No declarar V1 completa** mientras falten G5–G8 y los E2E finales de G9. G5–G7 continúan según sus gates propios. La imposibilidad comunicada de instalar OpenCode nativo no bloquea la V1 y no equivale a haberlo comparado.
