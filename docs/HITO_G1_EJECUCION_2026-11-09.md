@@ -212,3 +212,26 @@ La ejecución final de Workers Builds `e1e3bcac-9a42-4d0e-92cf-3613a2f93ea8` con
 - El riesgo de despliegues automáticos **fuera de orden** está documentado; el último despliegue fue fijado explícitamente al commit correcto. Antes de nuevas intervenciones con varios commits, verificar la cola de Workers Builds y no confiar únicamente en que el último build iniciado sea el último código publicado.
 
 **Dictamen inalterado:** G1 NO aprobado. Prioridad única: resolver la generación/interpretación del nombre de herramienta `inspect_linux<|channel|>commentary` y repetir `repair` auténtico con cuota disponible; no avanzar a G2 hasta test verde y verificación independiente.
+
+
+## Continuación — instrucción Linux exclusiva y cierre seguro del intento (09-11-2026, 06:46 UTC)
+
+**Fuentes íntegramente verificadas antes de intervenir:** `Informe_Integral_OpenCode_Cloud_V1.pdf` (21 páginas/1524 líneas), este registro, `docs/V1_EXECUTION_PLAN.md` y `docs/ARCHITECTURE_DECISION_2026-11-08.md`. No se sustituyó ninguna fuente por un resumen.
+
+### Diagnóstico conservado y corrección mínima
+- Último intento real anterior: GPT-OSS 20B ejecutó `linux` y observó el test Node rojo, pero emitió después `inspect_linux<|channel|>commentary`, nombre inválido; `calc.mjs` permaneció sin corregir. Este fallo se localizó en el límite de invocación de herramientas y **no se demostró** que fuera culpa exclusiva del modelo o del adaptador.
+- La prueba `repair` anterior pedía `linux` para el primer comando y después decía ambiguamente `inspecciona los archivos`. Se corrigió **solo** `src/server.ts` para especificar que el agente debe usar exclusivamente la herramienta exacta `linux` en todos los pasos: observar test rojo, consultar ambos archivos con `cat`, decidir y escribir el arreglo de `calc.mjs`, ejecutar test verde y emitir el token solo con exitCode exitoso. No se programó la solución, no se reescriben nombres malformados ni se añade otro adaptador.
+- **Commit:** `6fec41d3fe6e80db72da00c99c976ae3e265dd1a` en la PR #28. **GitHub Actions #122: success**. **Cloudflare Workers Builds** `f4624a39-47ae-4945-b74a-372c01992932`: `success` para ese mismo commit; Worker staging `267d0538-50cb-4abc-9dc4-5a3b0a466e4c`.
+- **Verificación directa del script publicado:** contiene la instrucción nueva `Emplea ÚNICAMENTE la herramienta cuyo nombre exacto es linux` y no contiene el código temporal `G1_TOOL_TRACE` ni `G1_STAGING`. Ningún Cron permanece activo.
+- Se comprobó el Worker productivo `opencode-harness-example` en `1d70eb77-316e-408d-bd14-5f19b171dedf`, sin cambios. Staging conserva Cloudflare Access con política de propietario; `schedules=[]` e instancias Container `active=0`, `starting=0`. No se modificó CDF CLOUD, WorkBench, producción ni datos canónicos.
+
+### Límite operativo y evidencia aún ausente
+- El método existente `PersonalSettings.reserveAgentCheck()` reserva **hasta dos autopruebas por día UTC** y ejecuta esa reserva antes de preparar el test Linux. La telemetría y este registro documentan dos intentos el **9 de noviembre UTC**: aproximadamente 05:10 (fallo de preparación, también reservó cuota) y 05:50 (modelo real, test rojo, llamada malformada). **No se inicia una tercera prueba ni se evade la cuota con otro workspace, cron o piloto paralelo.** La siguiente ventana de cuota es desde **2026-11-10 00:00 UTC**, siempre que el mismo límite y configuración sigan vigentes.
+- **No hubo una nueva inferencia real en esta intervención.** El CI aprobado y el despliegue exitoso verifican código y compilación, **no** demuestran que el modelo corrigió el test.
+- Permanecen pendientes la modificación autónoma de `calc.mjs`, ejecución posterior verde, comprobación independiente y repetibilidad. **G1 sigue PARCIAL/NO APROBADO.** No avanzar a G2 ni declarar autonomía concluida.
+- Costo exacto de inferencia/Container/Workers: no disponible en el desglose consultado. Esta intervención generó CI y un build de staging; no se declara consumo cero ni se han contratado servicios nuevos.
+
+### Única prioridad siguiente conforme al informe integral y V1_EXECUTION_PLAN
+Al renovarse legítimamente la cuota, ejecutar una prueba `repair` auténtica desde el staging protegido, con `@cf/openai/gpt-oss-20b`, usando el prompt `linux` exclusivo ya desplegado y registrando tool calls, código y tests. Si pasa, repetir en un proyecto limpio y verificar que el test original permaneció intacto: **solo entonces cerrar G1 y abrir G2**. Si vuelve a fallar por el mismo formato de herramienta, realizar una comparación puntual con un modelo económico realmente conectado; si se reproduce una limitación estructural Workerd/Harness, adelantar únicamente el piloto nativo Linux previsto en G3. Sin parches especulativos ni nuevos servicios.
+
+**Fuentes de prueba:** [PR #28](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/28), [GitHub Actions #122](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42574931913), [Plan maestro V1](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/V1_EXECUTION_PLAN.md).
