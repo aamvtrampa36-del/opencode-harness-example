@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assessAgentToolEvidence } from "./agent-check";
+import { assessAgentToolEvidence, hasUnfinishedAgentCheck } from "./agent-check";
 
 const project = "agent-check-123";
 const token = "abcdef1234";
@@ -33,5 +33,18 @@ describe("OpenCode end-to-end tool proof", () => {
       expect(assessAgentToolEvidence([tool(JSON.stringify(output))],project,token).correctLinuxResult).toBe(false);
     expect(assessAgentToolEvidence([tool("error", "error")],project,token).correctLinuxResult).toBe(false);
     expect(assessAgentToolEvidence([tool("garbage")],project,token).correctLinuxResult).toBe(false);
+  });
+});
+
+describe("Agent verification repeat policy", () => {
+  test("an active check is reused to avoid duplicate inference", () => {
+    expect(hasUnfinishedAgentCheck({ error: undefined }, null)).toBe(true);
+    expect(hasUnfinishedAgentCheck({ error: undefined }, undefined)).toBe(true);
+  });
+  test("a completed or failed check can be attempted again", () => {
+    expect(hasUnfinishedAgentCheck({ error: undefined }, { status: "passed" })).toBe(false);
+    expect(hasUnfinishedAgentCheck({ error: undefined }, { status: "failed" })).toBe(false);
+    expect(hasUnfinishedAgentCheck({ error: "Provider unavailable" }, null)).toBe(false);
+    expect(hasUnfinishedAgentCheck(null, null)).toBe(false);
   });
 });
