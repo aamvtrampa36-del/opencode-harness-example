@@ -73,5 +73,8 @@
   ],
   "triggers": {
     "crons": []
+  },
+  "vars": {
+    "G1_DEV_UNLIMITED_CHECKS": "true"
   }
 }
