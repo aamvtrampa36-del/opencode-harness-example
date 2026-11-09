@@ -125,41 +125,6 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
 
-  /** Temporary staging-only forensic read of G1's synthetic project.
-   * Does not expose prompts or arbitrary tool output, and consumes no model quota.
-   * Remove from the shared source after retrieving the controlled diagnostic.
-   */
-  async g1SyntheticTrace(): Promise<unknown> {
-    const check = await this.ctx.storage.get<{ session: string; project: string }>("agent-check-v1");
-    if (!check || !check.project.startsWith("agent-check-")) return { status: "no-synthetic-check" };
-    const history = await this.harness.session(check.session).history();
-    const events: { name?: string; status?: string; output?: string }[] = [];
-    for (const message of history) {
-      if (message.type !== "assistant") continue;
-      for (const part of message.content ?? []) {
-        if (part.type !== "tool") continue;
-        if (part.state?.status !== "completed") {
-          events.push({ name: part.name, status: part.state?.status, output: "tool not completed" });
-          continue;
-        }
-        const raw = (part.state.content ?? []).filter(x => x.type === "text")
-          .map(x => x.text ?? "").join("\n");
-        let detail = "";
-        try {
-          const parsed = JSON.parse(raw) as { project?: string; exitCode?: number; stdout?: string; stderr?: string };
-          if (parsed.project && parsed.project !== check.project) continue;
-          detail = JSON.stringify({ project: parsed.project, exitCode: parsed.exitCode,
-            stdout: parsed.stdout?.slice(0, 250), stderr: parsed.stderr?.slice(0, 160) });
-        } catch {
-          detail = raw.slice(0, 300);
-        }
-        events.push({ name: part.name, status: part.state?.status, output: detail });
-      }
-    }
-    return { project: check.project, count: events.length, events: events.slice(0, 12) };
-  }
-
-
   async agentCheckStatus(): Promise<unknown> {
     const saved = await this.ctx.storage.get<{
       status: string; toolCalls: number; fileVerified: boolean; project: string; model?: string; kind?: string; reason?: string
