@@ -139,71 +139,61 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
 
 
-  /** Temporary staging-only G2 proof. This supervises, but never edits, the agent's fix. */
+  /** Temporary staging-only G2 proof; real code and PR must originate with the model. */
   async g2SelfDevTick(): Promise<unknown> {
     if ((this.env as Env & { G1_DEV_UNLIMITED_CHECKS?: string }).G1_DEV_UNLIMITED_CHECKS !== "true") {
       return { status: "disabled" };
     }
-    const key = "g2-selfdev-20261109-v3";
-    type G2State = {
-      status: "started" | "completed" | "blocked";
-      session?: string; startedAt?: number; reason?: string;
-      openRouterConfigured?: boolean; openRouterActive?: boolean;
-      githubReadable?: boolean; toolCalls?: number;
-    };
-    const previous = await this.ctx.storage.get<G2State>(key);
+    const key = "g2-selfdev-20261109-v4";
+    type State = { status: "started" | "completed" | "blocked"; phase?: "probe" | "work";
+      session?: string; startedAt?: number; reason?: string; githubReadable?: boolean;
+      openRouterConfigured?: boolean; openRouterActive?: boolean; toolCalls?: number };
+    const previous = await this.ctx.storage.get<State>(key);
     if (!previous) {
       const githubConfigured = Boolean((this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
         || await this.personalConfig.getGitHubKey());
       const openRouterConfigured = await this.isOpenRouterConfigured();
       if (!githubConfigured || !openRouterConfigured) {
-        const blocked: G2State = { status: "blocked",
+        const blocked: State = { status: "blocked",
           reason: githubConfigured ? "OpenRouter not configured in staging" : "GitHub not configured in staging",
-          openRouterConfigured, githubReadable: false };
+          githubReadable: false, openRouterConfigured };
         await this.ctx.storage.put(key, blocked);
         return blocked;
       }
-      const repo = "aamvtrampa36-del/opencode-harness-example";
       try {
+        const repo = "aamvtrampa36-del/opencode-harness-example";
         await this.githubRunner.execute({ action: "repo", repo });
-        const read = await this.githubRunner.execute({ action: "read", repo, path: "src/github.ts", ref: "main" }) as { content?: string };
-        if (!read.content?.includes("class GitHubBridge")) throw new Error("GitHub read returned unexpected content");
+        const x = await this.githubRunner.execute({ action: "read", repo, path: "src/github.ts", ref: "main" }) as {content?: string};
+        if (!x.content?.includes("class GitHubBridge")) throw new Error("Unexpected repository content");
       } catch (error) {
-        const blocked: G2State = { status: "blocked", githubReadable: false, openRouterConfigured,
-          reason: "GitHub authorized read failed: " + (error instanceof Error ? error.message.slice(0, 190) : "unknown") };
+        const blocked: State = { status: "blocked", githubReadable: false, openRouterConfigured,
+          reason: "GitHub read failed: " + (error instanceof Error ? error.message.slice(0, 160) : "unknown") };
         await this.ctx.storage.put(key, blocked);
         return blocked;
       }
-      // Check native provider registration. The proven Cloudflare tool model is used for G2 to avoid the OpenRouter spend.
       const openRouterActive = (await this.refreshOpenRouter()).active;
       const created = await this.harness.sessions.create();
-      const started: G2State = { status: "started", session: created.id, startedAt: Date.now(),
-        githubReadable: true, openRouterConfigured, openRouterActive };
+      const started: State = { status: "started", phase: "probe", session: created.id,
+        startedAt: Date.now(), githubReadable: true, openRouterConfigured, openRouterActive };
       await this.ctx.storage.put(key, started);
       try {
         const handle = this.harness.session(created.id);
         await handle.setAgent("build");
         await handle.setModel(this.ai(MODEL_ID));
-        const prompt = [
-          "G2 SELF-DEVELOPMENT: YOU must actually fix your own real public repository using native github and linux tools. Do not merely propose or describe a patch.",
-          "Repository: aamvtrampa36-del/opencode-harness-example. Work ONLY on src/github.ts and src/github.test.ts. No production, no main writes, no secrets.",
-          "Issue: GitHubBridge branch and pr actions always choose the default branch. Implement OPTIONAL safe base ref for both actions using the existing github tool schema ref field. When ref is absent retain defaultBranch behavior. Validate explicit refs; reject dangerous refs like '..', leading '/', or invalid characters. Tests must cover explicit ref and existing default behavior.",
-          "First use github action=repo and github action=read for BOTH src/github.ts and src/github.test.ts (ref=main). Read their real source before editing.",
-          "Use linux with project=g2-selfdev-20261109 to git clone --depth=1 https://github.com/aamvtrampa36-del/opencode-harness-example.git . (public clone, no credential). Run existing tests with npx --yes bun@1.4.4 test src/github.test.ts. Record real exit status.",
-          "Add a regression test in your Linux checkout for an optional base ref (should fail against old source). Run it and OBSERVE test failure before changing implementation.",
-          "Modify src/github.ts and make src/github.test.ts pass. Run tests again using linux and inspect git diff. Do not modify any other files.",
-          "Now use the github tool: action=branch branch=opencode/g2-base-ref-20261109 to create review branch from default main. Then action=write with FULL contents of edited src/github.ts and src/github.test.ts, branch=opencode/g2-base-ref-20261109 for each. These writes create actual GitHub commits. Finally action=pr with the same branch, title='fix: selectable base refs in GitHubBridge', body describing tests. PR must be draft and target main. Never merge.",
-          "Do not invent tool output or success. If a tool fails, inspect its error and try a concrete alternative. Do not expose credentials. Use exact tool names 'linux' and 'github', NEVER inspect_linux. You must execute tools, not just discuss them."
-        ].join("\n");
-        await handle.submit(prompt, { whenBusy: "followUp" });
-        return { status: "started", session: created.id, githubReadable: true,
-          openRouterConfigured, openRouterActive, model: MODEL_ID };
+        await handle.submit(
+          "Real tool verification, not a question. Call the tool named EXACTLY github NOW, with " +
+          "action=read, repo=aamvtrampa36-del/opencode-harness-example, path=src/github.ts, ref=main. " +
+          "Do not call inspect_github or another name. Do NOT write anything. Wait for the actual tool result " +
+          "and then report READ_OK. Text-only replies cannot satisfy this test.",
+          { whenBusy: "followUp" }
+        );
+        return { status: "started", phase: "probe", session: created.id,
+          githubReadable: true, openRouterConfigured, openRouterActive, model: MODEL_ID };
       } catch (error) {
-        const blocked: G2State = { ...started, status: "blocked", reason: "Agent launch: " +
-          (error instanceof Error ? error.message.slice(0, 190) : "unknown") };
+        const blocked: State = { ...started, status: "blocked",
+          reason: error instanceof Error ? error.message.slice(0, 170) : "Agent failed to launch" };
         await this.ctx.storage.put(key, blocked);
-        return { status: "blocked", reason: blocked.reason, session: started.session,
-          githubReadable: true, openRouterConfigured, openRouterActive };
+        return { status: "blocked", reason: blocked.reason };
       }
     }
     if (previous.status !== "started" || !previous.session) return previous;
@@ -215,23 +205,47 @@ export class OpenCodeAgent extends DurableObject<Env> {
           name: part.name ?? "unknown", status: part.state?.status ?? "unknown" }))
         : []);
       const age = Date.now() - (previous.startedAt ?? Date.now());
-      if (busy && age < 12 * 60_000) return { status: "running", session: previous.session,
-        count: tools.length, tools: tools.slice(-15), openRouterActive: previous.openRouterActive };
+      if (busy && age < 12 * 60_000) {
+        return { status: "running", phase: previous.phase, session: previous.session,
+          count: tools.length, tools: tools.slice(-12) };
+      }
       if (busy) {
-        try { await handle.abort(); } catch { /* Don't leave a runaway model. */ }
+        try { await handle.abort(); } catch { /* Stop runaway inference. */ }
       }
-      if (!history.some(message => message.type === "assistant") && age < 5 * 60_000) {
-        return { status: "queued", session: previous.session, count: tools.length };
+      if (!history.some(m => m.type === "assistant") && age < 5 * 60_000) {
+        return { status: "queued", phase: previous.phase, session: previous.session };
       }
-      const end: G2State = { ...previous, status: "completed", toolCalls: tools.length,
-        reason: busy ? "12-minute safety timeout" : undefined };
-      await this.ctx.storage.put(key, end);
-      return { status: "completed", session: previous.session, count: tools.length,
-        tools, reason: end.reason, githubReadable: previous.githubReadable,
-        openRouterConfigured: previous.openRouterConfigured, openRouterActive: previous.openRouterActive };
+      if (previous.phase === "probe" && !busy) {
+        const hasGitHubRead = tools.some(t => t.name === "github" && t.status === "completed");
+        if (!hasGitHubRead) {
+          const failed: State = { ...previous, status: "completed",
+            reason: "GitHub tool did not complete in probe", toolCalls: tools.length };
+          await this.ctx.storage.put(key, failed);
+          return { status: "completed", phase: "probe", session: previous.session,
+            reason: failed.reason, tools };
+        }
+        const workPrompt = [
+          "The github read tool has worked. Now COMPLETE G2 autonomously, using actual linux and github tools. Do not write only prose.",
+          "Your own public repo: aamvtrampa36-del/opencode-harness-example. Bug: src/github.ts actions branch and pr always use defaultBranch and cannot select an optional safe base ref.",
+          "Read src/github.test.ts through github, ref=main. Use linux project=g2-selfdev-20261109, clone public repo HTTPS (no tokens). Run current tests with npx --yes bun@1.4.4 test src/github.test.ts.",
+          "In Linux, add a regression test for optional base ref, observe it FAIL before the fix; then edit ONLY src/github.ts and src/github.test.ts to support optional input.ref with validation. Missing ref must retain default behavior. Run tests again to GREEN and inspect git diff.",
+          "Create review branch opencode/g2-base-ref-20261109 with github action=branch, which initially bases on main. Use github action=write for BOTH modified files with their COMPLETE final contents and branch=opencode/g2-base-ref-20261109, creating real commits. Open a github action=pr on that branch, title='fix: selectable base refs in GitHubBridge', draft, target main. NEVER merge or deploy.",
+          "Your commits, tests and PR must exist outside your text answer. Use ONLY exact tools linux and github. No credentials in Linux. On genuine tool errors, act to solve the specific cause, do not simulate success."
+        ].join("\n");
+        await handle.submit(workPrompt, { whenBusy: "followUp" });
+        const active: State = { ...previous, phase: "work", startedAt: Date.now() };
+        await this.ctx.storage.put(key, active);
+        return { status: "work-started", session: previous.session, probeTools: tools };
+      }
+      const completed: State = { ...previous, status: "completed", toolCalls: tools.length,
+        reason: busy ? "12-minute execution timeout" : undefined };
+      await this.ctx.storage.put(key, completed);
+      return { status: "completed", phase: previous.phase, session: previous.session,
+        count: tools.length, tools, reason: completed.reason };
     } catch (error) {
-      return { status: "running", session: previous.session,
-        reason: "History unavailable: " + (error instanceof Error ? error.message.slice(0, 150) : "unknown") };
+      return { status: "running", phase: previous.phase, session: previous.session,
+        reason: "History or submit failed: " +
+          (error instanceof Error ? error.message.slice(0, 160) : "unknown") };
     }
   }
 
