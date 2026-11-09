@@ -44,4 +44,8 @@ export type StoredBackup = {
   bytes: number;
   chunks: number;
   sha256: string;
+  /** Metadata pointer only; full Workerd transcript stays in the agent Durable Object. */
+  sessionRef?: string;
+  gitBranch?: string;
+  gitHead?: string;
 };
