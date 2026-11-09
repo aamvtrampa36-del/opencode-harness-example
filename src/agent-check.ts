@@ -77,6 +77,11 @@ export function hasUnfinishedAgentCheck(
   return Boolean(previous && !previous.error && outcome == null);
 }
 
+/** Development staging may retry without the historic daily reservation. */
+export function isUnlimitedDevAgentCheck(value: unknown): boolean {
+  return value === "true";
+}
+
 /** Restrict expensive diagnostic calls to the baseline and two low-cost presets. */
 export const AGENT_CHECK_MODELS = ["cloudflare", "economy", "review"] as const;
 export type AgentCheckModel = (typeof AGENT_CHECK_MODELS)[number];
