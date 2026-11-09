@@ -49,3 +49,33 @@ La ejecución local del comando que prepara los archivos devolvió `exit_code=1`
 - Previews/resources: https://developers.cloudflare.com/workers/previews/resources/
 - Previews/configuration: https://developers.cloudflare.com/workers/previews/configuration/
 - Container snapshots: https://developers.cloudflare.com/containers/guides/snapshots/
+
+
+## Continuación — normalización de staging y prueba interna (9 de noviembre de 2026)
+
+### Estado técnico verificado
+- PR #28 sigue abierta en borrador. El Worker productivo `opencode-harness-example` permanece en versión `1d70eb77-316e-408d-bd14-5f19b171dedf` (despliegue 8/11/2026 23:48:25 UTC).
+- Worker de staging `opencode-g1-staging` existe; su dominio `opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev` exige la pantalla `Sign in · Cloudflare Access` a clientes no autenticados.
+- La aplicación Container `opencode-g1-staging-devcontainer` usa política `durable_object` con namespace `bb8b042de894489f82b9efeb486da157`, distinto del namespace productivo. Los namespaces `OpenCodeAgent` y `SETTINGS` de staging también son independientes.
+- La conexión Workers Builds se limita a la rama `fix/repeatable-agent-verification-20261108`. La API de Workers Builds ejecuta un build con configuración de staging específica. No hubo actualización de CDF CLOUD ni WorkBench.
+- **Incidencia de Container en el despliegue**: el error recurrente `Durable Object-managed Container application settings were not fully applied` desapareció después de alinear el nombre usado por Vite y Wrangler. La causa probable es la mezcla de config de producción con la opción `wrangler deploy --name opencode-g1-staging`; el experimento demuestra que al usar una configuración completa e idéntica para build/deploy el resultado cambia a éxito, pero no establece de manera concluyente la causa interna de Wrangler.
+- Se añadió `wrangler.g1.jsonc`, copia aislada de `wrangler.jsonc` con nombre `opencode-g1-staging`; la compilación de staging ahora utiliza `cp wrangler.g1.jsonc wrangler.jsonc && bun install --frozen-lockfile && bun run build` y despliega con `bunx wrangler deploy`. La configuración principal permanece intacta.
+- Workers Builds ejecución `b2d1ce0b-0122-4234-95f0-10acccdfea3e`: `success`; versión staging `657ead04-7e3e-48cb-a499-1fbcead59511`.
+- GitHub Actions #101 del cambio de staging concluyó `success`.
+- Para evitar pedir credenciales y no exponer una ruta de administración, se creó **solo para staging** `src/g1-probe-worker.ts` y se configuró temporalmente un Cron `* * * * *`. El wrapper llama a los métodos reales `OpenCodeAgent.startAgentCheck("cloudflare","repair")` y `agentCheckStatus()` sin sustituir el modelo ni simular herramientas. Usa un workspace único y no repite la prueba después de iniciarla. El mecanismo debe **retirarse antes de cerrar la intervención**; no es parte de la V1.
+- Workers Builds `a9349655-1560-4346-ba2a-5ba607785828` terminó satisfactoriamente y desplegó la versión staging `ac1a0716-6864-45fe-9bdd-206449e816d4` con disparador temporal. GitHub Actions #102 concluyó `success`.
+- La comprobación externa no autenticada posterior a ese despliegue vuelve a recibir `Sign in · Cloudflare Access`, sin contenido de la API interna.
+- El resultado de la modalidad `repair` **no queda aprobado por la mera existencia del Cron**. Exige logs y verificación efectiva de modelo/herramientas/Node; si la invocación no aparece, debe señalarse explícitamente como bloqueo de disparo/acceso en lugar de inferir que el agente falló.
+
+### Cierre y siguiente hito (pendiente de verificación)
+1. Confirmar en Workers Observability el evento real `G1_EVIDENCE` y las ejecuciones del agente.
+2. Si la prueba se inició, recoger su dictamen y repetibilidad; si no, registrar el motivo real. Ninguna simulación cuenta.
+3. Retirar el cron de staging y verificar `schedules: []` antes de concluir.
+4. Conservar esta evidencia y actualizar esta sección con el estado final. `G2` (autodesarrollo) solo puede iniciarse después de aprobar genuinamente `G1`; de lo contrario, la prioridad única es el bloqueo observado.
+
+### Referencias de esta intervención
+- [GitHub PR #28](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/28)
+- [GitHub Actions #101](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42564251255)
+- [GitHub Actions #102](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42564565910)
+- [Cloudflare Workers Environments](https://developers.cloudflare.com/workers/wrangler/environments/)
+- [Cron Triggers](https://developers.cloudflare.com/workers/configuration/cron-triggers/)
