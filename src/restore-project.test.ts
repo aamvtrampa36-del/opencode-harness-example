@@ -17,7 +17,7 @@ async function fixture() {
   return { root, archive, bytes: await readFile(archive), src };
 }
 function restore(root: string, bytes: Uint8Array, target = "restored", fault = false) {
-  return Bun.spawnSync(["node", "-e", RESTORE_PROJECT_SOURCE, "source", target], {
+  return Bun.spawnSync(["node", "--input-type=module", "-e", RESTORE_PROJECT_SOURCE, "source", target], {
     stdin: bytes,
     env: { ...process.env, G4_RESTORE_TEST_ROOT: root, ...(fault ? { G4_TEST_FAIL_BEFORE_COMMIT: "1" } : {}) }
   });
