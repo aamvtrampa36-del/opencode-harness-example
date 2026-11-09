@@ -3,6 +3,10 @@ export type AgentCheckEvidence = {
   requestedTools: number;
   finishedLinuxTools: number;
   correctLinuxResult: boolean;
+  /** A Linux tool returned a real failing Node test in this session. */
+  observedFailingTest: boolean;
+  /** A successful tool result arrived only AFTER observing a failing test. */
+  verifiedRepairSequence: boolean;
 };
 
 export function assessAgentToolEvidence(
@@ -23,6 +27,8 @@ export function assessAgentToolEvidence(
   let requestedTools = 0;
   let finishedLinuxTools = 0;
   let correctLinuxResult = false;
+  let observedFailingTest = false;
+  let verifiedRepairSequence = false;
   for (const message of messages) {
     if (message.type !== "assistant") continue;
     for (const part of message.content ?? []) {
@@ -39,16 +45,22 @@ export function assessAgentToolEvidence(
           exitCode?: number;
           stdout?: string;
         };
-        if (result.project === project && result.exitCode === 0 &&
+        if (result.project !== project) continue;
+        // Seeding the fixture server-side is not proof that the model saw its failure.
+        if (result.exitCode !== 0 && result.stdout?.includes("not ok")) {
+          observedFailingTest = true;
+        }
+        if (result.exitCode === 0 &&
             result.stdout?.includes("AGENT_PROOF_OK:" + token)) {
           correctLinuxResult = true;
+          if (observedFailingTest) verifiedRepairSequence = true;
         }
       } catch {
         // A model response that merely describes a command never passes.
       }
     }
   }
-  return { requestedTools, finishedLinuxTools, correctLinuxResult };
+  return { requestedTools, finishedLinuxTools, correctLinuxResult, observedFailingTest, verifiedRepairSequence };
 }
 
 /** Reuse only a genuinely unfinished proof; terminal attempts are retryable. */
@@ -67,12 +79,18 @@ export function isAgentCheckModel(value: unknown): value is AgentCheckModel {
 }
 
 /** Human-actionable diagnostics, based on actual tool events rather than assistant text. */
-export function explainAgentCheckFailure(evidence: AgentCheckEvidence): string {
+export function explainAgentCheckFailure(evidence: AgentCheckEvidence, kind: AgentCheckKind = "linux"): string {
   if (evidence.requestedTools === 0) {
     return "El agente no solicitó herramientas. Es posible que el modelo no haya arrancado; revisa el proveedor y los registros de Cloudflare.";
   }
   if (evidence.finishedLinuxTools === 0) {
     return "El agente solicitó herramientas, pero ninguna ejecución Linux terminó correctamente.";
+  }
+  if (kind === "repair" && !evidence.observedFailingTest) {
+    return "No se observó una prueba Node fallida en las herramientas del agente. La prueba inicial del servidor no cuenta como observación del modelo.";
+  }
+  if (kind === "repair" && !evidence.verifiedRepairSequence) {
+    return "El agente observó el fallo, pero no consta una ejecución Linux posterior que haya pasado la prueba y devuelto el token."; 
   }
   if (!evidence.correctLinuxResult) {
     return "Linux respondió, pero faltó la salida verificable del comando solicitado o su resultado fue incorrecto.";
