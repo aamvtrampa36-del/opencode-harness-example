@@ -79,3 +79,33 @@ export function explainAgentCheckFailure(evidence: AgentCheckEvidence): string {
   }
   return "Linux devolvió el resultado esperado, pero la comprobación independiente del archivo persistido falló.";
 }
+
+
+/** An isolated red-to-green Node test. This is a fixture, NOT a repository change. */
+export const REPAIR_SOURCE_BROKEN = "export const add = (a, b) => a - b;\n";
+export const REPAIR_TEST = [
+  "import test from 'node:test';",
+  "import assert from 'node:assert/strict';",
+  "import { add } from './calc.mjs';",
+  "test('sumar dos numeros', () => assert.equal(add(2, 3), 5));",
+  ""
+].join("\n");
+
+export const AGENT_CHECK_KINDS = ["linux", "repair"] as const;
+export type AgentCheckKind = (typeof AGENT_CHECK_KINDS)[number];
+export function isAgentCheckKind(value: unknown): value is AgentCheckKind {
+  return typeof value === "string" && AGENT_CHECK_KINDS.some(kind => kind === value);
+}
+
+/** Seed a known failing test before letting the model edit the isolated files. */
+export function repairSeedCommand(): string {
+  const script = "const fs=require('node:fs');" +
+    "fs.writeFileSync('calc.mjs'," + JSON.stringify(REPAIR_SOURCE_BROKEN) + ");" +
+    "fs.writeFileSync('calc.test.mjs'," + JSON.stringify(REPAIR_TEST) + ");";
+  return "node -e " + JSON.stringify(script) + " && node --test calc.test.mjs";
+}
+
+/** A fix only counts when the source changed, the test was not weakened and Node passes. */
+export function repairIsVerified(source: string, test: string, exitCode: number | null): boolean {
+  return source !== REPAIR_SOURCE_BROKEN && test === REPAIR_TEST && exitCode === 0;
+}
