@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
+import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
 
 const project = "agent-check-123";
 const token = "abcdef1234";
@@ -37,6 +37,12 @@ describe("OpenCode end-to-end tool proof", () => {
 });
 
 describe("Agent verification repeat policy", () => {
+  test("unlimited development is explicit and does not change production defaults", () => {
+    expect(isUnlimitedDevAgentCheck("true")).toBe(true);
+    expect(isUnlimitedDevAgentCheck(undefined)).toBe(false);
+    expect(isUnlimitedDevAgentCheck("false")).toBe(false);
+    expect(isUnlimitedDevAgentCheck(true)).toBe(false);
+  });
   test("an active check is reused to avoid duplicate inference", () => {
     expect(hasUnfinishedAgentCheck({ error: undefined }, null)).toBe(true);
     expect(hasUnfinishedAgentCheck({ error: undefined }, undefined)).toBe(true);
