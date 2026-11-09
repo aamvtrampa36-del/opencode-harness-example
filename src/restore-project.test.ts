@@ -44,6 +44,20 @@ describe("G4 durable backup restore safety", () => {
       await rm(f.archive, { force: true });
     }
   });
+  test("restores into a blank Container filesystem without a pre-existing projects directory", async () => {
+    const f = await fixture();
+    try {
+      const blankRoot = join(f.root, "fresh-boot-projects");
+      const r = restore(blankRoot, f.bytes);
+      if (r.exitCode !== 0) throw new Error(new TextDecoder().decode(r.stderr));
+      expect(r.exitCode).toBe(0);
+      expect(await readFile(join(blankRoot, "restored", "calc.mjs"), "utf8"))
+        .toBe(await readFile(join(f.src, "calc.mjs"), "utf8"));
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+      await rm(f.archive, { force: true });
+    }
+  });
   test("interrupted write does not publish partial target; retry succeeds", async () => {
     const f = await fixture();
     try {
