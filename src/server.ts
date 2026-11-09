@@ -107,12 +107,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
         JSON.stringify(command) + ". Debes CREAR el archivo proof.txt en el Container y VERIFICARLO con Node. " +
         "No generes código solamente en tu respuesta. Espera el resultado real de linux " +
         "y describe su exitCode. No alteres ningún otro proyecto.";
-      const repairPrompt = "Prueba REAL de reparación autónoma de código. Trabaja exclusivamente en Linux con project=" +
-        project + ". Ya existen calc.mjs (contiene un bug) y calc.test.mjs (prueba que falla). " +
-        "Primero usa la herramienta linux para ejecutar node --test --test-reporter=tap calc.test.mjs y ver el fallo. " +
-        "Después inspecciona los archivos y CORRIGE calc.mjs; NO modifiques calc.test.mjs. " +
-        "Ejecuta de nuevo node --test --test-reporter=tap calc.test.mjs y solo si pasa imprime AGENT_PROOF_OK:" + token +
-        " desde esa misma herramienta Linux. No basta con describir la reparación ni modificar otros proyectos.";
+      const repairPrompt = "Prueba REAL de reparación autónoma de código. Proyecto Linux aislado: " +
+        project + ". Emplea ÚNICAMENTE la herramienta cuyo nombre exacto es linux " +
+        "(con parámetros project y command). NO uses inspect_linux, exec, herramientas de archivos ni otros nombres. " +
+        "Ya existen calc.mjs con un defecto y calc.test.mjs con el test original. " +
+        "Paso 1: llama a linux para ejecutar node --test --test-reporter=tap calc.test.mjs; observa el fallo. " +
+        "Paso 2: llama a linux con cat calc.mjs && cat calc.test.mjs para inspeccionar ambos archivos. " +
+        "Paso 3: decide la reparación y escribe SOLO calc.mjs mediante otro comando linux que construyas tú; " +
+        "no modifiques calc.test.mjs ni ningún otro proyecto. " +
+        "Paso 4: vuelve a llamar a linux para ejecutar node --test --test-reporter=tap calc.test.mjs " +
+        "y, únicamente cuando el test pase, imprime AGENT_PROOF_OK:" + token +
+        " en la salida de esa misma llamada Linux. Espera los exitCode reales. " +
+        "No basta con describir la reparación; todas las acciones deben realizarse mediante linux.";
       await handle.submit(kind === "repair" ? repairPrompt : prompt, { whenBusy: "followUp" });
       return { status: "started", session: created.id, project, model, kind };
     } catch (error) {
