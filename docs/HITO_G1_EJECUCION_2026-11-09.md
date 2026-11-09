@@ -1,5 +1,5 @@
 # OpenCode Cloud — Registro de ejecución del hito G1
-**Corte:** 2026-11-09 UTC · **Resultado:** PARCIALMENTE COMPLETADO; prueba real del agente BLOQUEADA POR AUSENCIA DE ENTORNO DE EJECUCIÓN DE PR AUTENTICADO. 
+**Corte:** 2026-11-09 UTC · **Resultado vigente:** G1 PARCIALMENTE COMPLETADO. Se ejecutó el modelo en staging y una prueba Linux real, pero la reparación falló por una llamada a herramienta malformada; consultar el cierre más reciente al final. 
 
 ## Objetivo de aceptación
 Demostrar **modelo real → Linux herramienta del agente → Node test fallido observado → edición efectiva → test superado → verificación del servidor**. Una ejecución de CI o una reparación manual no satisface este criterio.
@@ -143,3 +143,57 @@ La ejecución local del comando que prepara los archivos devolvió `exit_code=1`
 **Siguiente acción única conforme a `docs/V1_EXECUTION_PLAN.md`:** abrir desde un navegador autorizado `https://opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev`, iniciar sesión mediante Cloudflare Access y ejecutar una vez la opción `repair` con `@cf/openai/gpt-oss-20b`. Recopilar la traza real del modelo y herramientas y solo entonces cerrar G1 si supera el ciclo fallido→edición→test verde→verificación independiente. Si falla, corregir la primera causa reproducible antes de agregar funciones. G2 sigue bloqueado hasta aprobar G1.
 
 **Enlaces:** [CI #107](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42566073996), [PR #28](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/28), [Plan V1](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/V1_EXECUTION_PLAN.md).
+
+
+## Actualización final de G1 — ensayo de modelo y evidencia de herramienta inválida (09-11-2026)
+
+### Fuentes y condición documental verificadas
+Antes de nuevas operaciones se verificó lectura completa del **Informe técnico integral — OpenCode Cloud V1** (PDF de 21 páginas y 13 capítulos) y de los tres documentos del repositorio: `docs/HITO_G1_EJECUCION_2026-11-09.md`, `docs/V1_EXECUTION_PLAN.md` y `docs/ARCHITECTURE_DECISION_2026-11-08.md`. La decisión de avance sigue los gates de esos documentos.
+
+### Ejecución de infraestructura y ensayo auténtico
+- La PR #28 permaneció en borrador, rama `fix/repeatable-agent-verification-20261108`. El Worker de producción `opencode-harness-example` conservó la versión `1d70eb77-316e-408d-bd14-5f19b171dedf` (sin merge ni despliegue productivo).
+- Staging `opencode-g1-staging` conservó Cloudflare Access y Durable Objects/Container separados. La prueba interna usó un disparador `scheduled` **temporal**, sin ruta HTTP pública nueva. El código fuente fue puesto en `src/g1-diagnostic-probe.ts` solo durante el ensayo.
+- Workers Builds `9f721621-32d0-4dae-b83f-5c8ebf8baeba`: `success`, para commit `ced65fe7b507cbdfbb6cce8da8933e8a76e12980`; GitHub Actions **#112** finalizó correctamente.
+- **05:50:08 UTC — preflight Linux auténtico:** Cloudflare Workers Observability `G1_STAGING phase=preflight`, `ok=true`, `exitCode=1`, salida `TAP version 13` y `not ok 1 - sumar dos numeros`, resultado `-1 !== 5`. Se usó `node --test --test-reporter=tap calc.test.mjs`. Fue una preparación del servidor, **no** la corrección del modelo.
+- **05:50:14 UTC — sesión del modelo realmente iniciada:** `G1_STAGING phase=start status=started kind=repair model=cloudflare`; sesión `ses_e4124a10dff9TdVCMOhFRNVy2O`; proyecto aislado `agent-check-d05fa4dbd281`. Modelo: `@cf/openai/gpt-oss-20b`.
+- **05:51:06 UTC — resultado real del servidor:** `G1_STAGING phase=status status=failed toolCalls=2 observedFailingTest=true fileVerified=false`; no se observó una segunda ejecución exitosa del test con token de prueba.
+- **06:03:07 UTC — traza forense de OpenCode:** primer tool `linux`, `completed`, `exitCode=1`, salida TAP roja; segundo tool `inspect_linux<|channel|>commentary`, `error`. El nombre real registrado en `src/workspace.ts` es `inspect_linux`; la llamada incluyó delimitadores del protocolo como parte indebida del nombre.
+- **06:03:09 UTC — inspección independiente de fuente:** `G1_SOURCE_AUDIT` confirmó `calc.mjs = "export const add = (a, b) => a - b;\n"`. El código **no fue corregido**. No existe salida 0 posterior atribuible al modelo ni verificación positiva del test original.
+- **Dictamen técnico:** se demostró **modelo→herramienta Linux→test fallido observado**, pero no **edición→test aprobado**. La llamada malformada es un defecto reproducido en esta ejecución del formato de herramientas; no se ha establecido si lo emitió el modelo o lo introdujo el proveedor/adaptador Workerd/Harness. No se debe afirmar una limitación estructural definitiva sin aislar esa frontera.
+- La preparación con reporter TAP ahora funciona realmente en el Container, corroborando la corrección previa. Las pruebas unitarias del supervisor no se hacen pasar por trabajo del modelo.
+
+### Cambios implementados, controles y limpieza
+- Se incorporó a `src/agent-check.ts` una comprobación **pasiva** para detectar delimitadores de canal en nombres de herramientas, con mensaje de diagnóstico específico; `src/agent-check.test.ts` tiene regresión para el nombre `inspect_linux<|channel|>commentary`. **No se creó ningún adaptador que reescriba herramientas inválidas ni se alteró el modelo.**
+- GitHub Actions **#119** finalizó `success` para el commit `8be35c6aaffd2f622ad23e74acdf31d07a785369`. Un commit temporal anterior falló en typecheck de auditoría y se corrigió antes del cierre; no afectó producción.
+- Se comprobó un riesgo real de **builds fuera de orden**: Workers Builds publicó un commit anterior `2ceb5d31...` después del diagnóstico, dejando temporalmente staging sin el método `scheduled()`. Se forzó un build del commit correcto `a7bc8f402afae974bcd8ca501882c40898a63e18` (`14e3d5be-b496-4206-9ef6-06e31f5ccb4d`, `success`) para extraer la traza. Esta carrera debe controlarse en futuras intervenciones; no justifica construir otra capa.
+- Se eliminó `src/g1-diagnostic-probe.ts`, se retiró `g1SyntheticTrace()` del servidor y se restauró `wrangler.g1.jsonc` a `main: src/server.ts` y `triggers.crons: []`.
+- Workers Builds de cierre `f40329cf-82ca-472c-b754-ed4568bd2c70` terminó `success` para commit `8be35c6aaffd2f622ad23e74acdf31d07a785369`; versión de staging activa `0bb278b1-4295-449c-8e59-8effacb893f5`.
+- Comprobación directa en Cloudflare: `schedules: []` en staging; no hay `G1_STAGING` ni `g1SyntheticTrace` en el código desplegado; sí está la nueva validación `malformedToolCall`. Access mantiene la política de propietario `e0739025-1dc9-4ea1-b803-4580e8161766`. La producción sigue en `1d70eb77-316e-408d-bd14-5f19b171dedf`.
+- En el último corte se observó **1 instancia Container activa** en staging después de la inspección final; el código existente prevé suspensión y snapshots tras inactividad, pero no se afirma que se hubiera detenido todavía.
+- No se obtuvo desglose monetario verificable para esta sesión. Existe consumo potencial de Container, Worker, DO y una inferencia real del modelo; **no afirmar costo cero**. No se efectuaron compras ni se cambiaron CDF CLOUD/WorkBench.
+- El límite de **dos autopruebas por día UTC** se respetó. No se inició una tercera inferencia para sortear esa cuota, ni se dejó una tarea programada pendiente.
+
+### Criterios de aceptación de G1
+| Criterio | Resultado |
+|---|---|
+| Staging separado y protegido | **Verificado** |
+| Deploy de Worker y ejecución Linux | **Verificado** |
+| Modelo real en sesión OpenCode | **Verificado** |
+| Llamada `linux` desde el agente | **Verificada** |
+| Test fallido observado por el agente | **Verificado** |
+| Modificación efectiva del código | **Falló: fuente intacta** |
+| Test posterior verde y comprobación independiente | **No demostrado** |
+| Repetibilidad satisfactoria | **No demostrada** |
+| Producción intacta | **Verificado** |
+
+**Estado final: G1 PARCIAL / NO APROBADO. G2 NO está autorizado por los criterios del informe.**
+
+### Siguiente prioridad única, derivada del informe integral y del plan maestro
+**Resolver la compatibilidad de invocación de herramientas entre `@cf/openai/gpt-oss-20b` y OpenCode Workerd/Harness, y repetir G1 con cuota disponible.** Comparar el nombre de herramienta producido por el proveedor frente al nombre registrado `inspect_linux`; probar un modelo económico ya conectado que maneje herramientas sin delimitadores malformados, o reproducir el fallo en el motor nativo aislado si se confirma que procede de Workerd/Harness. No modificar producción ni añadir parches que normalicen silenciosamente nombres inválidos. Solo tras `repair` real y verificado se podrá pasar a G2.
+
+### Referencias de ejecución
+- [PR #28](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/28)
+- [CI #112](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42568821680)
+- [CI #119](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42571202805)
+- [Plan maestro de V1](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/V1_EXECUTION_PLAN.md)
+- [Decisión de arquitectura](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/ARCHITECTURE_DECISION_2026-11-08.md)
