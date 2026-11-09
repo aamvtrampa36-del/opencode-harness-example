@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isAgentCheckModel, explainAgentCheckFailure } from "./agent-check";
+import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
 
 const project = "agent-check-123";
 const token = "abcdef1234";
@@ -64,5 +64,25 @@ describe("Diagnostic model selection and evidence explanations", () => {
     expect(explainAgentCheckFailure({requestedTools:2,finishedLinuxTools:0,correctLinuxResult:false})).toContain("ninguna ejecución Linux");
     expect(explainAgentCheckFailure({requestedTools:2,finishedLinuxTools:1,correctLinuxResult:false})).toContain("faltó la salida");
     expect(explainAgentCheckFailure({requestedTools:2,finishedLinuxTools:1,correctLinuxResult:true})).toContain("archivo persistido");
+  });
+});
+
+
+describe("Isolated autonomous code-repair rehearsal", () => {
+  test("only expected proof modes are supported", () => {
+    expect(isAgentCheckKind("linux")).toBe(true);
+    expect(isAgentCheckKind("repair")).toBe(true);
+    expect(isAgentCheckKind("shell-arbitrary")).toBe(false);
+  });
+  test("seeded code is wrong and the seed runs a failing Node test", () => {
+    expect(REPAIR_SOURCE_BROKEN).toContain("a - b");
+    expect(REPAIR_TEST).toContain("assert.equal(add(2, 3), 5)");
+    expect(repairSeedCommand()).toContain("node --test calc.test.mjs");
+  });
+  test("an AI claim alone, a weakened test, or unchanged code cannot pass", () => {
+    expect(repairIsVerified(REPAIR_SOURCE_BROKEN, REPAIR_TEST, 0)).toBe(false);
+    expect(repairIsVerified("export const add=(a,b)=>a+b;\\n", "modified test", 0)).toBe(false);
+    expect(repairIsVerified("export const add=(a,b)=>a+b;\\n", REPAIR_TEST, 1)).toBe(false);
+    expect(repairIsVerified("export const add=(a,b)=>a+b;\\n", REPAIR_TEST, 0)).toBe(true);
   });
 });
