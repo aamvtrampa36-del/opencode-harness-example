@@ -120,7 +120,7 @@ export function repairSeedCommand(): string {
   const script = "const fs=require('node:fs');" +
     "fs.writeFileSync('calc.mjs'," + JSON.stringify(REPAIR_SOURCE_BROKEN) + ");" +
     "fs.writeFileSync('calc.test.mjs'," + JSON.stringify(REPAIR_TEST) + ");";
-  return "node -e " + JSON.stringify(script) + " && node --test calc.test.mjs";
+  return "node -e " + JSON.stringify(script) + " && node --test --test-reporter=tap calc.test.mjs";
 }
 
 /** A fix only counts when the source changed, the test was not weakened and Node passes. */
