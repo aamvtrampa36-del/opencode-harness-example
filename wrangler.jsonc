@@ -102,8 +102,7 @@
     },
     "containers": [
       {
-        "class_name": "DevContainer",
-        "scheduling_policy": "durable_object"
+        "class_name": "DevContainer"
       }
     ]
   }
