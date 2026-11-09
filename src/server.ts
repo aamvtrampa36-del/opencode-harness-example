@@ -472,7 +472,10 @@ export default {
             return Response.json({ error: "Origen no permitido" }, { status: 403 });
           }
           try {
-            return Response.json({ backup: await dev.saveBackup(project) },
+            const raw = await request.text();
+            if (raw.length > 300) return Response.json({ error: "Request too large" }, { status: 413 });
+            const args = raw ? JSON.parse(raw) as { sessionRef?: string } : {};
+            return Response.json({ backup: await dev.saveBackup(project, args.sessionRef) },
               { headers: { "Cache-Control": "no-store" } });
           } catch (error) {
             return Response.json({ error: error instanceof Error ? error.message : "Backup failed" },
@@ -480,6 +483,25 @@ export default {
           }
         }
         return new Response("Method not allowed", { status: 405 });
+      }
+      const restoreMatch = url.pathname.match(/^\/api\/dev\/restore\/([a-z][a-z0-9-]{0,39})$/);
+      if (restoreMatch) {
+        if (request.method !== "POST") return new Response("POST only", { status: 405 });
+        if (request.headers.get("Origin") !== url.origin ||
+            !request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
+          return Response.json({ error: "Same-origin JSON required" }, { status: 403 });
+        }
+        try {
+          const raw = await request.text();
+          if (raw.length > 300) return Response.json({ error: "Request too large" }, { status: 413 });
+          const input = JSON.parse(raw) as { target?: string };
+          return Response.json({ restoration:
+            await env.DEV.getByName("personal").restoreSavedBackup(restoreMatch[1], input.target ?? "")
+          }, { headers: { "Cache-Control": "no-store" } });
+        } catch (error) {
+          return Response.json({ error: error instanceof Error ? error.message : "Restore failed" },
+            { status: 422, headers: { "Cache-Control": "no-store" } });
+        }
       }
       if (url.pathname === "/api/dev/projects" && request.method === "GET") {
         return Response.json({
