@@ -74,7 +74,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (hasUnfinishedAgentCheck(previous, outcome)) {
       return { status: "existing", session: previous!.session, project: previous!.project, model: previous!.model ?? "cloudflare", kind: previous!.kind ?? "linux" };
     }
-    if (!(await this.personalConfig.reserveAgentCheck())) {
+    // Staging-only development switch: retries are allowed without a daily counter.
+    // Production keeps the existing quota unless its own environment opts in.
+    const unrestrictedDev = (this.env as Env & { G1_DEV_UNLIMITED_CHECKS?: string }).G1_DEV_UNLIMITED_CHECKS === "true";
+    if (!unrestrictedDev && !(await this.personalConfig.reserveAgentCheck())) {
       return { status: "daily-limit", message: "Límite de dos verificaciones diarias para evitar gastos de IA" };
     }
     const token = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
