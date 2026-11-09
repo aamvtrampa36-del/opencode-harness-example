@@ -19,7 +19,7 @@ import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
 import { remoteMcpPlugin } from "./mcp-plugin";
-import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isAgentCheckModel, explainAgentCheckFailure } from "./agent-check";
+import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -56,20 +56,23 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return { active: true };
   }
   /** Explicit owner-initiated real-model/tool test, never a recurring cron. */
-  async startAgentCheck(model: unknown = "cloudflare"): Promise<{ status: string; session?: string; project?: string; model?: string; message?: string }> {
+  async startAgentCheck(model: unknown = "cloudflare", kind: unknown = "repair"): Promise<{ status: string; session?: string; project?: string; model?: string; kind?: string; message?: string }> {
     if (!isAgentCheckModel(model)) {
       return { status: "rejected", message: "Solo se permiten modelos económicos en la autoprueba." };
+    }
+    if (!isAgentCheckKind(kind)) {
+      return { status: "rejected", message: "Tipo de autoprueba desconocido." };
     }
     const preset = MODEL_PRESETS[model];
     if (preset.providerID === "openrouter" && !(await this.isOpenRouterConfigured())) {
       return { status: "rejected", message: "Conecta OpenRouter antes de probar este modelo. No se consumió la cuota." };
     }
     const previous = await this.ctx.storage.get<{
-      session: string; project: string; token: string; startedAt: number; model?: string; error?: string
+      session: string; project: string; token: string; startedAt: number; model?: string; kind?: string; error?: string
     }>("agent-check-v1");
     const outcome = await this.ctx.storage.get("agent-check-result-v1");
     if (hasUnfinishedAgentCheck(previous, outcome)) {
-      return { status: "existing", session: previous!.session, project: previous!.project, model: previous!.model ?? "cloudflare" };
+      return { status: "existing", session: previous!.session, project: previous!.project, model: previous!.model ?? "cloudflare", kind: previous!.kind ?? "linux" };
     }
     if (!(await this.personalConfig.reserveAgentCheck())) {
       return { status: "daily-limit", message: "Límite de dos verificaciones diarias para evitar gastos de IA" };
@@ -77,7 +80,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const token = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
     const project = "agent-check-" + token;
     const created = await this.harness.sessions.create();
-    const state = { session: created.id, project, token, model, startedAt: Date.now() };
+    const state = { session: created.id, project, token, model, kind, startedAt: Date.now() };
     // Atomically replace the previous terminal proof only after creating a new session.
     // This keeps completed checks retryable without exposing stale pass results.
     await this.ctx.storage.transaction(async (tx) => {
@@ -85,6 +88,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
       await tx.delete("agent-check-result-v1");
     });
     try {
+      if (kind === "repair") {
+        const seed = await this.linuxRunner.run(project, repairSeedCommand());
+        if (seed.exitCode !== 1 || !seed.stdout.includes("not ok")) {
+          throw new Error("No se pudo preparar la prueba de reparación con un test fallido verificable.");
+        }
+      }
       const handle = this.harness.session(created.id);
       await handle.setAgent("build");
       await handle.setModel(model === "cloudflare" ? this.ai(MODEL_ID) : {
@@ -98,27 +107,33 @@ export class OpenCodeAgent extends DurableObject<Env> {
         JSON.stringify(command) + ". Debes CREAR el archivo proof.txt en el Container y VERIFICARLO con Node. " +
         "No generes código solamente en tu respuesta. Espera el resultado real de linux " +
         "y describe su exitCode. No alteres ningún otro proyecto.";
-      await handle.submit(prompt, { whenBusy: "followUp" });
-      return { status: "started", session: created.id, project, model };
+      const repairPrompt = "Prueba REAL de reparación autónoma de código. Trabaja exclusivamente en Linux con project=" +
+        project + ". Ya existen calc.mjs (contiene un bug) y calc.test.mjs (prueba que falla). " +
+        "Primero usa la herramienta linux para ejecutar node --test calc.test.mjs y ver el fallo. " +
+        "Después inspecciona los archivos y CORRIGE calc.mjs; NO modifiques calc.test.mjs. " +
+        "Ejecuta de nuevo node --test calc.test.mjs y solo si pasa imprime AGENT_PROOF_OK:" + token +
+        " desde esa misma herramienta Linux. No basta con describir la reparación ni modificar otros proyectos.";
+      await handle.submit(kind === "repair" ? repairPrompt : prompt, { whenBusy: "followUp" });
+      return { status: "started", session: created.id, project, model, kind };
     } catch (error) {
       const failed = {
         ...state, error: error instanceof Error ? error.message.slice(0, 250) : "No se pudo iniciar"
       };
       await this.ctx.storage.put("agent-check-v1", failed);
-      return { status: "failed", message: failed.error, model };
+      return { status: "failed", message: failed.error, model, kind };
     }
   }
 
   async agentCheckStatus(): Promise<unknown> {
     const saved = await this.ctx.storage.get<{
-      status: string; toolCalls: number; fileVerified: boolean; project: string; model?: string; reason?: string
+      status: string; toolCalls: number; fileVerified: boolean; project: string; model?: string; kind?: string; reason?: string
     }>("agent-check-result-v1");
     if (saved) return saved;
     const state = await this.ctx.storage.get<{
-      session: string; project: string; token: string; startedAt: number; model?: string; error?: string
+      session: string; project: string; token: string; startedAt: number; model?: string; kind?: string; error?: string
     }>("agent-check-v1");
     if (!state) return { status: "not-started" };
-    if (state.error) return { status: "failed", reason: state.error, project: state.project, model: state.model };
+    if (state.error) return { status: "failed", reason: state.error, project: state.project, model: state.model, kind: state.kind };
     const handle = this.harness.session(state.session);
     let running: boolean;
     let history: Awaited<ReturnType<typeof handle.history>>;
@@ -130,37 +145,48 @@ export class OpenCodeAgent extends DurableObject<Env> {
         ? "El modelo elegido no está disponible en el registro activo de OpenCode. Prueba otro modelo."
         : "No se pudo recuperar la ejecución del agente; consulta los registros del servicio.";
       const failed = { status: "failed", reason, toolCalls: 0, fileVerified: false,
-        project: state.project, model: state.model };
+        project: state.project, model: state.model, kind: state.kind };
       await this.ctx.storage.put("agent-check-result-v1", failed);
       return failed;
     }
     const evidence = assessAgentToolEvidence(history, state.project, state.token);
     if (running) {
       if (Date.now() - state.startedAt < 6 * 60_000) {
-        return { status: "running", toolCalls: evidence.requestedTools, project: state.project, model: state.model };
+        return { status: "running", toolCalls: evidence.requestedTools, project: state.project, model: state.model, kind: state.kind };
       }
       try { await handle.abort(); } catch { /* Preserve timeout as a failure. */ }
       const timeout = { status: "failed", reason: "La autoprueba superó seis minutos y se detuvo para evitar consumo indefinido.",
-        toolCalls: evidence.requestedTools, fileVerified: false, project: state.project, model: state.model };
+        toolCalls: evidence.requestedTools, fileVerified: false, project: state.project, model: state.model, kind: state.kind };
       await this.ctx.storage.put("agent-check-result-v1", timeout);
       return timeout;
     }
     if (!history.some(message => message.type === "assistant") &&
         Date.now() - state.startedAt < 5 * 60_000) {
-      return { status: "queued", toolCalls: 0, project: state.project, model: state.model };
+      return { status: "queued", toolCalls: 0, project: state.project, model: state.model, kind: state.kind };
     }
     let fileVerified = false;
     if (evidence.correctLinuxResult) {
       try {
-        const actual = await this.env.DEV.getByName("personal").inspect(state.project, "read", "proof.txt") as
-          { contents?: string };
-        fileVerified = actual.contents === state.token;
-      } catch { /* An absent file or failed restore is NOT a successful test. */ }
+        const dev = this.env.DEV.getByName("personal");
+        if (state.kind === "repair") {
+          const [source, test] = await Promise.all([
+            dev.inspect(state.project, "read", "calc.mjs") as Promise<{ contents?: string }>,
+            dev.inspect(state.project, "read", "calc.test.mjs") as Promise<{ contents?: string }>
+          ]);
+          if (source.contents && test.contents === REPAIR_TEST && source.contents !== REPAIR_SOURCE_BROKEN) {
+            const run = await dev.run(state.project, "node --test calc.test.mjs");
+            fileVerified = repairIsVerified(source.contents, test.contents, run.exitCode);
+          }
+        } else {
+          const actual = await dev.inspect(state.project, "read", "proof.txt") as { contents?: string };
+          fileVerified = actual.contents === state.token;
+        }
+      } catch { /* Failed inspection or test cannot count as a verified repair. */ }
     }
     const outcome = {
       status: evidence.correctLinuxResult && fileVerified ? "passed" : "failed",
       toolCalls: evidence.requestedTools,
-      fileVerified, project: state.project, model: state.model,
+      fileVerified, project: state.project, model: state.model, kind: state.kind,
       ...(evidence.correctLinuxResult && fileVerified ? {} : { reason: explainAgentCheckFailure(evidence) })
     };
     await this.ctx.storage.put("agent-check-result-v1", outcome);
@@ -398,7 +424,7 @@ export default {
       if (url.pathname === "/api/dev/agent-check") {
         const body = request.method === "POST" && request.headers.get("Origin") === url.origin &&
           request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")
-          ? (await request.json()) as { workspace?: string; model?: string }
+          ? (await request.json()) as { workspace?: string; model?: string; kind?: string }
           : null;
         const workspace = request.method === "GET" ? url.searchParams.get("workspace") : body?.workspace;
         if (!workspace || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(workspace)) {
@@ -409,7 +435,7 @@ export default {
           return Response.json(await host.agentCheckStatus(), { headers: { "Cache-Control": "no-store" } });
         }
         if (request.method === "POST") {
-          return Response.json(await host.startAgentCheck(body?.model), { headers: { "Cache-Control": "no-store" } });
+          return Response.json(await host.startAgentCheck(body?.model, body?.kind), { headers: { "Cache-Control": "no-store" } });
         }
         return new Response("Method not allowed", { status: 405 });
       }
