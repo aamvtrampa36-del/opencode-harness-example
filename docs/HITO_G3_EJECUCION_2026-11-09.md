@@ -72,3 +72,19 @@ El plan maestro original exigía para G3 instalar `opencode serve`/web nativo en
 - [GitHub Actions #150 — cierre G2](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42682147880)
 - [Plan maestro](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/V1_EXECUTION_PLAN.md)
 - [Decisión arquitectónica vigente](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/fix/repeatable-agent-verification-20261108/docs/ARCHITECTURE_DECISION_2026-11-08.md)
+
+
+## 6. Validación final de G3 (2026-11-09 21:09 UTC)
+
+La publicación inicial de esta acta, commit `48254eb7d30f3c6ecabbf5455821f0f010ee31d6`, fue comprobada de forma independiente:
+
+- **GitHub Actions #153**, ejecución `42699654431`: job `validate` con `completed/success` y ninguna etapa fallida.
+- **Cloudflare Workers Builds:** build `13af98ed-b58a-4967-beef-5c9dd0fae380`, resultado `success` y commit de origen `48254eb7d30f3c6ecabbf5455821f0f010ee31d6`.
+- **Staging activo comprobado tras esa compilación:** versión `5774ef2d-caa6-4ce0-a692-76deee1c7365`. Su código no contiene `g2SelfDevTick` ni `g1ProofTick`, y conserva `G1_DEV_UNLIMITED_CHECKS`.
+- **Cron:** `[]`. **Containers:** `active=0`, `starting=0`. **Access:** dominio protegido con política `allow`.
+- **Producción:** versión `1d70eb77-316e-408d-bd14-5f19b171dedf`, sin cambios.
+- Las PR #28 y #29 permanecen borradores sin fusionar. G3 no creó ni ejecutó agentes nuevos, no instaló el motor nativo y no inició costos de inferencia.
+
+Esta sección registra una comprobación puntual del commit de publicación inicial; cualquier commit puramente documental posterior puede obtener un nuevo ID de despliegue sin alterar la arquitectura seleccionada.
+
+**Dictamen definitivo: G3 cerrado bajo el alcance revisado. Siguiente y única prioridad: G4 — persistencia, respaldo externo al Container y recuperación comprobada.**
