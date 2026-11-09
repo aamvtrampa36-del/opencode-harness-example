@@ -26,7 +26,7 @@ La ejecución local del comando que prepara los archivos devolvió `exit_code=1`
 
 ## Evidencia y limitaciones
 - CI #89 para commit `9b546e4321f2db22417d421881811bfaef281cc4`: completo y correcto (Bun tests, preview, TypeScript, compilación, invariantes).
-- CI #90 del commit `5d07953d37626ec18317b7c6948911bad5e450ee`: completo y correcto. Los identificadores de corrida son fuente de verdad; comprobar el número de ejecución antes de referenciarla.
+- CI #91 del commit `5d07953d37626ec18317b7c6948911bad5e450ee` (run 42554295714): completo y correcto.
 - **Preflight real del proveedor**: Cloudflare Workers AI devolvió `success:true` para una llamada directa a `@cf/openai/gpt-oss-20b` (106 tokens totales, 2,2181796 neuronas reportadas). Esto confirma acceso del administrador al modelo por la API directa; **NO** demuestra OpenCode, sesión Harness, registro de herramientas ni ejecución de Linux por IA. El costo monetario de esa llamada no fue calculado.
 - La verificación con inferencia **dentro de OpenCode Cloud** sigue sin ejecutarse: no hay un entorno Preview de PR accesible mediante sesión autorizada; la conexión Cloudflare API permite administración, pero no proporciona la sesión de navegador Cloudflare Access ni ejecuta directamente la aplicación protegida.
 - El plugin de control remoto disponible no tiene ningún dispositivo conectado. No se usaron atajos para saltar Access ni se expusieron tokens.
