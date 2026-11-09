@@ -144,7 +144,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if ((this.env as Env & { G1_DEV_UNLIMITED_CHECKS?: string }).G1_DEV_UNLIMITED_CHECKS !== "true") {
       return { status: "disabled" };
     }
-    const key = "g2-selfdev-20261109-v4";
+    const key = "g2-selfdev-20261109-v5";
     type State = { status: "started" | "completed" | "blocked"; phase?: "probe" | "work";
       session?: string; startedAt?: number; reason?: string; githubReadable?: boolean;
       openRouterConfigured?: boolean; openRouterActive?: boolean; toolCalls?: number };
@@ -171,15 +171,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
         await this.ctx.storage.put(key, blocked);
         return blocked;
       }
-      const openRouterActive = (await this.refreshOpenRouter()).active;
       const created = await this.harness.sessions.create();
+      const openRouterActive = (await this.refreshOpenRouter()).active;
       const started: State = { status: "started", phase: "probe", session: created.id,
         startedAt: Date.now(), githubReadable: true, openRouterConfigured, openRouterActive };
       await this.ctx.storage.put(key, started);
       try {
         const handle = this.harness.session(created.id);
         await handle.setAgent("build");
-        await handle.setModel(this.ai(MODEL_ID));
+        await handle.setModel({ providerID: "openrouter", id: "z-ai/glm-5.3-flash" });
         await handle.submit(
           "Real tool verification, not a question. Call the tool named EXACTLY github NOW, with " +
           "action=read, repo=aamvtrampa36-del/opencode-harness-example, path=src/github.ts, ref=main. " +
@@ -188,7 +188,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           { whenBusy: "followUp" }
         );
         return { status: "started", phase: "probe", session: created.id,
-          githubReadable: true, openRouterConfigured, openRouterActive, model: MODEL_ID };
+          githubReadable: true, openRouterConfigured, openRouterActive, model: "z-ai/glm-5.3-flash" };
       } catch (error) {
         const blocked: State = { ...started, status: "blocked",
           reason: error instanceof Error ? error.message.slice(0, 170) : "Agent failed to launch" };
