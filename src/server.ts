@@ -41,7 +41,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
         || await this.personalConfig.getGitHubKey();
       if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
-      return new GitHubBridge(key, fetch, await this.personalConfig.getAllowedRepositories()).execute(input);
+      // Wrap the global fetch so it is called with the correct receiver in Workers.
+      return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
+        await this.personalConfig.getAllowedRepositories()).execute(input);
     }
   };
   async isOpenRouterConfigured(): Promise<boolean> {
@@ -142,7 +144,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if ((this.env as Env & { G1_DEV_UNLIMITED_CHECKS?: string }).G1_DEV_UNLIMITED_CHECKS !== "true") {
       return { status: "disabled" };
     }
-    const key = "g2-selfdev-20261109-v2";
+    const key = "g2-selfdev-20261109-v3";
     type G2State = {
       status: "started" | "completed" | "blocked";
       session?: string; startedAt?: number; reason?: string;
