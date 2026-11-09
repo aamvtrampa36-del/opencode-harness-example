@@ -27,6 +27,7 @@ describe("G4 durable backup restore safety", () => {
     const f = await fixture();
     try {
       const r = restore(f.root, f.bytes);
+      if (r.exitCode !== 0) throw new Error(new TextDecoder().decode(r.stderr));
       expect(r.exitCode).toBe(0);
       const data = JSON.parse(new TextDecoder().decode(r.stdout));
       expect(data.files).toBe(2);
@@ -50,6 +51,7 @@ describe("G4 durable backup restore safety", () => {
       expect(failed.exitCode).not.toBe(0);
       await expect(stat(join(f.root, "retry"))).rejects.toThrow();
       const succeeded = restore(f.root, f.bytes, "retry");
+      if (succeeded.exitCode !== 0) throw new Error(new TextDecoder().decode(succeeded.stderr));
       expect(succeeded.exitCode).toBe(0);
     } finally {
       await rm(f.root, { recursive: true, force: true });
