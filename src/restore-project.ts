@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readFile, mkdir, mkdtemp, rename, rm, lstat, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { gunzipSync } from "node:zlib";
-const ROOT = "/workspace/projects";
+const ROOT = process.env.G4_RESTORE_TEST_ROOT || "/workspace/projects";
 const [source, target] = process.argv.slice(1);
 const SLUG = /^[a-z][a-z0-9-]{0,39}$/;
 if (!SLUG.test(source || "") || !SLUG.test(target || "") || source === target) throw Error("Invalid or overlapping project slugs");
@@ -83,6 +83,7 @@ try {
   if(actual!==expected)throw Error("Restored files fail SHA-256");
   try {await lstat(outputDir);throw Error("Restore target already exists");}
   catch(e){if(e.code!=="ENOENT")throw e;}
+  if(process.env.G4_TEST_FAIL_BEFORE_COMMIT==="1")throw Error("G4 simulated interrupted restore");
   await rename(root,outputDir);
   process.stdout.write(JSON.stringify({source,target,files:files.length,sha256:actual,bytes:expanded}));
 } finally {
