@@ -53,3 +53,13 @@ Fuentes técnicas:
 - https://developers.cloudflare.com/containers/api/durable-object-container/
 - https://developers.cloudflare.com/containers/guides/snapshots/
 - https://developers.cloudflare.com/containers/platform/pricing/
+
+## Diagnóstico puntual del error de modelos (telemetría)
+
+Cloudflare Workers Observability, consulta de solo lectura del 7 al 9 de noviembre de 2026: **un evento** `SessionRunnerModel.ModelUnavailableError`, disparado durante un `alarm` de `OpenCodeAgent` el 8 de noviembre, 18:21 UTC. El mensaje exacto identifica `cloudflare/@cf/meta/llama-3.3-70b-instruct-fp8-fast` durante `SessionRunnerModel.resolve` → `SessionContext.load` → `SessionRunner.advanceToStep`. Sucedió antes de la llamada a herramienta.
+
+Este ID **no** figura en los presets actualmente permitidos en `src/model-presets.ts` (el predeterminado es GPT-OSS 20B). Sin embargo, `@cf/meta/llama-3.3-70b-instruct-fp8-fast` figura en el catálogo público oficial de Workers AI, por lo que **no** está demostrado que Cloudflare haya retirado el modelo. La causa local comprobada es una selección de sesión que el registro activo de modelos de OpenCode no consigue resolver; faltan datos para distinguir la desconexión del proveedor, el descubrimiento del modelo o la persistencia de una selección antigua.
+
+Próxima prueba de raíz: inspeccionar en un entorno autorizado el catálogo habilitado de OpenCode en el momento de reanudación; comparar el modelo persistido de la sesión con dicho catálogo y con Workers AI; corregir solamente la capa que discrepe. No sustituir modelos de sesiones automáticamente ni borrar su historial sin conservar los datos. Un endpoint directo de Workers AI que responda no prueba su registro dentro de Workerd.
+
+Referencias: https://developers.cloudflare.com/workers-ai/models/llama-3.3-70b-instruct-fp8-fast/ y https://opencode.ai/docs/models .
