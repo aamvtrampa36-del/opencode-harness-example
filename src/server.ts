@@ -19,7 +19,6 @@ import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
 import { remoteMcpPlugin } from "./mcp-plugin";
-import { blockUnprotectedPreviewHost } from "./preview-guard";
 import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
@@ -287,15 +286,6 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
-      // Alternate Cloudflare deployment/branch aliases are not covered by the
-      // owner-only Access application attached to the stable G1 hostname.
-      // Deny them BEFORE reading state, running tools or routing OpenCode.
-      if (blockUnprotectedPreviewHost(url.hostname,
-          (env as Env & { G1_PREVIEW_HOST?: string }).G1_PREVIEW_HOST)) {
-        return new Response("Preview host is not authorized", {
-          status: 403, headers: { "Cache-Control": "no-store" }
-        });
-      }
       const personal = env.SETTINGS.getByName("personal");
       const settingsOriginAllowed =
         request.headers.get("Origin") === url.origin &&
