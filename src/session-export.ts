@@ -3,7 +3,7 @@
  * This uses the persisted server transcript instead of a short-lived
  * browser blob URL that some Android browsers cancel on immediate revoke.
  */
-import type { OpenCodeMessage } from "agents/harness/opencode";
+// Keep the export boundary independent of the harness recursive message types.
 
 const WORKSPACE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const SESSION_ID = /^ses_[A-Za-z0-9_-]{1,80}$/;
@@ -18,7 +18,8 @@ export function validateExportIdentity(object: unknown, session: unknown): void 
 }
 
 /** Explicit input prevents a filename or arbitrary client text controlling response headers. */
-export function sessionExportResponse(session: string, messages: readonly OpenCodeMessage[]): Response {
+export function sessionExportResponse(session: string, messages: unknown): Response {
+  if (!Array.isArray(messages)) throw new Error("Historial inválido");
   if (!SESSION_ID.test(session)) throw new Error("Sesión inválida");
   const result = {
     format: "opencode-harness-session-v1",
