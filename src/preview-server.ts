@@ -126,5 +126,5 @@ http.createServer(async (req, res) => {
     else res.writeHead(code, { "Content-Type": "text/plain", "Cache-Control": "no-store" })
       .end(code === 404 ? "Project files not found" : "Project archive or preview unavailable");
   }
-}).listen(Number(process.env.PREVIEW_PORT || 4321), "0.0.0.0");
+}).listen(Number(process.env.PREVIEW_PORT || 4322), "0.0.0.0");
 `;
