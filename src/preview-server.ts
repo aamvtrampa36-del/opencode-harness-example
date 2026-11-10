@@ -13,6 +13,7 @@ import { resolve, sep, extname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 const ROOT = process.env.PREVIEW_ROOT || "/workspace/projects";
+const TAR_BIN = process.env.PREVIEW_TAR_BIN || "tar";
 const MIME = {
   ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8",
@@ -47,7 +48,7 @@ http.createServer(async (req, res) => {
       try {
         const archive = join(temp, "project.tar.gz");
         await new Promise((resolveDone, rejectDone) => {
-          const child = spawn("tar", [
+          const child = spawn(TAR_BIN, [
             "--exclude=node_modules", "--exclude=.git", "--exclude=.env",
             "--exclude=.env.*", "--exclude=*.pem", "--exclude=*.key",
             "-czf", archive, "-C", ROOT, project
