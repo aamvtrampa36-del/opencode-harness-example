@@ -18,6 +18,7 @@ import { workspacePlugin } from "./workspace";
 import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
+import { assertScopedTool, requireSameScope, scopeStorageKey, validateProjectScope, type ProjectScope, type ScopedToolAction } from "./project-scope";
 import { remoteMcpPlugin } from "./mcp-plugin";
 import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
 import { inlinePreviewAssets } from "./preview-inline";
@@ -38,6 +39,32 @@ export class OpenCodeAgent extends DurableObject<Env> {
     await this.mcpLifecycle.reload();
     return { refreshed: true };
   }
+  /** This selection is fixed per OpenCode conversation, not an LLM instruction. */
+  async bindSessionScope(sessionID: string, input: unknown): Promise<void> {
+    const next = validateProjectScope(input, await this.personalConfig.getAllowedRepositories());
+    const key = scopeStorageKey(sessionID);
+    await this.ctx.storage.transaction(async tx => {
+      const old = await tx.get<ProjectScope>(key);
+      const current = requireSameScope(old, next);
+      if (!old) await tx.put(key, current);
+    });
+  }
+
+  async inheritSessionScope(source: string, target: string, project: string): Promise<void> {
+    const old = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(source));
+    if (old) {
+      if (old.project !== project) throw new Error("La sesión delegada no puede cambiar de proyecto");
+      await this.bindSessionScope(target, old);
+    } else {
+      await this.bindSessionScope(target, { project });
+    }
+  }
+
+  async enforceSessionScope(sessionID: string, action: ScopedToolAction): Promise<void> {
+    const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
+    assertScopedTool(scope, action);
+  }
+
   private readonly githubRunner = {
     execute: async (input: Parameters<GitHubBridge["execute"]>[0]) => {
       const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
@@ -88,6 +115,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const project = "agent-check-" + token;
     const created = await this.harness.sessions.create();
     const state = { session: created.id, project, token, model, kind, startedAt: Date.now() };
+    await this.bindSessionScope(created.id, { project });
     // Atomically replace the previous terminal proof only after creating a new session.
     // This keeps completed checks retryable without exposing stale pass results.
     await this.ctx.storage.transaction(async (tx) => {
@@ -302,7 +330,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
             () => this.personalConfig.getRemoteMcps(),
             (reload) => { this.mcpLifecycle.reload = reload; }
           ),
-          workspacePlugin(this.workspace, {}, this.linuxRunner, this.githubRunner)
+          workspacePlugin(this.workspace, {}, this.linuxRunner, this.githubRunner,
+            (sessionID, action) => this.enforceSessionScope(sessionID, action))
         ]
       }),
     // Low effort: with more, the model sometimes writes its whole answer
@@ -319,7 +348,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
     (tag) => this.ctx.getWebSockets(tag),
     () => this.isOpenRouterConfigured(),
     (id: string) => this.personalConfig.getSpecialization(id),
-    (incident: IncidentObservation) => this.noteIncident(incident)
+    (incident: IncidentObservation) => this.noteIncident(incident),
+    (sessionID: string, input: unknown) => this.bindSessionScope(sessionID, input),
+    (source: string, target: string, project: string) => this.inheritSessionScope(source, target, project)
   );
   readonly webSockets = new WebSockets(this.sockets.options());
   readonly lifecycle = Lifecycle.install(this)
