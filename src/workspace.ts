@@ -8,6 +8,7 @@ import {
 import type { Plugin } from "@opencode/plugin";
 import type { GitHubAction } from "./github";
 import type { ScopedToolAction } from "./project-scope";
+import { executeBoundRepositoryAction } from "./scoped-github";
 
 /**
  * OpenCode's tools that need a local filesystem or process. The Workers
@@ -29,7 +30,7 @@ export type LinuxRunner = {
 
 const LOCAL_TOOLS = ["read", "write", "edit", "patch", "glob", "grep", "shell"];
 
-const SYSTEM = `You are OpenCode running in a Cloudflare Durable Object, not the user's computer. You have a durable /workspace with file tools and an isolated JavaScript ES-module exec backend; you can clone public Git repositories via codemode:git. You ALSO have a separate cloud Linux computer via the linux tool (Debian, Node.js and npm; Git can be installed on demand). The inspect_linux tool safely lists and reads existing Linux project files without executing commands; use it for planning and review. The Durable Object file tools are a separate storage area; use linux for actual application projects under /workspace/projects/{project-slug}, compilation, package installation and tests. The Linux container automatically checkpoints files before idle suspension. To give the user a live browser preview, create a static production build at /workspace/projects/{project-slug}/dist/index.html with relative asset URLs. For Vite use base './' (for example npm run build -- --base=./); for HTML-only projects copy HTML, CSS and JS into dist/. The web UI provides a Ver app button that opens /api/dev/preview/{project-slug}/dist/. Do not claim the preview is working until tested. Never claim a command passed until its returned exitCode is zero. Never claim to have run tools or tests you could not actually run.\n\nDEVELOPMENT: Understand requirements, use small reversible changes, inspect diffs, report tests actually performed and unresolved issues. Create proposals or drafts first. Do not delete important data, write to production, merge to main, change credentials or deploy services without explicit approval. Never make up tool results or source contents.\n\nOFFICIAL SOURCES: You may plan, draft, edit and review, but the owner approves final integration and publication. NEVER overwrite official sources, canonize editorial content, merge production changes or publish without explicit authorization for the exact operation. Keep drafts distinguishable from approved materials.\n\nGITHUB: When the github tool is available, use it to read the owner's repositories approved in Settings, create opencode/* review branches, save changed text files and open draft pull requests. It never merges or pushes to main. If github is unavailable, tell the user that a private GITHUB_TOKEN Worker secret must be configured; never ask for a token in chat.\n\nCOST/SECURITY: Prefer inexpensive models for ordinary tasks. Never print API secrets. Do not disable authentication or launch billable infrastructure without informed authorization.\n\nOPERATIONS: State the actual available tools and constraints. A separate Linux Container is already available through the linux tool. Explain only genuine missing capabilities, and never fake command results, tools, or tests. Paths for workspace tools are absolute. Prefer read/write/edit for text files. Concise Spanish unless the user requests otherwise.`;
+const SYSTEM = `You are OpenCode running in a Cloudflare Durable Object, not the user's computer. You have a durable /workspace with file tools and an isolated JavaScript ES-module exec backend; you can clone public Git repositories via codemode:git. You ALSO have a separate cloud Linux computer via the linux tool (Debian, Node.js and npm; Git can be installed on demand). The inspect_linux tool safely lists and reads existing Linux project files without executing commands; use it for planning and review. The Durable Object file tools are a separate storage area; use linux for actual application projects under /workspace/projects/{project-slug}, compilation, package installation and tests. The Linux container automatically checkpoints files before idle suspension. To give the user a live browser preview, create a static production build at /workspace/projects/{project-slug}/dist/index.html with relative asset URLs. For Vite use base './' (for example npm run build -- --base=./); for HTML-only projects copy HTML, CSS and JS into dist/. The web UI provides a Ver app button that opens /api/dev/preview/{project-slug}/dist/. Do not claim the preview is working until tested. Never claim a command passed until its returned exitCode is zero. Never claim to have run tools or tests you could not actually run.\n\nDEVELOPMENT: Understand requirements, use small reversible changes, inspect diffs, report tests actually performed and unresolved issues. Create proposals or drafts first. Do not delete important data, write to production, merge to main, change credentials or deploy services without explicit approval. Never make up tool results or source contents.\n\nOFFICIAL SOURCES: You may plan, draft, edit and review, but the owner approves final integration and publication. NEVER overwrite official sources, canonize editorial content, merge production changes or publish without explicit authorization for the exact operation. Keep drafts distinguishable from approved materials.\n\nGITHUB: When the github tool is available, use it to read the owner's repositories approved in Settings, create opencode/* review branches, save changed text files and open draft pull requests. It never merges or pushes to main. For remote GitHub review use repo_review, repo_read and repo_info: these tools automatically resolve the repository from the authenticated session. DO NOT inspect /bundle/.git/HEAD or use /bundle as a checkout of the selected GitHub repository. Generic read/ls/find/grep tools belong to the separate Durable Object workspace, NOT to the selected GitHub repository. In Plan/Review use repo_review with the opencode/* branch directly. If the bridge is unavailable, ask the user to connect GitHub privately in Settings; never ask for a token in chat.\n\nCOST/SECURITY: Prefer inexpensive models for ordinary tasks. Never print API secrets. Do not disable authentication or launch billable infrastructure without informed authorization.\n\nOPERATIONS: State the actual available tools and constraints. A separate Linux Container is already available through the linux tool. Explain only genuine missing capabilities, and never fake command results, tools, or tests. Paths for workspace tools are absolute. Prefer read/write/edit for text files. Concise Spanish unless the user requests otherwise.`;
 
 /**
  * The shared `exec` description is written for a choice of shell backends.
@@ -114,7 +115,8 @@ export function workspacePlugin(
   options: Omit<CreatePiToolsOptions, "workspace" | "exec" | "shell"> = {},
   linux?: LinuxRunner,
   github?: GitHubRunner,
-  scopeGuard?: (sessionID: string, action: ScopedToolAction) => Promise<void>
+  scopeGuard?: (sessionID: string, action: ScopedToolAction) => Promise<void>,
+  getBoundRepository?: (sessionID: string) => Promise<string>
 ): Plugin.Plugin {
   const { tools, execute } = createPiTools({
     ...options,
@@ -217,6 +219,64 @@ export function workspacePlugin(
               });
               const result = await github.execute(input as GitHubAction);
               return { content: JSON.stringify(result) };
+            }
+          });
+        }
+        // Dedicated unambiguous GitHub read tools. Unlike a generic
+        // github action with an LLM-provided repo, these resolve the
+        // selected repository from Durable Object session state.
+        if (github && getBoundRepository && scopeGuard) {
+          const runBound = (
+            context: { sessionID: string; agent: string },
+            action: Parameters<typeof executeBoundRepositoryAction>[2]
+          ) => executeBoundRepositoryAction(
+            context.sessionID, context.agent, action,
+            getBoundRepository,
+            async (sessionID, repo) => scopeGuard(sessionID, { kind: "github", repo }),
+            (input) => github.execute(input)
+          );
+          editor.add({
+            name: "repo_review",
+            description: "REVIEW SELECTED GITHUB REPOSITORY DIFF. Use this FIRST in Review mode. Read-only GitHub API comparison of main to an opencode/* branch. The selected repository is automatically resolved from the current session; do not supply a repo. Never inspect /bundle/.git/HEAD. Returns changed files and line counts.",
+            input: {
+              type: "object",
+              properties: {
+                branch: { type: "string", description: "Review branch, e.g. opencode/g8-cdf-isolation-20261110" }
+              },
+              required: ["branch"],
+              additionalProperties: false
+            },
+            options: { codemode: false },
+            async execute(input, context) {
+              const p = input as { branch: string };
+              return { content: JSON.stringify(await runBound(context, { action: "review", branch: p.branch })) };
+            }
+          });
+          editor.add({
+            name: "repo_info",
+            description: "Read ONLY the selected GitHub repository metadata through its authorized API. Automatically uses the immutable repository bound to this conversation. Do NOT use generic filesystem tools or /bundle.",
+            input: { type: "object", properties: {}, additionalProperties: false },
+            options: { codemode: false },
+            async execute(_input, context) {
+              return { content: JSON.stringify(await runBound(context, { action: "repo" })) };
+            }
+          });
+          editor.add({
+            name: "repo_read",
+            description: "Read ONLY a text file from the selected GitHub repository and ref using GitHub API. The repo is bound to this session, NOT a local /bundle checkout. Does not modify files.",
+            input: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "Repository-relative path, e.g. docs/opencode-g8/isolated-review-20261110.md" },
+                ref: { type: "string", description: "Branch or commit, e.g. opencode/g8-cdf-isolation-20261110" }
+              },
+              required: ["path", "ref"],
+              additionalProperties: false
+            },
+            options: { codemode: false },
+            async execute(input, context) {
+              const p = input as { path: string; ref: string };
+              return { content: JSON.stringify(await runBound(context, { action: "read", path: p.path, ref: p.ref })) };
             }
           });
         }
