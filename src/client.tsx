@@ -472,6 +472,8 @@ function App() {
     localStorage.setItem(SESSION_KEY, next);
     setSession(next);
     setProject(localStorage.getItem(PROJECT_PREFIX + next) ?? "");
+    // On narrow screens the conversation list is an overlay, not a second grid row.
+    if (window.matchMedia("(max-width: 1099px)").matches) setSessionsOpen(false);
   };
   const loadProjects = async () => {
     try {
@@ -661,7 +663,7 @@ function App() {
 
   return (
     <div
-      className={`grid h-dvh overflow-hidden bg-kumo-elevated text-kumo-default ${
+      className={`relative grid h-dvh overflow-hidden bg-kumo-elevated text-kumo-default ${
         sessionsOpen
           ? "lg:grid-cols-[minmax(220px,18vw)_minmax(520px,1fr)]"
           : "grid-cols-1"
@@ -669,11 +671,16 @@ function App() {
     >
       {sessionsOpen ? (
         <aside
-          className="flex min-h-0 flex-col border-r border-kumo-line bg-kumo-base"
+          className="absolute inset-0 z-20 flex min-h-0 flex-col border-r border-kumo-line bg-kumo-base lg:static"
           aria-label="Conversaciones"
         >
           <div className="flex h-[68px] shrink-0 items-center justify-between gap-2 border-b border-kumo-line px-4">
             <span className="text-sm font-semibold">Conversaciones</span>
+            <Button type="button" variant="ghost" shape="square"
+              aria-label="Cerrar lista de conversaciones"
+              className="lg:hidden"
+              onClick={() => setSessionsOpen(false)}
+              icon={<XCircleIcon size={16} />} />
             <Button
               variant="ghost"
               shape="square"
