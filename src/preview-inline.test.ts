@@ -63,6 +63,6 @@ describe("isolated HTML preview resource delivery", () => {
     const html = await inlinePreviewAssets('<script src="./app.js"></script>', "dist/",
       async () => new Response('console.log("</script>")', { headers: { "Content-Type": "text/javascript" } }));
     expect(html).toContain('<\\/script>');
-    expect(html.match(/<\\/script>/g)?.length).toBe(1);
+    expect(html.split("</script>").length - 1).toBe(1);
   });
 });
