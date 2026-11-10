@@ -25,13 +25,46 @@ export function AgentCheckPanel({ workspace }: { workspace: string }) {
   const [error, setError] = useState("");
   const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
   const [incidentError, setIncidentError] = useState("");
+  const [smokeBusy, setSmokeBusy] = useState(false);
+  const [smokeResult, setSmokeResult] = useState("");
   const loadIncidents = async () => {
     const response = await fetch("/api/dev/incidents", { cache: "no-store" });
     if (!response.ok) throw new Error("No se pudo consultar el registro de incidentes");
     const data = await response.json() as { incidents?: IncidentRecord[] };
     setIncidents(data.incidents ?? []);
     setIncidentError("");
+    return data.incidents ?? [];
   };
+
+  /** One explicit safe failing Linux command. No LLM calls, no file edits. */
+  async function runIncidentSmoke() {
+    setSmokeBusy(true);
+    setSmokeResult("");
+    setIncidentError("");
+    try {
+      const response = await fetch("/api/dev/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project: "g7-diagnostics",
+          command: 'node -e "process.exit(19)"'
+        })
+      });
+      const output = await response.json() as { exitCode?: number; error?: string };
+      if (!response.ok || output.exitCode !== 19) {
+        throw new Error(output.error ?? "La prueba Linux no devolvió el exitCode esperado (19)");
+      }
+      const recorded = await loadIncidents();
+      const entry = recorded.find(row => row.project === "g7-diagnostics"
+        && row.source === "linux" && row.code === "SHELL_FAILED" && row.exitCode === 19);
+      if (!entry) throw new Error("Linux devolvió 19, pero el incidente no aparece en el registro persistente");
+      setSmokeResult("Verificado: Linux devolvió exitCode 19 y el fallo se registró sin utilizar IA.");
+    } catch (error) {
+      setIncidentError(error instanceof Error ? error.message : "No se completó la prueba de incidentes");
+    } finally {
+      setSmokeBusy(false);
+    }
+  }
 
   const refresh = async () => {
     const res = await fetch("/api/dev/agent-check?workspace=" + encodeURIComponent(workspace), {
@@ -127,6 +160,18 @@ export function AgentCheckPanel({ workspace }: { workspace: string }) {
           indica cómo actuar y evita reintentos automáticos equivalentes. No guarda prompts, comandos,
           respuestas ni credenciales.
         </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" disabled={smokeBusy}
+            className="rounded-md border border-kumo-line px-3 py-2 text-xs disabled:opacity-50"
+            onClick={() => void runIncidentSmoke()}>
+            {smokeBusy ? "Verificando…" : "Comprobar registro con un fallo real"}
+          </button>
+          <span className="text-xs text-kumo-subtle">
+            Prueba opcional: ejecuta un comando Linux que falla intencionalmente (exitCode 19).
+            No gasta tokens de IA ni modifica archivos; puede iniciar el Container facturable.
+          </span>
+        </div>
+        {smokeResult ? <p role="status" className="text-xs">{smokeResult}</p> : null}
         {incidents.length === 0 ? (
           <p className="text-xs text-kumo-subtle">No hay fallos registrados desde la activación de G7.</p>
         ) : incidents.slice(0, 8).map(item => (
