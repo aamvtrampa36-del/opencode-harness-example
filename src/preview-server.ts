@@ -5,6 +5,7 @@
  *
  * No dependencies, no git, no package manager.
  */
+export const PREVIEW_PORT = 4322;
 export const PREVIEW_SOURCE = String.raw`
 import http from "node:http";
 import { readFile, stat, realpath, mkdtemp, rm } from "node:fs/promises";
@@ -126,5 +127,5 @@ http.createServer(async (req, res) => {
     else res.writeHead(code, { "Content-Type": "text/plain", "Cache-Control": "no-store" })
       .end(code === 404 ? "Project files not found" : "Project archive or preview unavailable");
   }
-}).listen(Number(process.env.PREVIEW_PORT || 4322), "0.0.0.0");
+}).listen(Number(process.env.PREVIEW_PORT || ${PREVIEW_PORT}), "0.0.0.0");
 `;
