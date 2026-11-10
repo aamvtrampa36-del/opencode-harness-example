@@ -1,6 +1,6 @@
-# OpenCode Cloud — G7: diagnóstico pasivo y autorreparación acotada (10 noviembre 2026)
+# OpenCode Cloud — G7: diagnóstico pasivo y autorreparación acotada (APROBADO en staging, 10 noviembre 2026)
 
-**Dictamen de esta intervención:** G7 **IMPLEMENTADO Y VALIDADO AUTOMÁTICAMENTE EN STAGING; pendiente de prueba operativa mínima en staging protegido**. No confundir CI / test de un ejecutor real en CI con una llamada authenticated al Worker del propietario.
+**Dictamen vigente (cierre 10 noviembre 2026): G7 APROBADO Y CERRADO EN STAGING**, tras prueba operativa del titular desde Android y la validación automática. Los estados de «pendiente» de las secciones históricas anteriores corresponden al momento previo a la evidencia final; prevalece la sección 5. No confundir CI / test de un ejecutor real en CI con una llamada authenticated al Worker del propietario.
 
 **Fuentes recuperadas íntegramente:** informe maestro `Informe_Integral_OpenCode_Cloud_V1.pdf` (21 páginas, 1.524 líneas), `docs/V1_EXECUTION_PLAN.md` y actas G1–G6. G6 permanece aprobado en staging con evidencia del usuario: perfil Decisiones y respuesta `G6-OK` de un modelo real.
 
@@ -44,3 +44,37 @@ Se reutilizan los Durable Objects y la API ya existentes, sin nuevas dependencia
 El conector administrativo de Cloudflare no permite controlar el navegador autenticado de la persona propietaria; tampoco es aceptable retirar temporalmente Cloudflare Access para simular esa prueba. No inventar evidencia.
 
 **Estado: G7 pendiente solo de esa comprobación operativa.** Si funciona, registrar confirmación, declarar G7 APROBADO EN STAGING y pasar a G8, empezando por aislamiento de CDF CLOUD y WorkBench. Si falla, usar el error concreto y corregir únicamente el defecto reproducible. Nunca fusionar ni desplegar producción sin autorización.
+
+
+## 5. Aceptación funcional del titular y cierre de G7 (10 noviembre 2026)
+
+### Evidencia observada desde Android
+
+El titular ejecutó en el **staging protegido** el botón **«Comprobar registro con un fallo real»** de **Configuración → Incidentes técnicos** y remitió una captura de pantalla. Se observa:
+
+- Texto visible: **«Verificado: Linux devolvió exitCode 19 y el fallo se registró sin utilizar IA.»**.
+- Un registro real en el panel: **`SHELL_FAILED · 1 incidente`**.
+- Causa presentada: **«Comando Linux terminó con error»**.
+- Evidencia técnica visible: **`linux · g7-diagnostics · exitCode 19`**.
+- Acción recomendada: examinar `exitCode` y corregir causa antes de volver a ejecutar.
+
+Esta prueba confirma el circuito operacional **comando Linux que falla → detección no inferida del modelo → escritura en ledger de Durable Object → lectura por la API → visualización autenticada desde Android**. La captura es evidencia proporcionada por el propietario; no se atribuye al supervisor una sesión remota autenticada ni una ejecución propia sobre el dispositivo. No consume tokens de IA; el Container puede incurrir en costo de infraestructura.
+
+### Matriz final de aceptación
+
+| Criterio de G7 | Evidencia | Dictamen |
+| --- | --- | --- |
+| Capturar fallo real sin explicación del modelo | Linux `exitCode=19`, mensaje de verificación y `SHELL_FAILED` visibles en Android | **APROBADO FUNCIONALMENTE** |
+| Registro persistente y recuperable desde la aplicación | Registro devuelto por API y mostrado en panel autenticado; confirmación de la prueba | **APROBADO FUNCIONALMENTE** |
+| Clasificación estable, contador y huella de incidentes | Tests `incident-diagnostics.test.ts`; panel muestra un incidente | APROBADO TÉCNICAMENTE |
+| Incidencias repetidas agrupadas y política acotada | Tres fallos equivalentes generan un grupo con contador 3 en CI; solo errores transitorios elegibles para reintento limitado | APROBADO COMO POLÍTICA; **no se probó una segunda incidencia en Android** |
+| Privacidad de telemetría | Sanitización de campos y pruebas de no conservación de prompts/comandos/secretos | APROBADO TÉCNICAMENTE |
+| Sin autoparches o despliegues productivos | No se introdujeron colas de autorreparación ni Cron; worker productivo inalterado | APROBADO EN STAGING |
+
+Antes del cierre se confirmó el HEAD anterior de la PR #28 `707929bf369181ab1a3759716e250933dec2757f`, GitHub Actions **#223**, run `42850233154`, `completed/success`, Workers Builds `success`, staging `52b6c0a3-80d4-41de-ad00-716fd66c84af`, producción `1d70eb77-316e-408d-bd14-5f19b171dedf`, staging sin Cron y protegido por Cloudflare Access `self_hosted` con una política. El commit documental de esta sección debe verificarse de forma independiente después de publicarse.
+
+**Dictamen definitivo: G7 APROBADO Y CERRADO EN STAGING.** Se alcanza el gate del informe: un fallo real queda registrado sin depender de la afirmación del modelo y las repeticiones se agrupan con política de no autoparches equivalentes. Esto **no implica** que el sistema intercepte todos los reintentos internos del Harness, ni que una reparación autónoma haya sido ejecutada. Ambas limitaciones quedan consignadas para no exagerar capacidades.
+
+### Traspaso a G8: CDF CLOUD y WorkBench
+
+**G8 pasa a ser el hito actual**. Su primera acción es revisar y configurar el aislamiento de repositorios y proyectos, sin volver a trabajar G7. El plan exige dos recorridos independientes sobre ramas nuevas: abrir el repositorio correcto, leer, modificar un archivo de ejemplo **no canónico**, probar/compilar, generar una PR borrador, verificar el diff, las regresiones y la recuperación. Respetar el canon narrativo y los documentos oficiales de CDF; ninguna escritura en producción. Mantener la PR #28 abierta como borrador hasta autorización expresa para fusionar.
