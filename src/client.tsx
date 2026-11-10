@@ -49,6 +49,7 @@ const ROOT_SESSION = "ses_root";
 const MODEL_KEY = "opencode-model-preset";
 const PROJECT_PREFIX = "opencode-active-project:";
 const SPECIALIZATION_KEY = "opencode-specialization";
+const REPOSITORY_PREFIX = "opencode-session-repository:";
 
 const SUGGESTIONS = [
   {
@@ -342,6 +343,9 @@ function App() {
   );
   const [prompt, setPrompt] = useState("");
   const [project, setProject] = useState(() => localStorage.getItem(PROJECT_PREFIX + (localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION)) ?? "");
+  const [repository, setRepository] = useState(() =>
+    localStorage.getItem(REPOSITORY_PREFIX + (localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION)) ?? "");
+  const [authorizedRepos, setAuthorizedRepos] = useState<string[]>([]);
   const [linkCopied, setLinkCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
@@ -382,7 +386,16 @@ function App() {
       // The chat continues when diagnostics are unavailable.
     }
   };
-  useEffect(() => { void refreshIntegrations(); void refreshSpecializations(); }, []);
+  useEffect(() => {
+    void refreshIntegrations(); void refreshSpecializations();
+    void fetch("/api/settings/repositories", { cache: "no-store" })
+      .then(async response => {
+        if (!response.ok) throw new Error("GitHub repos unavailable");
+        return response.json() as Promise<{ repositories?: string[] }>;
+      })
+      .then(data => setAuthorizedRepos(data.repositories ?? []))
+      .catch(() => setAuthorizedRepos([]));
+  }, []);
   const [modelPreset, setModelPreset] = useState<ModelPresetID>(() => {
     const stored = localStorage.getItem(MODEL_KEY);
     return isModelPreset(stored) ? stored : "economy";
@@ -473,6 +486,7 @@ function App() {
     localStorage.setItem(SESSION_KEY, next);
     setSession(next);
     setProject(localStorage.getItem(PROJECT_PREFIX + next) ?? "");
+    setRepository(localStorage.getItem(REPOSITORY_PREFIX + next) ?? "");
     // On narrow screens the conversation list is an overlay, not a second grid row.
     if (window.matchMedia("(max-width: 1099px)").matches) setSessionsOpen(false);
   };
@@ -584,6 +598,27 @@ function App() {
     setProject(name);
     setProjectsOpen(false);
   };
+  /** Each GitHub repository receives its own new session and Linux project. */
+  const selectRepository = (repo: string) => {
+    if (!repo || !authorizedRepos.includes(repo)) {
+      setProjectError("Elige un repositorio autorizado en Configuración.");
+      return;
+    }
+    const slug = repo.split("/")[1].toLowerCase().replace(/[^a-z0-9-]+/g, "-")
+      .replace(/-+$/, "").slice(0, 40);
+    create().then(next => {
+      choose(next);
+      localStorage.setItem(PROJECT_PREFIX + next, slug);
+      localStorage.setItem(REPOSITORY_PREFIX + next, repo);
+      setProject(slug);
+      setRepository(repo);
+      setProjectsOpen(false);
+      setProjectError("");
+      setPrompt("Revisa el repositorio " + repo +
+        " en una rama opencode/* aislada. No alteres fuentes oficiales, main ni producción. " +
+        "Inspecciona primero los archivos y prepara un cambio pequeño en un archivo no canónico con pruebas.");
+    }, fail);
+  };
 
   /** One guided new-project entrypoint for web and native Android work. */
   const startNewApp = (kind: "web" | "android" = "web") => {
@@ -627,7 +662,8 @@ function App() {
       : text;
     const selectedModel = openRouterAvailable ? modelPreset : "cloudflare";
     const deliver = () => {
-      const accepted = submitPrompt(task, whenBusy, selectedModel, agentMode, specialization || undefined);
+      const accepted = submitPrompt(task, whenBusy, selectedModel, agentMode,
+        specialization || undefined, project || undefined, repository || undefined);
       if (accepted) setPrompt((current) => current.trim() === text ? "" : current);
     };
     if (!busy && MODEL_PRESETS[selectedModel].providerID === "openrouter") {
@@ -920,6 +956,22 @@ function App() {
                   <h2 className="text-base font-semibold">Proyectos del entorno Linux</h2>
                   <button className="rounded border border-kumo-line px-2 py-1 text-xs" type="button"
                     onClick={() => void loadProjects()}>Actualizar</button>
+                </div>
+                <div className="mt-3 space-y-2 rounded-md border border-kumo-line p-3" aria-label="Repositorio aislado G8">
+                  <label className="block text-sm font-medium" htmlFor="repo-g8">Repositorio GitHub para la tarea</label>
+                  <p className="text-xs text-kumo-subtle">
+                    Elegir un repositorio crea una conversación nueva vinculada exclusivamente a él.
+                    Las herramientas del agente no pueden escribir en otros proyectos ni repositorios.
+                  </p>
+                  <select id="repo-g8" value="" className="w-full rounded-md border border-kumo-line bg-kumo-base px-3 py-2 text-sm"
+                    disabled={!connected || !integrations?.githubConfigured}
+                    onChange={e => selectRepository(e.target.value)}>
+                    <option value="">Seleccionar repositorio y crear conversación</option>
+                    {authorizedRepos.map(repo => <option value={repo} key={repo}>{repo}</option>)}
+                  </select>
+                  {repository ? <p className="text-xs">Repositorio de esta sesión: <strong>{repository}</strong></p> : null}
+                  {!integrations?.githubConfigured
+                    ? <p className="text-xs text-kumo-subtle">Conecta GitHub en Configuración para crear ramas y PR de borrador.</p> : null}
                 </div>
                 <p className="mt-1 text-xs text-kumo-subtle">Consultar esta lista no enciende el Container. Puedes guardar una copia de proyectos pequeños (máximo 2 MiB comprimidos) en Durable Object, independiente de las instantáneas de 30 días, y descargarla incluso si estas caducan. Los respaldos se guardan manualmente y pueden restaurarse en un proyecto nuevo sin sobrescribir uno existente.</p>
                 {projectError ? <p role="alert" className="mt-2 text-sm">{projectError}</p> : null}
