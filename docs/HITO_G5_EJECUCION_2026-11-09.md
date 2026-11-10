@@ -198,3 +198,29 @@ Esta intervención está dirigida a recursos locales CSS/JS. No equivale todaví
 Desde Android, el propietario debe recargar la vista previa del mismo proyecto `app-mwabn7ns` en staging y verificar **(a)** que reaparece el fondo oscuro y la tarjeta con estilos, **(b)** que al tocar «Funciona» aparece «Prueba completada». No hace falta solicitar otra generación al modelo.
 
 Si funciona, continuar por los criterios G5 aún no demostrados: revisar archivos, guardar respaldo, restaurar con otro nombre y recargar/reconectar el historial de sesión. Si falla, registrar captura y, de ser posible, los códigos HTTP de CSS/JS desde navegador autenticado, antes de realizar otra corrección. Solo después de superar estas condiciones se puede declarar G5 aprobado y avanzar a G6: plantillas configurables sin arquitectura adicional.
+
+
+## 10. Retest real Android POSITIVO de CSS/JavaScript en staging (10 noviembre 2026)
+
+El propietario regresó al mismo proyecto `app-mwabn7ns` desde su dispositivo Android y aportó una nueva captura de la vista previa después de publicar la corrección descrita en §9. En la captura se ven el **fondo oscuro**, la **tarjeta centrada** y el **botón azul «Funciona»**, demostrando que los estilos CSS se aplican. Se ve también el texto verde **«Prueba completada»** tras la interacción, demostrando que el JavaScript del proyecto se ejecuta correctamente en el navegador real. Esto resuelve el defecto funcional previamente reproducido. La evidencia visual es aportada por el titular en la conversación de aceptación; no se adjuntaron cookies, códigos de Cloudflare Access ni credenciales.
+
+### Matriz actualizada de aceptación G5
+
+| Requisito | Estado tras prueba real Android |
+| --- | --- |
+| Inicio de sesión y uso de la interfaz en Android | **Demostrado** por capturas del titular |
+| Seleccionar proyecto, modelo y enviar una tarea | **Demostrado**: `app-mwabn7ns`, DeepSeek y sesión exportada |
+| Ejecución Linux real, eventos y resultados | **Demostrado**: cuatro herramientas Linux completadas, una inspección inicial fallida y recuperada, pruebas y compilación verdes |
+| Vista previa de aplicación con CSS y JavaScript | **Demostrado** tras corrección §9 con captura móvil: estilos visibles y mensaje «Prueba completada» |
+| Revisar archivos modificados desde la interfaz | Implementado, **aún no acreditado por prueba móvil del titular** |
+| Guardar respaldo y restaurarlo sin sobrescribir | Implementado y probado en G4 a nivel de almacenamiento, **pendiente de comprobación desde Android** |
+| Recuperar historial y conexión después de recargar | Implementado, **pendiente de comprobación desde Android** |
+| Control de detener una tarea | Implementado, **no comprobado en recorrido móvil**, verificar si se ejecuta una tarea de prueba apta para interrupción |
+
+### Estado y regla de avance
+
+Se verificó la PR #28 aún en borrador con HEAD `7a9401e37ff8aabd49fb7da3abfefe7b8eaba418`, GitHub Actions **#194** `completed/success`, Workers Builds `success`, staging `307f778f-dd99-4a1f-92dc-b3ab6b064a5c`, producción sin cambios `1d70eb77-316e-408d-bd14-5f19b171dedf`, sin tareas Cron y con Cloudflare Access protegido. La sesión de navegador del propietario no está disponible para control remoto desde esta conversación, pero su captura constituye evidencia directa del retest CSS/JS. No se debe confundir esta evidencia parcial con una aceptación completa.
+
+**Dictamen vigente: G5 PARCIALMENTE VALIDADO, pendiente de cierre.** No corregir ni rediseñar otra vez la vista previa que pasó su retest. Para completar G5, el propietario debe (1) usar **Proyectos → Revisar archivos** sobre `app-mwabn7ns`, (2) guardar un respaldo y restaurarlo con nombre nuevo sin sobrescribir, (3) recargar el navegador y confirmar que la sesión y los mensajes persistieron; cuando sea posible, comprobar desconexión/reintento y detener una tarea no crítica. Documentar los resultados visibles o un error reproducible.
+
+**Siguiente hito tras G5 APROBADO:** G6 — plantillas declarativas editables para Desarrollo, Diagnóstico, Revisión, Planificación, Decisiones, Flujo de trabajo y Documentación, reutilizando las especializaciones existentes; no abrir un segundo motor ni desplegar a producción antes de cumplir las condiciones autorizadas.
