@@ -82,7 +82,10 @@ Priorizar un **agente que edite, ejecute, corrija, confirme y permita recuperar*
 - Cada plantilla = nombre + instrucciones limitadas + modo + modelo sugerido; CRUD simple, copiar/restablecer, sin conceder permisos extra por texto.
 - **Hecho cuando**: editar y reutilizar una plantilla modifica realmente la conducta sin desplegar código.
 
-### G7 — Diagnóstico pasivo y autorreparación acotada
+### G7 — Diagnóstico pasivo y autorreparación acotada — IMPLEMENTADO EN STAGING; GATE OPERATIVO PENDIENTE
+- **Estado (10 nov 2026):** clasificación pasiva de fallos Linux/agente, huellas con códigos estables, contador y primera/última aparición, evidencias sanitizadas en Durable Object, panel en Configuración y política de reintentos transitorios acotados (sin autoparches ni autodespliegue). CI #221 y Workers Builds verdes; un proceso Node real fallido se clasificó en CI, pero aún no hay confirmación de escritura persistente desde Android en staging.
+- **Última acción G7:** en Configuración → Incidentes técnicos, pulsar «Comprobar registro con un fallo real». El resultado debe acreditar exitCode 19 y la aparición del incidente persistido. Acta: `docs/HITO_G7_EJECUCION_2026-11-10.md`.
+- **G8 se prepara, sin iniciarlo formalmente hasta aprobar la prueba operativa de G7.**
 - Aprovechar logs/eventos existentes, clasificar incidentes con códigos estables: modelo no disponible, herramientas ausentes, fallo shell, tests fallidos, sesión bloqueada, latencia, persistencia y exceso de reintentos.
 - Agrupar incidencias iguales con conteo, primera/última aparición, causa sospechada, evidencia, estado y acción. No guardar prompts ni claves íntegros.
 - Reintentar fallos transitorios hasta un límite pequeño; detener bucles idénticos; no reintentar tests determinísticamente rotos sin modificar causa.
