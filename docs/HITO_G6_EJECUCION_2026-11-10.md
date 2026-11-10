@@ -1,4 +1,4 @@
-# OpenCode Cloud — G6: plantillas configurables (ejecución 10 noviembre 2026)
+# OpenCode Cloud — G6: plantillas configurables (APROBADO en staging, 10 noviembre 2026)
 
 **Referencia obligatoria:** `Informe_Integral_OpenCode_Cloud_V1.pdf` completo (21 páginas), `docs/V1_EXECUTION_PLAN.md`, actas G1–G5. G5 quedó **APROBADO EN STAGING** en la sección 11 de su acta, confirmado por el titular desde Android. No fusionar ni modificar producción por este cierre.
 
@@ -45,3 +45,27 @@ La siguiente fase, G7, es diagnóstico pasivo y autorreparación acotada: clasif
 **Única acción del titular para cerrar el gate:** desde Android en staging, abrir Configuración → Plantillas de trabajo → **Editar** la plantilla `Decisiones`, añadir al final de las instrucciones «Para esta prueba, empieza tu respuesta exactamente con G6-OK.», guardar. En la barra de chat seleccionar `Decisiones`, elegir el modelo económico ya conectado (o Cloudflare) y enviar «Da una recomendación breve sobre elegir A o B.»; confirmar que la nueva respuesta empieza con `G6-OK`. No editar otros proyectos ni producción, no compartir credenciales. El propietario puede pulsar **Restablecer** en la plantilla después de obtener la evidencia.
 
 Cuando exista evidencia positiva de la respuesta real, registrar fecha, modelo y resultado, marcar G6 **APROBADO** y pasar a G7. Si falla, recuperar resultado y corregir solo el defecto reproducible en staging. No volver a abrir G5 ni ampliar G6 con mejoras estéticas. La PR #28 sigue sin fusionar: un cierre en staging no autoriza producción.
+
+
+## 6. Aceptación funcional Android y cierre definitivo (10 noviembre 2026)
+
+**Evidencia aportada directamente por el propietario:** tras recibir la instrucción de editar `Decisiones`, guardar un añadido temporal `Empieza tu respuesta exactamente con G6-OK.`, seleccionar esa plantilla y enviar una tarea corta, el propietario envió la captura del navegador Android y confirmó **«Listo.»**. La captura muestra la plantilla **Decisiones** seleccionada en la barra, el modo visible como **Planifi…** y una respuesta real que empieza literalmente con **`G6-OK`**, seguida de una recomendación sobre elegir el producto A de menor costo y razones de beneficio, riesgo y reversibilidad. En esa sesión la interfaz reporta `0 herramientas completadas`, coherente con una tarea de decisión sin ejecución Linux.
+
+**Calificación de la evidencia:** es una captura de respuesta real del agente en staging, no una ejecución simulada de test. El detalle del formulario guardado y el identificador preciso del modelo no aparecen en la captura; la ejecución del procedimiento completo está sustentada por la confirmación del propietario en este hilo, en continuidad con la instrucción de aceptación. No se solicitaron credenciales ni se inspeccionó remotamente el navegador. No se afirma haber probado todos los modelos ni todas las plantillas con un LLM, solo la conducta realmente observada y el resto de controles verificados por CI.
+
+### Matriz de cierre
+
+| Criterio de G6 | Evidencia | Dictamen |
+| --- | --- | --- |
+| Siete plantillas predeterminadas sin segundo motor | Catálogo estático y persistencia overlay en `specializations-v1` | APROBADO |
+| Nombre, instrucciones acotadas, modo y modelo sugerido | Validación y editor de `src/specializations-panel.tsx` | APROBADO |
+| Crear/editar/copiar/restablecer y preservar perfiles existentes | CRUD persistente existente, tests `src/specializations.test.ts` | APROBADO |
+| Edición sin redespliegue modifica el prompt del Harness | Test de integración `src/sockets-g6.test.ts` con ALFA-G6 → BETA-G6 → predeterminado | APROBADO TÉCNICAMENTE |
+| Un modelo real sigue instrucciones editadas desde Android | Captura del propietario, perfil Decisiones y respuesta literal `G6-OK` | **APROBADO FUNCIONALMENTE** |
+| Seguridad y aislamiento | Cloudflare Access permanece activo, no hay nuevos permisos, no se fusionó la PR ni se tocó producción | APROBADO EN STAGING |
+
+Antes del cierre se reconfirmó GitHub Actions **#206** (run `42775652656`) con `completed/success`; Cloudflare Workers Builds `success` para el commit `d3ae9020e519ed3239b5c1ba5ff1ef54331e55e2`; staging versión `3068698d-260a-41d0-aca6-77a3e2ebbafb`; Worker de producción sin cambios en `1d70eb77-316e-408d-bd14-5f19b171dedf`; Cron staging vacío; Cloudflare Access `self_hosted` protegido con una política.
+
+**Dictamen definitivo: G6 APROBADO Y CERRADO EN STAGING.** La evidencia satisface el criterio del informe maestro y del plan V1: editar/reutilizar una plantilla afecta a la respuesta del agente sin desplegar código. No volver a modificar G6 por perfeccionismo ni repetir la prueba sin una regresión reproducible. El marcador temporal `G6-OK` puede retirarse mediante **Restablecer** de la plantilla Decisiones; hacerlo es opcional, no bloquea el cierre.
+
+**Siguiente hito: G7 — Diagnóstico pasivo y autorreparación acotada.** Su primera tarea es inspeccionar logs, eventos y estado de incidentes ya existentes y definir una clasificación única y acotada de fallos reales (modelo no disponible, herramientas, shell/tests, sesión bloqueada, latencia, persistencia, reintentos). Agrupar duplicados y detener bucles sin registrar prompts ni secretos íntegros. Las correcciones de código solo en rama y con pruebas; no introducir autodespliegue a producción. La PR #28 permanece en borrador, independiente del cierre de G6 en staging.
