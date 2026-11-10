@@ -348,6 +348,8 @@ function App() {
   const [projectError, setProjectError] = useState("");
   const [savedBackups, setSavedBackups] = useState<{ project: string; createdAt: string; bytes: number }[]>([]);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [restoreFrom, setRestoreFrom] = useState("");
+  const [restoreTo, setRestoreTo] = useState("");
   const [agentMode, setAgentMode] = useState<AgentMode>("build");
   const [specializations, setSpecializations] = useState<{ id: string; name: string; enabled: boolean }[]>([]);
   const [specialization, setSpecialization] = useState(() => localStorage.getItem(SPECIALIZATION_KEY) ?? "");
@@ -385,6 +387,10 @@ function App() {
     () => window.matchMedia("(min-width: 1100px)").matches
   );
   const endRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (projectsOpen) mainRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  }, [projectsOpen]);
   const {
     status,
     openRouterAvailable,
@@ -422,6 +428,13 @@ function App() {
 
   const connected = status === "open";
   const queued = pending.filter((operation) => operation.status === "queued");
+  const toolsObserved = messages.flatMap((message) =>
+    message.type === "assistant"
+      ? message.content.filter((part): part is ToolPart => part.type === "tool")
+      : []
+  );
+  const toolsCompleted = toolsObserved.filter((part) => part.state.status === "completed").length;
+  const toolsFailed = toolsObserved.filter((part) => part.state.status === "error").length;
 
   const choose = (next: string) => {
     localStorage.setItem(SESSION_KEY, next);
@@ -453,7 +466,7 @@ function App() {
       const response = await fetch("/api/dev/backup/" + encodeURIComponent(name), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: "{}"
+        body: JSON.stringify(name === project ? { sessionRef: session } : {})
       });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error ?? "No se pudo guardar el respaldo");
@@ -461,6 +474,42 @@ function App() {
       setProjectError("Respaldo recuperable guardado en Cloudflare para " + name + ".");
     } catch (error) {
       setProjectError(error instanceof Error ? error.message : "No se pudo guardar el respaldo");
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+  /** G5: recover a saved project through the existing non-destructive G4 API. */
+  const restoreProject = async () => {
+    const source = restoreFrom || savedBackups[0]?.project;
+    const target = restoreTo.trim();
+    if (!source || !savedBackups.some((item) => item.project === source)) {
+      setProjectError("Selecciona un respaldo guardado."); return;
+    }
+    if (!/^[a-z][a-z0-9-]{0,39}$/.test(target)) {
+      setProjectError("Usa un nombre nuevo de 1 a 40 caracteres: minúsculas, números y guiones; empieza con letra.");
+      return;
+    }
+    if (availableProjects.some((item) => item.name === target)) {
+      setProjectError("Ese proyecto ya existe. La restauración nunca sobrescribe archivos.");
+      return;
+    }
+    setBackupBusy(true);
+    setProjectError("");
+    try {
+      const response = await fetch("/api/dev/restore/" + encodeURIComponent(source), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target })
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "La restauración falló.");
+      await loadProjects();
+      localStorage.setItem(PROJECT_PREFIX + session, target);
+      setProject(target);
+      setRestoreTo("");
+      setProjectError("Restaurado como " + target + ". Revisa los archivos y ejecuta sus pruebas antes de continuar.");
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : "No se pudo restaurar el respaldo.");
     } finally {
       setBackupBusy(false);
     }
@@ -505,7 +554,12 @@ function App() {
     const text = prompt.trim();
     if (!text || !connected) return;
     setPrompt("");
-    submitPrompt(text, whenBusy, openRouterAvailable ? modelPreset : "cloudflare", agentMode, specialization || undefined);
+    // Link the chosen project to the task; server-side isolation is addressed in G8.
+    const task = project && agentMode === "build"
+      ? "Proyecto Linux seleccionado: " + project + ". Si usas la herramienta linux, utiliza project=" + project +
+        ". No modifiques otros proyectos ni producción sin autorización.\\n\\nTarea: " + text
+      : text;
+    submitPrompt(task, whenBusy, openRouterAvailable ? modelPreset : "cloudflare", agentMode, specialization || undefined);
   };
 
   // Live text for an assistant message no snapshot has yet.
@@ -746,7 +800,7 @@ function App() {
           </div>
         </header>
 
-        <main className="min-h-0 flex-1 overflow-y-auto">
+        <main ref={mainRef} className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-3xl space-y-5 px-5 py-6">
             {projectsOpen ? (
               <section className="rounded-xl border border-kumo-line bg-kumo-base p-4" aria-label="Mis proyectos">
@@ -755,7 +809,7 @@ function App() {
                   <button className="rounded border border-kumo-line px-2 py-1 text-xs" type="button"
                     onClick={() => void loadProjects()}>Actualizar</button>
                 </div>
-                <p className="mt-1 text-xs text-kumo-subtle">Consultar esta lista no enciende el Container. Puedes guardar una copia de proyectos pequeños (máximo 2 MiB comprimidos) en Durable Object, independiente de las instantáneas de 30 días, y descargarla incluso si estas caducan. Los respaldos requieren acción manual y aún no tienen restauración automática.</p>
+                <p className="mt-1 text-xs text-kumo-subtle">Consultar esta lista no enciende el Container. Puedes guardar una copia de proyectos pequeños (máximo 2 MiB comprimidos) en Durable Object, independiente de las instantáneas de 30 días, y descargarla incluso si estas caducan. Los respaldos se guardan manualmente y pueden restaurarse en un proyecto nuevo sin sobrescribir uno existente.</p>
                 {projectError ? <p role="alert" className="mt-2 text-sm">{projectError}</p> : null}
                 {availableProjects.length ? (
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -777,6 +831,37 @@ function App() {
                     ))}
                   </div>
                 ) : <p className="mt-2 text-sm text-kumo-subtle">No hay proyectos registrados todavía.</p>}
+                {savedBackups.length ? (
+                  <div className="mt-4 space-y-3 rounded-lg border border-kumo-line p-3" aria-label="Restaurar respaldo">
+                    <h3 className="text-sm font-semibold">Recuperar un proyecto</h3>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="flex flex-col gap-1 text-xs">
+                        Respaldo guardado
+                        <select aria-label="Respaldo de origen"
+                          className="min-w-0 rounded border border-kumo-line bg-kumo-base p-2"
+                          value={restoreFrom || savedBackups[0]?.project || ""}
+                          onChange={(event) => setRestoreFrom(event.target.value)}>
+                          {savedBackups.map((item) => (
+                            <option key={item.project} value={item.project}>{item.project}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1 text-xs">
+                        Nombre del proyecto recuperado
+                        <input type="text" autoComplete="off" maxLength={40}
+                          className="min-w-0 rounded border border-kumo-line bg-kumo-base p-2"
+                          value={restoreTo} placeholder="mi-proyecto-recuperado"
+                          onChange={(event) => setRestoreTo(event.target.value)} />
+                      </label>
+                    </div>
+                    <button type="button" disabled={backupBusy || !restoreTo.trim()}
+                      className="rounded border border-kumo-line px-3 py-2 text-xs disabled:opacity-50"
+                      onClick={() => void restoreProject()}>
+                      {backupBusy ? "Procesando…" : "Restaurar sin sobrescribir"}
+                    </button>
+                    <p className="text-xs text-kumo-subtle">La copia original permanece guardada. El historial de sesión y los archivos de Git no se recrean automáticamente.</p>
+                  </div>
+                ) : null}
               </section>
             ) : null}
             {settingsOpen ? (
@@ -908,6 +993,12 @@ function App() {
             }}
             className="mx-auto max-w-3xl px-5 pt-4"
           >
+            <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-kumo-subtle">
+              <span>Proyecto: <strong className="text-kumo-default">{project || "Sin seleccionar"}</strong></span>
+              <button type="button" className="underline"
+                onClick={() => { setProjectsOpen(true); void loadProjects(); }}>Cambiar proyecto</button>
+              <span aria-live="polite">{busy ? "Ejecutando" : "Disponible"} · {toolsCompleted} herramientas completadas{toolsFailed ? " · " + toolsFailed + " fallidas" : ""}</span>
+            </div>
             <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm transition-shadow focus-within:border-transparent focus-within:ring-2 focus-within:ring-kumo-ring">
               <InputArea
                 value={prompt}
