@@ -103,7 +103,8 @@ export function aggregateIncident(
   records: readonly IncidentRecord[], raw: unknown, now: Date = new Date()
 ): IncidentRecord[] {
   const event = cleanObservation(raw);
-  const id = [event.code, event.source, event.project ?? "-", event.tool ?? "-"].join(":");
+  const id = [event.code, event.source, event.project ?? "-", event.tool ?? "-",
+    event.exitCode ?? "-", event.httpStatus ?? "-"].join(":");
   const old = records.find(record => record.id === id);
   const count = Math.min((old?.count ?? 0) + 1, 1_000_000);
   const { cause, action } = DESCRIPTIONS[event.code];
