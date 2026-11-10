@@ -860,21 +860,17 @@ function App() {
                 </Button>
               ) : null}
               {project ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  title={"Descargar archivos del proyecto " + project}
-                  aria-label="Descargar proyecto"
-                  onClick={() => window.open(
-                    "/api/dev/download/" + project,
-                    "_blank",
-                    "noopener,noreferrer"
-                  )}
+                <a
+                  href={"/api/dev/download/" + encodeURIComponent(project) +
+                    (repository ? "?" + new URLSearchParams({ source: "github", object, session }).toString() : "")}
+                  download={repository ? project + "-github.zip" : project + ".tar.gz"}
+                  className="inline-flex min-h-9 items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-kumo-elevated"
+                  title={repository ? "Descargar ZIP del repositorio GitHub seleccionado" : "Descargar archivos del proyecto Linux"}
+                  aria-label={repository ? "Descargar repositorio GitHub" : "Descargar proyecto Linux"}
                 >
                   <DownloadSimpleIcon size={16} />
-                  <span className="hidden sm:inline">Descargar</span>
-                </Button>
+                  <span className="hidden sm:inline">{repository ? "Descargar repo" : "Descargar"}</span>
+                </a>
               ) : null}
               <Button
                 type="button"
