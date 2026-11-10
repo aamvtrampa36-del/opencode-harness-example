@@ -146,3 +146,16 @@ El siguiente hito es G9 — entrega y publicación controlada, **sin iniciarlo f
 **Prueba manual mínima:** desde Android, abrir la conversación que tenga seleccionado el repo `cdf-cloud-engine` y pulsar **Descargar repo**. Debe aparecer un ZIP que pueda abrirse y contenga el repositorio. Si ya se trata de un proyecto Linux local, usar **Descargar**, esperar el `.tar.gz` y comprobar que se abre. No hace falta volver a ejecutar ninguna IA. Si falla, conservar el mensaje HTTP exacto; no compartir credenciales.
 
 **G8 sigue pendiente por separado:** la aceptación real de `repo_review` sobre los dos repositorios continúa sin completarse. Solucionar las descargas no equivale a aprobar G8 ni autoriza fusionar PR o publicar producción.
+
+
+## 9. Aceptación de la descarga GitHub desde Brave/Android (10 noviembre 2026)
+
+**Veredicto específico: APROBADA la descarga de repositorios GitHub vinculados a una conversación.**
+
+El propietario confirmó «Exitoso» y adjuntó el archivo realmente descargado `cdf-cloud-engine-github (2).zip` desde Android después de aplicar la corrección descrita en §8. Se inspeccionó el ZIP adjunto en el entorno de verificación sin modificarlo: **897.332 bytes**, **234 entradas**, **204 archivos regulares**, **2.998.313 bytes descomprimidos**, `ZipFile.testzip()` sin errores CRC. Raíz del archivo: `aamvtrampa36-del-cdf-cloud-engine-f5967fe84e22c2e629ae60a8aedabcceff016735/`, con `README.md` de CDF Cloud Engine y estructura de proyecto. SHA-256 del ZIP: `af688885c1703bcafea989ddf6984ee1c1425c1fe71de602b00dbd6acbc9e4ec`.
+
+Esto demuestra **descarga real e integridad del ZIP privado de GitHub bajo la sesión de Android**, resolviendo el `ERR_INVALID_RESPONSE` para la vía nueva **Descargar repo**. Como es un archivo del repositorio por defecto (`main`), el ZIP no incluye el marcador de la rama de prueba G8; esto **no es un defecto** ni demuestra que el agente `repo_review` pueda analizar la PR. Las comprobaciones del tar local en Linux continúan basadas en la CI real, no en una nueva captura Android.
+
+**Estado de la incidencia de descargas:** cerrada para el recorrido privado GitHub probado, con tests de regresión del tar local y del historial de conversaciones en CI. No volver a pedir esta prueba salvo regresión real.
+
+**Estado de G8:** todavía **PENDIENTE** exclusivamente por revisión del agente mediante `repo_review` en conversaciones reales separadas de CDF CLOUD y WorkBench. No se fusionaron PR ni se desplegó a producción. Siguiente hito, después de G8 aprobado: G9, entrega y publicación controlada.
