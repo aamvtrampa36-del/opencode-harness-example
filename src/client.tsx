@@ -557,7 +557,7 @@ function App() {
     // Link the chosen project to the task; server-side isolation is addressed in G8.
     const task = project && agentMode === "build"
       ? "Proyecto Linux seleccionado: " + project + ". Si usas la herramienta linux, utiliza project=" + project +
-        ". No modifiques otros proyectos ni producción sin autorización.\\n\\nTarea: " + text
+        ". No modifiques otros proyectos ni producción sin autorización.\n\nTarea: " + text
       : text;
     submitPrompt(task, whenBusy, openRouterAvailable ? modelPreset : "cloudflare", agentMode, specialization || undefined);
   };
@@ -997,7 +997,7 @@ function App() {
               <span>Proyecto: <strong className="text-kumo-default">{project || "Sin seleccionar"}</strong></span>
               <button type="button" className="underline"
                 onClick={() => { setProjectsOpen(true); void loadProjects(); }}>Cambiar proyecto</button>
-              <span aria-live="polite">{busy ? "Ejecutando" : "Disponible"} · {toolsCompleted} herramientas completadas{toolsFailed ? " · " + toolsFailed + " fallidas" : ""}</span>
+              <span aria-live="polite">{busy ? "Ejecutando" : "Disponible"} · {toolsCompleted} herramientas completadas en esta sesión{toolsFailed ? " · " + toolsFailed + " fallidas" : ""}</span>
             </div>
             <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm transition-shadow focus-within:border-transparent focus-within:ring-2 focus-within:ring-kumo-ring">
               <InputArea
