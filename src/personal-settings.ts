@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { aggregateIncident, type IncidentRecord } from "./incident-diagnostics";
 import { ALLOWED_REPOS, normalizeOwnedRepository } from "./github";
 import { MAX_SPECIALIZATIONS, mergeSpecializations, validateSpecialization, type Specialization } from "./specializations";
 import { publicMcp, validateRemoteMcp, type PublicMcpConfig, type RemoteMcpConfig } from "./mcp-config";
@@ -55,6 +56,21 @@ async function checkProvider(url: string, token: string): Promise<KeyUsage> {
 }
 
 export class PersonalSettings extends DurableObject<Env> {
+  /** Read-only owner-scoped incident ledger, without prompt or credential text. */
+  async listIncidents(): Promise<IncidentRecord[]> {
+    return (await this.ctx.storage.get<IncidentRecord[]>("incident-ledger-v1")) ?? [];
+  }
+
+  async recordIncident(observation: unknown): Promise<IncidentRecord> {
+    // Serializes parallel agent/tool reports, preventing lost duplicate counts.
+    return this.ctx.storage.transaction(async (tx) => {
+      const previous = (await tx.get<IncidentRecord[]>("incident-ledger-v1")) ?? [];
+      const updated = aggregateIncident(previous, observation);
+      await tx.put("incident-ledger-v1", updated);
+      return updated[0];
+    });
+  }
+
   /** Bound AI inference expense: at most two optional tool-loop checks per UTC day. */
   async reserveAgentCheck(): Promise<boolean> {
     const day = new Date().toISOString().slice(0, 10);
