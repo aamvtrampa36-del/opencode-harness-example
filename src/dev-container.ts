@@ -21,7 +21,9 @@ const IDLE_MS = 5 * 60_000;
 const CHECK_MS = 60_000;
 const CHECKPOINT_MS = 2 * 60_000;
 const SNAPSHOT_TTL_MS = 30 * 24 * 60 * 60_000;
-const PREVIEW_PORT = 4321;
+// Port version bump prevents a still-running old preview process from serving stale archive code.
+// The old process stops with the normal Container lifecycle; no data reset is needed.
+const PREVIEW_PORT = 4322;
 
 export type LinuxResult = {
   project: string;
