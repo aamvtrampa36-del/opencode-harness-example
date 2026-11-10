@@ -161,3 +161,40 @@ Releído íntegramente el informe maestro de 21 páginas y consultadas las actas
 **Única acción necesaria para desbloquear:** el propietario abre `https://opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev` desde Android con su acceso habitual y ejecuta una tarea pequeña en un proyecto de prueba, comprueba herramientas y revisión de cambios, guarda un respaldo, lo restaura en otro proyecto, recarga y verifica historial/reconexión. Registrar éxito o fallo específico. No compartir contraseñas, cookies ni tokens. Si falla, reparar solo el defecto reproducible en la rama y volver a validar.
 
 Una vez demostrado el recorrido, marcar **G5 APROBADO** y pasar a **G6: plantillas declarativas editables**, reutilizando el CRUD de especializaciones existente (Desarrollo, Diagnóstico, Revisión, Planificación, Decisiones, Flujo de trabajo y Documentación). El informe maestro define el orden; esta verificación no autoriza merge ni despliegue en producción.
+
+
+## 9. Fallo real detectado en Android: vista previa sin CSS ni JavaScript (10 noviembre 2026)
+
+### Evidencia del propietario y causa probable
+
+El propietario ejecutó **desde Android / Brave**, bajo su autenticación habitual de Cloudflare Access, una tarea con DeepSeek en el proyecto de prueba `app-mwabn7ns`. El historial exportado aporta cuatro herramientas Linux completadas y una llamada previa `inspect_linux` fallida porque el proyecto aún no existía, seguida de creación correcta del proyecto. `npm test`, `npm run build` y la comprobación HTTP *dentro del Container* finalizaron correctamente. No hubo intervención del supervisor en los archivos de la aplicación generada.
+
+La captura del navegador Android confirmó un fallo de aceptación de G5: **se veían el título «Prueba G5» y el botón «Funciona», pero no se aplicaban los estilos CSS y el botón no respondía**. El origen exacto de las peticiones rechazadas no se pudo inspeccionar sin una sesión autenticada de navegador conectada. La explicación técnica más probable es la combinación de CSP `sandbox allow-scripts` (origen opaco) y solicitudes de recursos separados en un dominio protegido por Cloudflare Access, que pueden quedar sin cookies autorizadas. La anterior autoprueba HTTP local no podía detectar ese problema.
+
+### Corrección segura ejecutada
+
+- `src/preview-inline.ts`: reescritura limitada y verificable de referencias a CSS y JavaScript **locales y exclusivos del directorio `dist/` del mismo proyecto**, incorporándolos al documento HTML durante la respuesta del Worker. El Worker obtiene los recursos desde el `DevContainer.preview` ya existente, sin exponer carpetas de código ni conceder acceso externo al Container. Se limitan cantidad y tamaño.
+- `src/server.ts`: aplica la reescritura solo a respuestas HTML `GET` correctas de `/api/dev/preview/:project/...`; elimina el encabezado `Content-Length` después de modificar el contenido. `HEAD`, archivos individuales, descarga y todos los demás endpoints conservan su comportamiento.
+- `src/preview-inline.test.ts`: pruebas para CSS + JavaScript locales, rutas relativas y absolutas dentro del proyecto, URLs externas y navegación fuera de `dist/`, tipo MIME incorrecto y cierre seguro de etiquetas.
+- **Se conserva la CSP anterior** (`sandbox allow-scripts` sin `allow-same-origin`) y la protección Cloudflare Access. No se abre un subdominio público ni se crea otro ejecutor. No se tocan proyectos del usuario ni datos productivos.
+
+Esta intervención está dirigida a recursos locales CSS/JS. No equivale todavía a una validación de módulos con importaciones dinámicas, fuentes, imágenes o aplicaciones web arbitrarias.
+
+### Commits y validación
+
+- `f465a8e55dd2fefc014c8e350fdda4742e4fd783`: módulo de reescritura de recursos.
+- `cfe99387c910cb211c3a6ca39bce756ab3b2af16`, `ad74d0224b6199742e2182587339d3bcd7ea2d93`: correcciones de patrones de coincidencia.
+- `79a465ba0289e72ff3f589ca9f7be85b51637644`: casos de regresión.
+- `0a1517cdad739e78cb6e195408b96d6b9ab9bae2`: integración en el Worker.
+- **CI #192 falló** por un error de sintaxis en una expresión regular del archivo de pruebas; corregido en `e3d0c1ca376693357f835de95ea39c535ef64ed8`.
+- **CI #193** (run `42771520825`): `completed/success`, con pruebas unitarias, previsualización Node, TypeScript, compilación e invariantes.
+- **Cloudflare Workers Builds** `d80d37f6-1453-46c7-8902-96f900445fb8`: `stopped/success` para `e3d0c1c`.
+- Staging `opencode-g1-staging` quedó publicado en versión `38279871-8d30-44df-9287-ccf80fdf2687`. Worker productivo inalterado: `1d70eb77-316e-408d-bd14-5f19b171dedf`. Cron vacío, política Cloudflare Access conservada.
+
+**G5 AÚN NO APROBADO.** La validación Android demostró que el primer recorrido tenía un fallo verdadero y la corrección ahora está desplegada, pero no se ha recibido todavía una segunda confirmación del dispositivo real.
+
+### Acción única de retest y avance
+
+Desde Android, el propietario debe recargar la vista previa del mismo proyecto `app-mwabn7ns` en staging y verificar **(a)** que reaparece el fondo oscuro y la tarjeta con estilos, **(b)** que al tocar «Funciona» aparece «Prueba completada». No hace falta solicitar otra generación al modelo.
+
+Si funciona, continuar por los criterios G5 aún no demostrados: revisar archivos, guardar respaldo, restaurar con otro nombre y recargar/reconectar el historial de sesión. Si falla, registrar captura y, de ser posible, los códigos HTTP de CSS/JS desde navegador autenticado, antes de realizar otra corrección. Solo después de superar estas condiciones se puede declarar G5 aprobado y avanzar a G6: plantillas configurables sin arquitectura adicional.
