@@ -47,7 +47,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (!sessions.some(item => item.id === sessionID)) {
       throw new Error("La conversación no existe en este espacio");
     }
-    return this.harness.session(sessionID).history();
+    return JSON.stringify(await this.harness.session(sessionID).history());
   }
 
   /** This selection is fixed per OpenCode conversation, not an LLM instruction. */
@@ -398,8 +398,8 @@ export default {
         const session = url.searchParams.get("session");
         try {
           validateExportIdentity(object, session);
-          const messages = await env.OpenCodeAgent.getByName(object!).exportSessionData(session!);
-          return sessionExportResponse(session!, messages);
+          const historyJson = await env.OpenCodeAgent.getByName(object!).exportSessionData(session!);
+          return sessionExportResponse(session!, JSON.parse(historyJson) as unknown);
         } catch (error) {
           const message = error instanceof Error ? error.message : "No se pudo exportar la sesión";
           return Response.json({ error: message }, { status: 422,
