@@ -15,7 +15,7 @@ describe("native OpenCode tool execution permissions", () => {
     }
   });
   test("plan allows read-only workspace operations, not edit or exec", () => {
-    for (const tool of ["read", "glob", "grep"]) {
+    for (const tool of ["read", "glob", "grep", "ls", "find", "stat"]) {
       expect(() => assertAgentToolPermission("plan", "workspace", { tool })).not.toThrow();
     }
     for (const tool of ["write", "edit", "exec", "patch", "shell"]) {
