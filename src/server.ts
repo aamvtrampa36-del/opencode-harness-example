@@ -20,6 +20,7 @@ import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
 import { remoteMcpPlugin } from "./mcp-plugin";
 import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
+import { inlinePreviewAssets } from "./preview-inline";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -532,8 +533,21 @@ export default {
         }
         const project = previewMatch[1];
         const path = previewMatch[2] || "index.html";
-        const result = await env.DEV.getByName("personal").preview(project, path);
+        const dev = env.DEV.getByName("personal");
+        const result = await dev.preview(project, path);
         const headers = new Headers(result.headers);
+        let responseBody: BodyInit | null = request.method === "HEAD" ? null : result.body;
+        if (request.method === "GET" && result.ok &&
+            headers.get("Content-Type")?.toLowerCase().startsWith("text/html")) {
+          // In CSP sandbox, a generated page has an opaque origin. With
+          // Cloudflare Access its own CSS/JS subrequests may lose cookies.
+          // Embed only small assets from this project's dist/ on the server,
+          // retaining the opaque-origin sandbox and denying source-tree reads.
+          const html = await result.text();
+          responseBody = await inlinePreviewAssets(html, path, (assetPath) =>
+            dev.preview(project, assetPath));
+          headers.delete("Content-Length");
+        }
         // A generated application must not inherit the authenticated
         // OpenCode origin or invoke /api/dev/run from its own scripts.
         // CSP sandbox applies even when a preview URL is opened directly.
@@ -543,7 +557,7 @@ export default {
         headers.set("Referrer-Policy", "no-referrer");
         headers.set("Cache-Control", "no-store");
         headers.set("Access-Control-Allow-Origin", "*");
-        return new Response(request.method === "HEAD" ? null : result.body, {
+        return new Response(responseBody, {
           status: result.status,
           headers
         });
