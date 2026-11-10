@@ -348,6 +348,9 @@ function App() {
   const [projectError, setProjectError] = useState("");
   const [savedBackups, setSavedBackups] = useState<{ project: string; createdAt: string; bytes: number }[]>([]);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [projectReview, setProjectReview] = useState<{ project: string; output: string } | null>(null);
+  const [lastCost, setLastCost] = useState("No hay una medición individual disponible.");
   const [restoreFrom, setRestoreFrom] = useState("");
   const [restoreTo, setRestoreTo] = useState("");
   const [agentMode, setAgentMode] = useState<AgentMode>("build");
@@ -387,6 +390,8 @@ function App() {
     () => window.matchMedia("(min-width: 1100px)").matches
   );
   const endRef = useRef<HTMLDivElement>(null);
+  const pendingUsage = useRef<{ session: string; project: string; base: number } | null>(null);
+  const wasBusy = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
   useEffect(() => {
     if (projectsOpen) mainRef.current?.scrollTo({ top: 0, behavior: "smooth" });
@@ -414,6 +419,33 @@ function App() {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, live, busy]);
+
+  useEffect(() => {
+    // OpenRouter reports account/key usage, not a session invoice. This delta
+    // is an estimate only and may include other simultaneous requests.
+    if (busy) {
+      wasBusy.current = true;
+      return;
+    }
+    if (!wasBusy.current) return;
+    wasBusy.current = false;
+    const baseline = pendingUsage.current;
+    pendingUsage.current = null;
+    if (!baseline || baseline.session !== session) return;
+    void fetch("/api/settings/openrouter/usage", { cache: "no-store" })
+      .then(async response => {
+        if (!response.ok) throw new Error("usage-unavailable");
+        const body = await response.json() as { usage?: { usage?: number } };
+        const total = body.usage?.usage;
+        if (typeof total !== "number" || !Number.isFinite(total) || total < baseline.base) {
+          throw new Error("usage-unavailable");
+        }
+        setLastCost("Variación aproximada de la cuenta OpenRouter: $" +
+          (total - baseline.base).toFixed(4) +
+          " USD; incluye otras sesiones si estuvieron activas.");
+      })
+      .catch(() => setLastCost("El proveedor no devolvió una variación verificable de consumo."));
+  }, [busy, session]);
 
   const exportSession = () => {
     const data = { format: "opencode-harness-session-v1", exportedAt: new Date().toISOString(), session, messages };
@@ -514,6 +546,36 @@ function App() {
       setBackupBusy(false);
     }
   };
+  /** Owner-triggered, read-only Git review. No extra executor or server API. */
+  const reviewChanges = async (name: string) => {
+    setReviewBusy(true);
+    setProjectError("");
+    setProjectReview(null);
+    try {
+      const command = "if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then " +
+        "printf 'ARCHIVOS MODIFICADOS\\n'; git status --short --untracked-files=normal; " +
+        "printf '\\nRESUMEN DE DIFERENCIAS\\n'; git diff --stat; " +
+        "printf '\\nÚLTIMO COMMIT\\n'; git log -1 --format='%h %s'; " +
+        "else printf 'Sin repositorio Git: listado actual de archivos (no es un diff).\\n'; " +
+        "find . -maxdepth 2 -type f -not -path './node_modules/*' | sort | head -80; fi";
+      const response = await fetch("/api/dev/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project: name, command })
+      });
+      const result = await response.json() as {
+        exitCode?: number | null; stdout?: string; stderr?: string; error?: string
+      };
+      if (!response.ok || result.exitCode !== 0) {
+        throw new Error(result.error ?? result.stderr ?? "No se pudo revisar el proyecto.");
+      }
+      setProjectReview({ project: name, output: result.stdout || "No hay cambios locales registrados." });
+    } catch (error) {
+      setProjectError(error instanceof Error ? error.message : "No se pudieron consultar los archivos.");
+    } finally {
+      setReviewBusy(false);
+    }
+  };
   const chooseProject = (name: string) => {
     localStorage.setItem(PROJECT_PREFIX + session, name);
     setProject(name);
@@ -559,7 +621,26 @@ function App() {
       ? "Proyecto Linux seleccionado: " + project + ". Si usas la herramienta linux, utiliza project=" + project +
         ". No modifiques otros proyectos ni producción sin autorización.\n\nTarea: " + text
       : text;
-    submitPrompt(task, whenBusy, openRouterAvailable ? modelPreset : "cloudflare", agentMode, specialization || undefined);
+    const selectedModel = openRouterAvailable ? modelPreset : "cloudflare";
+    if (!busy && MODEL_PRESETS[selectedModel].providerID === "openrouter") {
+      setLastCost("Consultando consumo de la clave OpenRouter…");
+      void fetch("/api/settings/openrouter/usage", { cache: "no-store" })
+        .then(async response => {
+          if (!response.ok) throw new Error("usage-unavailable");
+          const body = await response.json() as { usage?: { usage?: number } };
+          const base = body.usage?.usage;
+          if (typeof base !== "number" || !Number.isFinite(base)) throw new Error("usage-unavailable");
+          pendingUsage.current = { session, project, base };
+        })
+        .catch(() => { pendingUsage.current = null; setLastCost("Consumo por tarea no disponible."); })
+        .finally(() => submitPrompt(task, whenBusy, selectedModel, agentMode, specialization || undefined));
+      return;
+    }
+    if (!busy) {
+      pendingUsage.current = null;
+      setLastCost("Workers AI u otro proveedor: costo por tarea no disponible en esta interfaz.");
+    }
+    submitPrompt(task, whenBusy, selectedModel, agentMode, specialization || undefined);
   };
 
   // Live text for an assistant message no snapshot has yet.
@@ -822,6 +903,11 @@ function App() {
                         <button type="button" disabled={backupBusy}
                           className="rounded border border-kumo-line px-2 py-1 text-xs disabled:opacity-50"
                           onClick={() => void saveProjectBackup(row.name)}>Guardar respaldo</button>
+                        <button type="button" disabled={reviewBusy}
+                          className="rounded border border-kumo-line px-2 py-1 text-xs disabled:opacity-50"
+                          onClick={() => void reviewChanges(row.name)}>
+                          {reviewBusy ? "Consultando…" : "Revisar archivos"}
+                        </button>
                         {savedBackups.some(item => item.project === row.name) ? (
                           <a className="text-xs underline" href={"/api/dev/backup/" + encodeURIComponent(row.name)}>
                             Descargar respaldo conservado
@@ -831,6 +917,13 @@ function App() {
                     ))}
                   </div>
                 ) : <p className="mt-2 text-sm text-kumo-subtle">No hay proyectos registrados todavía.</p>}
+                {projectReview ? (
+                  <div className="mt-4 rounded-lg border border-kumo-line p-3" aria-label="Resumen de archivos del proyecto">
+                    <p className="mb-2 text-sm font-semibold">Revisión de {projectReview.project}</p>
+                    <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words text-xs">{projectReview.output}</pre>
+                    <p className="mt-2 text-xs text-kumo-subtle">Salida real de Git o listado del entorno Linux; si no hay Git, no se puede calcular un diff fiable.</p>
+                  </div>
+                ) : null}
                 {savedBackups.length ? (
                   <div className="mt-4 space-y-3 rounded-lg border border-kumo-line p-3" aria-label="Restaurar respaldo">
                     <h3 className="text-sm font-semibold">Recuperar un proyecto</h3>
@@ -998,6 +1091,7 @@ function App() {
               <button type="button" className="underline"
                 onClick={() => { setProjectsOpen(true); void loadProjects(); }}>Cambiar proyecto</button>
               <span aria-live="polite">{busy ? "Ejecutando" : "Disponible"} · {toolsCompleted} herramientas completadas en esta sesión{toolsFailed ? " · " + toolsFailed + " fallidas" : ""}</span>
+              <span title="El cambio de consumo de OpenRouter es de cuenta, no una factura de la tarea">{lastCost}</span>
             </div>
             <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm transition-shadow focus-within:border-transparent focus-within:ring-2 focus-within:ring-kumo-ring">
               <InputArea
