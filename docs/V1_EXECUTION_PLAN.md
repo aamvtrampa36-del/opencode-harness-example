@@ -82,17 +82,18 @@ Priorizar un **agente que edite, ejecute, corrija, confirme y permita recuperar*
 - Cada plantilla = nombre + instrucciones limitadas + modo + modelo sugerido; CRUD simple, copiar/restablecer, sin conceder permisos extra por texto.
 - **Hecho cuando**: editar y reutilizar una plantilla modifica realmente la conducta sin desplegar código.
 
-### G7 — Diagnóstico pasivo y autorreparación acotada — IMPLEMENTADO EN STAGING; GATE OPERATIVO PENDIENTE
-- **Estado (10 nov 2026):** clasificación pasiva de fallos Linux/agente, huellas con códigos estables, contador y primera/última aparición, evidencias sanitizadas en Durable Object, panel en Configuración y política de reintentos transitorios acotados (sin autoparches ni autodespliegue). CI #221 y Workers Builds verdes; un proceso Node real fallido se clasificó en CI, pero aún no hay confirmación de escritura persistente desde Android en staging.
-- **Última acción G7:** en Configuración → Incidentes técnicos, pulsar «Comprobar registro con un fallo real». El resultado debe acreditar exitCode 19 y la aparición del incidente persistido. Acta: `docs/HITO_G7_EJECUCION_2026-11-10.md`.
-- **G8 se prepara, sin iniciarlo formalmente hasta aprobar la prueba operativa de G7.**
+### G7 — Diagnóstico pasivo y autorreparación acotada — APROBADO EN STAGING (2026-11-10)
+- **Gate cerrado:** clasificación pasiva y huellas de fallos Linux/agente, contador y primera/última aparición, evidencias sanitizadas en Durable Object, panel de incidentes y política de reintentos transitorios acotados sin autoparches ni autodespliegue. CI #223 y Workers Builds verdes. **Prueba Android real del titular:** pulsó «Comprobar registro con un fallo real» y observó «Verificado: Linux devolvió exitCode 19 y el fallo se registró sin utilizar IA», junto con `SHELL_FAILED · 1 incidente`, `linux · g7-diagnostics · exitCode 19`. El ciclo de fallo → almacenamiento → lectura autenticada queda demostrado. La repetición/deduplicación se probó en CI, no en otro ciclo Android.
+- **Acta de cierre:** `docs/HITO_G7_EJECUCION_2026-11-10.md` §5; no fusionar ni modificar producción sin autorización.
+- **Hito actual G8 — CDF CLOUD y WorkBench:** empezar por revisar el aislamiento por repositorio/proyecto y permisos antes de efectuar cambios en ramas no canónicas.
 - Aprovechar logs/eventos existentes, clasificar incidentes con códigos estables: modelo no disponible, herramientas ausentes, fallo shell, tests fallidos, sesión bloqueada, latencia, persistencia y exceso de reintentos.
 - Agrupar incidencias iguales con conteo, primera/última aparición, causa sospechada, evidencia, estado y acción. No guardar prompts ni claves íntegros.
 - Reintentar fallos transitorios hasta un límite pequeño; detener bucles idénticos; no reintentar tests determinísticamente rotos sin modificar causa.
 - Las reparaciones de código ocurren en rama y se verifican antes de ofrecer integración; no desplegar por sí mismo un fix a producción.
 - **Hecho cuando**: fallo real queda registrado aunque el modelo no lo explique, y una incidencia repetida no genera una cadena de parches equivalentes.
 
-### G8 — Proyectos CDF CLOUD y WorkBench
+### G8 — Proyectos CDF CLOUD y WorkBench — HITO ACTUAL
+- **Primera acción:** verificar repositorios autorizados, directorio/branch por proyecto y restricciones de escritura; después dos pruebas independientes con archivos no canónicos en ramas nuevas, compilación/tests, PR borrador, diff y recuperación. No tocar fuentes narrativas oficiales ni producción.
 - Configurar repositorios por separado; impedir que una sesión escriba fuera de su proyecto seleccionado.
 - Probar en ramas nuevas: leer, modificar un archivo no canónico de ejemplo, compilar/probar y producir PR borrador. Prohibir escrituras a fuentes narrativas oficiales y a producción.
 - **Hecho cuando**: ambas pruebas muestran repositorio correcto, diff correcto, regresiones ausentes y recuperación.
