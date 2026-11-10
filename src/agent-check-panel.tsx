@@ -177,7 +177,7 @@ export function AgentCheckPanel({ workspace }: { workspace: string }) {
         ) : incidents.slice(0, 8).map(item => (
           <div key={item.id} className="rounded-md border border-kumo-line p-2 text-xs">
             <p className="font-semibold">{item.code} · {item.count} {item.count === 1 ? "incidente" : "incidentes"}
-              {item.status === "blocked" ? " · Reintentos detenidos" : ""}
+              {item.status === "blocked" ? " · Sin reintento automático" : ""}
             </p>
             <p>{item.suspectedCause}</p>
             <p className="text-kumo-subtle">{item.action}</p>
