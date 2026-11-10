@@ -110,3 +110,34 @@ Anotar fecha, resultado observable y fallo concreto si aparece; no hace falta cr
 Una vez **aprobado G5**, continuar con **G6 — Plantillas sin arquitectura adicional**. Acción inicial: reutilizar el CRUD ya existente de especializaciones para ofrecer los siete perfiles declarativos previstos (Desarrollo, Diagnóstico, Revisión, Planificación, Decisiones, Flujo de trabajo y Documentación), con configuración editable y pruebas de que cambian la conducta del agente sin crear otros ejecutores.
 
 **No convertir G6 en requisito para cerrar G5 ni anticipar tareas G7–G9.** Este registro no constituye una autorización de merge ni de despliegue productivo.
+
+## 7. Corrección concreta de continuidad de tareas y validación (10 noviembre 2026 UTC)
+
+### Defecto detectado
+
+Al revisar el flujo de G5 se comprobó que `useOpenCodeSession` descartaba silenciosamente los mensajes cuando el WebSocket dejaba de estar `OPEN` justo antes de llamar a `send`. En la interfaz, el texto de la tarea se limpiaba **antes** de verificar ese envío. Esto podía perder el borrador de trabajo incluso cuando el servidor no recibía la orden. También podían perderse sin aviso las órdenes de detener o crear una sesión.
+
+### Corrección aplicada
+
+- `src/use-opencode-session.ts`: el envío devuelve `boolean`; un fallo de conexión presenta un error visible. La creación de sesiones rechaza inmediatamente la promesa si no se envía su orden, en lugar de aguardar innecesariamente.
+- `src/client.tsx`: el borrador se limpia solo si la orden fue aceptada localmente por el WebSocket; en caso contrario permanece editable para reintentar. El cambio no modifica el servidor, permisos ni el entorno productivo.
+- `src/ws-send.ts` y `src/ws-send.test.ts`: comprobaciones unitarias para socket abierto, socket desconectado/conectando y excepción al enviar.
+
+**Límite explícito:** aceptar una trama en el WebSocket local **no garantiza** su recepción o ejecución remota. La corrección cubre la pérdida silenciosa antes del envío, no sustituye el reconocimiento de órdenes del servidor ni las pruebas reales de reconexión.
+
+### Commits y evidencias
+
+- `a6e97541ac7ce5d20b8ab3a669791edd3f0f2bd5`: aviso y resultado booleano de envío.
+- `88ec4428340dbad871178f9c8dc767c6fcbb7d7e`: conservar borrador cuando no se consigue enviar la tarea.
+- `d40a340c2fe82ce67aae8e7e176268c894e2b96c`: helper de envío comprobable.
+- `5190353003137daca9c59c2a8a13a40bbe241704`: tres pruebas unitarias de comportamiento negativo/positivo.
+- `902f2badcfea2ba19a35eef5e503c9fcf60e355a`: usar helper verificado en el hook.
+- GitHub Actions **#185**, run `42756516484`: `completed/success` (Bun tests, preview, TypeScript, build de Worker/cliente, invariantes).
+- Cloudflare Workers Builds `8cbb3830-1686-4306-bcd9-e241a533d396`: `stopped/success` para `902f2bad`.
+- Staging verificado en versión `06c20f75-4a3a-439b-aa5f-b935201c2426`. Producción sin cambios en `1d70eb77-316e-408d-bd14-5f19b171dedf`. Cron staging vacío.
+
+### Estado de aceptación después de la corrección
+
+**G5 sigue BLOQUEADO PARA CIERRE** únicamente por la prueba funcional integral real de Android bajo Cloudflare Access que consta en §6. No se debe reabrir G1–G4 ni volver a corregir preventivamente código ya probado. Ninguna prueba unitaria, compilación ni verificación de Cloudflare API puede acreditar por sí sola que el titular completó desde el teléfono el recorrido de proyecto → tarea → herramientas → revisión → respaldo → restauración → recarga/reconexión.
+
+El siguiente paso operativo es **verificar ese recorrido con una sesión autorizada de Android en el staging protegido**, registrando resultados y corrigiendo exclusivamente defectos reproducibles. Se mantiene la PR #28 como borrador sin fusionar. Tras la aceptación real de G5, iniciar **G6 — Plantillas sin arquitectura adicional**, reutilizando el CRUD de especializaciones existente. Ningún despliegue a producción ni ampliación de permisos fue necesario para esta intervención.
