@@ -71,7 +71,7 @@ export function classifyAgentFailure(message: string): IncidentCode {
   if (/retry|retries|too many attempts|repeated attempts/i.test(message)) return "RETRY_EXHAUSTED";
   if (/unknown tool|invalid tool|tool not found|unrecognized tool|malformed tool/i.test(message)) return "TOOL_MISSING";
   if (/model.*(?:not found|unavailable|unknown)|provider.*(?:not available|unavailable|failed)|429\b|rate.limit/i.test(message)) return "MODEL_UNAVAILABLE";
-  if (/session.*(?:stuck|stalled|busy)|cannot resume|connection closed|disconnected/i.test(message)) return "SESSION_STALLED";
+  if (/(?:session.*(?:stuck|stalled|busy)|(?:stuck|stalled|busy).*session|cannot resume|connection closed|disconnected)/i.test(message)) return "SESSION_STALLED";
   return "AGENT_FAILURE";
 }
 
