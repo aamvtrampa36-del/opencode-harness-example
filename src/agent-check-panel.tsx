@@ -168,7 +168,7 @@ export function AgentCheckPanel({ workspace }: { workspace: string }) {
           </button>
           <span className="text-xs text-kumo-subtle">
             Prueba opcional: ejecuta un comando Linux que falla intencionalmente (exitCode 19).
-            No gasta tokens de IA ni modifica archivos; puede iniciar el Container facturable.
+            No gasta tokens de IA ni modifica proyectos existentes; puede iniciar un Container facturable.
           </span>
         </div>
         {smokeResult ? <p role="status" className="text-xs">{smokeResult}</p> : null}
