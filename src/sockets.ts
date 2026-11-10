@@ -95,6 +95,8 @@ export class OpenCodeSessionSockets {
   readonly #openRouterAvailable: () => Promise<boolean>;
   readonly #specialization: (id: string) => Promise<Specialization | undefined>;
   readonly #noteIncident: (event: IncidentObservation) => Promise<void>;
+  readonly #bindScope: (sessionID: string, value: unknown) => Promise<void>;
+  readonly #inheritScope: (source: string, target: string, project: string) => Promise<void>;
   /** One event stream per running session, or its opening. */
   readonly #watches = new Map<
     OpenCodeSessionId,
@@ -108,13 +110,17 @@ export class OpenCodeSessionSockets {
     getWebSockets: (tag?: string) => WebSocket[],
     openRouterAvailable: () => Promise<boolean> = async () => false,
     getSpecialization: (id: string) => Promise<Specialization | undefined> = async () => undefined,
-    noteIncident: (event: IncidentObservation) => Promise<void> = async () => undefined
+    noteIncident: (event: IncidentObservation) => Promise<void> = async () => undefined,
+    bindScope: (sessionID: string, value: unknown) => Promise<void> = async () => undefined,
+    inheritScope: (source: string, target: string, project: string) => Promise<void> = async () => undefined
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
     this.#openRouterAvailable = openRouterAvailable;
     this.#specialization = getSpecialization;
     this.#noteIncident = noteIncident;
+    this.#bindScope = bindScope;
+    this.#inheritScope = inheritScope;
   }
 
   async #record(event: IncidentObservation): Promise<void> {
@@ -221,6 +227,11 @@ export class OpenCodeSessionSockets {
             `Prompts are limited to ${MAX_PROMPT_LENGTH.toLocaleString()} characters`
           );
         }
+        // Scope is bound by the server before any tool-capable inference.
+        // The project/repository association remains fixed for this session.
+        if (message.project !== undefined || message.repository !== undefined) {
+          await this.#bindScope(session, { project: message.project, repository: message.repository });
+        }
         // A preset is an explicit selection. The normal baseline does not
         // require an OpenRouter secret; other models fail closed.
         if (message.model !== undefined) {
@@ -277,6 +288,7 @@ export class OpenCodeSessionSockets {
           throw new Error("Primero selecciona un proyecto válido");
         }
         const fork = await this.#harness.sessions.fork(session);
+        await this.#inheritScope(session, fork.id, message.project);
         await fork.setAgent("plan");
         await fork.setModel({ providerID: MODEL_PRESETS.cloudflare.providerID, id: MODEL_PRESETS.cloudflare.id });
         const review = "Eres un agente revisor independiente. Inspecciona el proyecto " +
