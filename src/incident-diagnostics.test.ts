@@ -56,6 +56,12 @@ describe("G7 passive incident registry", () => {
     expect(cleanObservation({...raw, project:"../../private", exitCode:-1})).not.toHaveProperty("project");
     expect(() => cleanObservation({...raw, code:"USER_PROVIDED_SECRET"})).toThrow();
   });
+  test("same project with distinct exit codes produces distinct incident fingerprints", () => {
+    let incidents = aggregateIncident([], { code:"SHELL_FAILED", source:"linux", project:"g7-test", tool:"linux", exitCode:1 });
+    incidents = aggregateIncident(incidents, { code:"SHELL_FAILED", source:"linux", project:"g7-test", tool:"linux", exitCode:2 });
+    expect(incidents).toHaveLength(2);
+    expect(incidents.every(item => item.count === 1)).toBe(true);
+  });
   test("bounds ledger size without dropping the most recent incident", () => {
     let records: ReturnType<typeof aggregateIncident> = [];
     for (let n=0; n<80; n++) {
