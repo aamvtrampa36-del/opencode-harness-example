@@ -191,11 +191,11 @@ export function workspacePlugin(
         if (github) {
           editor.add({
             name: "github",
-            description: "Direct GitHub integration independent of ChatGPT. Read files and repository metadata, create review branches named opencode/<slug>, commit small text files to those branches, and create draft pull requests. Only the owner's explicitly approved repositories are authorized. Never merge, publish or modify default branches. Actions: repo, read, branch, write, pr. No GitHub token is sent to Linux or the model.",
+            description: "Session-scoped GitHub integration. Only the repository explicitly selected in this conversation is permitted. Read metadata/files, create opencode/* review branches, write small text files outside protected canonical paths, review changed-file diffs and open draft PRs. Never merge or modify main. Actions: repo, read, branch, write, review, pr. Token never enters the agent or Linux.",
             input: {
               type: "object",
               properties: {
-                action: { type: "string", enum: ["repo", "read", "branch", "write", "pr"] },
+                action: { type: "string", enum: ["repo", "read", "branch", "write", "review", "pr"] },
                 repo: { type: "string", description: "An owner-approved repository, e.g. aamvtrampa36-del/my-project" },
                 branch: { type: "string", description: "New review branch, must start opencode/" },
                 path: { type: "string", description: "Repository-relative file path (text files only, 100KB maximum)" },
