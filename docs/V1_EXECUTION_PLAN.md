@@ -75,7 +75,9 @@ Priorizar un **agente que edite, ejecute, corrija, confirme y permita recuperar*
 - Probar con Android y ancho pequeño, reconexión WebSocket y estado luego de recargar.
 - **Hecho cuando**: usuario puede completar flujo sin terminal ni configuración manual.
 
-### G6 — Plantillas sin arquitectura adicional — SIGUIENTE HITO
+### G6 — Plantillas sin arquitectura adicional — IMPLEMENTADO EN STAGING; ACEPTACIÓN REAL PENDIENTE
+- **Estado (10 nov 2026):** siete plantillas, CRUD editable/copiable/restablecible, modo y modelo sugerido, validación, persistencia de overrides y actualización dinámica del prompt del Harness implementados. GitHub Actions #204 y Cloudflare Builds aprobaron. El test WebSocket usa Harness simulado y prueba cambios `ALFA-G6 → BETA-G6 → predeterminado` sin desplegar. **Falta una prueba mínima del propietario con un modelo real desde Android** antes de declarar G6 aprobado. Acta: `docs/HITO_G6_EJECUCION_2026-11-10.md`.
+- **G7 está preparado pero no iniciado formalmente** mientras falte el gate de inferencia real de G6.
 - **Primera acción:** inspeccionar el CRUD y la persistencia de especializaciones existentes; implementar de forma incremental el catálogo editable en ese mismo sistema, sin otro ejecutor o framework de autorización.
 - Predeterminadas: Desarrollo, Diagnóstico, Revisión, Planificación, Decisiones, Flujo, Documentación.
 - Cada plantilla = nombre + instrucciones limitadas + modo + modelo sugerido; CRUD simple, copiar/restablecer, sin conceder permisos extra por texto.
