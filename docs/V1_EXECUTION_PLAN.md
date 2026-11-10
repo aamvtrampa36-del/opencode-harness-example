@@ -92,8 +92,10 @@ Priorizar un **agente que edite, ejecute, corrija, confirme y permita recuperar*
 - Las reparaciones de código ocurren en rama y se verifican antes de ofrecer integración; no desplegar por sí mismo un fix a producción.
 - **Hecho cuando**: fallo real queda registrado aunque el modelo no lo explique, y una incidencia repetida no genera una cadena de parches equivalentes.
 
-### G8 — Proyectos CDF CLOUD y WorkBench — HITO ACTUAL
-- **Primera acción:** verificar repositorios autorizados, directorio/branch por proyecto y restricciones de escritura; después dos pruebas independientes con archivos no canónicos en ramas nuevas, compilación/tests, PR borrador, diff y recuperación. No tocar fuentes narrativas oficiales ni producción.
+### G8 — Proyectos CDF CLOUD y WorkBench — IMPLEMENTADO EN STAGING; ACEPTACIÓN FUNCIONAL PENDIENTE
+- **Estado (10 nov 2026):** el agente tiene ámbitos inmutables por sesión para proyecto/repo y validación obligatoria al ejecutar herramientas; las escrituras globales y los cruces de repositorios se rechazan. Hay dos pruebas reales por GitHub conectado: [CDF CLOUD PR #160](https://github.com/aamvtrampa36-del/cdf-cloud-engine/pull/160) y [WorkBench PR #36](https://github.com/aamvtrampa36-del/CDF-WorkBench-/pull/36), ambas draft con un único archivo no canónico y `main` intacta. WorkBench CI #161 aprobada; CDF no disparó workflow para doc-only. OpenCode CI #229 y Workers Builds aprobados. **Falta la aceptación desde el GitHub interno de OpenCode Cloud**, no sustituible por el conector GitHub de ChatGPT.
+- **Acción mínima:** desde Android, Proyectos → «Comprobar aislamiento CDF CLOUD y WorkBench» (sin IA ni escrituras), y después prueba real de herramienta `github` en una sesión por repositorio con revisión de solo lectura. Acta: `docs/HITO_G8_EJECUCION_2026-11-10.md`. No fusionar ni publicar producción.
+- **G9** es el siguiente hito, todavía no comenzado.
 - Configurar repositorios por separado; impedir que una sesión escriba fuera de su proyecto seleccionado.
 - Probar en ramas nuevas: leer, modificar un archivo no canónico de ejemplo, compilar/probar y producir PR borrador. Prohibir escrituras a fuentes narrativas oficiales y a producción.
 - **Hecho cuando**: ambas pruebas muestran repositorio correcto, diff correcto, regresiones ausentes y recuperación.
