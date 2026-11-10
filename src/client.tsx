@@ -617,13 +617,18 @@ function App() {
   const submit = (whenBusy: "followUp" | "steer" = "followUp") => {
     const text = prompt.trim();
     if (!text || !connected) return;
-    setPrompt("");
+    // Clear only after the client socket accepts the message; never lose the
+    // task draft on an immediate connection failure.
     // Link the chosen project to the task; server-side isolation is addressed in G8.
     const task = project && agentMode === "build"
       ? "Proyecto Linux seleccionado: " + project + ". Si usas la herramienta linux, utiliza project=" + project +
         ". No modifiques otros proyectos ni producción sin autorización.\n\nTarea: " + text
       : text;
     const selectedModel = openRouterAvailable ? modelPreset : "cloudflare";
+    const deliver = () => {
+      const accepted = submitPrompt(task, whenBusy, selectedModel, agentMode, specialization || undefined);
+      if (accepted) setPrompt((current) => current.trim() === text ? "" : current);
+    };
     if (!busy && MODEL_PRESETS[selectedModel].providerID === "openrouter") {
       setLastCost("Consultando consumo de la clave OpenRouter…");
       void fetch("/api/settings/openrouter/usage", { cache: "no-store" })
@@ -635,14 +640,14 @@ function App() {
           pendingUsage.current = { session, project, base };
         })
         .catch(() => { pendingUsage.current = null; setLastCost("Consumo por tarea no disponible."); })
-        .finally(() => submitPrompt(task, whenBusy, selectedModel, agentMode, specialization || undefined));
+        .finally(deliver);
       return;
     }
     if (!busy) {
       pendingUsage.current = null;
       setLastCost("Workers AI u otro proveedor: costo por tarea no disponible en esta interfaz.");
     }
-    submitPrompt(task, whenBusy, selectedModel, agentMode, specialization || undefined);
+    deliver();
   };
 
   // Live text for an assistant message no snapshot has yet.
