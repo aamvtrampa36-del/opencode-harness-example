@@ -66,3 +66,42 @@ Cada archivo contiene un marcador distinto (`G8-CDF-ISOLATION-PROOF` y `G8-WORKB
 3. Después, para el gate de *agente real*, abrir una conversación aislada por cada repositorio desde el selector y pedir una **revisión de solo lectura de la rama G8**, con acciones `github repo/read/review`. Confirmar que ambas respuestas usaron herramientas reales y los diffs correctos. No pedir nuevas escrituras: las PR de prueba ya existen.
 
 Si estas pruebas pasan, actualizar matriz, cerrar G8 y comenzar G9 — pruebas de entrega y publicación controlada. En caso contrario, corregir únicamente el defecto observado, sin ampliar G8. No desplegar producción ni fusionar PRs sin autorización explícita.
+
+
+## 6. Fallo de aceptación real y reparación dirigida (10 noviembre 2026)
+
+### Lo que mostró Android
+
+El propietario completó primero el gate de lectura directa **Proyectos → Comprobar aislamiento CDF CLOUD y WorkBench**: captura con resultado `Verificado: CDF CLOUD y WorkBench están aislados. Dos diffs correctos, ninguna escritura o inferencia durante la comprobación.` Se valida así el puente GitHub interno, las dos ramas y el diff auténtico **sin agente**.
+
+La segunda prueba fue un **bloqueo reproducible**: desde Android, sesión `ses_e396b5669ffeC76a36yl1T4BPv`, proyecto `cdf-cloud-engine`, modo **Revisión**, el agente intentó verificar la rama `opencode/g8-cdf-isolation-20261110` y produjo **10 herramientas fallidas y 0 completadas**. Capturas del titular muestran fallos de `github`, `ls`, `find`, `grep`, `read`, `inspect_linux` y `exec`, mensaje de permisos de Revisión que recomendaba cambiar a Desarrollar, y errores `File not found: /bundle/.git/HEAD`. El agente declaró correctamente que no pudo leer datos y que **no emitiría una revisión inventada**. La interfaz mostró incremento aproximado de cuenta OpenRouter de **0,0014 USD** (no factura exacta por tarea).
+
+**Conclusión:** el gate G8 de operación real de herramientas **FALLÓ**, aunque el gate de verificación directa del puente sí había pasado. El modo Revisión se mantuvo sin escritura, lo cual es positivo; el problema fue su incapacidad de acceder al diff, no la ausencia de un repositorio en GitHub.
+
+### Defectos identificados y correcciones
+
+1. **Lista incompleta de operaciones de lectura.** En `src/tool-permissions.ts` las herramientas genéricas `ls`, `find` y `stat` no estaban en la allowlist del modo `plan`/Revisión. Se ampliaron **solo** los permisos de lectura y se conservaron las prohibiciones de shell, edición y escrituras. Test de regresión actualizado.
+2. **Ruta falsa de checkout.** Las herramientas de archivo del Durable Object operan sobre otro workspace; `/bundle/.git/HEAD` **no representa** el repositorio GitHub seleccionado. Antes el agente intentó consultar esa ruta en vez de utilizar `GitHubBridge`. Se reforzaron las instrucciones de sistema para indicar explícitamente que las revisiones de repositorios deben usar GitHub remoto, no herramientas genéricas de archivos.
+3. **Selección innecesaria del `repo` mediante el modelo.** `src/scoped-github.ts` proporciona acciones de lectura (`repo`, `read`, `review`) que obtienen el identificador **solo de la asociación inmutable en Durable Object según el `sessionID`**, no de argumentos del modelo. Reaplica la guardia de proyecto/repositorio antes de llamar a la API.
+4. **Herramientas inequívocas de agente.** `src/workspace.ts` registra `repo_review`, `repo_info` y `repo_read` con argumentos limitados; `repo_review` solo necesita `branch`, y funciona en Revisión. Se preserva el puente GitHub anterior para funciones de edición acotadas, sin ampliar privilegios.
+5. **Prompt inicial incorrecto para G8.** `src/client.tsx` ahora inicia nuevas conversaciones de repositorio en modo Revisión, limpia perfiles anteriores y precarga un mensaje concreto que usa exclusivamente `repo_review` para la rama G8 apropiada. No recomienda `ls`, `find`, `read`, `exec`, `inspect_linux` ni `/bundle` al revisar GitHub.
+
+### Commits, validación y seguridad
+
+- `872e4687b0ae7190bc51fb1cfa476de72ab37bd2`: permisos de lectura.
+- `9a7ca164cd3960b83d8bb862111a26fb66e766da`: tests de Revisión.
+- `7fad5199ac886c6ef9177481a7e6816ef26e5e7d`: operaciones de GitHub derivadas del ámbito confiable.
+- `a9d4f184770817ea9b7e8136c6d1843ae03f6b5b`: herramientas `repo_review`, `repo_info`, `repo_read` e instrucciones.
+- `bcf1138c32b81dd7ee8c13fa83894cc093f5471a`: obtención de repo vinculado desde Durable Object.
+- `bdd1bf4af46850e0673b1e820034598f861838fb`: tests de binding y bloqueo cruzado con modelo `plan`.
+- `3be3cda5298db96fed9790e7d170e7377f5f55f8`: una nueva conversación G8 inicia con prompt de revisión dirigido.
+- **CI #237 y #238: `completed/success`**, TypeScript, pruebas y build. **Cloudflare Workers Builds: `success`** para `3be3cda5`; staging `7525611c-af5e-48a4-884e-569cac5f6d87`.
+- Producción conservó `1d70eb77-316e-408d-bd14-5f19b171dedf`, Cron staging vacío, Cloudflare Access `self_hosted` con una política. PR #28 y PR de prueba CDF #160 / WorkBench #36 permanecen **borrador**, sin merge ni deploy productivo.
+
+### Dictamen después de la reparación
+
+**G8 SIGUE PENDIENTE de retest del agente real.** Se demostró por código y CI que la nueva ruta de `repo_review` usa el repositorio de la sesión y conserva el modo Revisión; no se ha recibido todavía evidencia de su funcionamiento bajo inferencia auténtica desde Android. No afirmar que G8 está aprobado. El gate directo de las dos ramas **sí está validado**; no repetirlo ni crear nuevas PR de prueba.
+
+**Acción mínima del titular:** abrir staging desde Android, Proyectos → **Seleccionar repositorio y crear conversación** → elegir `aamvtrampa36-del/cdf-cloud-engine`. Esto crea **una nueva sesión**, con modo Revisión y un mensaje precargado para comparar la rama G8 mediante `repo_review`. Enviar el mensaje sin modificarlo y confirmar **al menos una herramienta `repo_review` completada** y un diff de un solo archivo `docs/opencode-g8/isolated-review-20261110.md`. Repetir para `aamvtrampa36-del/CDF-WorkBench-`, en **otra conversación nueva**. Si falla, compartir error específico y detener para no gastar más inferencia.
+
+El siguiente hito es G9 — entrega y publicación controlada, **sin iniciarlo formalmente** hasta aprobar la prueba del agente en ambas sesiones. Ninguna de estas verificaciones autoriza despliegue productivo.
