@@ -68,13 +68,15 @@ Priorizar un **agente que edite, ejecute, corrija, confirme y permita recuperar*
 - El historial de sesión Workerd sigue en almacenamiento DO separado: se verificó que una sesión histórica de G2 continúa registrada con 20 mensajes. **No se afirma reanudación automática de una ejecución que estaba en progreso**, ni respaldo de dependencias, secretos o Git internals. La ampliación a proyectos mayores de 2 MiB queda para cuando exista necesidad demostrada.
 - **Hecho cuando:** existe restauración real, independiente de una snapshot, con integridad y reversión documentadas. **Cumplido en alcance V1 personal; evidencias y límites en `docs/HITO_G4_EJECUCION_2026-11-09.md`.** Siguiente: G5 (interfaz para vibe coding).
 
-### G5 — Interfaz para vibe coding
+### G5 — Interfaz para vibe coding — APROBADO EN STAGING (2026-11-10)
+- **Gate cerrado:** el titular validó desde Android el proyecto `app-mwabn7ns`, ejecución con herramientas y pruebas reales, vista previa CSS/JS tras corrección, revisión de archivos, respaldo/restauración en destino nuevo y persistencia de sesión tras recarga. Capturas/transcript documentan ejecución/vista previa; para la revisión y recuperación móvil el respaldo de aceptación es la declaración explícita de éxito del titular. Evidencias y riesgos residuales en `docs/HITO_G5_EJECUCION_2026-11-09.md` §11. No se fusionó la PR ni se desplegó producción.
 - Pantalla principal: proyecto → tarea → modelo automático/elegido → ejecutar. Mostrar eventos reales, archivos cambiados, coste aproximado, terminar/reanudar.
 - Reutilizar OpenCode Web cuando sea adecuado; crear solo un selector ligero de proyectos/plantillas si la UI nativa carece de él.
 - Probar con Android y ancho pequeño, reconexión WebSocket y estado luego de recargar.
 - **Hecho cuando**: usuario puede completar flujo sin terminal ni configuración manual.
 
-### G6 — Plantillas sin arquitectura adicional
+### G6 — Plantillas sin arquitectura adicional — SIGUIENTE HITO
+- **Primera acción:** inspeccionar el CRUD y la persistencia de especializaciones existentes; implementar de forma incremental el catálogo editable en ese mismo sistema, sin otro ejecutor o framework de autorización.
 - Predeterminadas: Desarrollo, Diagnóstico, Revisión, Planificación, Decisiones, Flujo, Documentación.
 - Cada plantilla = nombre + instrucciones limitadas + modo + modelo sugerido; CRUD simple, copiar/restablecer, sin conceder permisos extra por texto.
 - **Hecho cuando**: editar y reutilizar una plantilla modifica realmente la conducta sin desplegar código.
