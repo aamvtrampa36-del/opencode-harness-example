@@ -17,6 +17,10 @@ const fake = (async (url: any, init: any = {}) => {
     status=404;body={message:"Not Found"};
   } else if (route.endsWith("/contents/docs/test.md")) {
     body={commit:{sha:"newcommit"},content:{sha:"filehash"}};
+  } else if (route.includes("/compare/main...opencode%2Fnew-feature")) {
+    body={ahead_by:1,behind_by:0,total_commits:1,files:[{
+      filename:"docs/test.md",status:"added",additions:1,deletions:0
+    }]};
   } else if (route.endsWith("/pulls")) {
     status=201;body={number:12,html_url:"https://github.com/example/pull/12",draft:true};
   } else {
@@ -66,6 +70,15 @@ describe("GitHub scoped permissions",()=>{
     expect(r.sha).toBe("basecommit");
     expect(calls.at(-1)?.body.ref).toBe("refs/heads/opencode/new-feature");
     expect(calls.at(-1)?.headers.get("Authorization")).toBe("Bearer dummy-test-key");
+  });
+  test("reads a bounded diff only for the chosen review branch",async()=>{
+    calls.length=0;
+    const result:any=await api.execute({action:"review",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:"opencode/new-feature"});
+    expect(result.base).toBe("main");
+    expect(result.files).toEqual([{path:"docs/test.md",status:"added",additions:1,deletions:0}]);
+    expect(result.aheadBy).toBe(1);
+    expect(calls.every(x=>x.method==="GET")).toBe(true);
+    await expect(api.execute({action:"review",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:"main"})).rejects.toThrow("review branch");
   });
   test("write UTF-8 content to authorized review branch and open draft PR",async()=>{
     calls.length=0;
