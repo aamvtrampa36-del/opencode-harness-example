@@ -83,7 +83,7 @@ export async function inlinePreviewAssets(
     const css = await loadLocal(attribute(tag, "href"), "css");
     if (css === null) continue;
     const media = attribute(tag, "media");
-    const safeMedia = media && /^[a-zA-Z0-9 (),.:/-]+$/.test(media)
+    const safeMedia = media && /^[a-zA-Z0-9 (),.:-]+$/.test(media)
       ? ' media="' + media + '"' : "";
     html = html.replace(tag, "<style" + safeMedia + ">" + safeInline(css, "style") + "</style>");
   }
