@@ -1,6 +1,7 @@
 import type { AgentMode } from "./protocol";
 import { SettingsPanel } from "./settings-panel";
 import { MODEL_PRESETS, isModelPreset, type ModelPresetID } from "./model-presets";
+import type { Specialization } from "./specializations";
 import {
   Badge,
   Button,
@@ -354,7 +355,7 @@ function App() {
   const [restoreFrom, setRestoreFrom] = useState("");
   const [restoreTo, setRestoreTo] = useState("");
   const [agentMode, setAgentMode] = useState<AgentMode>("build");
-  const [specializations, setSpecializations] = useState<{ id: string; name: string; enabled: boolean }[]>([]);
+  const [specializations, setSpecializations] = useState<Specialization[]>([]);
   const [specialization, setSpecialization] = useState(() => localStorage.getItem(SPECIALIZATION_KEY) ?? "");
   const [integrations, setIntegrations] = useState<{
     openRouterConfigured: boolean;
@@ -364,7 +365,7 @@ function App() {
     try {
       const response = await fetch("/api/settings/specializations", { cache: "no-store" });
       if (!response.ok) return;
-      const result = await response.json() as { specializations?: { id: string; name: string; enabled: boolean }[] };
+      const result = await response.json() as { specializations?: Specialization[] };
       setSpecializations((result.specializations ?? []).filter(item => item.enabled));
     } catch { /* Optional profiles do not prevent normal development. */ }
   };
@@ -833,13 +834,24 @@ function App() {
                 <LinkIcon size={16} />
                 <span className="hidden sm:inline">{linkCopied ? "Copiado" : "Vincular"}</span>
               </Button>
-              <select aria-label="Especialización opcional" title="Perfil de instrucciones seleccionable"
+              <select aria-label="Plantilla de trabajo" title="Plantilla editable: cambia instrucciones, modo y modelo sugerido"
                 value={specialization} onChange={(e) => {
-                  localStorage.setItem(SPECIALIZATION_KEY, e.target.value);
-                  setSpecialization(e.target.value);
+                  const id = e.target.value;
+                  localStorage.setItem(SPECIALIZATION_KEY, id);
+                  setSpecialization(id);
+                  const selected = specializations.find(item => item.id === id);
+                  if (selected) {
+                    setAgentMode(selected.mode ?? "build");
+                    const preferred = selected.model ?? "cloudflare";
+                    const available = openRouterAvailable ||
+                      MODEL_PRESETS[preferred].providerID !== "openrouter";
+                    const nextModel = available ? preferred : "cloudflare";
+                    setModelPreset(nextModel);
+                    localStorage.setItem(MODEL_KEY, nextModel);
+                  }
                 }}
                 className="max-w-[132px] rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 text-xs text-kumo-default">
-                <option value="">Sin especialización</option>
+                <option value="">Sin plantilla</option>
                 {specializations.map(item => (
                   <option key={item.id} value={item.id}>{item.name}</option>
                 ))}
