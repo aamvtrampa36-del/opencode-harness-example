@@ -181,7 +181,7 @@ export function workspacePlugin(
               additionalProperties: false
             },
             options: { codemode: false },
-            async execute(input) {
+            async execute(input, context) {
               const p = input as { project: string; action: "list" | "read"; path: string };
               if (scopeGuard) await scopeGuard(context.sessionID, { kind: "linux", project: p.project });
               return { content: JSON.stringify(await linux.inspect(p.project, p.action, p.path)) };
