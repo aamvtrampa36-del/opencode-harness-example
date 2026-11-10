@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { AGENT_CHECK_MODELS, isAgentCheckModel, AGENT_CHECK_KINDS, isAgentCheckKind, type AgentCheckKind, type AgentCheckModel } from "./agent-check";
 import { MODEL_PRESETS } from "./model-presets";
+import type { IncidentRecord } from "./incident-diagnostics";
 
 type AgentStatus = {
   status: string;
@@ -22,6 +23,15 @@ export function AgentCheckPanel({ workspace }: { workspace: string }) {
   const [model, setModel] = useState<AgentCheckModel>("cloudflare");
   const [kind, setKind] = useState<AgentCheckKind>("repair");
   const [error, setError] = useState("");
+  const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
+  const [incidentError, setIncidentError] = useState("");
+  const loadIncidents = async () => {
+    const response = await fetch("/api/dev/incidents", { cache: "no-store" });
+    if (!response.ok) throw new Error("No se pudo consultar el registro de incidentes");
+    const data = await response.json() as { incidents?: IncidentRecord[] };
+    setIncidents(data.incidents ?? []);
+    setIncidentError("");
+  };
 
   const refresh = async () => {
     const res = await fetch("/api/dev/agent-check?workspace=" + encodeURIComponent(workspace), {
@@ -33,6 +43,7 @@ export function AgentCheckPanel({ workspace }: { workspace: string }) {
 
   useEffect(() => {
     void refresh().catch(err => setError(String(err)));
+    void loadIncidents().catch(err => setIncidentError(String(err)));
   }, [workspace]);
   useEffect(() => {
     if (!["started", "running", "queued"].includes(status?.status ?? "")) return;
@@ -104,6 +115,36 @@ export function AgentCheckPanel({ workspace }: { workspace: string }) {
       {status?.reason || status?.message
         ? <p className="text-xs text-kumo-subtle">{status.reason ?? status.message}</p> : null}
       {error ? <p role="alert" className="text-xs">{error}</p> : null}
+      <div className="mt-5 space-y-2 border-t border-kumo-line pt-4" aria-label="Registro de incidentes G7">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">Incidentes técnicos</h3>
+          <button className="rounded-md border border-kumo-line px-3 py-1.5 text-xs"
+            onClick={() => void loadIncidents().catch(err => setIncidentError(String(err)))}
+            type="button">Actualizar incidentes</button>
+        </div>
+        <p className="text-xs text-kumo-subtle">
+          Registro automático de errores reales de Linux y del agente. Agrupa incidentes repetidos,
+          indica cómo actuar y evita reintentos automáticos equivalentes. No guarda prompts, comandos,
+          respuestas ni credenciales.
+        </p>
+        {incidents.length === 0 ? (
+          <p className="text-xs text-kumo-subtle">No hay fallos registrados desde la activación de G7.</p>
+        ) : incidents.slice(0, 8).map(item => (
+          <div key={item.id} className="rounded-md border border-kumo-line p-2 text-xs">
+            <p className="font-semibold">{item.code} · {item.count} {item.count === 1 ? "incidente" : "incidentes"}
+              {item.status === "blocked" ? " · Reintentos detenidos" : ""}
+            </p>
+            <p>{item.suspectedCause}</p>
+            <p className="text-kumo-subtle">{item.action}</p>
+            <p className="text-kumo-subtle">
+              {item.source}{item.project ? " · " + item.project : ""}
+              {item.exitCode === undefined ? "" : " · exitCode " + item.exitCode}
+              {" · Último " + item.lastAt}
+            </p>
+          </div>
+        ))}
+        {incidentError ? <p role="alert" className="text-xs">{incidentError}</p> : null}
+      </div>
     </section>
   );
 }
