@@ -21,6 +21,7 @@ import { GitHubBridge } from "./github";
 import { remoteMcpPlugin } from "./mcp-plugin";
 import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
 import { inlinePreviewAssets } from "./preview-inline";
+import { classifyAgentFailure, observeLinux, type IncidentObservation } from "./incident-diagnostics";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -209,6 +210,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
       ...(toolSequenceVerified && fileVerified ? {} : { reason: explainAgentCheckFailure(evidence, state.kind === "repair" ? "repair" : "linux") })
     };
     await this.ctx.storage.put("agent-check-result-v1", outcome);
+    if (outcome.status === "failed") {
+      const code = evidence.requestedTools === 0 ? "MODEL_UNAVAILABLE"
+        : evidence.finishedLinuxTools === 0 ? "TOOL_MISSING"
+          : state.kind === "repair" ? "TEST_FAILED" : "AGENT_FAILURE";
+      await this.noteIncident({ source: "agent-check", code, project: state.project });
+    }
     return outcome;
   }
 
@@ -232,11 +239,37 @@ export class OpenCodeAgent extends DurableObject<Env> {
       })
     ]
   });
+  private async noteIncident(event: IncidentObservation): Promise<void> {
+    try {
+      await this.personalConfig.recordIncident(event);
+    } catch {
+      // Diagnostics must not turn an otherwise valid tool result into an error.
+      console.warn("Incident ledger write unavailable");
+    }
+  }
+
   readonly linuxRunner = {
-    run: (project: string, command: string) =>
-      this.env.DEV.getByName("personal").run(project, command),
-    inspect: (project: string, action: "list" | "read", path: string) =>
-      this.env.DEV.getByName("personal").inspect(project, action, path)
+    run: async (project: string, command: string) => {
+      try {
+        const result = await this.env.DEV.getByName("personal").run(project, command);
+        const incident = observeLinux(result);
+        if (incident) await this.noteIncident(incident);
+        return result;
+      } catch (error) {
+        await this.noteIncident({ source: "linux", project, tool: "linux",
+          code: classifyAgentFailure(error instanceof Error ? error.message : "") });
+        throw error;
+      }
+    },
+    inspect: async (project: string, action: "list" | "read", path: string) => {
+      try {
+        return await this.env.DEV.getByName("personal").inspect(project, action, path);
+      } catch (error) {
+        await this.noteIncident({ source: "linux", project, tool: "inspect_linux",
+          code: classifyAgentFailure(error instanceof Error ? error.message : "") });
+        throw error;
+      }
+    }
   };
 
   readonly harness = new OpenCodeHarness({
@@ -285,7 +318,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     this.harness,
     (tag) => this.ctx.getWebSockets(tag),
     () => this.isOpenRouterConfigured(),
-    (id: string) => this.personalConfig.getSpecialization(id)
+    (id: string) => this.personalConfig.getSpecialization(id),
+    (incident: IncidentObservation) => this.noteIncident(incident)
   );
   readonly webSockets = new WebSockets(this.sockets.options());
   readonly lifecycle = Lifecycle.install(this)
@@ -440,6 +474,10 @@ export default {
         }
         return new Response("Method not allowed", { status: 405 });
       }
+      if (url.pathname === "/api/dev/incidents" && request.method === "GET") {
+        return Response.json({ incidents: await personal.listIncidents() },
+          { headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
+      }
       if (url.pathname === "/api/dev/agent-check") {
         const body = request.method === "POST" && request.headers.get("Origin") === url.origin &&
           request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")
@@ -574,9 +612,21 @@ export default {
           return Response.json({ error: "Request too large" }, { status: 413 });
         }
         const { project, command } = JSON.parse(body) as { project: string; command: string };
-        return Response.json(await env.DEV.getByName("personal").run(project, command), {
-          headers: { "Cache-Control": "no-store" }
-        });
+        try {
+          const result = await env.DEV.getByName("personal").run(project, command);
+          const incident = observeLinux(result);
+          if (incident) {
+            try { await personal.recordIncident(incident); }
+            catch { console.warn("Incident ledger write unavailable"); }
+          }
+          return Response.json(result, { headers: { "Cache-Control": "no-store" } });
+        } catch (error) {
+          try {
+            await personal.recordIncident({ source: "linux", project, tool: "linux",
+              code: classifyAgentFailure(error instanceof Error ? error.message : "") });
+          } catch { console.warn("Incident ledger write unavailable"); }
+          throw error;
+        }
       }
       if (url.pathname === "/api/health") {
         return Response.json(
