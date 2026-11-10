@@ -120,7 +120,8 @@ http.createServer(async (req, res) => {
     });
     res.end(req.method === "HEAD" ? undefined : data);
   } catch (err) {
-    const code = err && err.code === "ENOENT" ? 404 : 500;
+    const missingProject = err && err.code === "ENOENT" && !String(err.syscall || "").startsWith("spawn");
+    const code = missingProject ? 404 : 500;
     if (res.headersSent) res.destroy();
     else res.writeHead(code, { "Content-Type": "text/plain", "Cache-Control": "no-store" })
       .end(code === 404 ? "Project files not found" : "Project archive or preview unavailable");
