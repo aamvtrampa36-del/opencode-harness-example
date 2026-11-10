@@ -463,16 +463,6 @@ function App() {
       .catch(() => setLastCost("El proveedor no devolvió una variación verificable de consumo."));
   }, [busy, session]);
 
-  const exportSession = () => {
-    const data = { format: "opencode-harness-session-v1", exportedAt: new Date().toISOString(), session, messages };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const objectURL = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = objectURL;
-    anchor.download = `opencode-session-${session}.json`;
-    anchor.click();
-    URL.revokeObjectURL(objectURL);
-  };
 
   const connected = status === "open";
   const queued = pending.filter((operation) => operation.status === "queued");
@@ -799,17 +789,15 @@ function App() {
             ))}
           </nav>
           <div className="border-t border-kumo-line p-3">
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              disabled={!connected}
-              onClick={exportSession}
-              aria-label="Exportar conversación actual como copia local"
+            <a
+              href={"/api/session/export?" + new URLSearchParams({ object, session }).toString()}
+              download={`opencode-session-${session}.json`}
+              className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-kumo-line bg-kumo-elevated px-3 py-2 text-sm hover:bg-kumo-surface"
+              aria-label="Descargar conversación guardada como archivo JSON"
             >
               <DownloadSimpleIcon size={16} />
               Exportar sesión
-            </Button>
+            </a>
           </div>
         </aside>
       ) : null}
