@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { MAX_SHELL_OUTPUT, validateCommand, validateProject } from "./dev-guard";
-import { PREVIEW_SOURCE } from "./preview-server";
+import { PREVIEW_SOURCE, PREVIEW_PORT } from "./preview-server";
 import { INSPECT_SOURCE, validateInspectionPath } from "./linux-inspect";
 import { chunkBackup, joinBackup, sha256Hex, MAX_ARCHIVE_BYTES, type StoredBackup } from "./durable-backup";
 import { RESTORE_PROJECT_SOURCE } from "./restore-project";
@@ -21,9 +21,7 @@ const IDLE_MS = 5 * 60_000;
 const CHECK_MS = 60_000;
 const CHECKPOINT_MS = 2 * 60_000;
 const SNAPSHOT_TTL_MS = 30 * 24 * 60 * 60_000;
-// Port version bump prevents a still-running old preview process from serving stale archive code.
-// The old process stops with the normal Container lifecycle; no data reset is needed.
-const PREVIEW_PORT = 4322;
+// Shared PREVIEW_PORT selects the new server without destroying persistent Container data.
 
 export type LinuxResult = {
   project: string;
