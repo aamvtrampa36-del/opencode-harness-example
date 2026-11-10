@@ -416,7 +416,9 @@ export class DevContainer extends DurableObject<Env> {
       await this.previewStarting;
       return await container.getTcpPort(PREVIEW_PORT).fetch("http://container" + path, {
         method: "GET",
-        signal: AbortSignal.timeout(30_000)
+        // Generating a verified archive on disk can take longer than serving
+        // a static page; keep a finite budget without aborting valid tar jobs.
+        signal: AbortSignal.timeout(path.startsWith("/__archive/") ? 180_000 : 30_000)
       });
     } finally {
       this.busy--;
