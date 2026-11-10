@@ -66,6 +66,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
     assertScopedTool(scope, action);
   }
 
+  /** Trusted lookup for read-only GitHub tools. No LLM-provided repository. */
+  async sessionRepository(sessionID: string): Promise<string> {
+    const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
+    if (!scope?.repository) {
+      throw new Error("Esta sesión no tiene repositorio GitHub asignado. Selecciona uno desde Proyectos en una conversación nueva.");
+    }
+    return scope.repository;
+  }
+
   private readonly githubRunner = {
     execute: async (input: Parameters<GitHubBridge["execute"]>[0]) => {
       const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
@@ -332,7 +341,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
             (reload) => { this.mcpLifecycle.reload = reload; }
           ),
           workspacePlugin(this.workspace, {}, this.linuxRunner, this.githubRunner,
-            (sessionID, action) => this.enforceSessionScope(sessionID, action))
+            (sessionID, action) => this.enforceSessionScope(sessionID, action),
+            (sessionID) => this.sessionRepository(sessionID))
         ]
       }),
     // Low effort: with more, the model sometimes writes its whole answer
