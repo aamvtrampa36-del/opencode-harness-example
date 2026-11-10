@@ -18,7 +18,8 @@ export type GitHubAction =
   | { action: "read"; repo: string; path: string; ref?: string }
   | { action: "branch"; repo: string; branch: string }
   | { action: "write"; repo: string; path: string; branch: string; content: string; message?: string }
-  | { action: "pr"; repo: string; branch: string; title: string; body?: string };
+  | { action: "pr"; repo: string; branch: string; title: string; body?: string }
+  | { action: "review"; repo: string; branch: string };
 
 const BRANCH_RE = /^opencode\/[a-z0-9][a-z0-9._-]{0,59}$/;
 const MAX_FILE_BYTES = 100_000;
@@ -161,6 +162,28 @@ export class GitHubBridge {
           ...(current?.sha ? { sha: current.sha } : {})
         });
         return { repo, branch, path: input.path, commitSha: result.commit?.sha, fileSha: result.content?.sha };
+      }
+      case "review": {
+        const branch = branchChecked(input.branch);
+        const info = await this.api("GET", base);
+        const comparison = await this.api("GET", base + "/compare/" +
+          encodeURIComponent(info.default_branch) + "..." + encodeURIComponent(branch));
+        const files = Array.isArray(comparison.files) ? comparison.files : [];
+        // GitHub truncates large comparisons. Never claim a complete review
+        // when it returns more than the bounded safe set.
+        return {
+          repo, branch, base: info.default_branch,
+          aheadBy: comparison.ahead_by,
+          behindBy: comparison.behind_by,
+          totalCommits: comparison.total_commits,
+          truncated: files.length >= 300,
+          files: files.slice(0, 300).map((item: any) => ({
+            path: item.filename,
+            status: item.status,
+            additions: item.additions,
+            deletions: item.deletions
+          }))
+        };
       }
       case "pr": {
         const branch = branchChecked(input.branch);
