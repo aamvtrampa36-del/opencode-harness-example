@@ -51,6 +51,15 @@ describe("GitHub scoped permissions",()=>{
     await expect(api.execute({action:"write",repo:"aamvtrampa36-del/cdf-cloud-engine",path:"../secret",branch:"opencode/new-feature",content:"test"})).rejects.toThrow("Invalid repository file path");
     expect(calls.length).toBe(0);
   });
+  test("protects canonical narrative, workflows and deployment configuration even on review branch",async()=>{
+    calls.length=0;
+    for(const path of ["canon/c34.md","docs/oficial/BIBLIA.md","content/narrativa/chapter.md",
+      ".github/workflows/release.yml","cloudflare/wrangler.jsonc","docs/.env"]) {
+      await expect(api.execute({action:"write",repo:"aamvtrampa36-del/cdf-cloud-engine",
+        path,branch:"opencode/new-feature",content:"untrusted update"})).rejects.toThrow("Protected");
+    }
+    expect(calls.length).toBe(0);
+  });
   test("create review branch from current default branch, not main write",async()=>{
     calls.length=0;
     const r:any=await api.execute({action:"branch",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:"opencode/new-feature"});
