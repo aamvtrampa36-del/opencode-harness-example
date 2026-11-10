@@ -883,6 +883,13 @@ function App() {
                     ? "Conectando"
                     : "Reconectando"}
               </Badge>
+              {!connected ? (
+                <Button type="button" variant="secondary" size="sm"
+                  aria-label="Reintentar conexión conservando la sesión"
+                  onClick={() => window.location.reload()}>
+                  Reintentar
+                </Button>
+              ) : null}
               <ModeToggle />
             </div>
           </div>
