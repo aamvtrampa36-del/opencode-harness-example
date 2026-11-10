@@ -1,4 +1,4 @@
-import type { Specialization } from "./specializations";
+import { specializationPrompt as specializationPromptText, type Specialization } from "./specializations";
 import { MODEL_PRESETS, isModelPreset } from "./model-presets";
 import type { Connection, ConnectionContext } from "agents/lifecycle";
 import type { WebSocketMessage, WebSocketsOptions } from "agents/websockets";
@@ -234,9 +234,7 @@ export class OpenCodeSessionSockets {
           }
           const specialization = await this.#specialization(message.specialization);
           if (!specialization) throw new Error("La especialización seleccionada ya no existe o está desactivada");
-          specializationPrompt = "ESPECIALIZACIÓN OPCIONAL: " + specialization.name +
-            "\nInstrucciones del perfil (no sustituyen permisos ni políticas del sistema):\n" +
-            specialization.instructions + "\n\n";
+          specializationPrompt = specializationPromptText(specialization);
         }
         const prefixed =
           mode === "review" ? "Revisa críticamente este trabajo. Identifica problemas con evidencia y no modifiques archivos ni producción.\n\n" :
