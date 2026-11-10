@@ -1,7 +1,7 @@
-# OpenCode Cloud — G5: interfaz para vibe coding (avance verificable)
+# OpenCode Cloud — G5: interfaz para vibe coding (APROBADO en staging; cierre 2026-11-10)
 
 **Fecha:** 2026-11-09 / 2026-11-10 UTC.
-**Estado definitivo de esta intervención:** BLOQUEADO PARA CIERRE DE G5 por falta de prueba de usuario Android autenticado. Implementación y CI de G5 avanzados; no hay evidencia suficiente para aprobar el criterio E2E. No iniciar G6 formalmente.
+**Estado vigente (cierre 2026-11-10):** **G5 APROBADO EN STAGING** tras aceptación del titular desde Android. Los dictámenes históricos BLOQUEADO de las secciones anteriores conservan el estado que tenían antes de la prueba final; consultar §11 para el dictamen definitivo. La PR #28 sigue en borrador; no hay despliegue productivo autorizado.
 **Fuente:** informe maestro OpenCode Cloud V1 (21 páginas), plan `docs/V1_EXECUTION_PLAN.md`, cierre G4 y comprobaciones de GitHub/Cloudflare.
 
 ## 1. Línea base recuperada
@@ -224,3 +224,35 @@ Se verificó la PR #28 aún en borrador con HEAD `7a9401e37ff8aabd49fb7da3abfefe
 **Dictamen vigente: G5 PARCIALMENTE VALIDADO, pendiente de cierre.** No corregir ni rediseñar otra vez la vista previa que pasó su retest. Para completar G5, el propietario debe (1) usar **Proyectos → Revisar archivos** sobre `app-mwabn7ns`, (2) guardar un respaldo y restaurarlo con nombre nuevo sin sobrescribir, (3) recargar el navegador y confirmar que la sesión y los mensajes persistieron; cuando sea posible, comprobar desconexión/reintento y detener una tarea no crítica. Documentar los resultados visibles o un error reproducible.
 
 **Siguiente hito tras G5 APROBADO:** G6 — plantillas declarativas editables para Desarrollo, Diagnóstico, Revisión, Planificación, Decisiones, Flujo de trabajo y Documentación, reutilizando las especializaciones existentes; no abrir un segundo motor ni desplegar a producción antes de cumplir las condiciones autorizadas.
+
+
+## 11. Cierre de G5 — aceptación Android completa comunicada por el titular (10 noviembre 2026)
+
+### Resultado final y naturaleza de las evidencias
+
+Tras el retest documentado en §10, el titular respondió expresamente **«Exitoso. Todo exitoso. Funciona como lo dijiste.»** al procedimiento móvil que se le indicó para (a) revisar archivos desde el panel de proyectos, (b) guardar el respaldo de `app-mwabn7ns` y restaurarlo sin sobrescribir bajo otro nombre (ejemplo `prueba-g5-copia`), y (c) recargar y comprobar que la conversación y sus resultados continuaban accesibles. Este conjunto de comprobaciones completa el recorrido Android de aceptación establecido por el plan.
+
+**Diferenciar evidencia:** la ejecución Linux, la prueba de software, la interfaz Android y el botón final funcionando están sustentados por archivo JSON y capturas proporcionadas por el titular en la conversación. La revisión, respaldo, restauración y recuperación tras recarga tienen **declaración de éxito del titular**, no registros de navegador o de la API independientes adjuntados. No se afirma que el supervisor operó el navegador ni que observó códigos HTTP de esas acciones. El control aislado de **detener** una operación no cuenta con traza individual de prueba; sus controles y su transporte estaban implementados y sometidos a CI, y su comportamiento en situaciones de interrupción se conserva como riesgo residual, **sin retrasar el gate principal** definido en el plan: «usuario puede completar flujo sin terminal ni configuración manual».
+
+### Matriz de aceptación definitiva
+
+| Criterio | Dictamen | Evidencia |
+| --- | --- | --- |
+| Proyecto, modelo y tarea desde Android | APROBADO | Capturas y transcript exportado: proyecto `app-mwabn7ns`, DeepSeek |
+| Herramientas reales, errores visibles y pruebas | APROBADO | Transcript con cuatro operaciones Linux completadas, una inspección inicial fallida recuperada, `npm test`, `npm run build` y HTTP 200 |
+| Vista previa funcional, CSS y JavaScript | APROBADO | Retest visual Android del propietario: tarjeta oscura, botón azul y mensaje «Prueba completada» |
+| Revisión de archivos sin terminal | APROBADO por titular | Confirmación explícita de éxito del recorrido de **Proyectos → Revisar archivos** |
+| Respaldo y restauración sin sobrescribir | APROBADO por titular | Confirmación explícita de éxito del recorrido móvil; G4 conserva pruebas autónomas de almacenamiento y hashes |
+| Historial de conversación tras recarga | APROBADO por titular | Confirmación explícita de éxito en Android; transporte y controles existentes, reconexión validada en el recorrido reportado |
+| Costo aproximado, controles de ejecución y fallos | IMPLEMENTADO, alcance suficiente | Consumo OpenRouter mostrado con advertencias; control de detener/reintentar integrado. No existe factura exacta por tarea ni traza individual de cancelación |
+| Ejecución sin terminal ni configuración manual desde Android | **APROBADO** | Conjunto de pruebas de propietario y evidencia técnica arriba |
+
+### Comprobaciones de seguridad y límite del cierre
+
+Antes del cierre se comprobó el HEAD de la PR #28 en `0f3197910d465e30ea05f0323155af5ae0e736e3`, **CI #195** (run `42772290267`) `completed/success`; último Workers Build de staging `success`, versión publicada `eaa9e8d4-af3f-471e-87d8-9215c1c7aa7b`; Worker productivo conservado en `1d70eb77-316e-408d-bd14-5f19b171dedf`; Cron vacío y aplicación Cloudflare Access `self_hosted` protegida con una política. El cierre de G5 **no constituye autorización para fusionar la PR ni publicar en producción**.
+
+**Dictamen definitivo: G5 — APROBADO EN STAGING, CERRADO respecto al gate de experiencia Android V1.** No introducir mejoras marginales adicionales; riesgos residuales y pruebas de cancelación extrema pueden priorizarse más adelante si aparece un caso reproducible. El siguiente hito es **G6 — Plantillas editables**, conforme al informe maestro.
+
+### Traspaso operativo mínimo a G6
+
+Reutilizar el CRUD de especializaciones ya existente; no crear un segundo motor de agentes. Empezar por inventariar las plantillas persistidas y el editor de configuración existente para introducir exactamente los siete perfiles predeterminados: **Desarrollo, Diagnóstico, Revisión, Planificación, Decisiones, Flujo y Documentación**. Cada plantilla debe tener nombre, instrucciones acotadas, modo y modelo sugerido; permitir crear/editar/copiar/restablecer, sin conceder capacidades mediante el texto. El gate G6 exige una prueba en staging: editar y reutilizar una plantilla tiene que **modificar realmente la conducta del agente sin desplegar código**. Se mantienen la rama de desarrollo, Cloudflare Access y producción protegida; no reabrir G5 salvo regresión comprobada.
