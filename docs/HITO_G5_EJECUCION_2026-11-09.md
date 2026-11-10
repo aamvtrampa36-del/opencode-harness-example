@@ -1,7 +1,7 @@
 # OpenCode Cloud — G5: interfaz para vibe coding (avance verificable)
 
 **Fecha:** 2026-11-09 / 2026-11-10 UTC.
-**Estado:** EN PROGRESO; NO APROBADO AÚN. No avanzar formalmente a G6 sin los criterios funcionales de G5.
+**Estado definitivo de esta intervención:** BLOQUEADO PARA CIERRE DE G5 por falta de prueba de usuario Android autenticado. Implementación y CI de G5 avanzados; no hay evidencia suficiente para aprobar el criterio E2E. No iniciar G6 formalmente.
 **Fuente:** informe maestro OpenCode Cloud V1 (21 páginas), plan `docs/V1_EXECUTION_PLAN.md`, cierre G4 y comprobaciones de GitHub/Cloudflare.
 
 ## 1. Línea base recuperada
@@ -48,3 +48,65 @@ No se añadieron dependencias, nuevos modelos, nuevos servicios, cron, permisos,
 Con evidencia anterior, completar la visibilidad de archivos modificados y costo por tarea usando eventos existentes si lo permiten. No inventar métricas. Corregir defectos concretos con tests y volver a probar. Sólo cerrar G5 cuando el flujo principal pueda usarse sin terminal con resultados comprobables; entonces iniciar **G6 — plantillas declarativas editables**, reutilizando el sistema de especializaciones ya presente.
 
 **Producción:** sin despliegue autorizado ni solicitado. **Principio:** recuperar → comparar → ejecutar → validar → cerrar → avanzar; ninguna afirmación de cierre se basa solo en CI.
+
+## 6. Ejecución complementaria — interfaz operable y evaluación final (9–10 noviembre 2026 UTC)
+
+### Alcance ejecutado sin añadir servicios
+
+Se recuperó y verificó la versión íntegra del informe maestro PDF (21 páginas) y las actas G1–G5 antes de modificar. La PR #28 permaneció abierta como borrador, sin fusionar. Se revisaron los archivos de UI, transporte WebSocket, modelos, respaldo/restauración y el flujo de Linux existente.
+
+**Cambios ejecutados en `src/client.tsx`:**
+
+- `86c8433f07247b0d49e97d91021dc8aa7c6a2858`: botón **Revisar archivos** en el selector de proyectos. Usa el endpoint ya protegido `POST /api/dev/run` para consultar `git status --short`, `git diff --stat` y último commit. Si no existe repositorio Git, muestra un listado acotado y lo identifica expresamente como **no equivalente a un diff**. El usuario no necesita introducir comandos.
+- Mismo commit: indicador de consumo durante una ejecución OpenRouter, comparando el valor acumulado antes/después desde `GET /api/settings/openrouter/usage`. El texto advierte que es un **incremento aproximado de la cuenta**, no la factura de una tarea: puede incluir uso paralelo y no cubre Workers AI. Si no hay datos verificables, no muestra importes inventados.
+- `4ea1a02afbcf883ac6ac368d6c84902d9367b0c4`: el listado de conversaciones en móvil se abre como panel superpuesto, se puede cerrar y vuelve al chat al elegir una sesión; evita dividir el alto de pantalla en dos filas.
+- `5a0bba8974cb9b9f82db773d84ff81f48a1788a0`: botón **Reintentar** disponible cuando se pierde conexión; recarga la página conservando la sesión seleccionada en almacenamiento local y solicita otra vez el estado desde el servidor. No se afirma recuperación automática de una herramienta que estaba a mitad de ejecución.
+
+El flujo existente de G5 conserva selección de proyectos, redacción de tareas en lenguaje natural, modelos configurados, controles de detener/continuar, estado real de herramientas, respaldos y restauración no destructiva.
+
+### Verificaciones efectuadas
+
+| Prueba | Resultado |
+| --- | --- |
+| GitHub Actions #178 — commit `86c8433` | **success**; Bun, preview, TypeScript, compilación e invariantes |
+| GitHub Actions #179 — commit `4ea1a02` | **success** |
+| GitHub Actions #180 — commit `5a0bba8` | **success** |
+| Workers Builds `81ea2661-bc6c-4a25-ba94-05367bc82fc9` | **success**, commit `86c8433` |
+| Workers Builds `3fefc734-df44-464a-b42a-6195ae9f3e28` | **success**, commit `4ea1a02` |
+| Workers Builds `fc9b72dc-3b4d-463d-bef0-c591d07f3c96` | **success**, commit `5a0bba8` |
+| Staging `opencode-g1-staging` | Despliegues automáticos de la rama; Cloudflare Access sigue configurado |
+| Worker productivo `opencode-harness-example` | **Sin modificación**: versión `1d70eb77-316e-408d-bd14-5f19b171dedf` |
+| Cron en staging | **Sin tareas activas**: `schedules=[]` |
+| Prueba real desde navegador Android autorizado | **NO EJECUTADA**: no existe sesión de navegador autenticada accesible al supervisor |
+
+Cloudflare Access tiene una aplicación de tipo `self_hosted` para `opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev`, con una política configurada. El acceso de API del administrador no equivale a la sesión interactiva que permite probar el flujo en un navegador. No se intentó suplantarla, desactivar Access, entregar cookies o crear una credencial temporal.
+
+### Criterios de aceptación finales
+
+| Criterio G5 del plan | Estado verificable |
+| --- | --- |
+| Seleccionar proyecto y tarea | Implementado en UI; no validado en Android real |
+| Ejecutar y ver herramientas | Soportado por WebSocket y tarjetas de resultados; pruebas G1 y G2 acreditan el motor, no esta sesión móvil |
+| Revisar archivos y pruebas sin terminal | Implementado: consultas Git en UI y trazas de herramienta; no probado desde Android |
+| Mostrar consumo aproximado sin engaño | Implementado para uso incremental OpenRouter disponible; no se pretende desglose exacto ni costo Workers AI |
+| Detener, reconectar, recuperar historial | Controles y protocolo existentes más botón de reintento; falta prueba de interrupción en Android |
+| Guardar y restaurar desde la interfaz | Formulario sobre API G4 implementado; recorrido Android sin comprobar |
+| Flujo Android completo bajo Cloudflare Access | **PENDIENTE Y BLOQUEANTE** |
+
+**Dictamen: G5 BLOQUEADO para aprobación E2E.** La construcción automatizada satisfactoria y el despliegue separado no certifican la funcionalidad desde el teléfono del titular. No hay prueba de que falle; hay falta de evidencia independiente.
+
+### Acción mínima que desbloquea el cierre
+
+Desde Android, el titular debe abrir `https://opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev` y autenticarse mediante Cloudflare Access **sin comunicar credenciales al supervisor**. En un proyecto de prueba no crítico:
+
+1. Seleccionar o crear un proyecto, elegir modelo y enviar una tarea pequeña con herramienta Linux; comprobar que se registran operaciones y resultados reales.
+2. Abrir **Proyectos → Revisar archivos**, comprobar el cambio y las pruebas; guardar respaldo y restaurar en un destino nuevo con el formulario G5, verificando el resultado.
+3. Recargar/cerrar y volver a abrir la sesión en el mismo dispositivo; comprobar el historial y, cuando corresponda, la reconexión. Probar detener una operación de prueba si está en curso y volver a iniciar de forma segura.
+
+Anotar fecha, resultado observable y fallo concreto si aparece; no hace falta crear un segundo servicio ni publicar una consola. Ante un fallo reproducible, corregirlo en rama y volver a validar. **No fusionar a producción ni marcar G5 APROBADO** sin esa evidencia.
+
+### Hito siguiente según el informe y el plan
+
+Una vez **aprobado G5**, continuar con **G6 — Plantillas sin arquitectura adicional**. Acción inicial: reutilizar el CRUD ya existente de especializaciones para ofrecer los siete perfiles declarativos previstos (Desarrollo, Diagnóstico, Revisión, Planificación, Decisiones, Flujo de trabajo y Documentación), con configuración editable y pruebas de que cambian la conducta del agente sin crear otros ejecutores.
+
+**No convertir G6 en requisito para cerrar G5 ni anticipar tareas G7–G9.** Este registro no constituye una autorización de merge ni de despliegue productivo.
