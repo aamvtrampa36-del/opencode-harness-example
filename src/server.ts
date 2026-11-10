@@ -18,6 +18,7 @@ import { workspacePlugin } from "./workspace";
 import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
+import { verifyG8Proofs } from "./g8-smoke";
 import { assertScopedTool, requireSameScope, scopeStorageKey, validateProjectScope, type ProjectScope, type ScopedToolAction } from "./project-scope";
 import { remoteMcpPlugin } from "./mcp-plugin";
 import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
@@ -504,6 +505,25 @@ export default {
           }
         }
         return new Response("Method not allowed", { status: 405 });
+      }
+      if (url.pathname === "/api/dev/g8-verify" && request.method === "POST") {
+        if (!settingsOriginAllowed) {
+          return Response.json({ error: "Se requiere una solicitud autenticada del mismo origen." }, { status: 403 });
+        }
+        const key = (env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN || await personal.getGitHubKey();
+        if (!key) {
+          return Response.json({ error: "Primero conecta GitHub en Configuración de OpenCode Cloud." }, { status: 422 });
+        }
+        try {
+          const bridge = new GitHubBridge(key, (input, init) => globalThis.fetch(input, init),
+            await personal.getAllowedRepositories());
+          const outcome = await verifyG8Proofs(action => bridge.execute(action),
+            await personal.getAllowedRepositories());
+          return Response.json(outcome, { headers: { "Cache-Control": "no-store" } });
+        } catch (error) {
+          return Response.json({ error: error instanceof Error ? error.message : "G8 verification failed" },
+            { status: 422, headers: { "Cache-Control": "no-store" } });
+        }
       }
       if (url.pathname === "/api/dev/incidents" && request.method === "GET") {
         return Response.json({ incidents: await personal.listIncidents() },
