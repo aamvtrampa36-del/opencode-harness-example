@@ -141,3 +141,23 @@ Al revisar el flujo de G5 se comprobó que `useOpenCodeSession` descartaba silen
 **G5 sigue BLOQUEADO PARA CIERRE** únicamente por la prueba funcional integral real de Android bajo Cloudflare Access que consta en §6. No se debe reabrir G1–G4 ni volver a corregir preventivamente código ya probado. Ninguna prueba unitaria, compilación ni verificación de Cloudflare API puede acreditar por sí sola que el titular completó desde el teléfono el recorrido de proyecto → tarea → herramientas → revisión → respaldo → restauración → recarga/reconexión.
 
 El siguiente paso operativo es **verificar ese recorrido con una sesión autorizada de Android en el staging protegido**, registrando resultados y corrigiendo exclusivamente defectos reproducibles. Se mantiene la PR #28 como borrador sin fusionar. Tras la aceptación real de G5, iniciar **G6 — Plantillas sin arquitectura adicional**, reutilizando el CRUD de especializaciones existente. Ningún despliegue a producción ni ampliación de permisos fue necesario para esta intervención.
+
+
+## 8. Revalidación final y dependencia de aceptación (10 noviembre 2026)
+
+Releído íntegramente el informe maestro de 21 páginas y consultadas las actas G1–G5. No se detectaron cambios posteriores en el código de la rama que invalidaran la aprobación técnica documentada en §7. No se reabren los hitos G1–G4 ni se amplía el alcance de G5 por perfeccionismo.
+
+**Evidencias de estado actual verificadas de forma independiente:**
+
+- Rama de revisión PR #28, aún abierta como borrador, HEAD `3078f872df15e5c73ff3ad5e41d133b24e1e0cb4`.
+- GitHub Actions **#186** (run `42756664949`) completó con `success` para ese commit de documentación.
+- Cloudflare Workers Builds terminó con `success` para `3078f872`; Worker de staging `opencode-g1-staging` en versión `4d3486da-dc14-4a9c-8f6d-0d9a9f43e51d`.
+- Worker de producción `opencode-harness-example` sin modificaciones, versión `1d70eb77-316e-408d-bd14-5f19b171dedf`; no hay Cron de staging (`[]`).
+- Cloudflare Access mantiene aplicación `self_hosted` y una política para el dominio protegido.
+- La sesión de navegador vinculada no estaba disponible en este contexto: el conector solo funciona desde el contexto de navegador de origen. Por tanto **no se ejecutó E2E autenticado en Android**, ni se sustituyó por una prueba con privilegios de administrador o desactivando Access.
+
+**Dictamen: G5 BLOQUEADO únicamente para aceptación funcional Android; desarrollo y CI validados.** Los controles y APIs están implementados, pero no constituyen prueba suficiente del recorrido real completo desde el teléfono. No hay fundamento técnico para añadir nuevas funciones hasta recibir un defecto reproducible o esa evidencia.
+
+**Única acción necesaria para desbloquear:** el propietario abre `https://opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev` desde Android con su acceso habitual y ejecuta una tarea pequeña en un proyecto de prueba, comprueba herramientas y revisión de cambios, guarda un respaldo, lo restaura en otro proyecto, recarga y verifica historial/reconexión. Registrar éxito o fallo específico. No compartir contraseñas, cookies ni tokens. Si falla, reparar solo el defecto reproducible en la rama y volver a validar.
+
+Una vez demostrado el recorrido, marcar **G5 APROBADO** y pasar a **G6: plantillas declarativas editables**, reutilizando el CRUD de especializaciones existente (Desarrollo, Diagnóstico, Revisión, Planificación, Decisiones, Flujo de trabajo y Documentación). El informe maestro define el orden; esta verificación no autoriza merge ni despliegue en producción.
