@@ -105,3 +105,20 @@ La segunda prueba fue un **bloqueo reproducible**: desde Android, sesión `ses_e
 **Acción mínima del titular:** abrir staging desde Android, Proyectos → **Seleccionar repositorio y crear conversación** → elegir `aamvtrampa36-del/cdf-cloud-engine`. Esto crea **una nueva sesión**, con modo Revisión y un mensaje precargado para comparar la rama G8 mediante `repo_review`. Enviar el mensaje sin modificarlo y confirmar **al menos una herramienta `repo_review` completada** y un diff de un solo archivo `docs/opencode-g8/isolated-review-20261110.md`. Repetir para `aamvtrampa36-del/CDF-WorkBench-`, en **otra conversación nueva**. Si falla, compartir error específico y detener para no gastar más inferencia.
 
 El siguiente hito es G9 — entrega y publicación controlada, **sin iniciarlo formalmente** hasta aprobar la prueba del agente en ambas sesiones. Ninguna de estas verificaciones autoriza despliegue productivo.
+
+
+## 7. Reparación complementaria: exportación del historial desde Android (10 noviembre 2026)
+
+**Incidente informado por el propietario:** después de intentar compartir el resultado de una revisión del agente de G8, el propietario indicó «No puedo descargar el chat. Hay un error en la página». No se recibió aún código HTTP ni detalle exacto del error. El fallo no demuestra una pérdida del historial persistido; la sesión sigue identificada como `ses_e3924f7e6ffedOa29YMzSIcVQ0`, espacio `2eb8e899-dd94-4733-b990-2fc99e0f7d5c`. El origen es una **hipótesis técnica plausible**, no un diagnóstico del navegador confirmado: el anterior `src/client.tsx` exportaba una copia JSON con URL `blob:` temporal y llamaba `URL.revokeObjectURL` inmediatamente después del clic, lo que puede cancelar descargas en navegadores móviles.
+
+**Corrección de bajo alcance, sin modificar G8 ni datos:**
+- `src/client.tsx`: se reemplazó el clic sobre `blob:` efímero por enlace nativo a descarga autenticada del mismo origen. Puede usarse aunque se haya interrumpido la conexión WebSocket.
+- `src/server.ts`: `GET /api/session/export?object=…&session=…`; valida estrictamente UUID del espacio y formato de sesión, comprueba que la sesión existe, obtiene su historial guardado desde el Durable Object de OpenCode y responde `Content-Disposition: attachment`, `Content-Type: application/json`, sin caché. Se reutiliza Cloudflare Access, sin endpoints públicos adicionales ni nuevos permisos.
+- `src/session-export.ts` y `src/session-export.test.ts`: validación de entradas, formato compatible `opencode-harness-session-v1`, metadatos, contenido, cabeceras, protección frente a nombres manipulados y no caché.
+- El DO devuelve un JSON serializado como cadena para evitar profundización recursiva de tipos al cruzar el límite RPC. Ningún historial se escribió en GitHub ni en telemetría.
+
+**Validación real:** GitHub Actions **#245** falló en tipado recursivo del RPC; se corrigió con JSON serializado. GitHub Actions **#247** (run `42884472537`) finalizó **`completed/success`**; Workers Builds final `success`, commit `87db6bfefa62869d96fb42d0e36aca0e6aa68bc3`; staging `4be0f4d7-4d56-4501-9e95-ae048ad82301`. Producción conserva `1d70eb77-316e-408d-bd14-5f19b171dedf`, sin merge.
+
+**Aceptación pendiente:** abrir staging desde Brave/Android y pulsar nuevamente **Exportar sesión** en la conversación afectada. Comprobar que se descarga `opencode-session-ses_e3924f7e6ffedOa29YMzSIcVQ0.json` y que contiene el historial, sin reejecutar IA. No afirmar que la reparación ya funcionó en ese navegador hasta recibir evidencia. Si el error persiste, capturar la página o estado de respuesta, sin incluir cookies ni tokens.
+
+**Estado de G8 inalterado:** el primer recorrido del agente falló; G8 continúa pendiente de revisión real satisfactoria con `repo_review` en CDF CLOUD y WorkBench. Esta reparación restaura una vía sencilla para aportar evidencia sin gastar tokens de IA.
