@@ -1,4 +1,5 @@
 import { specializationPrompt as specializationPromptText, type Specialization } from "./specializations";
+import { classifyAgentFailure, type IncidentObservation } from "./incident-diagnostics";
 import { MODEL_PRESETS, isModelPreset } from "./model-presets";
 import type { Connection, ConnectionContext } from "agents/lifecycle";
 import type { WebSocketMessage, WebSocketsOptions } from "agents/websockets";
@@ -93,6 +94,7 @@ export class OpenCodeSessionSockets {
   readonly #getWebSockets: (tag?: string) => WebSocket[];
   readonly #openRouterAvailable: () => Promise<boolean>;
   readonly #specialization: (id: string) => Promise<Specialization | undefined>;
+  readonly #noteIncident: (event: IncidentObservation) => Promise<void>;
   /** One event stream per running session, or its opening. */
   readonly #watches = new Map<
     OpenCodeSessionId,
@@ -105,12 +107,19 @@ export class OpenCodeSessionSockets {
     harness: OpenCodeHarness,
     getWebSockets: (tag?: string) => WebSocket[],
     openRouterAvailable: () => Promise<boolean> = async () => false,
-    getSpecialization: (id: string) => Promise<Specialization | undefined> = async () => undefined
+    getSpecialization: (id: string) => Promise<Specialization | undefined> = async () => undefined,
+    noteIncident: (event: IncidentObservation) => Promise<void> = async () => undefined
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
     this.#openRouterAvailable = openRouterAvailable;
     this.#specialization = getSpecialization;
+    this.#noteIncident = noteIncident;
+  }
+
+  async #record(event: IncidentObservation): Promise<void> {
+    try { await this.#noteIncident(event); }
+    catch { console.warn("Agent incident ledger unavailable"); }
   }
 
   options(): WebSocketsOptions {
@@ -186,6 +195,8 @@ export class OpenCodeSessionSockets {
         send(connection, { type: "result", id: message.id, result });
       }
     } catch (error) {
+      await this.#record({ source: "agent",
+        code: classifyAgentFailure(error instanceof Error ? error.message : "") });
       send(connection, {
         type: "error",
         ...(message.id === undefined ? {} : { id: message.id }),
@@ -379,6 +390,10 @@ export class OpenCodeSessionSockets {
       }
     }
     try {
+      // A fault is a machine event, not a model explanation.
+      if (events.some(event => event.type === "fault")) {
+        await this.#record({ code: "AGENT_FAILURE", source: "session" });
+      }
       if (this.#getWebSockets(sessionTag(session)).length === 0) {
         await this.#unwatch(session);
       } else if (events.some((event) => event.type === "run_end")) {
