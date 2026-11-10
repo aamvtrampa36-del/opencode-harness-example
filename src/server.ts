@@ -25,6 +25,8 @@ import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCh
 import { inlinePreviewAssets } from "./preview-inline";
 import { classifyAgentFailure, observeLinux, type IncidentObservation } from "./incident-diagnostics";
 import { validateExportIdentity, sessionExportResponse } from "./session-export";
+import { archiveDownloadResponse, archiveError } from "./download-response";
+import { githubRepositoryDownload } from "./github-download";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -641,13 +643,34 @@ export default {
       if (downloadMatch) {
         if (request.method !== "GET") return new Response("GET only", { status: 405 });
         const project = downloadMatch[1];
-        const file = await env.DEV.getByName("personal").download(project);
-        const headers = new Headers(file.headers);
-        headers.set("Content-Type", "application/gzip");
-        headers.set("Content-Disposition", 'attachment; filename="' + project + '.tar.gz"');
-        headers.set("X-Content-Type-Options", "nosniff");
-        headers.set("Cache-Control", "no-store");
-        return new Response(file.body, { status: file.status, headers });
+        const source = url.searchParams.get("source");
+        if (source && source !== "github") return archiveError(400, "Fuente de descarga no reconocida.");
+        if (source === "github") {
+          const object = url.searchParams.get("object");
+          const session = url.searchParams.get("session");
+          try {
+            validateExportIdentity(object, session);
+            // Retrieve the remote repository from immutable, server-stored
+            // session scope. Never trust the URL or an LLM for repo identity.
+            const selected = await env.OpenCodeAgent.getByName(object!).sessionRepository(session!);
+            const normalizedProject = selected.split("/")[1].toLowerCase()
+              .replace(/[^a-z0-9-]+/g, "-").replace(/-+$/, "").slice(0, 40);
+            if (normalizedProject !== project) {
+              return archiveError(403, "El repositorio de esta sesión no coincide con el proyecto solicitado.");
+            }
+            const token = (env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN || await personal.getGitHubKey();
+            return githubRepositoryDownload(selected, token || "",
+              await personal.getAllowedRepositories());
+          } catch (error) {
+            return archiveError(422, error instanceof Error ? error.message : "No se pudo identificar el repositorio seleccionado.");
+          }
+        }
+        try {
+          const file = await env.DEV.getByName("personal").download(project);
+          return await archiveDownloadResponse(project, file, "tar.gz");
+        } catch {
+          return archiveError(502, "No se pudo preparar el archivo del Container. Revisa que existan archivos locales o descarga desde el repositorio GitHub seleccionado.");
+        }
       }
       const previewMatch = url.pathname.match(/^\/api\/dev\/preview\/([a-z][a-z0-9-]{0,39})(?:\/(.*))?$/);
       if (previewMatch) {
