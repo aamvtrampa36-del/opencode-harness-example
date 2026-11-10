@@ -7,8 +7,10 @@
  */
 export const PREVIEW_SOURCE = String.raw`
 import http from "node:http";
-import { readFile, stat, realpath } from "node:fs/promises";
-import { resolve, sep, extname } from "node:path";
+import { readFile, stat, realpath, mkdtemp, rm } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { resolve, sep, extname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 const ROOT = process.env.PREVIEW_ROOT || "/workspace/projects";
 const MIME = {
@@ -37,20 +39,52 @@ http.createServer(async (req, res) => {
       const source = resolve(ROOT, project);
       const dir = await stat(source);
       if (!dir.isDirectory()) { res.writeHead(404).end(); return; }
-      // Archive source and build output, not heavy dependencies, Git internals
-      // or typical local secrets. The user must still review any generated code.
-      const proc = spawn("tar", [
-        "--exclude=node_modules", "--exclude=.git", "--exclude=.env",
-        "--exclude=.env.*", "--exclude=*.pem", "--exclude=*.key",
-        "-czf", "-", "-C", ROOT, project
-      ], { stdio: ["ignore", "pipe", "ignore"] });
-      res.writeHead(200, {
-        "Content-Type": "application/gzip",
-        "Content-Disposition": 'attachment; filename="' + project + '.tar.gz"',
-        "Cache-Control": "no-store"
-      });
-      proc.stdout.pipe(res);
-      proc.on("error", () => res.destroy());
+      // Build and VERIFY the archive before sending HTTP 200. The previous
+      // direct tar stdout pipe could abort mid-response or return a broken gzip.
+      // Temp disk stores the archive; neither Worker nor DO buffers the file.
+      const temp = await mkdtemp(join(tmpdir(), "opencode-download-"));
+      let streaming = false;
+      try {
+        const archive = join(temp, "project.tar.gz");
+        await new Promise((resolveDone, rejectDone) => {
+          const child = spawn("tar", [
+            "--exclude=node_modules", "--exclude=.git", "--exclude=.env",
+            "--exclude=.env.*", "--exclude=*.pem", "--exclude=*.key",
+            "-czf", archive, "-C", ROOT, project
+          ], { stdio: ["ignore", "ignore", "pipe"] });
+          child.once("error", rejectDone);
+          child.once("close", code => {
+            if (code === 0) resolveDone();
+            else rejectDone(new Error("tar failed, exit code " + code));
+          });
+        });
+        const output = await stat(archive);
+        if (!output.isFile() || output.size === 0) throw new Error("Archive empty");
+        if (output.size > 256 * 1024 * 1024) {
+          res.writeHead(413, { "Content-Type": "text/plain" }).end("Project archive exceeds 256 MiB; use a smaller project export.");
+          return;
+        }
+        const cleanup = () => { void rm(temp, { recursive: true, force: true }).catch(() => undefined); };
+        const file = createReadStream(archive);
+        file.once("error", () => {
+          if (!res.headersSent) res.writeHead(500).end("Archive stream failed");
+          else res.destroy();
+          cleanup();
+        });
+        res.once("finish", cleanup);
+        res.once("close", cleanup);
+        res.writeHead(200, {
+          "Content-Type": "application/gzip",
+          "Content-Disposition": 'attachment; filename="' + project + '.tar.gz"',
+          "Content-Length": String(output.size),
+          "Cache-Control": "no-store",
+          "X-Content-Type-Options": "nosniff"
+        });
+        file.pipe(res);
+        streaming = true;
+      } finally {
+        if (!streaming) await rm(temp, { recursive: true, force: true });
+      }
       return;
     }
     const relative = decodeURIComponent(url.pathname);
@@ -86,7 +120,9 @@ http.createServer(async (req, res) => {
     res.end(req.method === "HEAD" ? undefined : data);
   } catch (err) {
     const code = err && err.code === "ENOENT" ? 404 : 500;
-    res.writeHead(code, { "Content-Type": "text/plain" }).end(code === 404 ? "Preview not found" : "Preview error");
+    if (res.headersSent) res.destroy();
+    else res.writeHead(code, { "Content-Type": "text/plain", "Cache-Control": "no-store" })
+      .end(code === 404 ? "Project files not found" : "Project archive or preview unavailable");
   }
-}).listen(4321, "0.0.0.0");
+}).listen(Number(process.env.PREVIEW_PORT || 4321), "0.0.0.0");
 `;
