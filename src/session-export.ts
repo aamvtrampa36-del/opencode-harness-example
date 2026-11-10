@@ -8,7 +8,7 @@ import type { OpenCodeMessage } from "agents/harness/opencode";
 const WORKSPACE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const SESSION_ID = /^ses_[A-Za-z0-9_-]{1,80}$/;
 
-export function validateExportIdentity(object: unknown, session: unknown): asserts object is string & asserts session is string {
+export function validateExportIdentity(object: unknown, session: unknown): void {
   if (typeof object !== "string" || !WORKSPACE_ID.test(object)) {
     throw new Error("Espacio de conversación inválido");
   }
