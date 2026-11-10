@@ -638,9 +638,22 @@ function App() {
       setRepository(repo);
       setProjectsOpen(false);
       setProjectError("");
-      setPrompt("Revisa el repositorio " + repo +
-        " en una rama opencode/* aislada. No alteres fuentes oficiales, main ni producción. " +
-        "Inspecciona primero los archivos y prepara un cambio pequeño en un archivo no canónico con pruebas.");
+      setAgentMode("review");
+      // Start project reviews without carrying another task's saved template.
+      setSpecialization("");
+      localStorage.setItem(SPECIALIZATION_KEY, "");
+      const branch = repo.toLowerCase() === "aamvtrampa36-del/cdf-cloud-engine"
+        ? "opencode/g8-cdf-isolation-20261110"
+        : repo.toLowerCase() === "aamvtrampa36-del/cdf-workbench-"
+          ? "opencode/g8-workbench-isolation-20261110" : "";
+      setPrompt(branch
+        ? "Usa exclusivamente la herramienta repo_review con branch '" + branch +
+          "'. El repositorio ya está vinculado a esta conversación. Revisa el diff contra main, " +
+          "los archivos cambiados y los posibles riesgos. No uses ls, find, read, exec, inspect_linux " +
+          "ni la ruta /bundle, que NO es un checkout de GitHub. Solo lectura; no modifiques nada."
+        : "Usa repo_info para consultar el repositorio vinculado a esta conversación. " +
+          "Para revisar ramas opencode/* usa repo_review, y para leer archivos usa repo_read. " +
+          "No uses /bundle como repositorio GitHub ni modifiques nada sin autorización.");
     }, fail);
   };
 
