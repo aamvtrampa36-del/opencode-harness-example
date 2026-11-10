@@ -58,6 +58,19 @@ function pathChecked(path: unknown): string {
   }
   return path.split("/").map(encodeURIComponent).join("/");
 }
+/** Never update narrative canon or operational deployment configuration via a review tool. */
+function assertNonCanonicalWrite(repo: string, path: string): void {
+  const lower = path.toLowerCase();
+  if (lower.startsWith(".github/workflows/") ||
+      /^(?:canon|canonical|oficial|official|narrativa|narrative|prosa|chapters|capitulos|biblia|biblias|published|production)(?:\/|$)/.test(lower) ||
+      /(?:^|\/)(?:canon|canonical|oficial|official|narrativa|narrative|capitulos|chapters|biblias)(?:\/|$)/.test(lower) ||
+      /(?:^|\/)(?:\.env|\.dev\.vars|wrangler\.toml|wrangler\.jsonc?)(?:$|\/)/.test(lower)) {
+    throw new Error("Protected official/production path cannot be edited from OpenCode");
+  }
+  // Both CDF repositories contain operational and editorial data. G8 smoke
+  // artifacts belong under docs/opencode-g8/, never within a canonical source.
+  void repo;
+}
 function toBase64(value: string): string {
   const bytes = new TextEncoder().encode(value);
   if (bytes.byteLength > MAX_FILE_BYTES) throw new Error("GitHub file exceeds 100KB; split the task");
@@ -138,6 +151,7 @@ export class GitHubBridge {
       case "write": {
         const branch = branchChecked(input.branch);
         const safePath = pathChecked(input.path);
+        assertNonCanonicalWrite(repo, input.path);
         if (typeof input.content !== "string") throw new Error("File content must be plain text");
         const current = await this.api("GET", base + "/contents/" + safePath + "?ref=" + encodeURIComponent(branch), undefined, true);
         const result = await this.api("PUT", base + "/contents/" + safePath, {
