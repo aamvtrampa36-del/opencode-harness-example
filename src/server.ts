@@ -24,6 +24,7 @@ import { remoteMcpPlugin } from "./mcp-plugin";
 import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
 import { inlinePreviewAssets } from "./preview-inline";
 import { classifyAgentFailure, observeLinux, type IncidentObservation } from "./incident-diagnostics";
+import { validateExportIdentity, sessionExportResponse } from "./session-export";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -40,6 +41,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
     await this.mcpLifecycle.reload();
     return { refreshed: true };
   }
+  /** Persisted server-side transcript for the owner's authenticated download. */
+  async exportSessionData(sessionID: string) {
+    const sessions = await this.harness.sessions.list();
+    if (!sessions.some(item => item.id === sessionID)) {
+      throw new Error("La conversación no existe en este espacio");
+    }
+    return this.harness.session(sessionID).history();
+  }
+
   /** This selection is fixed per OpenCode conversation, not an LLM instruction. */
   async bindSessionScope(sessionID: string, input: unknown): Promise<void> {
     const next = validateProjectScope(input, await this.personalConfig.getAllowedRepositories());
@@ -382,6 +392,20 @@ export default {
       const settingsOriginAllowed =
         request.headers.get("Origin") === url.origin &&
         request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json");
+      if (url.pathname === "/api/session/export") {
+        if (request.method !== "GET") return new Response("GET only", { status: 405 });
+        const object = url.searchParams.get("object");
+        const session = url.searchParams.get("session");
+        try {
+          validateExportIdentity(object, session);
+          const messages = await env.OpenCodeAgent.getByName(object!).exportSessionData(session!);
+          return sessionExportResponse(session!, messages);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "No se pudo exportar la sesión";
+          return Response.json({ error: message }, { status: 422,
+            headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
+        }
+      }
       if (url.pathname === "/api/settings" && request.method === "GET") {
         const existing = await personal.status();
         return Response.json({
