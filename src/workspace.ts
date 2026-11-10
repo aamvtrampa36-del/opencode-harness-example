@@ -7,6 +7,7 @@ import {
 } from "@cloudflare/computer/tools/pi-ai";
 import type { Plugin } from "@opencode/plugin";
 import type { GitHubAction } from "./github";
+import type { ScopedToolAction } from "./project-scope";
 
 /**
  * OpenCode's tools that need a local filesystem or process. The Workers
@@ -112,7 +113,8 @@ export function workspacePlugin(
   workspace: Workspace,
   options: Omit<CreatePiToolsOptions, "workspace" | "exec" | "shell"> = {},
   linux?: LinuxRunner,
-  github?: GitHubRunner
+  github?: GitHubRunner,
+  scopeGuard?: (sessionID: string, action: ScopedToolAction) => Promise<void>
 ): Plugin.Plugin {
   const { tools, execute } = createPiTools({
     ...options,
@@ -158,6 +160,7 @@ export function workspacePlugin(
             async execute(input, context) {
               assertAgentToolPermission(context.agent, "linux");
               const p = input as { project: string; command: string };
+              if (scopeGuard) await scopeGuard(context.sessionID, { kind: "linux", project: p.project });
               const result = await linux.run(p.project, p.command);
               return { content: JSON.stringify(result) };
             }
@@ -180,6 +183,7 @@ export function workspacePlugin(
             options: { codemode: false },
             async execute(input) {
               const p = input as { project: string; action: "list" | "read"; path: string };
+              if (scopeGuard) await scopeGuard(context.sessionID, { kind: "linux", project: p.project });
               return { content: JSON.stringify(await linux.inspect(p.project, p.action, p.path)) };
             }
           });
@@ -208,6 +212,9 @@ export function workspacePlugin(
             async execute(input, context) {
               const action = (input as { action?: string }).action;
               assertAgentToolPermission(context.agent, "github", { action });
+              if (scopeGuard) await scopeGuard(context.sessionID, {
+                kind: "github", repo: (input as { repo: string }).repo
+              });
               const result = await github.execute(input as GitHubAction);
               return { content: JSON.stringify(result) };
             }
@@ -225,6 +232,9 @@ export function workspacePlugin(
             options: { codemode: false },
             async execute(input, context) {
               assertAgentToolPermission(context.agent, "workspace", { tool: tool.name });
+              if (scopeGuard && ["write", "edit", "patch", "exec", "shell"].includes(tool.name)) {
+                await scopeGuard(context.sessionID, { kind: "workspace-write" });
+              }
               const { content, isError } = await execute(
                 { id: context.id, name: tool.name, arguments: input },
                 { abortSignal: context.signal }
