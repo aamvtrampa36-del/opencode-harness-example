@@ -346,6 +346,8 @@ function App() {
   const [repository, setRepository] = useState(() =>
     localStorage.getItem(REPOSITORY_PREFIX + (localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION)) ?? "");
   const [authorizedRepos, setAuthorizedRepos] = useState<string[]>([]);
+  const [g8Busy, setG8Busy] = useState(false);
+  const [g8Result, setG8Result] = useState("");
   const [linkCopied, setLinkCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
@@ -599,6 +601,28 @@ function App() {
     setProjectsOpen(false);
   };
   /** Each GitHub repository receives its own new session and Linux project. */
+  /** Tests both real GitHub draft PRs without changes, model calls or new branches. */
+  const verifyG8 = async () => {
+    setG8Busy(true);
+    setG8Result("");
+    try {
+      const response = await fetch("/api/dev/g8-verify", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+      });
+      const data = await response.json() as {
+        status?: string; error?: string;
+        results?: { repo: string; pr: number; passed: boolean }[]
+      };
+      if (!response.ok || data.status !== "passed" || data.results?.length !== 2) {
+        throw new Error(data.error ?? "No se pudieron verificar ambos repositorios");
+      }
+      setG8Result("Verificado: CDF CLOUD y WorkBench están aislados. Dos diffs correctos, ninguna escritura o inferencia durante la comprobación.");
+    } catch (error) {
+      setG8Result("G8 pendiente: " + (error instanceof Error ? error.message : "Error al comprobar el acceso"));
+    } finally {
+      setG8Busy(false);
+    }
+  };
   const selectRepository = (repo: string) => {
     if (!repo || !authorizedRepos.includes(repo)) {
       setProjectError("Elige un repositorio autorizado en Configuración.");
@@ -970,6 +994,18 @@ function App() {
                     {authorizedRepos.map(repo => <option value={repo} key={repo}>{repo}</option>)}
                   </select>
                   {repository ? <p className="text-xs">Repositorio de esta sesión: <strong>{repository}</strong></p> : null}
+                  <div className="mt-2 flex flex-col gap-2">
+                    <button type="button" disabled={g8Busy || !integrations?.githubConfigured}
+                      className="rounded border border-kumo-line px-3 py-2 text-sm disabled:opacity-50"
+                      onClick={() => void verifyG8()}>
+                      {g8Busy ? "Comprobando…" : "Comprobar aislamiento CDF CLOUD y WorkBench"}
+                    </button>
+                    <p className="text-xs text-kumo-subtle">
+                      Comprueba las dos ramas y PR de prueba de G8 mediante lecturas GitHub reales.
+                      No crea archivos, no hace merge ni consume tokens de IA.
+                    </p>
+                    {g8Result ? <p role="status" className="text-sm">{g8Result}</p> : null}
+                  </div>
                   {!integrations?.githubConfigured
                     ? <p className="text-xs text-kumo-subtle">Conecta GitHub en Configuración para crear ramas y PR de borrador.</p> : null}
                 </div>
