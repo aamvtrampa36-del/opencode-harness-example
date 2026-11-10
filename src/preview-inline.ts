@@ -75,29 +75,29 @@ export async function inlinePreviewAssets(
 
   // Replace only stylesheet links for local files in this project's dist/.
   // External stylesheet URLs and script URLs are never fetched by the Worker.
-  const links = [...html.matchAll(/<link\\b[^>]*>/gi)];
+  const links = [...html.matchAll(/<link\b[^>]*>/gi)];
   for (const match of links) {
     const tag = match[0];
-    const rel = attribute(tag, "rel")?.toLowerCase().split(/\\s+/) ?? [];
+    const rel = attribute(tag, "rel")?.toLowerCase().split(/\s+/) ?? [];
     if (!rel.includes("stylesheet")) continue;
     const css = await loadLocal(attribute(tag, "href"), "css");
     if (css === null) continue;
     const media = attribute(tag, "media");
-    const safeMedia = media && /^[a-zA-Z0-9 (),.:\\-/]+$/.test(media)
+    const safeMedia = media && /^[a-zA-Z0-9 (),.:/-]+$/.test(media)
       ? ' media="' + media + '"' : "";
     html = html.replace(tag, "<style" + safeMedia + ">" + safeInline(css, "style") + "</style>");
   }
 
   // Only empty external script elements: do not rewrite inline content,
   // inject remote URLs, or change module/async/defer attributes.
-  const scripts = [...html.matchAll(/<script\\b[^>]*>\\s*<\\/script\\s*>/gi)];
+  const scripts = [...html.matchAll(/<script\b[^>]*>\s*<\/script\s*>/gi)];
   for (const match of scripts) {
     const tag = match[0];
-    const open = tag.match(/^<script\\b[^>]*>/i)?.[0];
+    const open = tag.match(/^<script\b[^>]*>/i)?.[0];
     if (!open) continue;
     const js = await loadLocal(attribute(open, "src"), "js");
     if (js === null) continue;
-    const rewritten = open.replace(/\\s+src\\s*=\\s*(?:"[^"]*"|'[^']*')/i, "");
+    const rewritten = open.replace(/\s+src\s*=\s*(?:"[^"]*"|'[^']*')/i, "");
     html = html.replace(tag, rewritten + safeInline(js, "script") + "</script>");
   }
   return html;
