@@ -1,3 +1,4 @@
+import { trySendJson } from "./ws-send";
 import type { AgentMode } from "./protocol";
 import type { ModelPresetID } from "./model-presets";
 import type {
@@ -206,15 +207,7 @@ export function useOpenCodeSession(
   // The UI must not silently discard a task when the socket closes between
   // the user's tap and the actual send.
   const send = useCallback(
-    (message: ClientMessage): boolean => {
-      if (agent.readyState !== WebSocket.OPEN) return false;
-      try {
-        agent.send(JSON.stringify(message));
-        return true;
-      } catch {
-        return false;
-      }
-    },
+    (message: ClientMessage): boolean => trySendJson(agent, message),
     [agent]
   );
 
