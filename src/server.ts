@@ -20,6 +20,7 @@ import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
 import { verifyG8Proofs, G8_PROOFS } from "./g8-smoke";
 import { assessG8LiveHistory, g8LivePrompt, G8_LIVE_CHECK_VERSION, type G8LiveCheck } from "./g8-live-agent";
+import { G9_PROOF_VERSION, G9_REPO, G9_BRANCH, G9_PROJECT, G9_SOURCE, G9_TEST_PATH, G9_BROKEN, G9_FIXED, G9_TEST_SOURCE, assessG9History, g9AgentPrompt, type G9ProofState } from "./g9-selfdev";
 import { assertScopedTool, requireSameScope, scopeStorageKey, validateProjectScope, type ProjectScope, type ScopedToolAction } from "./project-scope";
 import { remoteMcpPlugin } from "./mcp-plugin";
 import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
@@ -181,6 +182,143 @@ export class OpenCodeAgent extends DurableObject<Env> {
     state.reason = passed ? undefined : "Alguna sesión no completó repo_review correctamente";
     await this.ctx.storage.put("g8-live-agent-v1", state);
     return { status: state.status, results, ...(passed ? {} : { reason: state.reason }) };
+  }
+
+  /** One owner-authorized live G9 code repair, fully isolated in a draft branch.
+   * Fixture and initial failure are seeded server-side; only the agent gets
+   * credit for a subsequent GitHub source edit and draft PR.
+   */
+  async startG9SelfDev(): Promise<{status:string;reason?:string;session?:string}> {
+    const allowed = await this.personalConfig.getAllowedRepositories();
+    if (!allowed.some(name => name.toLowerCase() === G9_REPO.toLowerCase())) {
+      return {status:"rejected",reason:"Autoriza el repositorio OpenCode Cloud en Configuración de GitHub."};
+    }
+    const token = (this.env as Env & {GITHUB_TOKEN?: string}).GITHUB_TOKEN
+      || await this.personalConfig.getGitHubKey();
+    if (!token) return {status:"rejected",reason:"Conecta GitHub dentro de OpenCode Cloud."};
+    let already: G9ProofState | undefined;
+    await this.ctx.storage.transaction(async tx => {
+      already = await tx.get<G9ProofState>("g9-selfdev-v1");
+      if(!already) {
+        await tx.put("g9-selfdev-v1", {
+          version:G9_PROOF_VERSION,status:"starting",startedAt:Date.now()
+        } satisfies G9ProofState);
+      }
+    });
+    if(already) return {status:"existing",session:already.session,
+      reason:"La prueba G9 ya se inició. Consulta su estado; no se ejecutará otra inferencia."};
+    const state: G9ProofState = {
+      version:G9_PROOF_VERSION,status:"starting",startedAt:Date.now(),seedCommits:[]
+    };
+    try {
+      await this.githubRunner.execute({action:"branch",repo:G9_REPO,branch:G9_BRANCH});
+      const seedCode = await this.githubRunner.execute({
+        action:"write",repo:G9_REPO,branch:G9_BRANCH,path:G9_SOURCE,
+        content:G9_BROKEN,message:"test(g9): seed deliberately failing isolated source"
+      }) as {commitSha?:string};
+      const seedTest = await this.githubRunner.execute({
+        action:"write",repo:G9_REPO,branch:G9_BRANCH,path:G9_TEST_PATH,
+        content:G9_TEST_SOURCE,message:"test(g9): seed immutable Node regression"
+      }) as {commitSha?:string};
+      state.seedCommits=[seedCode.commitSha??"",seedTest.commitSha??""];
+      const seedScript="const fs=require('node:fs');"+
+        "fs.writeFileSync('add.mjs',"+JSON.stringify(G9_BROKEN)+");"+
+        "fs.writeFileSync('add.test.mjs',"+JSON.stringify(G9_TEST_SOURCE)+");";
+      const seed=await this.linuxRunner.run(G9_PROJECT,
+        "node -e "+JSON.stringify(seedScript)+" && node --test --test-reporter=tap add.test.mjs");
+      if(seed.exitCode!==1 || !seed.stdout.includes("not ok")) {
+        throw new Error("El fixture inicial no falló como se esperaba; no se inicia inferencia.");
+      }
+      const created=await this.harness.sessions.create();
+      await this.bindSessionScope(created.id,{project:G9_PROJECT,repository:G9_REPO});
+      state.session=created.id;
+      await this.ctx.storage.put("g9-selfdev-v1",state);
+      const handle=this.harness.session(created.id);
+      await handle.setAgent("build");
+      // Prefer the same inexpensive model that completed G2; a functional
+      // Cloudflare model is available if the owner has no OpenRouter connection.
+      let selected: {providerID:string;id:string}|undefined;
+      if(await this.isOpenRouterConfigured()){
+        try {
+          const registration=await this.refreshOpenRouter();
+          if(registration.active) selected={providerID:"openrouter",id:MODEL_PRESETS.review.id};
+        }catch { /* Use existing Workers AI provider, never expose credentials. */ }
+      }
+      await handle.setModel(selected ?? this.ai(MODEL_ID));
+      await handle.submit(g9AgentPrompt(),{whenBusy:"followUp"});
+      state.status="running";
+      await this.ctx.storage.put("g9-selfdev-v1",state);
+      return {status:"started",session:created.id};
+    }catch(error){
+      state.status="failed";
+      state.reason=error instanceof Error ? error.message.slice(0,240) : "No se pudo iniciar G9";
+      await this.ctx.storage.put("g9-selfdev-v1",state);
+      return {status:"failed",reason:state.reason,session:state.session};
+    }
+  }
+
+  async getG9SelfDev(): Promise<unknown> {
+    const state=await this.ctx.storage.get<G9ProofState>("g9-selfdev-v1");
+    if(!state || state.version!==G9_PROOF_VERSION)return {status:"not-started"};
+    if(state.status==="failed" || state.status==="passed") return {
+      status:state.status,reason:state.reason,result:state.result,session:state.session,
+      branch:G9_BRANCH
+    };
+    if(!state.session || state.status==="verifying")
+      return {status:"running",stage:state.status,branch:G9_BRANCH};
+    try{
+      const handle=this.harness.session(state.session);
+      const [busy,history]=await Promise.all([handle.busy(),handle.history()]);
+      const evidence=assessG9History(history);
+      if(busy && Date.now()-state.startedAt < 8*60_000)
+        return {status:"running",stage:"agent",session:state.session,
+          toolCalls:evidence.toolCalls,branch:G9_BRANCH};
+      if(busy){
+        try{await handle.abort()}catch { /* ensure no unbounded background cost */ }
+        throw new Error("La sesión superó el límite de seguridad de ejecución.");
+      }
+      state.result=evidence;
+      if(!evidence.passed) throw new Error(
+        "El agente no completó la secuencia roja → escritura GitHub → verde → diff → PR borrador. "+
+        "Herramientas observadas: "+evidence.toolCalls+"; fallidas: "+evidence.failedTools);
+      state.status="verifying";
+      await this.ctx.storage.put("g9-selfdev-v1",state);
+      const [source,original,comparison]=await Promise.all([
+        this.githubRunner.execute({action:"read",repo:G9_REPO,ref:G9_BRANCH,path:G9_SOURCE}),
+        this.githubRunner.execute({action:"read",repo:G9_REPO,ref:G9_BRANCH,path:G9_TEST_PATH}),
+        this.githubRunner.execute({action:"review",repo:G9_REPO,branch:G9_BRANCH})
+      ]) as [
+        {content?:string},{content?:string},
+        {repo?:string;branch?:string;base?:string;truncated?:boolean;files?:{path:string}[]}
+      ];
+      if(source.content!==G9_FIXED || original.content!==G9_TEST_SOURCE ||
+         comparison.repo?.toLowerCase()!==G9_REPO.toLowerCase() ||
+         comparison.branch!==G9_BRANCH || comparison.base!=="main" ||
+         comparison.truncated ||
+         comparison.files?.length!==2 ||
+         ![G9_SOURCE,G9_TEST_PATH].every(path=>comparison.files!.some(file=>file.path===path))){
+        throw new Error("La revisión independiente no coincide con el arreglo exacto y el test original.");
+      }
+      const script="const fs=require('node:fs');"+
+        "fs.writeFileSync('add.mjs',"+JSON.stringify(source.content)+");"+
+        "fs.writeFileSync('add.test.mjs',"+JSON.stringify(original.content)+");";
+      const check=await this.linuxRunner.run(G9_PROJECT,
+        "node -e "+JSON.stringify(script)+" && node --test --test-reporter=tap add.test.mjs");
+      if(check.exitCode!==0 || !check.stdout.includes("ok 1 - G9: add(2,3) is five")){
+        throw new Error("La prueba Node independiente no aprobó el código de GitHub.");
+      }
+      state.status="passed";
+      state.reason=undefined;
+      await this.ctx.storage.put("g9-selfdev-v1",state);
+      return {status:"passed",result:state.result,session:state.session,
+        branch:G9_BRANCH,independentLinuxExitCode:check.exitCode};
+    }catch(error){
+      state.status="failed";
+      state.reason=error instanceof Error ? error.message.slice(0,350):"No se pudo verificar G9";
+      await this.ctx.storage.put("g9-selfdev-v1",state);
+      return {status:"failed",reason:state.reason,result:state.result,
+        session:state.session,branch:G9_BRANCH};
+    }
   }
 
   private readonly githubRunner = {
@@ -637,6 +775,27 @@ export default {
           }
         }
         return new Response("Method not allowed", { status: 405 });
+      }
+      if (url.pathname === "/api/dev/g9-selfdev") {
+        // This diagnostic initiates real development work and is strictly
+        // staging-only, under the existing Cloudflare Access boundary.
+        if(url.hostname!=="opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev"){
+          return new Response("Not found",{status:404});
+        }
+        const object=url.searchParams.get("object");
+        try{
+          validateExportIdentity(object,"ses_root");
+          const host=env.OpenCodeAgent.getByName(object!);
+          if(request.method==="GET") return Response.json(await host.getG9SelfDev(),
+            {headers:{"Cache-Control":"no-store"}});
+          if(request.method!=="POST")return new Response("Method not allowed",{status:405});
+          if(!settingsOriginAllowed)return Response.json({error:"Se requiere petición JSON autenticada del mismo origen."},{status:403});
+          return Response.json(await host.startG9SelfDev(),
+            {headers:{"Cache-Control":"no-store"}});
+        }catch(error){
+          return Response.json({error:error instanceof Error?error.message:"Error verificando G9"},
+            {status:422,headers:{"Cache-Control":"no-store"}});
+        }
       }
       if (url.pathname === "/api/dev/g8-agent-check") {
         const object = url.searchParams.get("object");
