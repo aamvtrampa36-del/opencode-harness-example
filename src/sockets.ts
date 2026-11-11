@@ -360,7 +360,10 @@ export class OpenCodeSessionSockets {
       handle.busy(),
       this.#harness.pending({ session })
     ]);
-    return { session, messages, busy, pending };
+    // The underlying flag can transiently report idle while an accepted operation
+    // is still unsettled. Do not advertise availability in that gap.
+    const operationPending = (this.#activeConfigurations.get(session)?.operations.size ?? 0) > 0;
+    return { session, messages, busy: busy || operationPending, pending };
   }
 
   /** Send every socket on the session a snapshot, one at a time. */
