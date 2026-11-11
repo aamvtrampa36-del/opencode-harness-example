@@ -15,6 +15,7 @@ describe("G7 passive errors from real socket dispatcher", () => {
     } as unknown as Connection;
     const harness = {
       session: () => ({
+        busy: async () => false,
         setModel: async () => { throw new Error("Provider unavailable (429)"); }
       })
     } as unknown as OpenCodeHarness;
