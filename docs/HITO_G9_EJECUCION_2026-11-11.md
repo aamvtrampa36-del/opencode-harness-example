@@ -1,6 +1,6 @@
 # OpenCode Cloud — G9: ejecución y preparación de entrega V1 (11 noviembre 2026)
 
-**ESTADO VIGENTE (11 noviembre 2026): G9 BLOQUEADO ÚNICAMENTE PARA CIERRE DOCUMENTAL DE LAS 12 E2E DEL ENCARGO.** El propietario completó en Android la aceptación real de desarrollo autónomo; GitHub confirmó la PR borrador #30 creada por el agente, su diff acotado y CI #300 verde. Ver §9, cuyo resultado prevalece sobre los estados anteriores de este informe. La lista literal de doce casos E2E no se encuentra disponible. La V1 NO está publicada.
+**ESTADO VIGENTE (11 noviembre 2026): MATRIZ SUSTITUTIVA E2E 12/12 APROBADA EN STAGING, G9 PENDIENTE SOLO DE TAG/RELEASE REVERSIBLE.** El propietario autorizó expresamente sustituir los doce casos no localizados por una matriz basada en el informe maestro. Se documentaron los doce recorridos con evidencias G1–G9; ver §10 y `docs/G9_MATRIZ_12_E2E_SUSTITUTIVA_2026-11-11.md`. El desarrollo autónomo ya fue aprobado en Android, PR #30/CI #300. El plan exige una etiqueta/release candidata que todavía no está creada. La V1 NO está publicada.
 
 ## 1. Condición obligatoria y recuperación
 
@@ -121,3 +121,45 @@ El mensaje solo se genera si el servidor devolvió `status: "passed"` tras leer 
 **Único gate obligatorio pendiente para G9:** la **definición y cobertura verificable de las 12 E2E del encargo original**. Ese encargo no aparece íntegro en el informe maestro ni en el plan. Recuperarlo o recibir autorización explícita para una matriz sustitutiva. No declarar G9 APROBADO, liberar V1 ni publicar producción hasta satisfacer ese requisito. G8 permanece cerrado, no se reabre.
 
 **Siguiente acción específica:** solicitar el encargo original que enumera los 12 casos o la autorización expresa para derivarlos del informe maestro, reutilizar G1–G9, comprobar los casos residuales y preparar dictamen G9. La PR #30 queda en borrador: es prueba, no una funcionalidad que deba fusionarse.
+
+
+## 10. Matriz sustitutiva de doce E2E — AUTORIZADA Y EVALUADA (11 noviembre 2026)
+
+### Cambio formal de criterio autorizado
+
+El titular respondió **«Sí»** a la solicitud concreta de autorización para **elaborar y ejecutar una matriz sustitutiva de 12 pruebas E2E derivadas del informe maestro**, reutilizar la evidencia previa y cerrar G9 si todos sus criterios se satisfacen. La lista original de «12 pruebas del encargo» continúa ausente de las fuentes, pero se deja de exigir recuperarla como bloqueo: la sustitución está autorizada, delimitada y declarada abiertamente.
+
+**Documento completo y trazable:** [G9_MATRIZ_12_E2E_SUSTITUTIVA_2026-11-11.md](G9_MATRIZ_12_E2E_SUSTITUTIVA_2026-11-11.md). Consta la derivación a secciones del PDF maestro y las evidencias reales G1–G9, con límites por caso.
+
+| Caso | Verificación | Dictamen |
+| --- | --- | --- |
+| E2E-01 | Acceso protegido y uso Android | APROBADO |
+| E2E-02 | Selección de proyecto y aislamiento por sesión | APROBADO |
+| E2E-03 | Modelo real usa herramientas verificables | APROBADO |
+| E2E-04 | Linux y pruebas reales visibles | APROBADO |
+| E2E-05 | Modificación de código por agente en rama aislada | APROBADO |
+| E2E-06 | Autorreparación rojo→verde con prueba independiente | APROBADO |
+| E2E-07 | Revisión de diff y PR borrador sin tocar `main` | APROBADO |
+| E2E-08 | Plantilla editable cambia una respuesta real | APROBADO |
+| E2E-09 | Persistencia de historial tras recarga Android | APROBADO (confirmación declarativa del titular) |
+| E2E-10 | Respaldo y recuperación real no destructiva | APROBADO (4/4 hashes, G4) |
+| E2E-11 | Registro de incidente independiente de IA | APROBADO |
+| E2E-12 | Entrega móvil, artefacto descargable y producción aislada | APROBADO EN STAGING |
+
+**Resultado: 12/12 APROBADOS para la matriz sustitutiva autorizada, con evidencia acumulada de ejecución**, no una batería nueva de doce sesiones corridas hoy ni un documento original recuperado. La calidad de cada evidencia se distingue entre captura, declaración del propietario, herramienta real, CI y control GitHub/Cloudflare.
+
+### Revalidación independiente realizada en esta intervención
+
+- PR #28, #29, #30, CDF CLOUD #160 y WorkBench #36: todas **draft, open, unmerged**.
+- PR #30: únicamente `tests/g9-proof/add.mjs` y `tests/g9-proof/add.test.mjs` añadidos respecto de `main`; rama tres commits delante, ninguno detrás; [CI #300](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42975249373) **success**.
+- Código general PR #28: [CI #302](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42975775656) **success**, build staging **success**.
+- Cloudflare Access: `self_hosted` con una política; staging sin Cron; producción sigue versión `1d70eb77-316e-408d-bd14-5f19b171dedf`.
+- Rama `release/g9-v1-candidate-20261111` conserva el código preentrega probado `ff5c88e7735469864d8264cc93fa56c6a7eaae62` con protección de rama de prueba, sin merge.
+
+### Gate final pendiente: referencia Git de release
+
+**No confundir una rama de referencia reversible con un Git tag o una GitHub Release formal.** `docs/V1_EXECUTION_PLAN.md` define literalmente G9 hecho cuando «una release/tag reversible supera los gates P0». Las consultas GET GitHub de `git/ref/tags/g9-v1-rc-20261111` y `releases/tags/g9-v1-rc-20261111` devolvieron **404**; el tag/release aún no existe. El conector GitHub disponible en este chat permite ramas, commits, archivos y PR, **pero carece de acción autorizada para crear tags o releases**. Una integración alternativa hallada requiere una conexión GitHub adicional del titular; no se intentó conectar sin autorización ni crear un tag ficticio.
+
+**Dictamen:** matriz de 12 E2E **APROBADA** y funcionalidades P0 demostradas en staging; **G9 permanece BLOQUEADO PARA CIERRE FORMAL solo por crear y verificar una release/tag candidata reversible**. No es un fallo de código ni razón para repetir las E2E. La autorización del titular cubrió la sustitución documental, no una publicación productiva.
+
+**Acción mínima para desbloquear G9:** crear la etiqueta ligera `g9-v1-rc-20261111` apuntando exactamente a `ff5c88e7735469864d8264cc93fa56c6a7eaae62`, bajo GitHub y sin merge, verificar el SHA y añadir la evidencia al informe. El paso posterior es cierre G9 y propuesta de publicación productiva **solo previa autorización separada**.
