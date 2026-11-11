@@ -168,3 +168,10 @@ No había dispositivo Android ni emulador ADB disponible en este entorno. La int
 3. Revisar el resultado y cerrar staging solo si pasan todos los criterios, sin bloqueantes ni errores de seguridad. El dictamen se mantiene BLOQUEADO.
 4. Solo después de cierre, inventariar datos productivos, verificar una copia/restauración aislada y documentar reversión de aplicación y datos. Nada de ello se ha ejecutado.
 
+
+
+### Confirmación explícita de persistencia tras Container detenido — 11 de noviembre, 13:33 Curitiba
+
+- Cloudflare confirmó que project-v1:repo-cdf-cloud-engine estaba detenido por inactividad (updated_at 2026-11-11T16:30:41.831Z). Después se invocó únicamente la lectura del archivo sintético. El Container volvió a estado running; el mismo identificador lógico 304bcfec1976207778f60c13ca36dcd11668e3024ad4271c4677c8bf5096b89d reportó started_at 2026-11-11T16:33:17.901Z.
+- Salida exacta del Linux tras el arranque: checkpoint-qa-7c19d2; SHA-256 228cd95c343803ff0760cc39e5cd5ef43f00536e573f5c137f5415e7123f75ce para /tmp/opencode-v1-interruption-20261111/marker.txt; comprobación NO_COMPLETED; stderr vacío; exitCode 0. El dato sintético creado antes de detenerse sobrevivió tanto la interrupción de la tarea como la parada y reactivación del Container. No se leyó ni modificó el repositorio durante esta comprobación.
+- Este ensayo verifica persistencia para ese archivo sintético y ese Container de CDF. No sustituye una restauración completa de sesión o de datos productivos. El cierre de staging sigue pendiente por el despliegue/verificación de #37 y la aceptación Android.
