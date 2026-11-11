@@ -139,7 +139,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async getG8LiveReview(): Promise<unknown> {
     const state = await this.ctx.storage.get<G8LiveCheck>("g8-live-agent-v1");
     if (!state || state.version !== G8_LIVE_CHECK_VERSION) return { status: "not-started" };
-    if (state.status === "failed") return { status: "failed", reason: state.reason ?? "No se inició", results: [] };
+    if (state.status === "failed" || state.status === "passed") {
+      return { status: state.status, reason: state.reason, results: state.results ?? [] };
+    }
     const results = [];
     let waiting = state.status === "starting" || state.tasks.length !== G8_PROOFS.length;
     for (const task of state.tasks) {
@@ -175,6 +177,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (waiting) return { status: "running", results };
     const passed = results.length === G8_PROOFS.length && results.every(result => result.status === "passed");
     state.status = passed ? "passed" : "failed";
+    state.results = results;
     state.reason = passed ? undefined : "Alguna sesión no completó repo_review correctamente";
     await this.ctx.storage.put("g8-live-agent-v1", state);
     return { status: state.status, results, ...(passed ? {} : { reason: state.reason }) };
