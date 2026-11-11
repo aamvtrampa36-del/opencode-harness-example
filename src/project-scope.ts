@@ -6,7 +6,7 @@ const SESSION_ID = /^ses[A-Za-z0-9_]{1,64}$/;
 export type ProjectScope = { project: string; repository?: string };
 export type ScopedToolAction =
   | { kind: "linux"; project: string }
-  | { kind: "github"; repo: string }
+  | { kind: "github"; repo: string; operation?: string; branch?: string }
   | { kind: "workspace-write" };
 
 export function validSessionId(id: unknown): id is string {
