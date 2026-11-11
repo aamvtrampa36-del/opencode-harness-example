@@ -29,6 +29,7 @@ import { classifyAgentFailure, observeLinux, type IncidentObservation } from "./
 import { validateExportIdentity, sessionExportResponse } from "./session-export";
 import { archiveDownloadResponse, archiveError } from "./download-response";
 import { githubRepositoryDownload } from "./github-download";
+import { checkIsolation } from "./isolation-check";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -820,6 +821,19 @@ export default {
           return Response.json(await host.startG8LiveReview(), { headers: { "Cache-Control": "no-store" } });
         } catch (error) {
           return Response.json({ error: error instanceof Error ? error.message : "Error de prueba G8" },
+            { status: 422, headers: { "Cache-Control": "no-store" } });
+        }
+      }
+      if (url.pathname === "/api/dev/isolation-probe" && request.method === "POST") {
+        if (url.hostname !== "opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev" || !settingsOriginAllowed) {
+          return Response.json({ error: "Solo disponible en staging con el mismo origen." }, { status: 403 });
+        }
+        try {
+          const nonce = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+          const result = await checkIsolation(name => env.DEV.getByName(name), nonce);
+          return Response.json(result, { headers: { "Cache-Control": "no-store" } });
+        } catch (error) {
+          return Response.json({ error: error instanceof Error ? error.message : "Falló la prueba." },
             { status: 422, headers: { "Cache-Control": "no-store" } });
         }
       }
