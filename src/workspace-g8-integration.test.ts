@@ -82,4 +82,33 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
     )).rejects.toThrow("Planificación y Revisión");
     expect(requests).toBe(0);
   });
+
+  test("blocks Linux shell before the shared container can access another project", async () => {
+    const toolSpecs = new Map<string, any>();
+    let runs = 0;
+    const plugin = workspacePlugin(
+      {} as Workspace, {},
+      {
+        inspect: async () => ({}),
+        run: async (project: string) => {
+          runs++;
+          return {project, exitCode: 0, stdout: "", stderr: "", truncated: false, persistence: "test"};
+        }
+      },
+      undefined,
+      async () => undefined
+    );
+    await plugin.setup({
+      agent: {transform: async () => undefined},
+      tool: {transform: async (cb: (ed:any)=>unknown) => cb({
+        remove: () => undefined,
+        add: (spec: any) => toolSpecs.set(spec.name,spec)
+      })}
+    } as any);
+    await expect(toolSpecs.get("linux").execute(
+      {project:"cdf-cloud-engine",command:"ls ../cdf-workbench"},
+      {sessionID:"ses_test",agent:"build"}
+    )).rejects.toThrow("falta aislamiento seguro");
+    expect(runs).toBe(0);
+  });
 });
