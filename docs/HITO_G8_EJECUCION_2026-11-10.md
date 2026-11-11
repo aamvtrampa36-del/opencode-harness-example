@@ -159,3 +159,39 @@ Esto demuestra **descarga real e integridad del ZIP privado de GitHub bajo la se
 **Estado de la incidencia de descargas:** cerrada para el recorrido privado GitHub probado, con tests de regresión del tar local y del historial de conversaciones en CI. No volver a pedir esta prueba salvo regresión real.
 
 **Estado de G8:** todavía **PENDIENTE** exclusivamente por revisión del agente mediante `repo_review` en conversaciones reales separadas de CDF CLOUD y WorkBench. No se fusionaron PR ni se desplegó a producción. Siguiente hito, después de G8 aprobado: G9, entrega y publicación controlada.
+
+
+## 10. Revalidación del gate G8 tras cierre de descarga (10 noviembre 2026)
+
+**Fuente obligatoria verificada:** lectura íntegra del informe maestro OpenCode Cloud V1 (21 páginas, 1.524 líneas), plan V1, actas previas y estado GitHub/Cloudflare. No se reabrieron hitos G1–G7.
+
+**Estado vigente:** G8 es el hito actual y G9 el siguiente. La descarga ZIP real de CDF CLOUD desde Brave ya se comprobó con el adjunto válido (§9); no volver a pedir esa prueba.
+
+**Última recuperación de GitHub:**
+- PR principal de OpenCode Cloud [#28](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/28) sigue **abierta en borrador** sobre rama `fix/repeatable-agent-verification-20261108`, sin fusionar a `main`.
+- [CDF CLOUD PR #160](https://github.com/aamvtrampa36-del/cdf-cloud-engine/pull/160) sigue en borrador, **no fusionada**; modifica únicamente `docs/opencode-g8/isolated-review-20261110.md`. Para el commit de esta rama documental no aparecen runs de GitHub Actions.
+- [WorkBench PR #36](https://github.com/aamvtrampa36-del/CDF-WorkBench-/pull/36) sigue en borrador, **no fusionada**; modifica únicamente la misma ruta de prueba en su propio repositorio. GitHub Actions #161 `completed/success`.
+- No se realizaron nuevas escrituras en CDF CLOUD ni WorkBench ni se modificaron documentos canónicos.
+
+**Brecha de pruebas detectada:** el código `src/scoped-github.test.ts` comprobaba la función de ejecución aislada, pero no probaba que `workspacePlugin` registrase realmente las herramientas `repo_review`, `repo_info` y `repo_read` para el agente en modo Revisión. Para evitar pedir otra inferencia al usuario sin esa cobertura, se añadió `src/workspace-g8-integration.test.ts`: inicializa el plugin de OpenCode, comprueba los tres nombres de herramienta y `codemode:false`, invoca realmente el manejador registrado de `repo_review` con el agente `plan` y verifica que usa el repositorio ligado al `sessionID` y que la guardia de permisos se ejecuta. Caso negativo: sesión sin repositorio y escritura GitHub desde modo Revisión no pueden alcanzar el ejecutor. Este test **no llama a un modelo real ni utiliza una sesión protegida de Android**, por lo que no reemplaza el gate operativo.
+
+- Commit de cobertura: `326ae61ace55d16cb3fd0ee62ec4fe898b1ad5e8`.
+- GitHub Actions **#268** `completed/success`.
+- Cloudflare Workers Builds `success` para el commit `326ae61`; Worker staging `1a7e45ab-e14e-43d3-af23-fddd740fbcc3`.
+- Worker productivo preservado `1d70eb77-316e-408d-bd14-5f19b171dedf`; staging con Cloudflare Access `self_hosted` (una política) y sin Cron.
+- Este commit añade tests; no cambia la lógica de producción ni exige reinstalar extensiones o configurar tokens.
+
+### Matriz vigente y aceptación mínima
+
+| Requisito | Resultado |
+| --- | --- |
+| Repositorio correcto y diff de prueba independiente para CDF CLOUD y WorkBench | APROBADO; dos PR draft, un único archivo no canónico por repo |
+| Privilegios acotados por proyecto/sesión; sin escrituras fuera del repo | APROBADO por pruebas automatizadas de guardias e invariancia de sesión |
+| Herramienta `repo_review` realmente registrada y accesible por el handler del plugin | APROBADO en nueva prueba de integración #268 con puente simulado |
+| Compilación y regresiones de OpenCode; WorkBench CI documental | APROBADO |
+| Reversibilidad | APROBADO técnicamente; ambas PR siguen sin merge y se pueden cerrar sin afectar `main` |
+| Herramienta `repo_review` completada desde un **modelo real en dos sesiones autenticadas** | **PENDIENTE**, sin evidencia nueva posterior al fallo de diez herramientas de la prueba anterior |
+
+**Dictamen: G8 NO APROBADO AÚN; técnicamente listo para una última aceptación funcional.** No repetir revisión manual de diffs, descargas, CI o el botón directo de aislamiento; ya están confirmados.
+
+**Intervención mínima desde Android:** en staging → Proyectos → seleccionar `aamvtrampa36-del/cdf-cloud-engine` (nueva conversación en modo Revisión) → enviar el prompt precargado de `repo_review`; confirmar herramienta completada y único archivo `docs/opencode-g8/isolated-review-20261110.md`. Repetir una vez con `aamvtrampa36-del/CDF-WorkBench-` en otra nueva conversación. Detenerse y compartir el primer error si una falla, sin reiterar inferencias. Con evidencia positiva de ambas, documentar G8 como APROBADO EN STAGING e iniciar G9 conforme al plan (sin merge ni despliegue productivo automático).
