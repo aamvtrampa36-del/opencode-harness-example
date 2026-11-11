@@ -16,6 +16,8 @@ export type G8LiveCheck = {
   status: "starting" | "running" | "passed" | "failed";
   startedAt: number;
   tasks: G8LiveTask[];
+  results?: { repo: string; branch?: string; status: string; reason: string;
+    toolCalls: number; completedTools?: number; failedTools?: number }[];
   reason?: string;
 };
 
