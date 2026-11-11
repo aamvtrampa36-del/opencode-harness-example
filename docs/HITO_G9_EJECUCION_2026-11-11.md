@@ -1,6 +1,6 @@
 # OpenCode Cloud — G9: ejecución y preparación de entrega V1 (11 noviembre 2026)
 
-**ESTADO VIGENTE (11 noviembre 2026): MATRIZ SUSTITUTIVA E2E 12/12 APROBADA EN STAGING, G9 PENDIENTE SOLO DE TAG/RELEASE REVERSIBLE.** El propietario autorizó expresamente sustituir los doce casos no localizados por una matriz basada en el informe maestro. Se documentaron los doce recorridos con evidencias G1–G9; ver §10 y `docs/G9_MATRIZ_12_E2E_SUSTITUTIVA_2026-11-11.md`. El desarrollo autónomo ya fue aprobado en Android, PR #30/CI #300. El plan exige una etiqueta/release candidata que todavía no está creada. La V1 NO está publicada.
+**ESTADO DEFINITIVO (11 noviembre 2026): G9 APROBADO Y CERRADO EN STAGING, CON ETIQUETA RC REVERSIBLE VERIFICADA.** La matriz sustitutiva autorizada de doce E2E está 12/12 aprobada; el desarrollo autónomo real fue verificado con PR #30 y CI #300; la etiqueta ligera `g9-v1-rc-20261111` existe y apunta al commit CI-verde `ff5c88e7735469864d8264cc93fa56c6a7eaae62`. Consultar el **§12 de cierre definitivo**, que prevalece sobre todos los bloqueos históricos previos. **La V1 NO se ha publicado en producción; no se fusionó ninguna PR.**
 
 ## 1. Condición obligatoria y recuperación
 
@@ -176,3 +176,41 @@ Se leyó nuevamente el informe maestro completo (21 páginas, corte histórico 8
 - La matriz conserva sus límites explícitos: la prueba funcional de CDF CLOUD y WorkBench fue de revisión del agente; las PR de ensayo fueron preparadas por el supervisor. La prueba G9 de escritura del agente usa un fixture aislado en el repositorio OpenCode, no demuestra desarrollo autónomo completo sobre cada uno de los dos proyectos CDF. La recuperación validada tampoco es un respaldo integral de repositorios grandes o de procesos activos.
 
 **Dictamen:** G9 permanece **BLOQUEADO PARA CIERRE FORMAL** por la referencia release/tag exigida por el plan. El siguiente paso mínimo es crear un borrador de release apuntando a la rama candidata (o un tag al SHA anterior), verificar su referencia y registrar el cierre. La eventual publicación en producción requiere autorización separada.
+
+
+## 12. CIERRE DEFINITIVO G9 — RC etiquetada, P0 y 12/12 E2E verificados (11 noviembre 2026)
+
+**DICTAMEN: G9 APROBADO Y CERRADO EN STAGING.** El informe maestro V1 (PDF original de 21 páginas y 1.524 líneas) fue recuperado íntegramente nuevamente en esta intervención; se verificó contra el plan y el cierre acumulado G1–G9 antes de tocar GitHub. Los estados «BLOQUEADO» de §1–§11 son históricos y quedan superados respecto al último requisito.
+
+### Evidencia definitiva de la referencia reversible
+
+- **Etiqueta ligera existente:** [`g9-v1-rc-20261111`](https://github.com/aamvtrampa36-del/opencode-harness-example/tree/g9-v1-rc-20261111).
+- **Consulta directa a GitHub REST** `GET /repos/aamvtrampa36-del/opencode-harness-example/git/ref/tags/g9-v1-rc-20261111`: `refs/tags/g9-v1-rc-20261111`, `object.type=commit`, **`object.sha=ff5c88e7735469864d8264cc93fa56c6a7eaae62`**.
+- **Rama candidata** `refs/heads/release/g9-v1-candidate-20261111` devuelve el **mismo SHA**. Se trata del código funcional de la PR #28 tras la corrección del guard G9, con [GitHub Actions #297](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42974263252) `success` y Cloudflare Workers Builds `success`.
+- La etiqueta fue creada mediante **un workflow efímero limitado a un commit y a una rama auxiliar aislada** `ops/g9-rc-tag-20261111` (commit de creación de workflow `74b87ddf85d419f4c272d5f9fc4d4684e7b922d0`). La ejecución no se da por exitosa por una afirmación del workflow: la **prueba concluyente** es la lectura independiente del Git ref y su SHA exacto. Se eliminó el archivo temporal `.github/workflows/g9-rc-tag-once.yml` de la rama auxiliar (commit `2341501cd8b09865478c19875a3076f9db423011`), y una lectura posterior confirmó 404 para ese archivo. La rama auxiliar no se ha eliminado: no está fusionada con `main`, no es la candidata y no está vinculada a despliegues.
+- **Ningún tag fue sobrescrito ni reescrito**, ninguna PR fue fusionada y no hubo cambios en el Worker productivo.
+- **Etiqueta no es despliegue:** no se creó una GitHub Release publicada ni se desplegó a producción. La entrega productiva sigue pendiente de autorización separada. Un tag o branch reversible preserva código, pero no representa por sí mismo un respaldo íntegro de datos operativos.
+
+### Matriz definitiva de aceptación
+
+| Gate G9 | Evidencia | Dictamen |
+| --- | --- | --- |
+| Informe maestro completo y línea base G1–G8 | PDF 21 pp y actas oficiales; GitHub plan V1 | **APROBADO** |
+| Doce casos E2E | [Matriz sustitutiva autorizada, 12/12](G9_MATRIZ_12_E2E_SUSTITUTIVA_2026-11-11.md), evidencias reales de G1–G9 y limitaciones explícitas | **APROBADO EN STAGING** |
+| Desarrollo autónomo con herramientas reales | Android `passed`, [PR #30](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/30), código corregido, Node rojo→verde, PR draft, [CI #300](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42975249373) | **APROBADO** |
+| Seguridad P0 y aislamiento de proyectos | Guards de repositorio, rama y proyecto; evidencia G8; pruebas de rechazo de cambios indebidos | **APROBADO EN ALCANCE PROBADO** |
+| Compilación, tests y despliegue staging | CI del commit candidato #297 `success`, CI de documentación previa #306 `success`, builds Cloudflare `success` | **APROBADO** |
+| Referencia de versión etiquetada y reversible | Git ref `g9-v1-rc-20261111` y rama `release/g9-v1-candidate-20261111` apuntan al mismo commit probado | **APROBADO** |
+| Ausencia de cambios productivos | Worker `opencode-harness-example` y `main` sin fusionar; PR #28/#29/#30 y PR CDF/WorkBench #160/#36 draft | **APROBADO** |
+
+**Límites residuales (no confundir con fallos del gate):** cobertura no universal de todos los modelos y plantillas, soporte de MCP remoto no demostrado para un proyecto complejo largo, respaldo pequeño DO no equivalente a respaldo integral de repo/estado de procesos, costo exacto por tarea no conocido y prueba de interrupt/cancelación extrema pendiente de escenario real. Matriz §10 detalla la heterogeneidad de capturas, declaraciones del titular, herramientas reales y CI. La V1 está **habilitada para plantear la publicación controlada**, no garantizada para todas las cargas ni certificada como sustituto de Codex a escala general.
+
+### Transición después de G9
+
+El informe maestro define **G9 como último hito numerado** de la ruta V1. No inventar un supuesto `G10` como requisito anterior. Lo siguiente es **decidir la publicación controlada de la candidata y su reversión**, bajo autorización explícita independiente del propietario.
+
+1. Conservar `g9-v1-rc-20261111` como referencia inmutable de código verificado; conservar branch candidata.
+2. Preparar **sin ejecutar producción** un checklist breve de respaldo de configuración/datos, acceso, pruebas humo, PR base y rollback. Revisar que una fusión de la PR #28 no incorpore cambios fuera de alcance; mantener PR #29/#30 y #160/#36 como evidencias de prueba, no fusionarlas por defecto.
+3. Solicitar una autorización explícita **distinta** para cualquier merge a `main`, cambio productivo o publicación de GitHub Release. El cierre G9 en staging **no autoriza ni implica** dichas operaciones.
+
+**Conclusión:** G9 completo y cerrado en staging sin necesidad de nuevas pruebas móviles, inferencias, refactorizaciones marginales ni acciones del propietario. Próxima decisión: publicación controlada V1 con revisión previa, no más desarrollo del hito G9.
