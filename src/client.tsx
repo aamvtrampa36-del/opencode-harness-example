@@ -351,6 +351,9 @@ function App() {
   const [g8LiveStatus, setG8LiveStatus] = useState("not-started");
   const [g8LiveMessage, setG8LiveMessage] = useState("");
   const [g8LiveBusy, setG8LiveBusy] = useState(false);
+  const [g9Status, setG9Status] = useState("not-started");
+  const [g9Busy, setG9Busy] = useState(false);
+  const [g9Message, setG9Message] = useState("");
   const [linkCopied, setLinkCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
@@ -667,6 +670,55 @@ function App() {
     }, 3500);
     return () => window.clearInterval(poll);
   }, [object, g8LiveStatus]);
+  /** One explicit owner action starts a real, isolated selfdevelopment PR. */
+  const fetchG9Status = async () => {
+    const response=await fetch("/api/dev/g9-selfdev?object="+encodeURIComponent(object),
+      {cache:"no-store"});
+    if(!response.ok) throw new Error("No se pudo consultar G9");
+    const data=await response.json() as {
+      status?:string;reason?:string;session?:string;branch?:string;
+      toolCalls?:number;result?:{prUrl?:string;toolCalls?:number;failedTools?:number}
+    };
+    setG9Status(data.status ?? "not-started");
+    if(data.status==="passed"){
+      setG9Message("Desarrollo autónomo G9 aprobado: arreglo, prueba roja→verde, commit, diff, PR borrador y verificación independiente. " +
+        (data.result?.prUrl ?? ""));
+    }else if(data.status==="failed"){
+      setG9Message("G9 pendiente: "+(data.reason ?? "No se completó la prueba independiente."));
+    }else if(data.status==="running"){
+      setG9Message("G9 en prueba de desarrollo aislado: "+
+        (data.toolCalls ?? 0)+" llamadas de herramienta observadas.");
+    }
+    return data;
+  };
+  const startG9 = async () => {
+    setG9Busy(true);
+    setG9Message("");
+    try{
+      const response=await fetch("/api/dev/g9-selfdev?object="+encodeURIComponent(object),{
+        method:"POST",headers:{"Content-Type":"application/json"},body:"{}"
+      });
+      const result=await response.json() as {status?:string;reason?:string;error?:string};
+      if(!response.ok || result.status==="rejected" || result.status==="failed"){
+        throw new Error(result.reason ?? result.error ?? "No se pudo iniciar G9");
+      }
+      await fetchG9Status();
+    }catch(error){
+      setG9Message("G9 pendiente: "+(error instanceof Error ? error.message : "Error desconocido"));
+    }finally{
+      setG9Busy(false);
+    }
+  };
+  useEffect(() => {
+    void fetchG9Status().catch(()=>undefined);
+  },[object]);
+  useEffect(() => {
+    if(g9Status!=="running")return;
+    const timer=window.setInterval(()=>{
+      void fetchG9Status().catch(err=>setG9Message("Error leyendo estado G9: "+String(err)));
+    },3500);
+    return ()=>window.clearInterval(timer);
+  },[object,g9Status]);
   const selectRepository = (repo: string) => {
     if (!repo || !authorizedRepos.includes(repo)) {
       setProjectError("Elige un repositorio autorizado en Configuración.");
@@ -1045,6 +1097,25 @@ function App() {
                     {authorizedRepos.map(repo => <option value={repo} key={repo}>{repo}</option>)}
                   </select>
                   {repository ? <p className="text-xs">Repositorio de esta sesión: <strong>{repository}</strong></p> : null}
+                  <div className="mt-2 flex flex-col gap-2 rounded-md border border-kumo-line p-3" aria-label="Prueba de desarrollo autónomo G9">
+                    <strong className="text-sm">G9 · Desarrollo autónomo</strong>
+                    <p className="text-xs text-kumo-subtle">
+                      Una prueba real en el repositorio OpenCode Cloud: crea una rama
+                      opencode/* descartable, prepara un defecto inocuo en archivos de prueba,
+                      y pide al agente corregirlo, ejecutar Node y abrir una PR en borrador.
+                      Se comprueba mediante herramientas y pruebas independientes.
+                      Consume inferencia y puede iniciar el Container; no altera main ni producción.
+                    </p>
+                    <button type="button"
+                      disabled={g9Busy || g9Status!=="not-started" ||
+                        !integrations?.githubConfigured}
+                      className="rounded border border-kumo-line px-3 py-2 text-sm disabled:opacity-50"
+                      onClick={() => void startG9()}>
+                      {g9Busy || g9Status==="running" ? "Verificando desarrollo…" :
+                        "Probar desarrollo real G9 (una vez)"}
+                    </button>
+                    {g9Message ? <p role="status" className="text-sm">{g9Message}</p> : null}
+                  </div>
                   <div className="mt-2 flex flex-col gap-2 rounded-md border border-kumo-line p-3" aria-label="Aceptación funcional del agente G8">
                     <button type="button"
                       disabled={g8LiveBusy || !integrations?.githubConfigured || g8LiveStatus !== "not-started"}
