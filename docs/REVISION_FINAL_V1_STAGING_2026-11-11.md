@@ -181,3 +181,33 @@ No había dispositivo Android ni emulador ADB disponible en este entorno. La int
 
 - El titular reportó «Exitoso» después de la comprobación solicitada desde Android: abrir staging, seleccionar WorkBench y enviar el mensaje de solo lectura. Se registra como aceptación manual del flujo básico de la versión activa #36.
 - No se recibió captura ni transcripción, así que esta evidencia es informada por el titular, no una verificación independiente. No cubre el diagnóstico corregido en #37, que aún no está desplegado. El dictamen de staging no cambia.
+
+
+## Verificación del diagnóstico de importación en #37 — 11 de noviembre de 2026, 17:33 UTC
+
+**Dictamen: BLOQUEADA para el cierre de staging.** La candidata #37 está ahora desplegada únicamente en el Worker de staging. El diagnóstico de importación antes del primer mensaje se verificó en conversaciones nuevas para ambos repositorios. La confirmación Android del titular citada arriba corresponde a #36 y no cubre esta versión.
+
+### Rectificación del registro de Workers Builds
+
+La actualización anterior indicó que no existían configuración ni triggers de Workers Builds para `opencode-g1-staging`. Esa afirmación fue incorrecta: la consulta anterior usó el nombre visible del Worker, mientras que la API requiere su `script_tag`. La configuración existente se encontró bajo ese identificador interno; no se modificó la configuración ni se revelaron valores de credenciales.
+
+- Build manual de Workers Builds para el SHA exacto de #37: `c6b23c7180916732d6a3e367fc9d0ee832c9d0f2`; build UUID `617bc3b6-37b1-470c-a3ab-a643b4ca3640`; resultado de build `success`, finalizado a las 17:33:24 UTC.
+- La compilación ejecutó `bun install --frozen-lockfile` y `bun run build`; compiló 3990 módulos. Esta orden no ejecuta la suite de pruebas ni el typecheck.
+- Cloudflare informa el deployment `69429aad-dda0-4d79-ab76-260fde9156be`, versión `e61b855e-488a-467a-9d48-611ea2cf7c22`, con 100 % del tráfico del Worker `opencode-g1-staging`. Producción no fue consultada ni modificada mediante esta publicación de staging.
+- El trigger automático conserva su rama histórica; el despliegue de #37 fue manual y fijado por commit. No se cambió ese trigger.
+
+### Importación real antes del primer mensaje
+
+- **CDF Cloud:** conversación nueva, repositorio seleccionado y diagnóstico ejecutado antes de enviar el primer mensaje. La interfaz informó `aamvtrampa36-del/cdf-cloud-engine`, commit `f5967fe84e22`, 204 archivos.
+- **WorkBench:** conversación nueva, repositorio seleccionado y diagnóstico ejecutado antes de enviar el primer mensaje. La interfaz informó `aamvtrampa36-del/CDF-WorkBench-`, commit `0a7b0e8109d2`, 308 archivos.
+- Las dos respuestas mostraron nombre, commit y cantidad de archivos; no apareció ningún token ni secreto. La revisión de archivos de los proyectos Linux muestra “Sin repositorio Git” y no lista un directorio `.git`; la importación de código fuente no incorpora metadatos Git. Esta comprobación no crea ni modifica proyectos guardados y no toca los respaldos existentes.
+- La evidencia confirma el camino permitido del diagnóstico real en staging; no sustituye las pruebas de aislamiento ya registradas ni es una nueva restauración de respaldos.
+
+### Estado de PR y puertas restantes
+
+- #32–#37 siguen abiertas, en borrador y sin merge. #37 mantiene cabeza `c6b23c7180916732d6a3e367fc9d0ee832c9d0f2`, base en #36 y 4 archivos modificados. No se modificó `main`, canon ni producción.
+- Para el SHA de #37, GitHub no devuelve status checks ni ejecuciones de workflow. El build de Cloudflare demuestra compilación y despliegue a staging, no CI ni pruebas.
+- `adb` no está disponible en este entorno. La prueba “Exitoso” registrada anteriormente fue aceptación informada del flujo básico de #36. No hay aceptación física de Android para el diagnóstico antes del primer mensaje en #37.
+- **Pendientes para cerrar staging:** (1) aceptación del flujo en Android sobre #37; (2) pruebas/checks automatizados verificables para el SHA exacto de #37, o evidencia equivalente de las suites requeridas ejecutadas sobre ese código. Tras ambas puertas, revisar el informe y declarar el cierre solo si no aparece regresión.
+- G9 sigue aprobado históricamente dentro de su alcance. El tramo actual es el cierre post-G9 de V1 en staging; la etapa siguiente sigue siendo preparación de publicación controlada, sin hito G10. La copia/restauración de datos productivos y el plan final de reversión quedan para después del cierre de staging y no se ejecutaron aquí.
+
