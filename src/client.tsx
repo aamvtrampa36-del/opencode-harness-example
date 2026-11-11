@@ -351,6 +351,8 @@ function App() {
   const [g8Busy, setG8Busy] = useState(false);
   const [isolationBusy, setIsolationBusy] = useState(false);
   const [isolationResult, setIsolationResult] = useState("");
+  const [importProbeBusy, setImportProbeBusy] = useState(false);
+  const [importProbeResult, setImportProbeResult] = useState("");
   const [g8Result, setG8Result] = useState("");
   const [g8LiveStatus, setG8LiveStatus] = useState("not-started");
   const [g8LiveMessage, setG8LiveMessage] = useState("");
@@ -644,6 +646,24 @@ function App() {
     } finally {
       setIsolationBusy(false);
     }
+  };
+  const verifyRepositoryImport = async () => {
+    setImportProbeBusy(true);
+    setImportProbeResult("");
+    try {
+      const response = await fetch("/api/dev/repository-import-probe", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ object, session })
+      });
+      const result = await response.json() as {
+        receipt?: { repository: string; commit: string; files: number }; error?: string
+      };
+      if (!response.ok || !result.receipt) throw Error(result.error ?? "Importación incompleta");
+      setImportProbeResult("Importado en un Container de prueba: " + result.receipt.repository +
+        " · commit " + result.receipt.commit.slice(0, 12) + " · " + result.receipt.files + " archivos.");
+    } catch (error) {
+      setImportProbeResult("No se completó la importación: " + (error instanceof Error ? error.message : "Error"));
+    } finally { setImportProbeBusy(false); }
   };
   /** One explicit tap runs two cheap, real, read-only agent sessions on staging. */
   const fetchG8LiveStatus = async () => {
@@ -1169,6 +1189,14 @@ function App() {
                     </button>
                     <p className="text-xs text-kumo-subtle">Inicia dos Containers temporales con archivos sintéticos y puede generar consumo de Cloudflare.</p>
                     {isolationResult ? <p role="status" className="text-sm">{isolationResult}</p> : null}</> : null}
+                    {window.location.hostname === "opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev" && repository ? <>
+                      <button type="button" disabled={importProbeBusy}
+                        className="rounded border border-kumo-line px-3 py-2 text-sm disabled:opacity-50"
+                        onClick={() => void verifyRepositoryImport()}>
+                        {importProbeBusy ? "Importando código…" : "Probar importación aislada del repositorio"}
+                      </button>
+                      {importProbeResult ? <p role="status" className="text-sm">{importProbeResult}</p> : null}
+                    </> : null}
                     <button type="button" disabled={g8Busy || !integrations?.githubConfigured}
                       className="rounded border border-kumo-line px-3 py-2 text-sm disabled:opacity-50"
                       onClick={() => void verifyG8()}>

@@ -4,6 +4,9 @@ import { PREVIEW_SOURCE, PREVIEW_PORT } from "./preview-server";
 import { INSPECT_SOURCE, validateInspectionPath } from "./linux-inspect";
 import { chunkBackup, joinBackup, sha256Hex, MAX_ARCHIVE_BYTES, type StoredBackup } from "./durable-backup";
 import { RESTORE_PROJECT_SOURCE } from "./restore-project";
+import { GITHUB_IMPORT_SOURCE } from "./github-import-source";
+import { githubSourceArchive } from "./github-import";
+import { validateIsolatedRegistration, type IsolatedProject } from "./project-container";
 
 /**
  * Opt-in Linux computer. There is exactly ONE named instance ("personal")
@@ -102,6 +105,86 @@ export class DevContainer extends DurableObject<Env> {
     const rows = (await this.ctx.storage.get<{ name: string; lastUsedAt: number }[]>("projectInventory")) ?? [];
     const next = [{ name, lastUsedAt: Date.now() }, ...rows.filter((x) => x.name !== name)];
     await this.ctx.storage.put("projectInventory", next.slice(0, 100));
+  }
+
+  /** Registry lives in the existing personal DO; its old data is untouched. */
+  async reserveIsolatedProject(project: string, repository?: string): Promise<IsolatedProject> {
+    const id = validateProject(project);
+    return await this.ctx.storage.transaction(async tx => {
+      const key = "isolated-project-v1:" + id;
+      const old = await tx.get<IsolatedProject>(key);
+      const legacy = (await tx.get<{name: string}[]>("projectInventory")) ?? [];
+      const record = validateIsolatedRegistration(legacy, old, {
+        project: id, ...(repository ? { repository } : {})
+      });
+      if (!old) await tx.put(key, record);
+      return record;
+    });
+  }
+
+  async isolatedProject(project: string): Promise<IsolatedProject | undefined> {
+    return await this.ctx.storage.get<IsolatedProject>("isolated-project-v1:" + validateProject(project));
+  }
+
+  async listIsolatedProjects(): Promise<IsolatedProject[]> {
+    const entries = await this.ctx.storage.list<IsolatedProject>({ prefix: "isolated-project-v1:" });
+    return [...entries.values()];
+  }
+
+  /**
+   * Import source into a fresh isolated project only. The Worker uses the
+   * owner's GitHub credential; the Container receives only archive bytes.
+   * Never overwrites a project, even after an interrupted previous import.
+   */
+  async prepareRepository(project: string, repository: string): Promise<{
+    project: string; repository: string; commit: string; files: number; sha256: string;
+  }> {
+    const id = validateProject(project);
+    const previous = this.commandQueue;
+    let release = () => {};
+    this.commandQueue = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    try {
+      const existing = await this.ctx.storage.get<{
+        project: string; repository: string; commit: string; files: number; sha256: string
+      }>("isolated-repository-v1");
+      if (existing) {
+        if (existing.project !== id || existing.repository.toLowerCase() !== repository.toLowerCase()) {
+          throw Error("El entorno aislado ya pertenece a otro proyecto o repositorio");
+        }
+        return existing;
+      }
+      const settings = this.env.SETTINGS.getByName("personal");
+      const token = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN || await settings.getGitHubKey();
+      const source = await githubSourceArchive(repository, token || "", await settings.getAllowedRepositories());
+      const container = await this.ensureRunning();
+      this.busy++;
+      await this.ctx.storage.put("lastActivity", Date.now());
+      try {
+        const process = await container.exec(
+          ["node", "--input-type=module", "-e", GITHUB_IMPORT_SOURCE, id], { stdin: source.stream }
+        );
+        const result = await process.output();
+        if (result.exitCode !== 0) {
+          throw Error("No se pudo importar el repositorio de forma segura: " +
+            new TextDecoder().decode(result.stderr).slice(-350));
+        }
+        const receipt = JSON.parse(new TextDecoder().decode(result.stdout)) as {
+          target: string; files: number; sha256: string
+        };
+        if (receipt.target !== id || !Number.isSafeInteger(receipt.files) || receipt.files < 1 ||
+            !/^[a-f0-9]{64}$/.test(receipt.sha256)) throw Error("Resultado de importación inválido");
+        const record = { project: id, repository: source.repo, commit: source.commit,
+          files: receipt.files, sha256: receipt.sha256 };
+        await this.ctx.storage.put("isolated-repository-v1", record);
+        await this.recordProject(id);
+        return record;
+      } finally {
+        this.busy--;
+        await this.ctx.storage.put("lastActivity", Date.now());
+        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      }
+    } finally { release(); }
   }
 
   /** Read-only project inspection for Plan and Review without a shell. */

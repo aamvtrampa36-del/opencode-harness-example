@@ -30,6 +30,7 @@ import { validateExportIdentity, sessionExportResponse } from "./session-export"
 import { archiveDownloadResponse, archiveError } from "./download-response";
 import { githubRepositoryDownload } from "./github-download";
 import { checkIsolation } from "./isolation-check";
+import { projectContainerName } from "./project-container";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -821,6 +822,26 @@ export default {
           return Response.json(await host.startG8LiveReview(), { headers: { "Cache-Control": "no-store" } });
         } catch (error) {
           return Response.json({ error: error instanceof Error ? error.message : "Error de prueba G8" },
+            { status: 422, headers: { "Cache-Control": "no-store" } });
+        }
+      }
+      if (url.pathname === "/api/dev/repository-import-probe" && request.method === "POST") {
+        if (url.hostname !== "opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev" || !settingsOriginAllowed) {
+          return Response.json({ error: "Solo disponible en staging con el mismo origen." }, { status: 403 });
+        }
+        try {
+          const raw = await request.text();
+          if (raw.length > 300) throw Error("Solicitud demasiado grande");
+          const input = JSON.parse(raw) as { object?: string; session?: string };
+          validateExportIdentity(input.object, input.session);
+          const repo = await env.OpenCodeAgent.getByName(input.object!).sessionRepository(input.session!);
+          const project = "repocheck-" + crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+          const dev = env.DEV.getByName(projectContainerName(project));
+          const receipt = await dev.prepareRepository(project, repo);
+          const listing = await dev.inspect(project, "list", "");
+          return Response.json({ receipt, listing }, { headers: { "Cache-Control": "no-store" } });
+        } catch (error) {
+          return Response.json({ error: error instanceof Error ? error.message : "Falló la importación." },
             { status: 422, headers: { "Cache-Control": "no-store" } });
         }
       }
