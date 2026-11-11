@@ -32,6 +32,7 @@ import { githubRepositoryDownload } from "./github-download";
 import { checkIsolation } from "./isolation-check";
 import { projectContainerName, repositoryProjectSlug } from "./project-container";
 import { checkIsolatedBackup } from "./isolated-backup-check";
+import { repositoryImportScope } from "./repository-import-scope";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -865,9 +866,14 @@ export default {
         try {
           const raw = await request.text();
           if (raw.length > 300) throw Error("Solicitud demasiado grande");
-          const input = JSON.parse(raw) as { object?: string; session?: string };
+          const input = JSON.parse(raw) as { object?: string; session?: string; repository?: string };
           validateExportIdentity(input.object, input.session);
-          const repo = await env.OpenCodeAgent.getByName(input.object!).sessionRepository(input.session!);
+          const host = env.OpenCodeAgent.getByName(input.object!);
+          // The repository selector creates the session before its first chat
+          // message. Bind the explicit, authorized selection before probing.
+          await host.bindSessionScope(input.session!,
+            repositoryImportScope(input.repository, await personal.getAllowedRepositories()));
+          const repo = await host.sessionRepository(input.session!);
           const project = "repocheck-" + crypto.randomUUID().replace(/-/g, "").slice(0, 12);
           const dev = env.DEV.getByName(projectContainerName(project));
           const receipt = await dev.prepareRepository(project, repo);
