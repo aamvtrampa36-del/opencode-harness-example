@@ -25,7 +25,7 @@
 
 ### Resultado de los doce casos
 
-**12/12 casos derivados con evidencia de aceptación suficiente para la V1 EN STAGING**, reutilizando pruebas históricas. Cinco de ellos se apoyan en capturas/confirmaciones directas desde Android, otros en ejecuciones reales de Linux, GitHub o restauración y todos en código/CI o verificación del estado según corresponde. El carácter distribuido y la calidad heterogénea de la evidencia están declarados; no hay una supuesta «suite original» de 12 casos ni una nueva ejecución simultánea de estos casos.
+**12/12 casos derivados con evidencia de aceptación suficiente para la V1 EN STAGING**, reutilizando pruebas históricas. Varios se apoyan en capturas o confirmaciones directas desde Android, otros en ejecuciones reales de Linux, GitHub o restauración y todos en código/CI o verificación del estado según corresponde. El carácter distribuido y la calidad heterogénea de la evidencia están declarados; no hay una supuesta «suite original» de 12 casos ni una nueva ejecución simultánea de estos casos.
 
 **Controles P0 transversales verificados adicionalmente:**
 - GitHub Actions OpenCode #302 `completed/success`, GitHub Actions #300 `completed/success` del commit del agente.
@@ -38,7 +38,7 @@
 
 **No bloquean esta matriz E2E en staging:** coste exacto por tarea no medido (interfaz da variación aproximada de la cuenta), cobertura integral de todos los modelos/plantillas no demostrada, MCP remoto no probado en un desarrollo largo, respaldo integral de repos grandes/historial de procesos activos no demostrado y cancelación durante una caída extrema sin prueba específica. Los límites están documentados y no se presentan como capacidades garantizadas.
 
-**Pendiente para el gate literal final de G9:** el plan V1 exige `una release/tag reversible` antes del estado de entrega final. Hay una **rama candidata reversible con SHA CI-verde**, pero **no existe evidencia de un tag o GitHub Release formal creado**. La capacidad GitHub conectada a esta sesión permite actualizar ramas, pero no crear tags ni releases. No inventar un tag ni renombrar la rama como si fuese uno.
+**Pendiente para el gate literal final de G9:** el plan V1 exige `una release/tag reversible` antes del estado de entrega final. Hay una **rama candidata reversible con SHA CI-verde**, pero **no existe evidencia de un tag o GitHub Release formal creado**. Se comprobaron directamente las rutas GitHub REST de \`git/ref/tags/g9-v1-rc-20261111\` y \`releases/tags/g9-v1-rc-20261111\`: ambas devolvieron **404 Not Found**; por tanto el gate de tag/release no está satisfecho. La capacidad GitHub conectada a esta sesión permite actualizar ramas, pero no crear tags ni releases. No inventar un tag ni renombrar la rama como si fuese uno.
 
 **Dictamen E2E:** APROBADO **12/12 para matriz sustitutiva autorizada en staging**. **Dictamen G9:** el único bloqueo restante para **cierre literal de G9** es crear/verificar un tag o release candidato reversible en GitHub, sin merge ni despliegue productivo. Esta reserva no requiere repetir E2E ni autodesarrollo.
 
