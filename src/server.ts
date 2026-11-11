@@ -646,9 +646,13 @@ export default {
       const url = new URL(request.url);
       const personal = env.SETTINGS.getByName("personal");
       const projectRegistry = env.DEV.getByName("personal");
-      const readableProject = async (name: string) =>
-        (await projectRegistry.isolatedProject(name))
-          ? env.DEV.getByName(projectContainerName(name)) : projectRegistry;
+      const readableProject = async (name: string) => {
+        const record = await projectRegistry.isolatedProject(name);
+        if (!record) return projectRegistry;
+        const dev = env.DEV.getByName(projectContainerName(name));
+        if (record.repository) await dev.prepareRepository(name, record.repository);
+        return dev;
+      };
       const settingsOriginAllowed =
         request.headers.get("Origin") === url.origin &&
         request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json");
@@ -1107,10 +1111,8 @@ export default {
         }
         const { project, command } = JSON.parse(body) as { project: string; command: string };
         try {
-          if (!await projectRegistry.isolatedProject(project)) {
-            await projectRegistry.reserveIsolatedProject(project);
-          }
-          const result = await env.DEV.getByName(projectContainerName(project)).run(project, command);
+          if (!await projectRegistry.isolatedProject(project)) await projectRegistry.reserveIsolatedProject(project);
+          const result = await (await readableProject(project)).run(project, command);
           const incident = observeLinux(result);
           if (incident) {
             try { await personal.recordIncident(incident); }

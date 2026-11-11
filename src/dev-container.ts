@@ -148,6 +148,11 @@ export class DevContainer extends DurableObject<Env> {
     this.commandQueue = new Promise<void>(resolve => { release = resolve; });
     await previous;
     try {
+      const settings = this.env.SETTINGS.getByName("personal");
+      const allowed = await settings.getAllowedRepositories();
+      if (!allowed.some(item => item.toLowerCase() === repository.toLowerCase())) {
+        throw Error("El repositorio ya no está autorizado");
+      }
       const existing = await this.ctx.storage.get<{
         project: string; repository: string; commit: string; files: number; sha256: string
       }>("isolated-repository-v1");
@@ -166,9 +171,8 @@ export class DevContainer extends DurableObject<Env> {
         throw Error("El Container ya fue utilizado; no se importará sobre su contenido");
       }
       if (!pending) await this.ctx.storage.put("repo-import-pending-v1", {project: id, repository});
-      const settings = this.env.SETTINGS.getByName("personal");
       const token = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN || await settings.getGitHubKey();
-      const source = await githubSourceArchive(repository, token || "", await settings.getAllowedRepositories());
+      const source = await githubSourceArchive(repository, token || "", allowed);
       const container = await this.ensureRunning();
       this.busy++;
       await this.ctx.storage.put("lastActivity", Date.now());
