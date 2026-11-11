@@ -1,0 +1,42 @@
+# One-shot release-candidate reference creation (G9).
+# Temporary workflow on an isolated non-deployment branch. Remove after success.
+name: G9 RC tag one-shot
+on:
+  push:
+    branches:
+      - ops/g9-rc-tag-20261111
+    paths:
+      - .github/workflows/g9-rc-tag-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    if: github.repository == 'aamvtrampa36-del/opencode-harness-example'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: true
+      - name: Tag the tested commit without replacing any existing reference
+        env:
+          TARGET_SHA: ff5c88e7735469864d8264cc93fa56c6a7eaae62
+          TAG_NAME: g9-v1-rc-20261111
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "$TARGET_SHA"
+          git cat-file -e "$TARGET_SHA^{commit}"
+          existing="$(git ls-remote origin "refs/tags/$TAG_NAME" | cut -f1)"
+          if [ -n "$existing" ]; then
+            test "$existing" = "$TARGET_SHA"
+            echo "Existing lightweight release tag already points to tested commit."
+            exit 0
+          fi
+          git tag "$TAG_NAME" "$TARGET_SHA"
+          git push origin "refs/tags/$TAG_NAME"
+          actual="$(git ls-remote origin "refs/tags/$TAG_NAME" | cut -f1)"
+          test "$actual" = "$TARGET_SHA"
+          echo "Verified: $TAG_NAME points to $TARGET_SHA; no merge or production deployment."
