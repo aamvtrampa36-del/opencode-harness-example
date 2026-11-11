@@ -48,12 +48,12 @@ Commits de código en rama staging:
 
 ## 5. Candidata reversible preparada (no publicada)
 
-Se creó la rama de referencia **[`release/g9-v1-candidate-20261111`](https://github.com/aamvtrampa36-del/opencode-harness-example/tree/release/g9-v1-candidate-20261111)** apuntando al commit exacto de código **`f5fe60a96daf9f2ec1d51bf1b5d190afcc6f8ea1`**, cuyo CI #289 está aprobado.
+Se creó y actualizó la rama de referencia **[`release/g9-v1-candidate-20261111`](https://github.com/aamvtrampa36-del/opencode-harness-example/tree/release/g9-v1-candidate-20261111)** apuntando al commit exacto de código **`ff5c88e7735469864d8264cc93fa56c6a7eaae62`**, cuyo CI #297 está aprobado. La actualización fue un avance directo con comprobación del SHA previo, sin reescribir historia ni tocar `main`.
 
 Esta es una **referencia reversible de trabajo** y no una release publicada, un tag firmado ni una V1 aprobada. Se puede volver a la versión staging anterior o abandonar esa rama sin cambiar `main`; la reversión del Worker **no** equivale por sí sola a restaurar datos persistentes de otra versión. La autorización de despliegue productivo no está concedida.
 
 Infraestructura verificada tras ese commit:
-- Worker staging `opencode-g1-staging`: versión `73506b2b-5922-4c5d-ba5a-6b3a32f96442`, Access `self_hosted` con una política, Cron `[]`, build exitoso.
+- Worker staging `opencode-g1-staging`: versión `b13f5e53-99d9-4ba6-8b31-bc5f48d38772`, Access `self_hosted` con una política, Cron `[]`, build exitoso.
 - Worker productivo `opencode-harness-example`: **`1d70eb77-316e-408d-bd14-5f19b171dedf`**, sin cambios.
 - PR [#28](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/28), [#29](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/29), [CDF CLOUD #160](https://github.com/aamvtrampa36-del/cdf-cloud-engine/pull/160) y [WorkBench #36](https://github.com/aamvtrampa36-del/CDF-WorkBench-/pull/36) no tienen autorización de merge.
 
@@ -80,3 +80,19 @@ Infraestructura verificada tras ese commit:
 **Acción 2 (documental):** proporcionar el texto/archivo del **encargo original donde se definieron las 12 pruebas E2E**, si existe; o autorizar explícitamente elaborar la matriz de aceptación a partir de los criterios literales del informe maestro. No declarar doce resultados inexistentes.
 
 Una vez se superen ambos gates, actualizar el informe, verificar P0 completos y preparar una **publicación controlada** con autorización productiva separada. No fusionar PR automáticamente.
+
+
+## 8. Endurecimiento P0 adicional y CI final
+
+Durante la revisión de la nueva prueba se detectó un riesgo concreto: la sesión G9 tenía el repositorio autorizado, pero el puente genérico GitHub permitía escribir en **cualquier otra rama `opencode/*` del mismo repositorio**, si el modelo lo solicitaba. Eso era reversible, pero podía alterar trabajos ajenos. Se corrigió en el **límite del ejecutor de herramientas**, no mediante una instrucción opcional al modelo:
+
+- `src/project-scope.ts` y `src/workspace.ts`: envían la operación y rama GitHub en los metadatos del control de sesión.
+- `src/g9-selfdev.ts`: `assertG9BoundGitHubOperation` rechaza crear ramas adicionales y ejecutar `github write` o `github pr` fuera de **`opencode/g9-selfdev-20261111`**. Mantiene lectura y revisión sin escritura.
+- `src/server.ts`: al ejecutar una herramienta, solo aplica ese bloqueo de rama a la sesión G9 correspondiente, en función del identificador persistido en Durable Object. Otros agentes y proyectos conservan sus permisos previos.
+- `src/g9-selfdev.test.ts`: verifica la denegación de escrituras y PR fuera de esa única rama.
+
+**Corrección y CI:** commits `01f8d15dbe75d8b8a407776894fd859d1df107c3`, `645584703bb1f3246c463c5356063a3f7e84f34f`, `27db5518b69a1651603ab8ad6b087b438c6b7f4a`, `851da47ead0b01616b8886344b8faff4bd094e09`, `4f8f25763ac217dcd8f33ff8fd44565a3e60439d`. CI #296 falló únicamente en el tipado de una operación GitHub opcional; corregido en `ff5c88e7735469864d8264cc93fa56c6a7eaae62`. **GitHub Actions #297 `completed/success`**, con 105 tests unitarios, TypeScript, servidor preview y compilación. Cloudflare Workers Builds del mismo commit también `success`, staging `b13f5e53-99d9-4ba6-8b31-bc5f48d38772`.
+
+La rama candidata `release/g9-v1-candidate-20261111` se movió mediante avance directo seguro desde `f5fe60a9` a **`ff5c88e7`**, sin force ni merge. Esta referencia sigue siendo **candidata preliminar no aprobada**: falta el resultado auténtico del agente y la lista original de doce pruebas E2E.
+
+**Dictamen sin cambios:** G9 continúa **BLOQUEADO PARA CIERRE**, pero el código que permite la última prueba real está listo, verificado y restringido a staging; no se ha disparado una tarea de inferencia ni creado una PR del agente en G9.
