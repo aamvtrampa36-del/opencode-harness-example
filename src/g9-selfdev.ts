@@ -20,7 +20,7 @@ export const G9_TEST_SOURCE = [
 
 export type G9ProofState = {
   version: string;
-  status: "starting" | "running" | "passed" | "failed";
+  status: "starting" | "running" | "verifying" | "passed" | "failed";
   startedAt: number;
   session?: string;
   seedCommits?: string[];
@@ -109,7 +109,7 @@ export function g9AgentPrompt(): string {
     "(2) usa github action=read para leer " + G9_SOURCE + " y " + G9_TEST_PATH +
     " en repo " + G9_REPO + " ref " + G9_BRANCH + ". " +
     "(3) usa github action=write para reparar SOLO " + G9_SOURCE +
-    " en branch " + G9_BRANCH + ", cambiando resta por suma, con commit message 'fix(g9): correct isolated add fixture'. " +
+    " en branch " + G9_BRANCH + ", escribiendo el código exacto export function add(a, b) { return a + b; }, con commit message 'fix(g9): correct isolated add fixture'. " +
     "(4) usa linux con project=" + G9_PROJECT +
     " y command que actualice SOLO add.mjs de forma equivalente y luego ejecute " +
     "'node --test --test-reporter=tap add.test.mjs' con exitCode 0. " +
