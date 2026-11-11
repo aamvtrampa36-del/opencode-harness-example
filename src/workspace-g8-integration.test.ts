@@ -3,6 +3,7 @@ import type { Workspace } from "@cloudflare/computer";
 import type { GitHubAction } from "./github";
 import { workspacePlugin } from "./workspace";
 import type { ScopedToolAction } from "./project-scope";
+import { assertScopedTool } from "./project-scope";
 
 /**
  * G8: test the real workspacePlugin registration, not just the helper.
@@ -83,20 +84,20 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
     expect(requests).toBe(0);
   });
 
-  test("blocks Linux shell before the shared container can access another project", async () => {
+  test("routes Linux to the trusted session and rejects another project's slug", async () => {
     const toolSpecs = new Map<string, any>();
-    let runs = 0;
+    const runs: Array<{project: string; session?: string}> = [];
     const plugin = workspacePlugin(
       {} as Workspace, {},
       {
         inspect: async () => ({}),
-        run: async (project: string) => {
-          runs++;
+        run: async (project: string, _command: string, session?: string) => {
+          runs.push({project, session});
           return {project, exitCode: 0, stdout: "", stderr: "", truncated: false, persistence: "test"};
         }
       },
       undefined,
-      async () => undefined
+      async (_session, action) => assertScopedTool({project:"cdf-cloud-engine"}, action)
     );
     await plugin.setup({
       agent: {transform: async () => undefined},
@@ -105,10 +106,15 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
         add: (spec: any) => toolSpecs.set(spec.name,spec)
       })}
     } as any);
-    await expect(toolSpecs.get("linux").execute(
-      {project:"cdf-cloud-engine",command:"ls ../cdf-workbench"},
+    const allowed = await toolSpecs.get("linux").execute(
+      {project:"cdf-cloud-engine",command:"pwd"},
       {sessionID:"ses_test",agent:"build"}
-    )).rejects.toThrow("falta aislamiento seguro");
-    expect(runs).toBe(0);
+    );
+    expect(JSON.parse(allowed.content).exitCode).toBe(0);
+    await expect(toolSpecs.get("linux").execute(
+      {project:"cdf-workbench",command:"pwd"},
+      {sessionID:"ses_test",agent:"build"}
+    )).rejects.toThrow("proyecto distinto");
+    expect(runs).toEqual([{project:"cdf-cloud-engine",session:"ses_test"}]);
   });
 });

@@ -1426,7 +1426,7 @@ function App() {
             className="mx-auto max-w-3xl px-5 pt-4"
           >
             <p role="status" className="mb-2 text-xs text-kumo-subtle">
-              Ejecución Linux pausada temporalmente: falta aislar los proyectos. La revisión de GitHub sigue disponible.
+              Los proyectos anteriores se conservan. Para editarlos, restaura una copia con un nombre nuevo.
             </p>
             <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-kumo-subtle">
               <span>Proyecto: <strong className="text-kumo-default">{project || "Sin seleccionar"}</strong></span>
