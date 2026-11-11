@@ -1440,6 +1440,9 @@ function App() {
             <p role="status" className="mb-2 text-xs text-kumo-subtle">
               Los proyectos anteriores se conservan. Para editarlos, restaura una copia con un nombre nuevo.
             </p>
+            <p role="status" className="mb-2 text-xs text-kumo-subtle">
+              Ejecución Linux pausada mientras se verifica el aislamiento entre proyectos. La revisión de GitHub sigue disponible.
+            </p>
             <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-kumo-subtle">
               <span>Proyecto: <strong className="text-kumo-default">{project || "Sin seleccionar"}</strong></span>
               <button type="button" className="underline"
