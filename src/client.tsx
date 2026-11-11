@@ -1,5 +1,6 @@
 import type { AgentMode } from "./protocol";
 import { readSessionMode, saveSessionMode } from "./session-mode";
+import { isInternalReminder } from "./message-display";
 import { SettingsPanel } from "./settings-panel";
 import { MODEL_PRESETS, isModelPreset, type ModelPresetID } from "./model-presets";
 import type { Specialization } from "./specializations";
@@ -311,12 +312,11 @@ function Message({
       );
     case "assistant":
       return <AssistantMessage message={message} live={live[message.id]} />;
-    case "synthetic":
-      return (
-        <p className="text-center text-xs text-kumo-inactive">
-          {message.description ?? message.text}
-        </p>
-      );
+    case "synthetic": {
+      const text = message.description ?? message.text;
+      if (isInternalReminder(text)) return null;
+      return <p className="text-center text-xs text-kumo-inactive">{text}</p>;
+    }
     case "compaction":
       return (
         <p className="text-center text-xs text-kumo-inactive">
