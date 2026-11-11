@@ -46,6 +46,21 @@ describe("in-flight session configuration", () => {
     expect(x.prompts).toHaveLength(2);
   });
 
+  test("concurrent submissions cannot upgrade a running review", async () => {
+    const x = setup(), s = x.makeSockets();
+    await Promise.all([x.send(s, "review"), x.send(s, "build")]);
+    expect(x.agents).toEqual(["plan"]);
+    expect(x.prompts).toHaveLength(1);
+  });
+
+  test("cannot change model during an active run", async () => {
+    const x = setup(), s = x.makeSockets();
+    await x.send(s, "review", "cloudflare");
+    await x.send(s, "review", "economy");
+    expect(x.models).toHaveLength(1);
+    expect(x.prompts).toHaveLength(1);
+  });
+
   test("a stale idle flag cannot upgrade an unfinished review", async () => {
     const x = setup(), s = x.makeSockets();
     await x.send(s, "review");
