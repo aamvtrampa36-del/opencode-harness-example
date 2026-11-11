@@ -1,4 +1,5 @@
 import type { AgentMode } from "./protocol";
+import { readSessionMode, saveSessionMode } from "./session-mode";
 import { SettingsPanel } from "./settings-panel";
 import { MODEL_PRESETS, isModelPreset, type ModelPresetID } from "./model-presets";
 import type { Specialization } from "./specializations";
@@ -98,6 +99,7 @@ function getObject(): string {
   if (existing) return existing;
   const created = crypto.randomUUID();
   localStorage.setItem(OBJECT_KEY, created);
+  saveSessionMode(localStorage, created, ROOT_SESSION, "build");
   return created;
 }
 
@@ -366,7 +368,11 @@ function App() {
   const [lastCost, setLastCost] = useState("No hay una medición individual disponible.");
   const [restoreFrom, setRestoreFrom] = useState("");
   const [restoreTo, setRestoreTo] = useState("");
-  const [agentMode, setAgentMode] = useState<AgentMode>("build");
+  const [agentMode, setAgentMode] = useState<AgentMode>(() => readSessionMode(localStorage, object, session));
+  const setModeForSession = (targetSession: string, mode: AgentMode) => {
+    saveSessionMode(localStorage, object, targetSession, mode);
+    setAgentMode(mode);
+  };
   const [specializations, setSpecializations] = useState<Specialization[]>([]);
   const [specialization, setSpecialization] = useState(() => localStorage.getItem(SPECIALIZATION_KEY) ?? "");
   const [integrations, setIntegrations] = useState<{
@@ -436,6 +442,7 @@ function App() {
     // deployment: fall back to the root session.
     localStorage.setItem(SESSION_KEY, ROOT_SESSION);
     setSession(ROOT_SESSION);
+    setAgentMode(readSessionMode(localStorage, object, ROOT_SESSION));
   });
 
   useEffect(() => {
@@ -483,6 +490,7 @@ function App() {
   const choose = (next: string) => {
     localStorage.setItem(SESSION_KEY, next);
     setSession(next);
+    setAgentMode(readSessionMode(localStorage, object, next));
     setProject(localStorage.getItem(PROJECT_PREFIX + next) ?? "");
     setRepository(localStorage.getItem(REPOSITORY_PREFIX + next) ?? "");
     // On narrow screens the conversation list is an overlay, not a second grid row.
@@ -734,7 +742,7 @@ function App() {
       setRepository(repo);
       setProjectsOpen(false);
       setProjectError("");
-      setAgentMode("review");
+      setModeForSession(next, "review");
       // Start project reviews without carrying another task's saved template.
       setSpecialization("");
       localStorage.setItem(SPECIALIZATION_KEY, "");
@@ -756,9 +764,9 @@ function App() {
   /** One guided new-project entrypoint for web and native Android work. */
   const startNewApp = (kind: "web" | "android" = "web") => {
     create().then((next) => {
-      setAgentMode("build");
       const slug = (kind === "android" ? "apk-" : "app-") + Date.now().toString(36);
       choose(next);
+      setModeForSession(next, "build");
       localStorage.setItem(PROJECT_PREFIX + next, slug);
       setProject(slug);
       setPrompt(kind === "android" ?
@@ -862,7 +870,10 @@ function App() {
               aria-label="Nueva conversación"
               disabled={!connected}
               onClick={() => {
-                create().then(choose, fail);
+                create().then(next => {
+                  saveSessionMode(localStorage, object, next, "build");
+                  choose(next);
+                }, fail);
               }}
               icon={<PlusIcon size={16} />}
             />
@@ -1004,7 +1015,7 @@ function App() {
                   setSpecialization(id);
                   const selected = specializations.find(item => item.id === id);
                   if (selected) {
-                    setAgentMode(selected.mode ?? "build");
+                    setModeForSession(session, selected.mode ?? "build");
                     const preferred = selected.model ?? "cloudflare";
                     const available = openRouterAvailable ||
                       MODEL_PRESETS[preferred].providerID !== "openrouter";
@@ -1020,7 +1031,7 @@ function App() {
                 ))}
               </select>
               <select aria-label="Modo de agente" title="Los roles de revisión y narrativa no modifican archivos"
-                value={agentMode} onChange={(event) => setAgentMode(event.target.value as AgentMode)}
+                value={agentMode} onChange={(event) => setModeForSession(session, event.target.value as AgentMode)}
                 className="max-w-[128px] rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 text-xs text-kumo-default">
                 <option value="build">Desarrollar</option>
                 <option value="plan">Planificar</option>
@@ -1233,7 +1244,7 @@ function App() {
                       onClick={() => create({ project }).then(next => {
                         localStorage.setItem(PROJECT_PREFIX + next, project);
                         choose(next);
-                        setAgentMode("review");
+                        setModeForSession(next, "review");
                       }, fail)}>
                       Delegar revisión independiente (consume tokens)
                     </button>
