@@ -166,6 +166,7 @@ export class DevContainer extends DurableObject<Env> {
           throw Error("El entorno aislado ya pertenece a otro proyecto o repositorio");
         }
         await this.ctx.storage.delete("repo-import-pending-v1");
+        await this.recordProject(id);
         return existing;
       }
       const pending = await this.ctx.storage.get<{project: string; repository: string}>("repo-import-pending-v1");
@@ -492,6 +493,7 @@ export class DevContainer extends DurableObject<Env> {
           throw Error("El destino ya pertenece a otra restauración");
         }
         await this.ctx.storage.delete("restore-pending-v1");
+        await this.recordProject(target);
         return complete;
       }
       const pending = await this.ctx.storage.get<{source: string; target: string; hash: string}>("restore-pending-v1");
