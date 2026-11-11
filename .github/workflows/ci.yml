@@ -1,6 +1,8 @@
 name: OpenCode validation
 
 on:
+  push:
+    branches: [feat/staging-conversation-markdown-export-20261111]
   pull_request:
     branches: [main]
   workflow_dispatch:
