@@ -105,7 +105,7 @@ export class OpenCodeSessionSockets {
   /** Sessions with a snapshot being sent, and whether another is due. */
   readonly #snapshots = new Map<OpenCodeSessionId, boolean>();
   readonly #submitLocks = new Map<OpenCodeSessionId, Promise<void>>();
-  readonly #activeConfigurations = new Map<OpenCodeSessionId, { mode: string; model: string | undefined }>();
+  readonly #activeConfigurations = new Map<OpenCodeSessionId, { mode: string; model: string | undefined; operations: Set<string> }>();
 
   /** Serialize configuration and submit for one session, including concurrent sockets. */
   async #serializeSubmit<T>(session: OpenCodeSessionId, work: () => Promise<T>): Promise<T> {
@@ -255,8 +255,8 @@ export class OpenCodeSessionSockets {
         // A queued or steering message must never change the permissions or
         // model of a running operation. After a restart an unknown configuration
         // fails closed until that operation completes.
-        const running = await handle.busy();
         const active = this.#activeConfigurations.get(session);
+        const running = (active?.operations.size ?? 0) > 0 || await handle.busy();
         if (running && (!active || active.mode !== mode || active.model !== message.model)) {
           throw new Error("Espera a que termine la tarea antes de cambiar el modo o modelo.");
         }
@@ -291,14 +291,19 @@ export class OpenCodeSessionSockets {
         const receipt = await handle.submit(specializationPrompt + prefixed + message.text, {
           whenBusy: message.whenBusy === "steer" ? "steer" : "followUp"
         });
-        if (!running) this.#activeConfigurations.set(session, { mode, model: message.model });
+        const configuration = active && running ? active : { mode, model: message.model, operations: new Set<string>() };
+        configuration.operations.add(receipt.operationId);
+        this.#activeConfigurations.set(session, configuration);
         await this.#broadcastSnapshot(session);
         // Once the operation settles, send the final transcript and stop
         // watching if nothing else is running. This holds even if the watch
         // attached after the run's last event.
         void handle
           .wait(receipt.operationId)
-          .then(() => this.#settle(session))
+          .then(() => {
+            configuration.operations.delete(receipt.operationId);
+            return this.#settle(session);
+          })
           .catch((error: unknown) => {
             console.warn("OpenCode wait failed", error);
           });
@@ -386,7 +391,8 @@ export class OpenCodeSessionSockets {
     for (const socket of this.#getWebSockets()) {
       send(socket, { type: "sessions", sessions });
     }
-    if (!(await this.#harness.session(session).busy())) {
+    if (!(await this.#harness.session(session).busy()) &&
+        !(this.#activeConfigurations.get(session)?.operations.size)) {
       this.#activeConfigurations.delete(session);
       await this.#unwatch(session);
     }
