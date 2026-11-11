@@ -211,3 +211,34 @@ La actualización anterior indicó que no existían configuración ni triggers d
 - **Pendientes para cerrar staging:** (1) aceptación del flujo en Android sobre #37; (2) pruebas/checks automatizados verificables para el SHA exacto de #37, o evidencia equivalente de las suites requeridas ejecutadas sobre ese código. Tras ambas puertas, revisar el informe y declarar el cierre solo si no aparece regresión.
 - G9 sigue aprobado históricamente dentro de su alcance. El tramo actual es el cierre post-G9 de V1 en staging; la etapa siguiente sigue siendo preparación de publicación controlada, sin hito G10. La copia/restauración de datos productivos y el plan final de reversión quedan para después del cierre de staging y no se ejecutaron aquí.
 
+
+
+## Revalidación de #37 tras el ajuste del diagnóstico — 11 de noviembre de 2026, 18:05 UTC
+
+### Corrección y pruebas locales sobre la candidata
+La suite de #37 descubrió un fallo real: ante un repositorio de otra cuenta, la selección era rechazada, pero el error interno en inglés no coincidía con el mensaje de diagnóstico previsto en español. La resolución ahora coteja primero la selección normalizada con la lista autorizada y responde «El repositorio no está autorizado en Configuración» cuando no pertenece a ella. La prueba de selección ausente y no autorizada pasa.
+
+- PR #37 sigue abierta, en borrador y sin merge. Cabeza actual: `8c5ebe73e684cd7f5a28db0b97eccf8cfb7883e0`; base #36. El árbol GitHub coincide con el árbol de prueba local `36980dcb9e3b2ab2a0624c61be99d506adc2d03b`.
+- Worktree local aislado: rama `validation/gh37-import-check-20261111`. Bun 1.4.4 y dependencias instaladas con `bun install --frozen-lockfile`.
+- `bun test`: 135 aprobadas, 0 fallidas, 557 aserciones, 35 archivos.
+- `bun run typecheck`: aprobado.
+- `bun run build`: aprobado; 3990 módulos transformados. Persiste el aviso no bloqueante de chunks de cliente superiores a 500 kB.
+- Bun 1.3.14 no reconoce la versión 2 de `bun.lock`; esa ejecución inicial no se cuenta. El dictamen usa Bun 1.4.4, que reconoce el lockfile de la candidata.
+
+### Build y despliegue del SHA actual en staging
+- Workers Builds manual fijado al SHA `8c5ebe73e684cd7f5a28db0b97eccf8cfb7883e0`: build `5305234a-4534-4310-8563-df12077afc1e`, resultado `success`, detenido a las 17:59:20 UTC. Corrió instalación congelada, build y despliegue.
+- Worker `opencode-g1-staging`: deployment `4ed3ede9-bfce-44c4-b01a-d9ead457fad3`; versión `fcd3ed66-3f7c-414f-ac04-513b4c5544a7`, 100 % del tráfico. La configuración sigue enlazada a staging; no se publicó a producción.
+- La build de Cloudflare no ejecuta unit tests ni typecheck. GitHub no informa status checks ni workflows para este SHA; la evidencia automatizada proviene de la ejecución local de la suite sobre el árbol idéntico más el build de Workers Builds.
+
+### Diagnóstico de importación real en la interfaz actual
+Se recargó la versión desplegada y se ejecutó el diagnóstico desde conversaciones nuevas, sin enviar el primer mensaje:
+
+- CDF Cloud: `aamvtrampa36-del/cdf-cloud-engine`, commit `f5967fe84e22`, 204 archivos.
+- WorkBench: `aamvtrampa36-del/CDF-WorkBench-`, commit `0a7b0e8109d2`, 308 archivos.
+- Los dos resultados mostraron únicamente repo, prefijo de commit y conteo; no apareció token ni secreto. La UI mantuvo visibles los proyectos y respaldos existentes; no se guardó ni sobrescribió un proyecto o backup en esta prueba.
+- La importación sigue siendo un archivo fuente, no un checkout. La inspección previa de las copias Linux encontró “Sin repositorio Git” y no listó `.git`; la corrección de este SHA solo cambia la validación/mensaje del repositorio seleccionado y no altera el contenido transferido.
+
+### Cierre del tramo y siguiente etapa
+**Dictamen de staging: BLOQUEADO únicamente por aceptación Android física de la cabeza actual.** No hay ADB ni emulador en este entorno. La aceptación informada de #36 no verifica #37. El resto de los criterios G1–G9 y las garantías de aislamiento/backups permanecen dentro del alcance y evidencia ya documentados; no se repitieron.
+
+Para cerrar staging falta probar desde Android la selección de WorkBench y pulsar «Probar importación aislada del repositorio» antes de enviar un mensaje, confirmando el repositorio y 308 archivos. Si pasa, revisar y cerrar staging. Solo después preparar la copia/restauración aislada de datos productivos y la reversión. No se inició backup/restauración productiva ni se modificó canon, `main` o producción. La siguiente etapa sigue siendo preparación de publicación controlada, sin un hito G10.
