@@ -139,3 +139,32 @@ Actualiza este informe con SHA, evidencia y pendientes; cierra staging solo si s
 5. Después del cierre, inventariar datos productivos y preparar una copia consistente, restauración aislada con verificación de integridad y plan de reversión documentado; aún no se ha realizado ni demostrado. Publicación y fusiones requieren autorización específica.
 
 No se fusionaron PR, modificó canon ni publicó producción.
+
+
+## Actualización de recuperación y diagnóstico — 11 de noviembre de 2026, 13:20 Curitiba
+
+**Estado: staging sigue abierto y la V1 no se cierra.** No se fusionó nada, no se modificó canon ni se tocó producción.
+
+### Corrección candidata del diagnóstico de importación
+
+- La PR borrador #37 está abierta y sin fusionar. Base: fix/staging-isolated-agent-validation-20261111 (#36); cabeza: fix/repository-import-prebind-20261111, commit c6b23c7180916732d6a3e367fc9d0ee832c9d0f2. Incluye 4 archivos (+42/−3).
+- La revisión del diff confirma que el cliente envía el repositorio seleccionado antes del primer mensaje; el Worker lo valida contra la lista autorizada y lo enlaza al alcance inmutable de la sesión antes de obtener el repositorio y preparar el Container. El token permanece en el Worker. Las pruebas unitarias añadidas cubren las selecciones autorizadas de CDF/WorkBench y las selecciones ausentes o no autorizadas.
+- Límite: no se encontraron ejecuciones CI ni checks en el SHA de #37. La corrección todavía no está desplegada ni probada en staging. El endpoint Cloudflare Workers Builds consultado no tiene una configuración ni triggers registrados para opencode-g1-staging; no se hizo un despliegue manual inseguro. Por tanto, el diagnóstico anterior al primer mensaje sigue pendiente de aceptación real, aunque el arreglo ya está implementado en la rama candidata.
+- El despliegue activo continúa en el commit de la candidata #36, versión d6411197-285c-4c2b-9857-299a5fc2b77c, deployment 1f87076f-0040-46c6-a0fb-7ae30c8efe75, 100 % del tráfico. La prueba de aislamiento y las dos tareas reales previas siguen siendo evidencia de su alcance documentado, no una prueba de #37.
+
+### Interrupción y recuperación sintética
+
+- En la sesión aislada repo-cdf-cloud-engine se ejecutó una tarea controlada que escribió solo en /tmp/opencode-v1-interruption-20261111/marker.txt y luego esperaba antes de añadir una línea final. Se pulsó Detener; el agente marcó la ejecución Linux como interrumpida y la sesión volvió a Disponible.
+- Al reanudar la lectura, Linux recuperó exactamente «checkpoint-qa-7c19d2» y el SHA-256 228cd95c343803ff0760cc39e5cd5ef43f00536e573f5c137f5415e7123f75ce. No apareció la línea «completed». Cloudflare mostró el Container del proyecto corriendo de nuevo tras su estado detenido, con el mismo identificador lógico y started_at 2026-11-11T16:20:13.582Z. El marcador sobrevivió la interrupción y el arranque posterior; no se escribió ni leyó un archivo real del repositorio durante esa prueba.
+- Se intentó comprobar el proceso con pgrep, pero el binario no está instalado en la imagen. La ejecución original retornó como interrumpida y el marcador no contiene la escritura final; el informe no presenta pgrep como comprobación exitosa.
+- En una verificación aparte de la importación ya desplegada, tras la parada por inactividad el archivo de código probado mantuvo su SHA-256 4543a480bc9df04ecb475ca2262d917e640a2c02c5a537e995c271f35be017e0 y .git siguió ausente. La evidencia de backing/restauración sintética previa sigue vigente; no se modificaron los proyectos o backups existentes en esta intervención.
+
+### Android, dictamen y acciones pendientes
+
+No había dispositivo Android ni emulador ADB disponible en este entorno. La interfaz real se observó en navegador de escritorio; no afirmo una aceptación Android. Tampoco se verificó el nuevo flujo en #37 porque no está desplegado.
+
+1. Desplegar de forma controlada la candidata #37 en staging y ejecutar CI/build en el SHA exacto; luego repetir antes del primer mensaje el diagnóstico de importación en CDF Cloud y WorkBench, verificando código fuente, conteo/hash, ausencia de .git y que ninguna credencial llegue al Container.
+2. Completar una comprobación Android de la versión candidata: selección del proyecto, importación antes del primer mensaje, envío, progreso, resultado, revisión del diff y recuperación. Este entorno no expone Android; se requiere una comprobación desde tu teléfono una vez desplegada la candidata.
+3. Revisar el resultado y cerrar staging solo si pasan todos los criterios, sin bloqueantes ni errores de seguridad. El dictamen se mantiene BLOQUEADO.
+4. Solo después de cierre, inventariar datos productivos, verificar una copia/restauración aislada y documentar reversión de aplicación y datos. Nada de ello se ha ejecutado.
+
