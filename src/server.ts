@@ -18,7 +18,8 @@ import { workspacePlugin } from "./workspace";
 import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
-import { verifyG8Proofs } from "./g8-smoke";
+import { verifyG8Proofs, G8_PROOFS } from "./g8-smoke";
+import { assessG8LiveHistory, g8LivePrompt, G8_LIVE_CHECK_VERSION, type G8LiveCheck } from "./g8-live-agent";
 import { assertScopedTool, requireSameScope, scopeStorageKey, validateProjectScope, type ProjectScope, type ScopedToolAction } from "./project-scope";
 import { remoteMcpPlugin } from "./mcp-plugin";
 import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
@@ -85,6 +86,98 @@ export class OpenCodeAgent extends DurableObject<Env> {
       throw new Error("Esta sesión no tiene repositorio GitHub asignado. Selecciona uno desde Proyectos en una conversación nueva.");
     }
     return scope.repository;
+  }
+
+  /**
+   * One owner-triggered two-repository acceptance test. Both use the ACTUAL
+   * OpenCode Harness/model/plugin, read-only plan agent and two isolated
+   * Durable Object sessions; never accept an LLM's textual success claim.
+   * Repeated clicks reuse the saved attempt rather than spending more tokens.
+   */
+  async startG8LiveReview(): Promise<{ status: string; message?: string }> {
+    const existing = await this.ctx.storage.get<G8LiveCheck>("g8-live-agent-v1");
+    if (existing?.version === G8_LIVE_CHECK_VERSION) {
+      return { status: "existing", message: "La prueba G8 ya fue iniciada. Consulta su resultado." };
+    }
+    const allowed = await this.personalConfig.getAllowedRepositories();
+    if (!G8_PROOFS.every(p => allowed.some(name => name.toLowerCase() === p.repo.toLowerCase()))) {
+      return { status: "rejected", message: "Autoriza ambos repositorios CDF CLOUD y WorkBench en Configuración." };
+    }
+    const githubKey = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
+      || await this.personalConfig.getGitHubKey();
+    if (!githubKey) return { status: "rejected", message: "Conecta GitHub desde Configuración." };
+    const state: G8LiveCheck = {
+      version: G8_LIVE_CHECK_VERSION, status: "starting", startedAt: Date.now(), tasks: []
+    };
+    await this.ctx.storage.put("g8-live-agent-v1", state);
+    try {
+      for (const proof of G8_PROOFS) {
+        const created = await this.harness.sessions.create();
+        await this.bindSessionScope(created.id, { project: proof.project, repository: proof.repo });
+        const task = {
+          repo: proof.repo, project: proof.project, branch: proof.branch,
+          session: created.id, startedAt: Date.now()
+        };
+        state.tasks.push(task);
+        await this.ctx.storage.put("g8-live-agent-v1", state);
+        const handle = this.harness.session(created.id);
+        await handle.setAgent("plan");
+        await handle.setModel(this.ai(MODEL_ID));
+        await handle.submit(g8LivePrompt(proof), { whenBusy: "followUp" });
+      }
+      state.status = "running";
+      await this.ctx.storage.put("g8-live-agent-v1", state);
+      return { status: "started" };
+    } catch (error) {
+      state.status = "failed";
+      state.reason = error instanceof Error ? error.message.slice(0, 180) : "No se pudo iniciar la prueba";
+      await this.ctx.storage.put("g8-live-agent-v1", state);
+      return { status: "failed", message: state.reason };
+    }
+  }
+
+  async getG8LiveReview(): Promise<unknown> {
+    const state = await this.ctx.storage.get<G8LiveCheck>("g8-live-agent-v1");
+    if (!state || state.version !== G8_LIVE_CHECK_VERSION) return { status: "not-started" };
+    if (state.status === "failed") return { status: "failed", reason: state.reason ?? "No se inició", results: [] };
+    const results = [];
+    let waiting = state.status === "starting" || state.tasks.length !== G8_PROOFS.length;
+    for (const task of state.tasks) {
+      const proof = G8_PROOFS.find(p => p.repo === task.repo && p.branch === task.branch);
+      if (!proof) return { status: "failed", reason: "Ámbito de la prueba inválido", results: [] };
+      try {
+        const handle = this.harness.session(task.session);
+        const [running, history] = await Promise.all([handle.busy(), handle.history()]);
+        const evidence = assessG8LiveHistory(history, proof);
+        const noAnswerYet = !history.some(message => message.type === "assistant");
+        const pending = running || (noAnswerYet && Date.now() - task.startedAt < 90_000);
+        if (pending && Date.now() - task.startedAt > 6 * 60_000) {
+          try { await handle.abort(); } catch { /* read-only check cannot run indefinitely */ }
+          results.push({ repo: proof.repo, status: "failed", reason: "El modelo superó seis minutos",
+            toolCalls: evidence.matchedTools });
+          continue;
+        }
+        if (pending) waiting = true;
+        results.push({
+          repo: proof.repo, branch: proof.branch, status: pending ? "running" :
+            evidence.passed ? "passed" : "failed",
+          reason: pending ? "Ejecutando revisión de solo lectura" : evidence.reason,
+          toolCalls: evidence.matchedTools,
+          completedTools: evidence.completedTools,
+          failedTools: evidence.failedTools
+        });
+      } catch {
+        results.push({ repo: proof.repo, status: "failed",
+          reason: "No se pudo recuperar el historial del agente; consulta los registros.",
+          toolCalls: 0 });
+      }
+    }
+    if (waiting) return { status: "running", results };
+    const passed = results.length === G8_PROOFS.length && results.every(result => result.status === "passed");
+    state.status = passed ? "passed" : "failed";
+    state.reason = passed ? undefined : "Alguna sesión no completó repo_review correctamente";
+    await this.ctx.storage.put("g8-live-agent-v1", state);
+    return { status: state.status, results, ...(passed ? {} : { reason: state.reason }) };
   }
 
   private readonly githubRunner = {
@@ -541,6 +634,26 @@ export default {
           }
         }
         return new Response("Method not allowed", { status: 405 });
+      }
+      if (url.pathname === "/api/dev/g8-agent-check") {
+        const object = url.searchParams.get("object");
+        try {
+          validateExportIdentity(object, "ses_root");
+          const host = env.OpenCodeAgent.getByName(object!);
+          if (request.method === "GET") {
+            return Response.json(await host.getG8LiveReview(), { headers: { "Cache-Control": "no-store" } });
+          }
+          if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+          if (!settingsOriginAllowed) {
+            return Response.json({ error: "Origin y JSON obligatorios" }, { status: 403 });
+          }
+          // A single explicit owner tap authorizes exactly two read-only real
+          // model tasks. No user-provided repo, branch, prompt or model.
+          return Response.json(await host.startG8LiveReview(), { headers: { "Cache-Control": "no-store" } });
+        } catch (error) {
+          return Response.json({ error: error instanceof Error ? error.message : "Error de prueba G8" },
+            { status: 422, headers: { "Cache-Control": "no-store" } });
+        }
       }
       if (url.pathname === "/api/dev/g8-verify" && request.method === "POST") {
         if (!settingsOriginAllowed) {
