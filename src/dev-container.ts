@@ -7,6 +7,7 @@ import { RESTORE_PROJECT_SOURCE } from "./restore-project";
 import { GITHUB_IMPORT_SOURCE } from "./github-import-source";
 import { githubSourceArchive } from "./github-import";
 import { validateIsolatedRegistration, type IsolatedProject } from "./project-container";
+import { assertRecoverableContainer, SNAPSHOT_TTL_MS } from "./snapshot-policy";
 
 /**
  * Opt-in Linux computer. There is exactly ONE named instance ("personal")
@@ -23,7 +24,6 @@ const INACTIVITY_MS = 15 * 60_000;
 const IDLE_MS = 5 * 60_000;
 const CHECK_MS = 60_000;
 const CHECKPOINT_MS = 2 * 60_000;
-const SNAPSHOT_TTL_MS = 30 * 24 * 60 * 60_000;
 // Shared PREVIEW_PORT selects the new server without destroying persistent Container data.
 
 export type LinuxResult = {
@@ -38,6 +38,7 @@ export type LinuxResult = {
 export class DevContainer extends DurableObject<Env> {
   private busy = 0;
   private previewStarting?: Promise<void>;
+  private starting?: Promise<NonNullable<DurableObjectState["container"]>>;
   private commandQueue: Promise<void> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -49,14 +50,18 @@ export class DevContainer extends DurableObject<Env> {
   }
 
   private async ensureRunning() {
+    this.starting ??= this.startOrRecover().finally(() => { this.starting = undefined; });
+    return await this.starting;
+  }
+
+  private async startOrRecover() {
     const container = this.ctx.container;
     if (!container) throw new Error("Linux Container binding is not deployed");
     if (!container.running) {
       const snapshotId = await this.ctx.storage.get<string>("snapshotId");
       const savedAt = await this.ctx.storage.get<number>("savedAt");
-      if (snapshotId && (!savedAt || Date.now() - savedAt >= SNAPSHOT_TTL_MS)) {
-        throw new Error("Linux snapshot is over 30 days old; verified recovery is required before continuing.");
-      }
+      const lastActivity = await this.ctx.storage.get<number>("lastActivity");
+      assertRecoverableContainer(snapshotId, savedAt, lastActivity, Date.now());
       container.start({
         ...(snapshotId
           ? { containerSnapshot: { id: snapshotId } }
