@@ -291,7 +291,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         {content?:string},{content?:string},
         {repo?:string;branch?:string;base?:string;truncated?:boolean;files?:{path:string}[]}
       ];
-      if(source.content!==G9_FIXED || original.content!==G9_TEST_SOURCE ||
+      if(typeof source.content!=="string" || source.content.trim()!==G9_FIXED.trim() || original.content!==G9_TEST_SOURCE ||
          comparison.repo?.toLowerCase()!==G9_REPO.toLowerCase() ||
          comparison.branch!==G9_BRANCH || comparison.base!=="main" ||
          comparison.truncated ||
