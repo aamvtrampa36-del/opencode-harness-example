@@ -217,7 +217,7 @@ export function workspacePlugin(
               if (scopeGuard) await scopeGuard(context.sessionID, {
                 kind: "github", repo: (input as { repo: string }).repo,
                 operation: action,
-                ...(["write", "pr", "review", "branch"].includes(action) ?
+                ...(["write", "pr", "review", "branch"].includes(action ?? "") ?
                   { branch: (input as { branch?: string }).branch } : {})
               });
               const result = await github.execute(input as GitHubAction);
