@@ -30,7 +30,8 @@ import { validateExportIdentity, sessionExportResponse } from "./session-export"
 import { archiveDownloadResponse, archiveError } from "./download-response";
 import { githubRepositoryDownload } from "./github-download";
 import { checkIsolation } from "./isolation-check";
-import { projectContainerName } from "./project-container";
+import { projectContainerName, repositoryProjectSlug } from "./project-container";
+import { checkIsolatedBackup } from "./isolated-backup-check";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -478,7 +479,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     let fileVerified = false;
     if (toolSequenceVerified) {
       try {
-        const dev = this.env.DEV.getByName("personal");
+        const dev = await this.isolatedProject(state.project);
         if (state.kind === "repair") {
           const [source, test] = await Promise.all([
             dev.inspect(state.project, "read", "calc.mjs") as Promise<{ contents?: string }>,
@@ -540,10 +541,21 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
   }
 
+  /** Route each project to its own Container, never the shared legacy VM. */
+  private async isolatedProject(project: string, sessionID?: string) {
+    const scope = sessionID ? await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID)) : undefined;
+    if (sessionID) assertScopedTool(scope, { kind: "linux", project });
+    const registry = this.env.DEV.getByName("personal");
+    await registry.reserveIsolatedProject(project, scope?.repository);
+    const dev = this.env.DEV.getByName(projectContainerName(project));
+    if (scope?.repository) await dev.prepareRepository(project, scope.repository);
+    return dev;
+  }
+
   readonly linuxRunner = {
-    run: async (project: string, command: string) => {
+    run: async (project: string, command: string, sessionID?: string) => {
       try {
-        const result = await this.env.DEV.getByName("personal").run(project, command);
+        const result = await (await this.isolatedProject(project, sessionID)).run(project, command);
         const incident = observeLinux(result);
         if (incident) await this.noteIncident(incident);
         return result;
@@ -553,9 +565,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
         throw error;
       }
     },
-    inspect: async (project: string, action: "list" | "read", path: string) => {
+    inspect: async (project: string, action: "list" | "read", path: string, sessionID?: string) => {
       try {
-        return await this.env.DEV.getByName("personal").inspect(project, action, path);
+        return await (await this.isolatedProject(project, sessionID)).inspect(project, action, path);
       } catch (error) {
         await this.noteIncident({ source: "linux", project, tool: "inspect_linux",
           code: classifyAgentFailure(error instanceof Error ? error.message : "") });
@@ -633,6 +645,10 @@ export default {
     try {
       const url = new URL(request.url);
       const personal = env.SETTINGS.getByName("personal");
+      const projectRegistry = env.DEV.getByName("personal");
+      const readableProject = async (name: string) =>
+        (await projectRegistry.isolatedProject(name))
+          ? env.DEV.getByName(projectContainerName(name)) : projectRegistry;
       const settingsOriginAllowed =
         request.headers.get("Origin") === url.origin &&
         request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json");
@@ -825,6 +841,19 @@ export default {
             { status: 422, headers: { "Cache-Control": "no-store" } });
         }
       }
+      if (url.pathname === "/api/dev/isolated-backup-probe" && request.method === "POST") {
+        if (url.hostname !== "opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev" || !settingsOriginAllowed) {
+          return Response.json({ error: "Solo disponible en staging con el mismo origen." }, { status: 403 });
+        }
+        try {
+          const nonce = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+          const result = await checkIsolatedBackup(name => env.DEV.getByName(name), nonce);
+          return Response.json(result, { headers: { "Cache-Control": "no-store" } });
+        } catch (error) {
+          return Response.json({ error: error instanceof Error ? error.message : "Falló la prueba." },
+            { status: 422, headers: { "Cache-Control": "no-store" } });
+        }
+      }
       if (url.pathname === "/api/dev/repository-import-probe" && request.method === "POST") {
         if (url.hostname !== "opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev" || !settingsOriginAllowed) {
           return Response.json({ error: "Solo disponible en staging con el mismo origen." }, { status: 403 });
@@ -900,13 +929,16 @@ export default {
         return new Response("Method not allowed", { status: 405 });
       }
       if (url.pathname === "/api/dev/backups" && request.method === "GET") {
-        return Response.json({ backups: await env.DEV.getByName("personal").listBackups() },
+        const isolated = await projectRegistry.listIsolatedProjects();
+        const others = await Promise.all(isolated.map(p =>
+          env.DEV.getByName(projectContainerName(p.project)).listBackups()));
+        return Response.json({ backups: [...await projectRegistry.listBackups(), ...others.flat()] },
           { headers: { "Cache-Control": "no-store" } });
       }
       const durableBackup = url.pathname.match(/^\/api\/dev\/backup\/([a-z][a-z0-9-]{0,39})$/);
       if (durableBackup) {
-        const dev = env.DEV.getByName("personal");
         const project = durableBackup[1];
+        const dev = await readableProject(project);
         if (request.method === "GET") return await dev.downloadSavedBackup(project);
         if (request.method === "POST") {
           if (request.headers.get("Origin") !== url.origin ||
@@ -937,17 +969,28 @@ export default {
           const raw = await request.text();
           if (raw.length > 300) return Response.json({ error: "Request too large" }, { status: 413 });
           const input = JSON.parse(raw) as { target?: string };
-          return Response.json({ restoration:
-            await env.DEV.getByName("personal").restoreSavedBackup(restoreMatch[1], input.target ?? "")
-          }, { headers: { "Cache-Control": "no-store" } });
+          const source = restoreMatch[1], target = input.target ?? "";
+          const sourceDev = await readableProject(source);
+          const metadata = (await sourceDev.listBackups()).find(item => item.project === source);
+          if (!metadata) throw Error("No hay respaldo guardado");
+          const archive = await sourceDev.downloadSavedBackup(source);
+          if (!archive.ok) throw Error("No se pudo leer el respaldo");
+          const bytes = new Uint8Array(await archive.arrayBuffer());
+          await projectRegistry.reserveIsolatedProject(target);
+          const targetDev = env.DEV.getByName(projectContainerName(target));
+          const restoration = await targetDev.restoreExternalBackup(source, target, bytes, metadata.sha256);
+          return Response.json({ restoration }, { headers: { "Cache-Control": "no-store" } });
         } catch (error) {
           return Response.json({ error: error instanceof Error ? error.message : "Restore failed" },
             { status: 422, headers: { "Cache-Control": "no-store" } });
         }
       }
       if (url.pathname === "/api/dev/projects" && request.method === "GET") {
+        const isolated = await projectRegistry.listIsolatedProjects();
+        const projects = await Promise.all(isolated.map(p =>
+          env.DEV.getByName(projectContainerName(p.project)).listProjects()));
         return Response.json({
-          projects: await env.DEV.getByName("personal").listProjects()
+          projects: [...await projectRegistry.listProjects(), ...projects.flat()]
         }, { headers: { "Cache-Control": "no-store" } });
       }
       if (url.pathname === "/api/dev/status" && request.method === "GET") {
@@ -971,7 +1014,7 @@ export default {
             const selected = await env.OpenCodeAgent.getByName(object!).sessionRepository(session!);
             const normalizedProject = selected.split("/")[1].toLowerCase()
               .replace(/[^a-z0-9-]+/g, "-").replace(/-+$/, "").slice(0, 40);
-            if (normalizedProject !== project) {
+            if (normalizedProject !== project && repositoryProjectSlug(selected) !== project) {
               return archiveError(403, "El repositorio de esta sesión no coincide con el proyecto solicitado.");
             }
             const token = (env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN || await personal.getGitHubKey();
@@ -982,7 +1025,7 @@ export default {
           }
         }
         try {
-          const file = await env.DEV.getByName("personal").download(project);
+          const file = await (await readableProject(project)).download(project);
           return await archiveDownloadResponse(project, file, "tar.gz");
         } catch {
           return archiveError(502, "No se pudo preparar el archivo del Container. Revisa que existan archivos locales o descarga desde el repositorio GitHub seleccionado.");
@@ -995,7 +1038,7 @@ export default {
         }
         const project = previewMatch[1];
         const path = previewMatch[2] || "index.html";
-        const dev = env.DEV.getByName("personal");
+        const dev = await readableProject(project);
         const result = await dev.preview(project, path);
         const headers = new Headers(result.headers);
         let responseBody: BodyInit | null = request.method === "HEAD" ? null : result.body;
@@ -1024,6 +1067,29 @@ export default {
           headers
         });
       }
+      if (url.pathname === "/api/dev/review" && request.method === "POST") {
+        if (!settingsOriginAllowed) return Response.json({ error: "Origen no permitido" }, { status: 403 });
+        const body = await request.text();
+        if (body.length > 300) return Response.json({ error: "Solicitud demasiado grande" }, { status: 413 });
+        const { project } = JSON.parse(body) as { project: string };
+        if (!await projectRegistry.isolatedProject(project)) {
+          const listing = await projectRegistry.inspect(project, "list", "") as {
+            entries: { name: string; type: string }[]
+          };
+          return Response.json({ project, exitCode: 0, stderr: "", truncated: false,
+            stdout: "Proyecto anterior: listado de solo lectura; no es un diff Git.\\n" +
+              listing.entries.map(item => item.name + (item.type === "directory" ? "/" : "")).join("\\n") },
+            { headers: { "Cache-Control": "no-store" } });
+        }
+        const command = "if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then " +
+          "printf 'ARCHIVOS MODIFICADOS\\n'; git status --short --untracked-files=normal; " +
+          "printf '\\nRESUMEN DE DIFERENCIAS\\n'; git diff --stat; " +
+          "printf '\\nÚLTIMO COMMIT\\n'; git log -1 --format='%h %s'; " +
+          "else printf 'Sin repositorio Git: listado actual de archivos (no es un diff).\\n'; " +
+          "find . -maxdepth 2 -type f -not -path './node_modules/*' | sort | head -80; fi";
+        return Response.json(await (await readableProject(project)).run(project, command),
+          { headers: { "Cache-Control": "no-store" } });
+      }
       if (url.pathname === "/api/dev/run" && request.method === "POST") {
         // Cloudflare Access protects this same-origin endpoint. A third-party
         // website cannot drive the private container with a cross-site POST.
@@ -1037,7 +1103,10 @@ export default {
         }
         const { project, command } = JSON.parse(body) as { project: string; command: string };
         try {
-          const result = await env.DEV.getByName("personal").run(project, command);
+          if (!await projectRegistry.isolatedProject(project)) {
+            await projectRegistry.reserveIsolatedProject(project);
+          }
+          const result = await env.DEV.getByName(projectContainerName(project)).run(project, command);
           const incident = observeLinux(result);
           if (incident) {
             try { await personal.recordIncident(incident); }

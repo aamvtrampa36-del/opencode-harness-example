@@ -17,8 +17,8 @@ import { executeBoundRepositoryAction } from "./scoped-github";
 export type GitHubRunner = { execute(input: GitHubAction): Promise<unknown> };
 
 export type LinuxRunner = {
-  inspect(project: string, action: "list" | "read", relativePath: string): Promise<unknown>;
-  run(project: string, command: string): Promise<{
+  inspect(project: string, action: "list" | "read", relativePath: string, sessionID?: string): Promise<unknown>;
+  run(project: string, command: string, sessionID?: string): Promise<{
     project: string;
     exitCode: number | null;
     stdout: string;
@@ -189,7 +189,7 @@ export function workspacePlugin(
             async execute(input, context) {
               const p = input as { project: string; action: "list" | "read"; path: string };
               if (scopeGuard) await scopeGuard(context.sessionID, { kind: "linux", project: p.project });
-              return { content: JSON.stringify(await linux.inspect(p.project, p.action, p.path)) };
+              return { content: JSON.stringify(await linux.inspect(p.project, p.action, p.path, context.sessionID)) };
             }
           });
         }

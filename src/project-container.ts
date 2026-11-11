@@ -1,8 +1,17 @@
 import { validateProject } from "./dev-guard";
+import { normalizeOwnedRepository } from "./github";
 
 /** A distinct Durable Object name ensures a distinct Container per project. */
 export function projectContainerName(project: unknown): string {
   return "project-v1:" + validateProject(project);
+}
+
+/** New repository work uses names distinct from legacy shared workspaces. */
+export function repositoryProjectSlug(repository: string): string {
+  const repo = normalizeOwnedRepository(repository);
+  const slug = repo.split("/")[1].toLowerCase().replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "").slice(0, 35);
+  return validateProject("repo-" + slug);
 }
 
 export type IsolatedProject = { project: string; repository?: string };

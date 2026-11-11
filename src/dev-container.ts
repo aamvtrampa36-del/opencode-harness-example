@@ -114,6 +114,9 @@ export class DevContainer extends DurableObject<Env> {
       const key = "isolated-project-v1:" + id;
       const old = await tx.get<IsolatedProject>(key);
       const legacy = (await tx.get<{name: string}[]>("projectInventory")) ?? [];
+      if (!old && await tx.get("backup-meta:" + id)) {
+        throw Error("Ya existe un respaldo anterior con este nombre; usa otro proyecto");
+      }
       const record = validateIsolatedRegistration(legacy, old, {
         project: id, ...(repository ? { repository } : {})
       });
@@ -431,6 +434,46 @@ export class DevContainer extends DurableObject<Env> {
         "X-Content-Type-Options": "nosniff"
       }
     });
+  }
+
+  /** Restore an already verified backup into this separate Container. */
+  async restoreExternalBackup(sourceProject: string, targetProject: string, data: Uint8Array, expected: string) {
+    const source = validateProject(sourceProject), target = validateProject(targetProject);
+    if (source === target || !/^[a-f0-9]{64}$/.test(expected) ||
+        data.byteLength > MAX_ARCHIVE_BYTES || await sha256Hex(data) !== expected) {
+      throw Error("El respaldo o el destino no son válidos");
+    }
+    const previous = this.commandQueue;
+    let release = () => {};
+    this.commandQueue = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    try {
+      const container = await this.ensureRunning();
+      this.busy++;
+      await this.ctx.storage.put("lastActivity", Date.now());
+      try {
+        const stdin = new ReadableStream<Uint8Array>({
+          start(controller) { controller.enqueue(data); controller.close(); }
+        });
+        const process = await container.exec(
+          ["node", "--input-type=module", "-e", RESTORE_PROJECT_SOURCE, source, target], { stdin }
+        );
+        const result = await process.output();
+        if (result.exitCode !== 0) throw Error("Restauración rechazada: " +
+          new TextDecoder().decode(result.stderr).slice(-350));
+        const receipt = JSON.parse(new TextDecoder().decode(result.stdout)) as {
+          source: string; target: string; files: number; sha256: string; bytes: number
+        };
+        if (receipt.source !== source || receipt.target !== target ||
+            !/^[a-f0-9]{64}$/.test(receipt.sha256)) throw Error("Resultado de restauración inválido");
+        await this.recordProject(target);
+        return { ...receipt, archiveSha256: expected };
+      } finally {
+        this.busy--;
+        await this.ctx.storage.put("lastActivity", Date.now());
+        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      }
+    } finally { release(); }
   }
 
   /**

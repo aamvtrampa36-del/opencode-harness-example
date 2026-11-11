@@ -1,6 +1,7 @@
 import type { AgentMode } from "./protocol";
 import { readSessionMode, saveSessionMode } from "./session-mode";
 import { isInternalReminder } from "./message-display";
+import { repositoryProjectSlug } from "./project-container";
 import { SettingsPanel } from "./settings-panel";
 import { MODEL_PRESETS, isModelPreset, type ModelPresetID } from "./model-presets";
 import type { Specialization } from "./specializations";
@@ -353,6 +354,8 @@ function App() {
   const [isolationResult, setIsolationResult] = useState("");
   const [importProbeBusy, setImportProbeBusy] = useState(false);
   const [importProbeResult, setImportProbeResult] = useState("");
+  const [isolatedBackupBusy, setIsolatedBackupBusy] = useState(false);
+  const [isolatedBackupResult, setIsolatedBackupResult] = useState("");
   const [g8Result, setG8Result] = useState("");
   const [g8LiveStatus, setG8LiveStatus] = useState("not-started");
   const [g8LiveMessage, setG8LiveMessage] = useState("");
@@ -579,16 +582,10 @@ function App() {
     setProjectError("");
     setProjectReview(null);
     try {
-      const command = "if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then " +
-        "printf 'ARCHIVOS MODIFICADOS\\n'; git status --short --untracked-files=normal; " +
-        "printf '\\nRESUMEN DE DIFERENCIAS\\n'; git diff --stat; " +
-        "printf '\\nÚLTIMO COMMIT\\n'; git log -1 --format='%h %s'; " +
-        "else printf 'Sin repositorio Git: listado actual de archivos (no es un diff).\\n'; " +
-        "find . -maxdepth 2 -type f -not -path './node_modules/*' | sort | head -80; fi";
-      const response = await fetch("/api/dev/run", {
+      const response = await fetch("/api/dev/review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project: name, command })
+        body: JSON.stringify({ project: name })
       });
       const result = await response.json() as {
         exitCode?: number | null; stdout?: string; stderr?: string; error?: string
@@ -664,6 +661,20 @@ function App() {
     } catch (error) {
       setImportProbeResult("No se completó la importación: " + (error instanceof Error ? error.message : "Error"));
     } finally { setImportProbeBusy(false); }
+  };
+  const verifyIsolatedBackup = async () => {
+    setIsolatedBackupBusy(true);
+    setIsolatedBackupResult("");
+    try {
+      const response = await fetch("/api/dev/isolated-backup-probe", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+      });
+      const result = await response.json() as { passed?: boolean; error?: string };
+      if (!response.ok || !result.passed) throw Error(result.error ?? "Prueba incompleta");
+      setIsolatedBackupResult("Respaldo y restauración verificados entre dos Containers de prueba.");
+    } catch (error) {
+      setIsolatedBackupResult("No se verificó la restauración: " + (error instanceof Error ? error.message : "Error"));
+    } finally { setIsolatedBackupBusy(false); }
   };
   /** One explicit tap runs two cheap, real, read-only agent sessions on staging. */
   const fetchG8LiveStatus = async () => {
@@ -770,8 +781,7 @@ function App() {
       setProjectError("Elige un repositorio autorizado en Configuración.");
       return;
     }
-    const slug = repo.split("/")[1].toLowerCase().replace(/[^a-z0-9-]+/g, "-")
-      .replace(/-+$/, "").slice(0, 40);
+    const slug = repositoryProjectSlug(repo);
     create().then(next => {
       choose(next);
       localStorage.setItem(PROJECT_PREFIX + next, slug);
@@ -1189,6 +1199,14 @@ function App() {
                     </button>
                     <p className="text-xs text-kumo-subtle">Inicia dos Containers temporales con archivos sintéticos y puede generar consumo de Cloudflare.</p>
                     {isolationResult ? <p role="status" className="text-sm">{isolationResult}</p> : null}</> : null}
+                    {window.location.hostname === "opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev" ? <>
+                      <button type="button" disabled={isolatedBackupBusy}
+                        className="rounded border border-kumo-line px-3 py-2 text-sm disabled:opacity-50"
+                        onClick={() => void verifyIsolatedBackup()}>
+                        {isolatedBackupBusy ? "Verificando respaldo…" : "Probar respaldo aislado en staging"}
+                      </button>
+                      {isolatedBackupResult ? <p role="status" className="text-sm">{isolatedBackupResult}</p> : null}
+                    </> : null}
                     {window.location.hostname === "opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev" && repository ? <>
                       <button type="button" disabled={importProbeBusy}
                         className="rounded border border-kumo-line px-3 py-2 text-sm disabled:opacity-50"
