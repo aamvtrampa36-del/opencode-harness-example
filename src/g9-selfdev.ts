@@ -87,11 +87,13 @@ export function assessG9History(messages: readonly unknown[]): G9Evidence {
         [G9_SOURCE,G9_TEST_PATH].every(path=>data.files.some((x:any)=>x.path===path)))reviewAt=pos;
     }
   }
+  // A successful test before a code change, or PR before review, is NOT
+  // evidence of a complete engineering cycle.
   const observedRed=redAt>=0;
-  const observedGreenAfterRed=greenAt>redAt && redAt>=0;
   const actualAgentWrite=writeAt>redAt && redAt>=0;
-  const actualAgentReview=reviewAt>writeAt && writeAt>=0;
-  const actualAgentDraftPR=prAt>writeAt && writeAt>=0;
+  const observedGreenAfterRed=greenAt>writeAt && actualAgentWrite;
+  const actualAgentReview=reviewAt>greenAt && observedGreenAfterRed;
+  const actualAgentDraftPR=prAt>reviewAt && actualAgentReview;
   return {passed:observedGreenAfterRed && actualAgentWrite && actualAgentReview && actualAgentDraftPR,
     observedRed,observedGreenAfterRed,actualAgentWrite,actualAgentReview,actualAgentDraftPR,
     toolCalls,failedTools,prUrl};
