@@ -70,6 +70,17 @@ describe("in-flight session configuration", () => {
     expect(x.prompts).toHaveLength(1);
   });
 
+  test("reports unfinished work as busy even if the underlying busy flag is stale", async () => {
+    const x = setup(), s = x.makeSockets();
+    await x.send(s, "review");
+    x.makeBusyStale();
+    x.frames.length = 0;
+    const socket = { tags: ["opencode-session:ses_root"], readyState: 1, send: (value: string) => x.frames.push(value) } as unknown as Connection;
+    await s.options().handlers.onMessage(socket, JSON.stringify({ type: "resync" }));
+    const snapshot = x.frames.map(frame => JSON.parse(frame)).find(frame => frame.type === "snapshot");
+    expect(snapshot.busy).toBe(true);
+  });
+
   test("rejects changes when the running configuration is unknown", async () => {
     const x = setup(), first = x.makeSockets();
     await x.send(first, "review");
