@@ -662,7 +662,7 @@ function App() {
     try {
       const response = await fetch("/api/dev/repository-import-probe", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ object, session })
+        body: JSON.stringify({ object, session, repository })
       });
       const result = await response.json() as {
         receipt?: { repository: string; commit: string; files: number }; error?: string
