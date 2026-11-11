@@ -116,4 +116,27 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
     )).rejects.toThrow("proyecto distinto");
     expect(runs).toEqual([]);
   });
+
+  test("project sessions cannot read the shared global workspace", async () => {
+    const toolSpecs = new Map<string, any>();
+    const plugin = workspacePlugin({} as Workspace, {}, undefined, undefined,
+      async (_session, action) => assertScopedTool({project:"cdf-cloud-engine"}, action));
+    await plugin.setup({
+      agent: {transform: async () => undefined},
+      tool: {transform: async (cb: (ed:any)=>unknown) => cb({
+        remove: () => undefined,
+        add: (spec: any) => toolSpecs.set(spec.name,spec)
+      })}
+    } as any);
+    expect(toolSpecs.has("read")).toBe(true);
+    await expect(toolSpecs.get("read").execute(
+      {path:"/other-project/secret.txt"}, {id:"test-read",sessionID:"ses_test",agent:"plan"}
+    )).rejects.toThrow("workspace");
+    for (const name of ["ls", "find", "grep", "glob", "stat"]) {
+      if (!toolSpecs.has(name)) continue;
+      await expect(toolSpecs.get(name).execute(
+        {}, {id:"test-" + name,sessionID:"ses_test",agent:"plan"}
+      )).rejects.toThrow("workspace");
+    }
+  });
 });
