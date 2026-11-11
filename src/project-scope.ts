@@ -56,7 +56,7 @@ export function assertScopedTool(scope: ProjectScope | undefined, tool: ScopedTo
     return;
   }
   // The global persistent workspace is not project-isolated. While a
-  // project-bound task runs, direct generic writes/exec are disabled;
+  // project-bound task runs, all generic reads and writes are disabled;
   // use the scoped Linux project or the scoped GitHub bridge instead.
-  throw new Error("Escritura global de workspace desactivada para sesiones de proyectos");
+  throw new Error("Herramienta de workspace global desactivada para sesiones de proyectos");
 }
