@@ -48,3 +48,11 @@ Después ejecuta con el agente una tarea real y aislada en CDF Cloud y otra en W
 
 Actualiza el informe, cierra staging únicamente si se cumplen los criterios y prepara respaldo/restauración de datos antes de proponer la publicación controlada. Trabaja en ramas aisladas; no fusionar, tocar canon ni publicar en producción sin autorización específica. Si necesitas al titular, termina primero el trabajo independiente y pide una sola acción sencilla desde Android.
 ```
+
+
+## Avance de reanudación — 11 noviembre 2026
+
+- Se retomó la revisión íntegra y el código desde staging. La contención del shell sigue activa y el Container anterior, sus proyectos y sus respaldos no se han migrado ni borrado.
+- Una prueba **real** en staging inició dos Containers identificados por proyecto y usó archivos sintéticos. En la UI se observó «Prueba superada»: el segundo no pudo leer el archivo del primero por ruta directa ni enlace, y las escrituras de prueba en su propia vista no alteraron el primero. Cloudflare listó dos instancias distintas. Prueba en commit `f25b3629f4049161399f87406a759b0fdcbba03f`, CI #327 y build `0bd878c8-95a7-4d82-8b3b-49b10186df32`. Esto demuestra ese ensayo, no que el agente ya esté conectado ni que se haya probado la recuperación.
+- [PR #32](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/32) continúa en borrador, sin merge. Se preparó un importador de archivos autenticado en Worker, que fija el commit y entrega únicamente los bytes al Container. La extracción rechaza enlaces y sobrescritura; prueba local y CI #329 aprobadas para `5baad969717cfb3473eae8f791847c5a53f0cbdd`. La importación real y su integración están pendientes.
+- La V1 continúa **bloqueada**. No retirar la contención hasta completar importación real, enrutamiento aislado, persistencia/restauración y pruebas integrales; no confundir esta prueba con el cierre.
