@@ -20,7 +20,7 @@ import { MODEL_PRESETS } from "./model-presets";
 import { GitHubBridge } from "./github";
 import { verifyG8Proofs, G8_PROOFS } from "./g8-smoke";
 import { assessG8LiveHistory, g8LivePrompt, G8_LIVE_CHECK_VERSION, type G8LiveCheck } from "./g8-live-agent";
-import { G9_PROOF_VERSION, G9_REPO, G9_BRANCH, G9_PROJECT, G9_SOURCE, G9_TEST_PATH, G9_BROKEN, G9_FIXED, G9_TEST_SOURCE, assessG9History, g9AgentPrompt, type G9ProofState } from "./g9-selfdev";
+import { G9_PROOF_VERSION, G9_REPO, G9_BRANCH, G9_PROJECT, G9_SOURCE, G9_TEST_PATH, G9_BROKEN, G9_FIXED, G9_TEST_SOURCE, assessG9History, g9AgentPrompt, assertG9BoundGitHubOperation, type G9ProofState } from "./g9-selfdev";
 import { assertScopedTool, requireSameScope, scopeStorageKey, validateProjectScope, type ProjectScope, type ScopedToolAction } from "./project-scope";
 import { remoteMcpPlugin } from "./mcp-plugin";
 import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
@@ -78,6 +78,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async enforceSessionScope(sessionID: string, action: ScopedToolAction): Promise<void> {
     const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
     assertScopedTool(scope, action);
+    if(action.kind === "github"){
+      const g9 = await this.ctx.storage.get<G9ProofState>("g9-selfdev-v1");
+      if(g9?.session === sessionID) {
+        assertG9BoundGitHubOperation(action.operation, action.branch);
+      }
+    }
   }
 
   /** Trusted lookup for read-only GitHub tools. No LLM-provided repository. */
