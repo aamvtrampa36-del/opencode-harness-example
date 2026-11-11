@@ -1,6 +1,6 @@
 # OpenCode Cloud — G9: ejecución y preparación de entrega V1 (11 noviembre 2026)
 
-**ESTADO: G9 BLOQUEADO PARA CIERRE DEFINITIVO.** Esta intervención completó código, CI, despliegue de staging y preparación de una candidata reversible, pero quedan dos gates que no se pueden dar por aprobados: **(A)** prueba de cambio de código por el agente iniciada desde una sesión Android real, y **(B)** definición y cobertura documental de las «12 pruebas E2E del encargo». La V1 NO está publicada.
+**ESTADO VIGENTE (11 noviembre 2026): G9 BLOQUEADO ÚNICAMENTE PARA CIERRE DOCUMENTAL DE LAS 12 E2E DEL ENCARGO.** El propietario completó en Android la aceptación real de desarrollo autónomo; GitHub confirmó la PR borrador #30 creada por el agente, su diff acotado y CI #300 verde. Ver §9, cuyo resultado prevalece sobre los estados anteriores de este informe. La lista literal de doce casos E2E no se encuentra disponible. La V1 NO está publicada.
 
 ## 1. Condición obligatoria y recuperación
 
@@ -96,3 +96,28 @@ Durante la revisión de la nueva prueba se detectó un riesgo concreto: la sesi�
 La rama candidata `release/g9-v1-candidate-20261111` se movió mediante avance directo seguro desde `f5fe60a9` a **`ff5c88e7`**, sin force ni merge. Esta referencia sigue siendo **candidata preliminar no aprobada**: falta el resultado auténtico del agente y la lista original de doce pruebas E2E.
 
 **Dictamen sin cambios:** G9 continúa **BLOQUEADO PARA CIERRE**, pero el código que permite la última prueba real está listo, verificado y restringido a staging; no se ha disparado una tarea de inferencia ni creado una PR del agente en G9.
+
+
+## 9. Aceptación funcional real G9 desde Android y PR creada por agente (11 noviembre 2026)
+
+**GATE DE AUTODESARROLLO: APROBADO EN STAGING.**
+
+El propietario realizó desde Brave/Android la única intervención solicitada y aportó captura de la pantalla privada de OpenCode Cloud. El panel **G9 · Desarrollo autónomo** mostraba el botón de repetición deshabilitado y el mensaje:
+
+> Desarrollo autónomo G9 aprobado: arreglo, prueba roja→verde, commit, diff, PR borrador y verificación independiente. https://github.com/aamvtrampa36-del/opencode-harness-example/pull/30
+
+El mensaje solo se genera si el servidor devolvió `status: "passed"` tras leer el historial real de herramientas del agente, comprobar el orden rojo → escritura GitHub → verde → revisión → PR borrador y ejecutar una verificación independiente del contenido de los archivos y del test Node. La captura es evidencia de sesión autenticada aportada por el titular; **esta conexión no leyó directamente el historial interno de Durable Object ni controló su navegador**.
+
+**Verificación independiente en GitHub**:
+
+- [PR #30](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/30), `test(g9): agent fixes isolated red-to-green fixture`: `state=open`, **`draft=true`**, `merged=false`. Rama `opencode/g9-selfdev-20261111` frente a `main`, tres commits por delante, cero por detrás.
+- HEAD `b7fdfa2efac87ff5c17d877b01fc1fa314f9880b`, commit del agente `fix(g9): correct isolated add fixture`. La PR contiene solo **dos archivos añadidos**: `tests/g9-proof/add.mjs` (función `add` corregida con suma) y `tests/g9-proof/add.test.mjs` (test Node de `add(2,3) === 5`).
+- La descripción de PR escrita por el agente registra un Linux rojo (`exitCode=1`, `-1 !== 5`) y verde (`exitCode=0`), así como la lectura, edición, comprobación GitHub y revisión. La evidencia primaria de ejecución no se reduce a esa descripción: el verificador de la aplicación rechazaba resultados de texto sin tool calls válidas, y la captura acredita su estado aprobado.
+- [GitHub Actions #300](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42975249373) para ese HEAD: **`completed/success`**, pruebas independientes adicionales sobre la rama del agente. El diff GitHub `main...opencode/g9-selfdev-20261111` coincide con la PR; no hay escrituras productivas.
+- La pantalla de Android estaba visualizando un proyecto CDF, pero **la prueba G9 es autónoma y utiliza deliberadamente un proyecto Linux y un repositorio OpenCode definidos exclusivamente por el servidor**, en una sesión de agente propia. Por tanto la selección visible del proyecto en el chat no implica que el agente haya escrito en CDF.
+
+**Criterios definitivamente satisfechos:** ejecución real iniciada por propietario, código escrito por el agente, test previo fallido realmente observado, reparación, test verde, diff independiente, PR draft, aislamiento por repo/rama, CI externa, reversibilidad en rama y ausencia de merge. No repetir la prueba ni abrir más PR de ensayo.
+
+**Único gate obligatorio pendiente para G9:** la **definición y cobertura verificable de las 12 E2E del encargo original**. Ese encargo no aparece íntegro en el informe maestro ni en el plan. Recuperarlo o recibir autorización explícita para una matriz sustitutiva. No declarar G9 APROBADO, liberar V1 ni publicar producción hasta satisfacer ese requisito. G8 permanece cerrado, no se reabre.
+
+**Siguiente acción específica:** solicitar el encargo original que enumera los 12 casos o la autorización expresa para derivarlos del informe maestro, reutilizar G1–G9, comprobar los casos residuales y preparar dictamen G9. La PR #30 queda en borrador: es prueba, no una funcionalidad que deba fusionarse.
