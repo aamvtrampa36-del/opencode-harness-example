@@ -104,6 +104,22 @@ export class OpenCodeSessionSockets {
   >();
   /** Sessions with a snapshot being sent, and whether another is due. */
   readonly #snapshots = new Map<OpenCodeSessionId, boolean>();
+  readonly #submitLocks = new Map<OpenCodeSessionId, Promise<void>>();
+  readonly #activeConfigurations = new Map<OpenCodeSessionId, { mode: string; model: string | undefined }>();
+
+  /** Serialize configuration and submit for one session, including concurrent sockets. */
+  async #serializeSubmit<T>(session: OpenCodeSessionId, work: () => Promise<T>): Promise<T> {
+    const prior = this.#submitLocks.get(session) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    this.#submitLocks.set(session, current);
+    await prior;
+    try { return await work(); }
+    finally {
+      release();
+      if (this.#submitLocks.get(session) === current) this.#submitLocks.delete(session);
+    }
+  }
 
   constructor(
     harness: OpenCodeHarness,
@@ -196,7 +212,9 @@ export class OpenCodeSessionSockets {
       return;
     }
     try {
-      const result = await this.#dispatch(connection, session, message);
+      const result = message.type === "submit"
+        ? await this.#serializeSubmit(session, () => this.#dispatch(connection, session, message))
+        : await this.#dispatch(connection, session, message);
       if (message.id !== undefined) {
         send(connection, { type: "result", id: message.id, result });
       }
@@ -227,28 +245,35 @@ export class OpenCodeSessionSockets {
             `Prompts are limited to ${MAX_PROMPT_LENGTH.toLocaleString()} characters`
           );
         }
-        // Scope is bound by the server before any tool-capable inference.
-        // The project/repository association remains fixed for this session.
-        if (message.project !== undefined || message.repository !== undefined) {
-          await this.#bindScope(session, { project: message.project, repository: message.repository });
-        }
-        // A preset is an explicit selection. The normal baseline does not
-        // require an OpenRouter secret; other models fail closed.
-        if (message.model !== undefined) {
-          if (!isModelPreset(message.model)) {
-            throw new Error("Unknown model preset");
-          }
-          const preset = MODEL_PRESETS[message.model];
-          if (preset.providerID === "openrouter" && !(await this.#openRouterAvailable())) {
-            throw new Error("Conecta OpenRouter desde Configuración antes de seleccionar ese modelo.");
-          }
-          await handle.setModel({ providerID: preset.providerID, id: preset.id });
-        }
         const mode = message.mode ?? "build";
         if (!["build", "plan", "review", "creative"].includes(mode)) {
           throw new Error("Modo de agente no reconocido");
         }
-        await handle.setAgent(mode === "build" ? "build" : "plan");
+        if (message.model !== undefined && !isModelPreset(message.model)) {
+          throw new Error("Unknown model preset");
+        }
+        // A queued or steering message must never change the permissions or
+        // model of a running operation. After a restart an unknown configuration
+        // fails closed until that operation completes.
+        const running = await handle.busy();
+        const active = this.#activeConfigurations.get(session);
+        if (running && (!active || active.mode !== mode || active.model !== message.model)) {
+          throw new Error("Espera a que termine la tarea antes de cambiar el modo o modelo.");
+        }
+        // Scope is fixed before inference; validate it for queued work too.
+        if (message.project !== undefined || message.repository !== undefined) {
+          await this.#bindScope(session, { project: message.project, repository: message.repository });
+        }
+        if (!running) {
+          if (message.model !== undefined) {
+            const preset = MODEL_PRESETS[message.model];
+            if (preset.providerID === "openrouter" && !(await this.#openRouterAvailable())) {
+              throw new Error("Conecta OpenRouter desde Configuración antes de seleccionar ese modelo.");
+            }
+            await handle.setModel({ providerID: preset.providerID, id: preset.id });
+          }
+          await handle.setAgent(mode === "build" ? "build" : "plan");
+        }
         let specializationPrompt = "";
         if (message.specialization !== undefined) {
           if (typeof message.specialization !== "string" || !/^[a-z][a-z0-9-]{1,39}$/.test(message.specialization)) {
@@ -266,6 +291,7 @@ export class OpenCodeSessionSockets {
         const receipt = await handle.submit(specializationPrompt + prefixed + message.text, {
           whenBusy: message.whenBusy === "steer" ? "steer" : "followUp"
         });
+        if (!running) this.#activeConfigurations.set(session, { mode, model: message.model });
         await this.#broadcastSnapshot(session);
         // Once the operation settles, send the final transcript and stop
         // watching if nothing else is running. This holds even if the watch
@@ -361,6 +387,7 @@ export class OpenCodeSessionSockets {
       send(socket, { type: "sessions", sessions });
     }
     if (!(await this.#harness.session(session).busy())) {
+      this.#activeConfigurations.delete(session);
       await this.#unwatch(session);
     }
   }
