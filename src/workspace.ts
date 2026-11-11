@@ -215,7 +215,10 @@ export function workspacePlugin(
               const action = (input as { action?: string }).action;
               assertAgentToolPermission(context.agent, "github", { action });
               if (scopeGuard) await scopeGuard(context.sessionID, {
-                kind: "github", repo: (input as { repo: string }).repo
+                kind: "github", repo: (input as { repo: string }).repo,
+                operation: action,
+                ...(["write", "pr", "review", "branch"].includes(action) ?
+                  { branch: (input as { branch?: string }).branch } : {})
               });
               const result = await github.execute(input as GitHubAction);
               return { content: JSON.stringify(result) };
