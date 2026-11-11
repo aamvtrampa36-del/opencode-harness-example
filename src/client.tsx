@@ -348,6 +348,9 @@ function App() {
   const [authorizedRepos, setAuthorizedRepos] = useState<string[]>([]);
   const [g8Busy, setG8Busy] = useState(false);
   const [g8Result, setG8Result] = useState("");
+  const [g8LiveStatus, setG8LiveStatus] = useState("not-started");
+  const [g8LiveMessage, setG8LiveMessage] = useState("");
+  const [g8LiveBusy, setG8LiveBusy] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
@@ -613,6 +616,57 @@ function App() {
       setG8Busy(false);
     }
   };
+  /** One explicit tap runs two cheap, real, read-only agent sessions on staging. */
+  const fetchG8LiveStatus = async () => {
+    const response = await fetch("/api/dev/g8-agent-check?object=" + encodeURIComponent(object),
+      { cache: "no-store" });
+    if (!response.ok) throw new Error("No se pudo consultar la prueba del agente");
+    const data = await response.json() as {
+      status?: string; reason?: string;
+      results?: {repo: string;status: string;reason: string;toolCalls: number}[];
+    };
+    const current = data.status ?? "not-started";
+    setG8LiveStatus(current);
+    if (current === "passed") {
+      setG8LiveMessage("G8 verificado: ambos agentes reales ejecutaron repo_review, devolvieron los diffs correctos y no modificaron archivos.");
+    } else if (current === "failed") {
+      setG8LiveMessage("G8 pendiente: " + (data.results?.filter(x=>x.status==="failed")
+        .map(x=>x.repo.split("/")[1] + ": " + x.reason).join("; ") || data.reason || "No se completó la prueba real"));
+    } else if (current === "running") {
+      setG8LiveMessage("Comprobando dos repositorios con el modelo real (solo lectura). " +
+        (data.results?.filter(x=>x.status === "passed").length ?? 0) + " de 2 revisiones completadas.");
+    }
+    return data;
+  };
+  const startG8Live = async () => {
+    setG8LiveBusy(true);
+    setG8LiveMessage("");
+    try {
+      const response = await fetch("/api/dev/g8-agent-check?object=" + encodeURIComponent(object), {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+      });
+      const result = await response.json() as {status?:string;message?:string;error?:string};
+      if (!response.ok || result.status === "rejected" || result.status === "failed") {
+        throw new Error(result.message ?? result.error ?? "No se pudo iniciar G8");
+      }
+      await fetchG8LiveStatus();
+    } catch (error) {
+      setG8LiveMessage("G8 pendiente: " + (error instanceof Error ? error.message : "Error iniciando la prueba"));
+    } finally {
+      setG8LiveBusy(false);
+    }
+  };
+  useEffect(() => {
+    void fetchG8LiveStatus().catch(() => undefined);
+  }, [object]);
+  useEffect(() => {
+    if (g8LiveStatus !== "running") return;
+    const poll = window.setInterval(() => {
+      void fetchG8LiveStatus().catch(err =>
+        setG8LiveMessage("No se pudo consultar el progreso: " + String(err)));
+    }, 3500);
+    return () => window.clearInterval(poll);
+  }, [object, g8LiveStatus]);
   const selectRepository = (repo: string) => {
     if (!repo || !authorizedRepos.includes(repo)) {
       setProjectError("Elige un repositorio autorizado en Configuración.");
@@ -991,6 +1045,21 @@ function App() {
                     {authorizedRepos.map(repo => <option value={repo} key={repo}>{repo}</option>)}
                   </select>
                   {repository ? <p className="text-xs">Repositorio de esta sesión: <strong>{repository}</strong></p> : null}
+                  <div className="mt-2 flex flex-col gap-2 rounded-md border border-kumo-line p-3" aria-label="Aceptación funcional del agente G8">
+                    <button type="button"
+                      disabled={g8LiveBusy || !integrations?.githubConfigured || g8LiveStatus !== "not-started"}
+                      className="rounded border border-kumo-line px-3 py-2 text-sm disabled:opacity-50"
+                      onClick={() => void startG8Live()}>
+                      {g8LiveBusy || g8LiveStatus === "running" ? "Revisando ambos repositorios…" :
+                        "Validar agente real G8 (una vez)"}
+                    </button>
+                    <p className="text-xs text-kumo-subtle">
+                      Dos sesiones aisladas con Workers AI, modo Revisión y solo lectura.
+                      Consume una pequeña cantidad de inferencia. Comprueba resultados reales de
+                      repo_review, no el texto del modelo. Sin cambios, PR nuevas ni despliegues.
+                    </p>
+                    {g8LiveMessage ? <p role="status" className="text-sm">{g8LiveMessage}</p> : null}
+                  </div>
                   <div className="mt-2 flex flex-col gap-2">
                     <button type="button" disabled={g8Busy || !integrations?.githubConfigured}
                       className="rounded border border-kumo-line px-3 py-2 text-sm disabled:opacity-50"
