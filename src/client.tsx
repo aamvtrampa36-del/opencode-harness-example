@@ -649,7 +649,7 @@ function App() {
       });
       const result = await response.json() as { passed?: boolean; error?: string };
       if (!response.ok || !result.passed) throw new Error(result.error ?? "Prueba incompleta");
-      setIsolationResult("Prueba superada: dos Containers sintéticos no compartieron archivos. El shell sigue pausado hasta terminar las demás verificaciones.");
+      setIsolationResult("Prueba superada: dos Containers sintéticos no compartieron archivos. Este ensayo no verifica todas las rutas ni la recuperación de sesiones.");
     } catch (error) {
       setIsolationResult("No se comprobó el aislamiento: " + (error instanceof Error ? error.message : "Error"));
     } finally {
@@ -1439,9 +1439,6 @@ function App() {
           >
             <p role="status" className="mb-2 text-xs text-kumo-subtle">
               Los proyectos anteriores se conservan. Para editarlos, restaura una copia con un nombre nuevo.
-            </p>
-            <p role="status" className="mb-2 text-xs text-kumo-subtle">
-              Ejecución Linux pausada mientras se verifica el aislamiento entre proyectos. La revisión de GitHub sigue disponible.
             </p>
             <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-kumo-subtle">
               <span>Proyecto: <strong className="text-kumo-default">{project || "Sin seleccionar"}</strong></span>
