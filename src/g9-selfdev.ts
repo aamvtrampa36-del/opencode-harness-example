@@ -10,6 +10,7 @@ export const G9_PROJECT = "g9-selfdev-proof";
 export const G9_SOURCE = "tests/g9-proof/add.mjs";
 export const G9_TEST_PATH = "tests/g9-proof/add.test.mjs";
 export const G9_BROKEN = "export function add(a, b) { return a - b; }\n";
+export const G9_FIXED = "export function add(a, b) { return a + b; }\n";
 export const G9_TEST_SOURCE = [
   "import test from 'node:test';",
   "import assert from 'node:assert/strict';",
