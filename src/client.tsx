@@ -968,12 +968,12 @@ function App() {
           <div className="border-t border-kumo-line p-3">
             <a
               href={"/api/session/export?" + new URLSearchParams({ object, session }).toString()}
-              download={`opencode-session-${session}.json`}
+              download={`opencode-conversacion-${session}.md`}
               className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-kumo-line bg-kumo-elevated px-3 py-2 text-sm hover:bg-kumo-surface"
-              aria-label="Descargar conversación guardada como archivo JSON"
+              aria-label="Descargar conversación guardada como Markdown"
             >
               <DownloadSimpleIcon size={16} />
-              Exportar sesión
+              Descargar conversación
             </a>
           </div>
         </aside>
@@ -1019,6 +1019,16 @@ function App() {
                 <PlusIcon size={14} />
                 <span className="hidden sm:inline">Crear app</span>
               </Button>
+              <a
+                href={"/api/session/export?" + new URLSearchParams({ object, session }).toString()}
+                download={"opencode-conversacion-" + session + ".md"}
+                className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg px-2 py-2 text-xs hover:bg-kumo-elevated"
+                title="Descargar el chat y sus evidencias de ejecución como Markdown"
+                aria-label="Descargar conversación actual en Markdown"
+              >
+                <DownloadSimpleIcon size={16} />
+                <span>Descargar conversación</span>
+              </a>
               {project ? (
                 <Button
                   type="button"
@@ -1046,7 +1056,7 @@ function App() {
                   aria-label={repository ? "Descargar repositorio GitHub" : "Descargar proyecto Linux"}
                 >
                   <DownloadSimpleIcon size={16} />
-                  <span className="hidden sm:inline">{repository ? "Descargar repo" : "Descargar"}</span>
+                  <span className="text-xs">{repository ? "Descargar repositorio" : "Descargar proyecto"}</span>
                 </a>
               ) : null}
               <Button

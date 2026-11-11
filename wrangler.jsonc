@@ -22,6 +22,7 @@
       "/agents/*",
       "/api/health",
       "/api/dev/*",
+      "/api/session/*",
       "/api/settings/*",
       "/api/settings"
     ]
