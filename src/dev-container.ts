@@ -155,8 +155,17 @@ export class DevContainer extends DurableObject<Env> {
         if (existing.project !== id || existing.repository.toLowerCase() !== repository.toLowerCase()) {
           throw Error("El entorno aislado ya pertenece a otro proyecto o repositorio");
         }
+        await this.ctx.storage.delete("repo-import-pending-v1");
         return existing;
       }
+      const pending = await this.ctx.storage.get<{project: string; repository: string}>("repo-import-pending-v1");
+      if (pending && (pending.project !== id || pending.repository.toLowerCase() !== repository.toLowerCase())) {
+        throw Error("Ya hay otra importación pendiente en este Container");
+      }
+      if (await this.ctx.storage.get("lastActivity") && !pending) {
+        throw Error("El Container ya fue utilizado; no se importará sobre su contenido");
+      }
+      if (!pending) await this.ctx.storage.put("repo-import-pending-v1", {project: id, repository});
       const settings = this.env.SETTINGS.getByName("personal");
       const token = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN || await settings.getGitHubKey();
       const source = await githubSourceArchive(repository, token || "", await settings.getAllowedRepositories());
@@ -180,6 +189,7 @@ export class DevContainer extends DurableObject<Env> {
         const record = { project: id, repository: source.repo, commit: source.commit,
           files: receipt.files, sha256: receipt.sha256 };
         await this.ctx.storage.put("isolated-repository-v1", record);
+        await this.ctx.storage.delete("repo-import-pending-v1");
         await this.recordProject(id);
         return record;
       } finally {
@@ -223,6 +233,10 @@ export class DevContainer extends DurableObject<Env> {
     this.commandQueue = new Promise<void>((resolve) => { release = resolve; });
     await previous;
     try {
+      if (await this.ctx.storage.get("repo-import-pending-v1") ||
+          await this.ctx.storage.get("restore-pending-v1")) {
+        throw Error("El proyecto está pendiente de importación o restauración");
+      }
       return await this.runExclusive(id, cmd);
     } finally {
       release();
@@ -338,6 +352,19 @@ export class DevContainer extends DurableObject<Env> {
    * Up to 2 MiB compressed; large projects need an external store.
    */
   async saveBackup(project: string, sessionRef?: string): Promise<StoredBackup> {
+    const previous = this.commandQueue;
+    let release = () => {};
+    this.commandQueue = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    try { return await this.saveBackupExclusive(project, sessionRef); }
+    finally { release(); }
+  }
+
+  private async saveBackupExclusive(project: string, sessionRef?: string): Promise<StoredBackup> {
+    if (await this.ctx.storage.get("repo-import-pending-v1") ||
+        await this.ctx.storage.get("restore-pending-v1")) {
+      throw Error("El proyecto está pendiente de importación o restauración");
+    }
     const id = validateProject(project);
     if (sessionRef !== undefined && (typeof sessionRef !== "string" ||
         !/^[a-zA-Z0-9_:-]{1,100}$/.test(sessionRef))) {
@@ -448,6 +475,24 @@ export class DevContainer extends DurableObject<Env> {
     this.commandQueue = new Promise<void>(resolve => { release = resolve; });
     await previous;
     try {
+      const complete = await this.ctx.storage.get<{
+        source: string; target: string; archiveSha256: string; files: number; sha256: string; bytes: number
+      }>("restore-complete-v1");
+      if (complete) {
+        if (complete.source !== source || complete.target !== target || complete.archiveSha256 !== expected) {
+          throw Error("El destino ya pertenece a otra restauración");
+        }
+        await this.ctx.storage.delete("restore-pending-v1");
+        return complete;
+      }
+      const pending = await this.ctx.storage.get<{source: string; target: string; hash: string}>("restore-pending-v1");
+      if (pending && (pending.source !== source || pending.target !== target || pending.hash !== expected)) {
+        throw Error("Ya hay otra restauración pendiente en este Container");
+      }
+      if (await this.ctx.storage.get("lastActivity") && !pending) {
+        throw Error("El Container de destino ya fue utilizado; elige un proyecto nuevo");
+      }
+      if (!pending) await this.ctx.storage.put("restore-pending-v1", {source, target, hash: expected});
       const container = await this.ensureRunning();
       this.busy++;
       await this.ctx.storage.put("lastActivity", Date.now());
@@ -466,8 +511,11 @@ export class DevContainer extends DurableObject<Env> {
         };
         if (receipt.source !== source || receipt.target !== target ||
             !/^[a-f0-9]{64}$/.test(receipt.sha256)) throw Error("Resultado de restauración inválido");
+        const complete = { ...receipt, archiveSha256: expected };
+        await this.ctx.storage.put("restore-complete-v1", complete);
         await this.recordProject(target);
-        return { ...receipt, archiveSha256: expected };
+        await this.ctx.storage.delete("restore-pending-v1");
+        return complete;
       } finally {
         this.busy--;
         await this.ctx.storage.put("lastActivity", Date.now());

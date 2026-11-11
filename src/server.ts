@@ -978,7 +978,11 @@ export default {
           const bytes = new Uint8Array(await archive.arrayBuffer());
           await projectRegistry.reserveIsolatedProject(target);
           const targetDev = env.DEV.getByName(projectContainerName(target));
-          const restoration = await targetDev.restoreExternalBackup(source, target, bytes, metadata.sha256);
+          const restored = await targetDev.restoreExternalBackup(source, target, bytes, metadata.sha256);
+          const restoration = { ...restored,
+            ...(metadata.sessionRef ? {sessionRef: metadata.sessionRef} : {}),
+            ...(metadata.gitBranch ? {gitBranch: metadata.gitBranch} : {}),
+            ...(metadata.gitHead ? {gitHead: metadata.gitHead} : {}) };
           return Response.json({ restoration }, { headers: { "Cache-Control": "no-store" } });
         } catch (error) {
           return Response.json({ error: error instanceof Error ? error.message : "Restore failed" },
