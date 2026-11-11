@@ -1009,7 +1009,7 @@ function App() {
                 <span className="hidden sm:inline">{linkCopied ? "Copiado" : "Vincular"}</span>
               </Button>
               <select aria-label="Plantilla de trabajo" title="Plantilla editable: cambia instrucciones, modo y modelo sugerido"
-                value={specialization} onChange={(e) => {
+                disabled={busy} value={specialization} onChange={(e) => {
                   const id = e.target.value;
                   localStorage.setItem(SPECIALIZATION_KEY, id);
                   setSpecialization(id);
@@ -1031,7 +1031,7 @@ function App() {
                 ))}
               </select>
               <select aria-label="Modo de agente" title="Los roles de revisión y narrativa no modifican archivos"
-                value={agentMode} onChange={(event) => setModeForSession(session, event.target.value as AgentMode)}
+                disabled={busy} value={agentMode} onChange={(event) => setModeForSession(session, event.target.value as AgentMode)}
                 className="max-w-[128px] rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 text-xs text-kumo-default">
                 <option value="build">Desarrollar</option>
                 <option value="plan">Planificar</option>
@@ -1040,6 +1040,7 @@ function App() {
               </select>
               <select
                 aria-label="Modelo de IA"
+                disabled={busy}
                 title={openRouterAvailable ? "Seleccionar modelo" : "Conecta OpenRouter desde Configuración"}
                 value={openRouterAvailable ? modelPreset : "cloudflare"}
                 onChange={(event) => {
