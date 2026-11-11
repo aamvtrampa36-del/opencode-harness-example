@@ -540,6 +540,13 @@ function App() {
       setBackupBusy(false);
     }
   };
+  /** A project switch needs a new conversation because scope is immutable. */
+  const openProjectConversation = async (name: string) => {
+    const next = await create();
+    localStorage.setItem(PROJECT_PREFIX + next, name);
+    choose(next);
+    setModeForSession(next, "build");
+  };
   /** G5: recover a saved project through the existing non-destructive G4 API. */
   const restoreProject = async () => {
     const source = restoreFrom || savedBackups[0]?.project;
@@ -557,6 +564,7 @@ function App() {
     }
     setBackupBusy(true);
     setProjectError("");
+    let restored = false;
     try {
       const response = await fetch("/api/dev/restore/" + encodeURIComponent(source), {
         method: "POST",
@@ -565,13 +573,15 @@ function App() {
       });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error ?? "La restauración falló.");
+      restored = true;
       await loadProjects();
-      localStorage.setItem(PROJECT_PREFIX + session, target);
-      setProject(target);
+      await openProjectConversation(target);
       setRestoreTo("");
       setProjectError("Restaurado como " + target + ". Revisa los archivos y ejecuta sus pruebas antes de continuar.");
     } catch (error) {
-      setProjectError(error instanceof Error ? error.message : "No se pudo restaurar el respaldo.");
+      setProjectError(restored
+        ? "El proyecto " + target + " se restauró, pero no se pudo abrir su conversación. Selecciónalo desde Proyectos."
+        : error instanceof Error ? error.message : "No se pudo restaurar el respaldo.");
     } finally {
       setBackupBusy(false);
     }
@@ -601,9 +611,11 @@ function App() {
     }
   };
   const chooseProject = (name: string) => {
-    localStorage.setItem(PROJECT_PREFIX + session, name);
-    setProject(name);
-    setProjectsOpen(false);
+    if (name === project) { setProjectsOpen(false); return; }
+    void openProjectConversation(name).then(() => {
+      setProjectError("");
+      setProjectsOpen(false);
+    }).catch(() => setProjectError("No se pudo abrir una conversación para este proyecto."));
   };
   /** Each GitHub repository receives its own new session and Linux project. */
   /** Tests both real GitHub draft PRs without changes, model calls or new branches. */
