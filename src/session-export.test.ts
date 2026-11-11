@@ -101,5 +101,7 @@ describe("Markdown transcript download", () => {
     const { readFileSync } = await import("node:fs");
     const config = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
     expect(config).toContain('"/api/session/*"');
+    const staging = readFileSync(new URL("../wrangler.g1.jsonc", import.meta.url), "utf8");
+    expect(staging).toContain('"/api/session/*"');
   });
 });
