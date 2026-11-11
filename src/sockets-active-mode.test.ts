@@ -5,6 +5,7 @@ import type { Connection } from "agents/lifecycle";
 
 function setup() {
   let running = false;
+  let staleBusy = false;
   const agents: string[] = [];
   const models: string[] = [];
   const prompts: string[] = [];
@@ -15,7 +16,7 @@ function setup() {
     setModel: async (model: { id: string }) => { models.push(model.id); },
     submit: async (text: string) => { prompts.push(text); running = true; return { operationId: "op" }; },
     wait: async () => await new Promise<void>(() => {}),
-    history: async () => [], busy: async () => running,
+    history: async () => [], busy: async () => staleBusy ? false : running,
     events: async () => ({ start: () => {}, stop: async () => {} })
   };
   const harness = { session: () => handle, sessions: { list: async () => [{ id: "ses_root", busy: running }] }, pending: async () => [] } as unknown as OpenCodeHarness;
@@ -23,7 +24,7 @@ function setup() {
   const send = async (s: OpenCodeSessionSockets, mode: string, model = "cloudflare") => {
     await s.options().handlers.onMessage(socket, JSON.stringify({type: "submit", id: "test", text: "review", mode, model, whenBusy: "followUp"}));
   };
-  return { makeSockets, send, agents, models, prompts, frames };
+  return { makeSockets, send, agents, models, prompts, frames, makeBusyStale: () => { staleBusy = true; } };
 }
 
 describe("in-flight session configuration", () => {
@@ -43,6 +44,15 @@ describe("in-flight session configuration", () => {
     expect(x.agents).toEqual(["plan"]);
     expect(x.models).toHaveLength(1);
     expect(x.prompts).toHaveLength(2);
+  });
+
+  test("a stale idle flag cannot upgrade an unfinished review", async () => {
+    const x = setup(), s = x.makeSockets();
+    await x.send(s, "review");
+    x.makeBusyStale();
+    await x.send(s, "build");
+    expect(x.agents).toEqual(["plan"]);
+    expect(x.prompts).toHaveLength(1);
   });
 
   test("rejects changes when the running configuration is unknown", async () => {
