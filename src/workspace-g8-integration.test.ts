@@ -84,7 +84,7 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
     expect(requests).toBe(0);
   });
 
-  test("keeps agent Linux blocked until isolation is independently validated", async () => {
+  test("routes Linux to the trusted session and rejects another project's slug", async () => {
     const toolSpecs = new Map<string, any>();
     const runs: Array<{project: string; session?: string}> = [];
     const plugin = workspacePlugin(
@@ -106,15 +106,16 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
         add: (spec: any) => toolSpecs.set(spec.name,spec)
       })}
     } as any);
-    await expect(toolSpecs.get("linux").execute(
+    const allowed = await toolSpecs.get("linux").execute(
       {project:"cdf-cloud-engine",command:"pwd"},
       {sessionID:"ses_test",agent:"build"}
-    )).rejects.toThrow("Ejecución Linux suspendida");
+    );
+    expect(JSON.parse(allowed.content).exitCode).toBe(0);
     await expect(toolSpecs.get("linux").execute(
       {project:"cdf-workbench",command:"pwd"},
       {sessionID:"ses_test",agent:"build"}
     )).rejects.toThrow("proyecto distinto");
-    expect(runs).toEqual([]);
+    expect(runs).toEqual([{project:"cdf-cloud-engine",session:"ses_test"}]);
   });
 
   test("project sessions cannot read the shared global workspace", async () => {
