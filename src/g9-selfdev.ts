@@ -11,6 +11,16 @@ export const G9_SOURCE = "tests/g9-proof/add.mjs";
 export const G9_TEST_PATH = "tests/g9-proof/add.test.mjs";
 export const G9_BROKEN = "export function add(a, b) { return a - b; }\n";
 export const G9_FIXED = "export function add(a, b) { return a + b; }\n";
+/** Fail closed for branch-changing tools in the dedicated G9 proof session.
+ * Agent may read metadata from any ref, but cannot mutate other review branches.
+ */
+export function assertG9BoundGitHubOperation(operation?: string, branch?: string): void {
+  if(!operation)return; // Dedicated read-only tools resolve repo separately.
+  if(operation === "branch") throw new Error("G9: rama ya preparada; no crear otras ramas");
+  if((operation === "write" || operation === "pr") && branch !== G9_BRANCH){
+    throw new Error("G9: escritura o PR fuera de la rama aislada bloqueada");
+  }
+}
 export const G9_TEST_SOURCE = [
   "import test from 'node:test';",
   "import assert from 'node:assert/strict';",
