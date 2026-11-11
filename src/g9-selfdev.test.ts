@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   assessG9History, g9AgentPrompt, G9_REPO, G9_BRANCH, G9_PROJECT,
-  G9_SOURCE, G9_TEST_PATH, G9_BROKEN, G9_FIXED, G9_TEST_SOURCE
+  G9_SOURCE, G9_TEST_PATH, G9_BROKEN, G9_FIXED, G9_TEST_SOURCE, assertG9BoundGitHubOperation
 } from "./g9-selfdev";
 
 const wrap=(name:string,status:string,result:unknown)=>({
@@ -75,6 +75,15 @@ describe("G9 genuine agent developer flow acceptance",()=>{
       [red,write,green,extra,pr],
       [red,write,green,review,merged]
     ])expect(assessG9History(history).passed).toBe(false);
+  });
+  test("G9 branch guard rejects writes, PRs and branch creation outside isolated fixture",()=>{
+    expect(()=>assertG9BoundGitHubOperation("write",G9_BRANCH)).not.toThrow();
+    expect(()=>assertG9BoundGitHubOperation("pr",G9_BRANCH)).not.toThrow();
+    expect(()=>assertG9BoundGitHubOperation("read","main")).not.toThrow();
+    expect(()=>assertG9BoundGitHubOperation("review","main")).not.toThrow();
+    expect(()=>assertG9BoundGitHubOperation("write","opencode/other")).toThrow("bloqueada");
+    expect(()=>assertG9BoundGitHubOperation("pr","opencode/other")).toThrow("bloqueada");
+    expect(()=>assertG9BoundGitHubOperation("branch",G9_BRANCH)).toThrow("ya preparada");
   });
   test("the isolated correction can be tested in Node without any project dependency",()=>{
     expect(G9_BROKEN).toContain("a - b");
