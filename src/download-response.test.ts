@@ -71,11 +71,15 @@ describe("download boundary is valid for failures and binary archives", () => {
     expect(await response.text()).not.toContain("private details");
   });
 
-  test("existing conversation export still returns JSON attachment", async () => {
-    const response = sessionExportResponse("ses_valid", [{ type: "user", content: "hello" }]);
+  test("conversation download is a distinct Markdown response, never GitHub ZIP", async () => {
+    const response = sessionExportResponse("ses_valid", {
+      project: "repo-cdf-cloud-engine",
+      messages: [{ type: "user", text: "hello" }]
+    });
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toContain("application/json");
-    expect(response.headers.get("content-disposition")).toContain("opencode-session-ses_valid.json");
-    expect((await response.json() as { messages: unknown[] }).messages).toHaveLength(1);
+    expect(response.headers.get("content-type")).toContain("text/markdown");
+    expect(response.headers.get("content-disposition")).toContain("opencode-conversacion-ses_valid.md");
+    expect(response.headers.get("content-disposition")).not.toContain("github.zip");
+    expect(await response.text()).toContain("hello");
   });
 });
