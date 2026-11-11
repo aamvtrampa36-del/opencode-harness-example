@@ -1,6 +1,6 @@
 # OpenCode Cloud — G8: aislamiento de CDF CLOUD y WorkBench (10 noviembre 2026)
 
-**Estado de esta intervención:** G8 **IMPLEMENTADO, PRUEBAS DE SEGURIDAD y DOS PR DE PRUEBA VERIFICADAS; PENDIENTE DE PRUEBA OPERATIVA AUTENTICADA EN OPENCODE CLOUD**. G9 es el siguiente hito según el informe maestro, pero no se inicia formalmente hasta completar el gate de G8.
+**ESTADO DEFINITIVO (10 noviembre 2026): G8 APROBADO EN STAGING.** La captura autenticada aportada por el propietario muestra que la comprobación real del agente aprobó ambos repositorios mediante `repo_review`. Todas las evidencias y el alcance exacto figuran en el **§12 (cierre final)**; los apartados §1–§11 conservan el registro histórico de los bloqueos anteriores. **G9 — Endurecimiento mínimo y entrega** es el hito siguiente. No hay autorización para fusionar ni publicar en producción.
 
 ## 1. Informe maestro y línea base
 
@@ -214,3 +214,53 @@ Esto demuestra **descarga real e integridad del ZIP privado de GitHub bajo la se
 **Validación automática:** GitHub Actions **#276** `completed/success`; Cloudflare Workers Builds `success`, versión de staging `b0239bc0-7868-49c2-9057-a71612edcf8b`. Producción continúa `1d70eb77-316e-408d-bd14-5f19b171dedf`, Access `self_hosted` con una política y staging sin Cron.
 
 **Dictamen actual: G8 BLOQUEADO PARA CIERRE por una sola evidencia externa.** El botón existe y está probado en código, pero **aún no ha sido pulsado con la sesión autenticada del propietario**. No afirmar que el modelo hizo las dos lecturas ni que G8 está aprobado. La intervención mínima pendiente es abrir staging desde Android, ir a **Proyectos → Validar agente real G8 (una vez)**, y compartir únicamente el mensaje final. Si indica 2/2 y `repo_review` correcto, G8 puede quedar **APROBADO EN STAGING** y se pasa a G9. Si falla, el sistema conserva el motivo concreto por repositorio; corregir ese defecto antes de volver a generar inferencia, sin repetir las pruebas ya superadas. No fusionar PR ni desplegar producción.
+
+
+## 12. Cierre definitivo G8 — aceptación de ambos agentes desde Android (10 noviembre 2026)
+
+**DICTAMEN: G8 APROBADO EN STAGING.** No confundir con la aprobación de la V1 ni con autorización de merge o despliegue a producción.
+
+### Evidencia de aceptación del propietario
+
+El propietario presentó una **captura de Brave/Android, 23:01**, desde la aplicación staging protegida por Cloudflare Access, con el botón **«Validar agente real G8 (una vez)»** deshabilitado después de su ejecución y este texto visible:
+
+> G8 verificado: ambos agentes reales ejecutaron repo_review, devolvieron los diffs correctos y no modificaron archivos.
+
+En la implementación revisada, la interfaz muestra ese mensaje exclusivamente cuando `GET /api/dev/g8-agent-check?object=<uuid>` devuelve `status: "passed"`. La ruta consulta el Durable Object que contiene las dos sesiones reales independientes, y `assessG8LiveHistory` solo acepta un bloque `tool` llamado **`repo_review`** con estado `completed` y JSON de resultado que corresponda al `repo` esperado, la rama esperada, `base: main`, sin diff truncado y **exactamente un archivo agregado** `docs/opencode-g8/isolated-review-20261110.md`. Una respuesta en prosa del modelo no aprueba la prueba. Se verifica el mecanismo por código y pruebas automatizadas.
+
+**Alcance de la evidencia:** la captura acredita el resultado que devolvió la aplicación en la sesión del propietario. No se ha accedido directamente desde esta conexión a los historiales privados del Durable Object, porque ello requeriría su sesión de Cloudflare Access. El respaldo verificable es la captura más el contrato del verificador y su CI, no una supuesta lectura administrativa de esas conversaciones.
+
+### Matriz de criterios de cierre
+
+| Requisito | Evidencia | Estado |
+| --- | --- | --- |
+| Repo CDF CLOUD correcto | PR CDF CLOUD #160 y lectura directa del repositorio; el verificador de agente exige repo y rama exactos | **APROBADO** |
+| Repo WorkBench correcto | PR WorkBench #36 y lectura directa del repositorio; el verificador de agente exige repo y rama exactos | **APROBADO** |
+| Revisión de agente REAL en dos sesiones separadas | Captura Android del resultado del verificador y lógica `startG8LiveReview/getG8LiveReview/assessG8LiveHistory` | **APROBADO EN STAGING** |
+| Diff no canónico correcto | PR #160 y #36: cada una cambia solo `docs/opencode-g8/isolated-review-20261110.md`, respecto de `main` | **APROBADO** |
+| Aislamiento y permisos | Ámbito inmutable por `sessionID`, guardias sobre herramientas, test del plugin e incidentes corregidos (§2–§11) | **APROBADO** |
+| Regresiones | CI OpenCode #278 `completed/success`; Workers Builds `success`; WorkBench #161 `completed/success`; la PR documental de CDF no disparó un nuevo workflow | **APROBADO EN EL ALCANCE DE LOS CAMBIOS** |
+| Recuperación | PRs en borrador no fusionadas; ramas de prueba descartables; ZIP del repo descargado de manera íntegra en Android (§9) | **APROBADO EN EL ALCANCE PROBADO** |
+| No modificar canon ni producción | Diffs con un único archivo no canónico; producción Worker sin cambios | **APROBADO** |
+
+**Distinción necesaria:** los commits de prueba, los archivos no canónicos y las PR #160 y #36 fueron creados por el supervisor utilizando el conector GitHub, **no por los dos agentes de la prueba final**. Los agentes demostraron lectura y revisión reales mediante `repo_review`; no se les atribuye haber implementado, compilado ni creado aquellas PR. G9 debe incluir un flujo completo de edición, test, revisión y rama reversible ejecutado por un agente para la entrega V1.
+
+### Estado confirmado de infraestructura y versiones
+
+- Rama aislada OpenCode: `fix/repeatable-agent-verification-20261108`; PR [#28](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/28) **abierta en borrador, sin fusionar**.
+- PR [CDF CLOUD #160](https://github.com/aamvtrampa36-del/cdf-cloud-engine/pull/160): borrador, un archivo de prueba, sin merge.
+- PR [WorkBench #36](https://github.com/aamvtrampa36-del/CDF-WorkBench-/pull/36): borrador, un archivo de prueba, sin merge.
+- Última CI de código antes de esta actualización: GitHub Actions [#278](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/42942603202), `completed/success`, commit `1b61a95c782534daa2c2bd7a36a8115b30b00776`. Cloudflare Workers Builds del mismo commit: `success`.
+- Staging antes de esta actualización documental: versión `03034084-2d9a-44b9-95f8-ecbae3ddd9b5`, protegido por Cloudflare Access `self_hosted` (una política), sin Cron.
+- Producción: versión `1d70eb77-316e-408d-bd14-5f19b171dedf`, **sin cambios**.
+- No hubo nuevas modificaciones en CDF CLOUD ni WorkBench durante el cierre.
+
+### Transición: G9 — Endurecimiento mínimo y entrega
+
+**G9 ES EL HITO ACTUAL TRAS EL CIERRE DE G8 EN STAGING.**
+
+Criterios expresos del `docs/V1_EXECUTION_PLAN.md`: eliminar solo código muerto/dependencias duplicadas/flags incompatibles realmente demostrados; ejecutar la batería E2E de **12 pruebas del encargo** registrando evidencias y límites; disponer de un tag/release reversible con gates P0 aprobados; demostrar que el propietario puede completar un cambio real de desarrollo sin asistencia administrativa. **La lista literal de las 12 pruebas no está íntegramente especificada en el informe maestro histórico**: recuperarla del encargo original antes de inventar una matriz exacta.
+
+**Primera acción técnica de G9:** crear una matriz de entrega que reutilice las evidencias ya aprobadas G1–G8, identifique sin suposiciones las 12 pruebas E2E del encargo y determine únicamente las pruebas P0 y el ciclo agente → edición → test → diff → rama que falten realmente. Ejecutarlas en staging sin repetir los recorridos ya probados salvo regresión justificada. Preparar tag/release reversible **sin publicarlo en producción ni fusionar PR sin permiso**.
+
+**Criterio de eficiencia:** cierre de G8 definitivo, sin más mejoras marginales ni repetir `repo_review`. El eventual merge de las PR documentales de prueba es opcional; no forma parte de la aprobación de G8 ni de la autorización productiva.
