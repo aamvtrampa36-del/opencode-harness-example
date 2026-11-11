@@ -73,3 +73,39 @@ Actualiza el informe, cierra staging únicamente si se cumplen los criterios y p
 - Precaución operativa: el trigger automático de staging sigue asociado a `fix/repeatable-agent-verification-20261108`; un nuevo push a esa rama podría volver a desplegar código sin la contención. Verificar el despliegue activo antes de usar el agente.
 
 - Después del restablecimiento, el navegador mostró el aviso «Ejecución Linux pausada temporalmente: falta aislar los proyectos». La pantalla estaba conectando y el cuadro de mensaje deshabilitado; no se realizó una nueva llamada del agente al shell. La observación confirma el aviso visual, no una prueba funcional completa ni Android físico.
+
+
+## Revisión adicional y corrección candidata — 11 noviembre 2026
+
+**Dictamen: BLOQUEADA.** G9 conserva su aprobación histórica dentro de su alcance; la debilidad de aislamiento descubierta posteriormente impide aceptar la V1 actual. La siguiente etapa es publicación controlada después de cerrar estas garantías y validar respaldo y restauración productivos; no se inventa un hito G10.
+
+### Evidencia nueva de esta intervención
+
+- Cloudflare confirma staging en versión de contención `0b5c91ac-be35-4271-aa4b-971c51d3eae8`, deployment `6ebb9ada-9654-4009-b9e6-0f5d069f5ab2`. La interfaz mostró de nuevo el aviso de pausa, pero no se efectuó una nueva llamada Linux real.
+- Una solicitud HTTP sin sesión fue redirigida a Cloudflare Access y existe una política de acceso restringida al propietario; esto verifica ese control de entrada para la ruta probada, no todos los vectores de acceso.
+- PR #32 sigue borrador con cabeza `acbc2b0fc03fedea1871da50df4459245eaff5df`; CI del commit completada con éxito.
+- Nueva [PR #33](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/33), borrador hacia la rama de #32, cabeza `3af5fd5a1b67e2933da49c7079ad1a1f0d3965de`: el registro real de la herramienta del agente rechaza Linux antes de invocar al ejecutor, mantiene la comprobación de alcance y muestra aviso de pausa en la interfaz. Revisión independiente del diff: tres archivos. No está desplegada. El rechazo cubre la herramienta del agente; los caminos administrativos no se consideran aislados por esta prueba.
+- La prueba de regresión se observó fallar sobre la candidata original y pasar después. En el checkout local: 132 pruebas, typecheck, build, preview e invariantes aprobados; el build informa paquetes grandes. CI remoto de #33 no se ha verificado. Tests automatizados no certifican separación real de Containers.
+- El navegador autenticado abrió staging y mostró una conversación histórica que confirma la lectura de carpetas ajenas desde WorkBench y el fallo de clon privado. Se abrió una nueva conversación para inspección; no se envió ninguna tarea ni se ejecutó Linux en esta intervención. Android físico no fue probado.
+- Producción permanece en versión `1d70eb77-316e-408d-bd14-5f19b171dedf`. No hubo fusiones, despliegue productivo, modificación de canon ni operaciones sobre datos o backups en esta intervención.
+
+### Clasificación y acciones pendientes
+
+1. **Bloqueante — aislamiento real y preservación:** desplegar una candidata de staging con la pausa activa, sin alterar datos existentes. Comprobar en Containers reales A→B y B→A lectura y escritura, rutas absolutas y relativas, enlaces, cambios de proyecto/sesión, rutas administrativas y conservación/restauración sin sobrescritura. Documentar hashes y resultados independientes. La prueba sintética anterior no demuestra todos esos caminos.
+2. **Bloqueante — preparación y trabajo real:** comprobar la importación de la revisión exacta en el proyecto seleccionado y el comportamiento ante archivos preexistentes e interrupción, sin credenciales en Linux. El archivo importado no incluye `.git`; comprobar si las pruebas concretas lo necesitan. Tras cumplir el punto 1, retirar la pausa en una candidata controlada y ejecutar una tarea real pequeña por cada repositorio CDF Cloud y WorkBench: salida de pruebas, diff y PR draft verificables.
+3. **Necesario para uso — Android y recuperación de sesión:** verificar la interfaz y el flujo actualizado en Android, especialmente selección, aviso, ejecución, errores, resultados y recarga. Probar recuperación del trabajo tras interrupción sin sobrescritura; documentar cobertura y límites.
+4. **Cierre:** CI y build de la candidata final, revisión de su SHA, informe actualizado y ningún P0 pendiente. Solo entonces declarar staging apto.
+5. **Publicación controlada posterior:** inventario de datos productivos, copias independientes, restauración real en destino aislado, compatibilidad y reversión de código y datos por separado. Pedir autorización independiente para merge/publicación.
+6. **Posterior:** optimización de tamaño del bundle y medición exacta por tarea, salvo que se demuestre impacto que bloquee el uso.
+
+### Prompt de continuación
+
+```
+@Cloudflare Retoma OpenCode Cloud desde docs/REVISION_FINAL_V1_STAGING_2026-11-11.md en la rama ops/staging-containment-review-20261111 y el informe maestro de 21 páginas. G9 fue aprobado históricamente, pero la V1 permanece bloqueada por la revisión posterior del aislamiento. Staging está en la versión de contención 0b5c91ac-be35-4271-aa4b-971c51d3eae8. Revisa las PR #32 y #33 y verifica sus SHA y el estado real antes de actuar.
+
+Mantén el shell del agente pausado hasta demostrar en staging, con pruebas reales y bidireccionales de lectura/escritura, rutas absolutas, relativas y enlaces, que los proyectos están aislados y que los datos y respaldos existentes se conservan y restauran sin sobrescritura. Usa la candidata con contención de #33 en una rama aislada; no confundas CI con pruebas reales. Comprueba la importación de ambos repositorios privados sin exponer credenciales y reconoce que el archivo importado no incluye .git.
+
+Solo después de superar esas garantías, habilita el agente en staging y realiza una tarea justificada en CDF Cloud y otra en WorkBench, cada una con código real, pruebas ejecutadas, revisión independiente del diff y PR borrador. Verifica los flujos nuevos en Android y la recuperación tras interrupción. Reutiliza G1–G9 aprobados cuando sigan siendo válidos.
+
+Actualiza este informe con SHA, evidencia y pendientes; cierra staging solo si se cumplen todos los criterios. Después prepara copias y restauración verificables de los datos productivos y un plan de reversión, sin fusionar, modificar canon ni publicar en producción. Solicita autorización separada para merge y publicación; si necesitas ayuda, pide una única acción sencilla en Android.
+```
