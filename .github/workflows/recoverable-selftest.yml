@@ -1,0 +1,77 @@
+name: OpenCode recoverable E2E proof (isolated)
+
+on:
+  push:
+    branches:
+      - opencode/staging-5fc8ae01d372b946
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opencode-recoverable-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: Persist verified source and delegated checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+      - name: Setup pinned Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install frozen dependencies
+        run: bun install --frozen-lockfile
+      - name: Execute independent checks and persist SHA-bound receipt
+        run: node scripts/ci-durable-selftest.mjs checks
+      - name: Save durable checkpoint for later attempts
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-ci-checks
+          path: .ci-proof/checks.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  full:
+    name: Resume interrupted execution from checks checkpoint
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout identical source
+        uses: actions/checkout@v4
+      - name: Setup pinned Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Recover approved phase receipt from GitHub artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: opencode-ci-checks
+          path: .ci-proof
+      - name: Reject mismatched commit, branch or GitHub run
+        run: node scripts/ci-durable-selftest.mjs verify-checks
+      - name: Prove a terminated process can be resumed on the second attempt
+        if: github.run_attempt == 1
+        run: |
+          echo "CONTROLLED INTERRUPTION: the prior job checkpoint has been persisted."
+          echo "First attempt terminates before build. Re-run failed jobs to resume."
+          bash -c 'kill -TERM "$BASHPID"'
+      - name: Reinstall reproducible dependencies
+        run: bun install --frozen-lockfile
+      - name: Build and test HTTP candidate, negative guards, and final receipt
+        run: node scripts/ci-durable-selftest.mjs full
+      - name: Preserve complete verified receipt and negative controls
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-ci-complete
+          path: .ci-proof/*.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
