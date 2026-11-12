@@ -50,7 +50,7 @@ const {
 } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { dirname, join } = await import("node:path");
-const { PREVIEW_SOURCE } = await import("../src/preview-server.ts");
+const { PREVIEW_SOURCE, PREVIEW_PORT } = await import("../src/preview-server.ts");
 const {
   MOBILE_NOTE,
   RECEIPT_SCHEMA,
@@ -100,7 +100,7 @@ const logDir = ".selftest/logs";
 mkdirSync(logDir, { recursive: true });
 const distDir = "dist/client";
 const workerEntry = "dist/opencode_harness_example/index.js";
-const endpoint = "http://127.0.0.1:4321";
+const endpoint = `http://127.0.0.1:${PREVIEW_PORT}`;
 
 const runId = sha256(`${branch}|${commit}|${Date.now()}|${Math.random()}`).slice(0, 12);
 const notes = [];
