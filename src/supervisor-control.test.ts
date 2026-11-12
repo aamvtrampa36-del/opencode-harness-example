@@ -17,7 +17,7 @@ const input = {
 describe("OpenCode remote supervisor — fail closed", () => {
   test("requires owner-approved repository, immutable task ID and bounded prompt", () => {
     expect(validateSupervisorStart(input, repos)).toEqual(input);
-    expect(() => validateSupervisorStart({ ...input, repository: "outsider/secret" }, repos)).toThrow("no autorizado");
+    expect(() => validateSupervisorStart({ ...input, repository: "aamvtrampa36-del/not-approved" }, repos)).toThrow("no autorizado");
     expect(() => validateSupervisorStart({ ...input, requestId: "../bad" }, repos)).toThrow("requestId");
     expect(() => validateSupervisorStart({ ...input, prompt: "too short" }, repos)).toThrow("Tarea");
     expect(() => validateSupervisorStart({ ...input, prompt: "a".repeat(5001) }, repos)).toThrow("Tarea");
