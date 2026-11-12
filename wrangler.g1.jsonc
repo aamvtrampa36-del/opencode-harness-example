@@ -79,5 +79,12 @@
   "vars": {
     "G1_DEV_UNLIMITED_CHECKS": "true",
     "OPENCODE_SUPERVISOR_ENABLED": "true"
-  }
+  },
+  "workflows": [
+    {
+      "name": "opencode-supervisor-stage",
+      "binding": "SUPERVISOR_WORKFLOW",
+      "class_name": "OpenCodeSupervisorWorkflow"
+    }
+  ]
 }
