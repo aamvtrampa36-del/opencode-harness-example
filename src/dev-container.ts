@@ -101,12 +101,12 @@ export class DevContainer extends DurableObject<Env> {
 
   /** Durable project inventory; listing never starts the billable Linux VM. */
   async listProjects(): Promise<readonly { name: string; lastUsedAt: number }[]> {
-    const rows = (await this.ctx.storage.get<{ name: string; lastUsedAt: number }[]>(("projectInventory") as never) ?? [];
+    const rows = (await this.ctx.storage.get<{ name: string; lastUsedAt: number }[]>("projectInventory")) ?? [];
     return rows.slice().sort((a, b) => b.lastUsedAt - a.lastUsedAt);
   }
 
   private async recordProject(name: string): Promise<void> {
-    const rows = (await this.ctx.storage.get<{ name: string; lastUsedAt: number }[]>(("projectInventory") as never) ?? [];
+    const rows = (await this.ctx.storage.get<{ name: string; lastUsedAt: number }[]>("projectInventory")) ?? [];
     const next = [{ name, lastUsedAt: Date.now() }, ...rows.filter((x) => x.name !== name)];
     await this.ctx.storage.put("projectInventory", next.slice(0, 100));
   }
