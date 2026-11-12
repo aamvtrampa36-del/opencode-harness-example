@@ -422,10 +422,19 @@ export default {
       }
       const verifyMatch = url.pathname.match(/^\/api\/dev\/verify\/([a-z][a-z0-9-]{0,39})$/);
       if (verifyMatch) {
-        if (request.method !== "GET") return new Response("GET only", { status: 405 });
+        // This endpoint writes and corrupts ONLY a newly created scratch
+        // fixture, but it is not a safe/read-only GET operation.
+        if (request.method !== "POST") return new Response("POST only", { status: 405 });
+        if (request.headers.get("Origin") !== url.origin ||
+            !request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
+          return Response.json({ error: "Same-origin JSON request required" }, { status: 403 });
+        }
         try {
           const result = await env.DEV.getByName("personal").verifyRestore(verifyMatch[1]);
-          return Response.json(result, { headers: { "Cache-Control": "no-store" } });
+          return Response.json(result, {
+            status: result.ok && result.exitCode === 0 ? 200 : 422,
+            headers: { "Cache-Control": "no-store" }
+          });
         } catch (error) {
           return Response.json(
             { error: error instanceof Error ? error.message : "Verify failed" },
