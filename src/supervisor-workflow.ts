@@ -1,9 +1,11 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { SUPERVISOR_WORKSPACE, supervisorTaskKey, type SupervisorStart } from "./supervisor-control";
+import { restoreProofFixtureName, validateRestoreProofFixtureId } from "./restore-proof";
 
 type SupervisorWorkflowCommand =
   | { action: "start"; requestId: string; repository: string; prompt: string }
-  | { action: "status" | "cancel" | "review"; id: string };
+  | { action: "status" | "cancel" | "review"; id: string }
+  | { action: "restore-proof"; fixtureId: string };
 
 /**
  * Private supervisory control plane: the Cloudflare account's Workflow API
@@ -49,6 +51,17 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
         if (args.action === "status") return host.supervisedTaskStatus(args.id);
         if (args.action === "cancel") return host.cancelSupervisedTask(args.id);
         return host.supervisedTaskReview(args.id);
+      }
+      if (args.action === "restore-proof") {
+        if (Object.keys(args).some(k => !["action", "fixtureId"].includes(k)))
+          throw new Error("UNKNOWN_SUPERVISOR_FIELD");
+        // Fail closed: only a freshly created, test-exclusive fixture DO is
+        // accepted (restore-proof-v1:<16 hex>); any prior state is rejected
+        // by the fixture itself before touching a Container. The proof is
+        // resumable: re-creating an instance with the same fixtureId
+        // continues from the last persisted phase in the fixture storage.
+        const fixtureId = validateRestoreProofFixtureId(args.fixtureId);
+        return this.env.DEV.getByName(restoreProofFixtureName(fixtureId)).proveRestoreFixture(fixtureId);
       }
       throw new Error("UNKNOWN_SUPERVISOR_ACTION");
     });
