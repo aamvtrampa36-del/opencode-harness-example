@@ -1,0 +1,68 @@
+diff --git a/src/server.ts b/src/server.ts
+index cb922366..23c02990 100644
+--- a/src/server.ts
++++ b/src/server.ts
+@@ -33,6 +33,10 @@ import { githubRepositoryDownload } from "./github-download";
+ import { checkIsolation } from "./isolation-check";
+ import { projectContainerName, repositoryProjectSlug } from "./project-container";
+ import { checkIsolatedBackup } from "./isolated-backup-check";
++import { drillProjectNames } from "./container-recovery";
++// Side-effect import: attaches the snapshot recovery drill to DevContainer.
++import "./container-recovery-do";
++import type { DrillDev } from "./container-recovery-do";
+ import { repositoryImportScope } from "./repository-import-scope";
+ import {
+   SUPERVISOR_WORKSPACE, SUPERVISOR_API_PREFIX,
+@@ -1089,6 +1093,52 @@ export default {
+             { status: 422, headers: { "Cache-Control": "no-store" } });
+         }
+       }
++      if (url.pathname === "/api/dev/snapshot-recovery-drill" && request.method === "POST") {
++        if (url.hostname !== "opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev" || !settingsOriginAllowed) {
++          return Response.json({ error: "Solo disponible en staging con el mismo origen." }, { status: 403 });
++        }
++        // Dedicated disposable DOs for this run only: snaprec-a-<nonce> creates
++        // and snapshots; snaprec-b-<nonce> attempts the cross-DO restore.
++        const { creator, restorer } = drillProjectNames(crypto.randomUUID().replace(/-/g, "").slice(0, 12));
++        // The drill API is attached by the container-recovery-do import.
++        const a = env.DEV.getByName(projectContainerName(creator)) as unknown as DrillDev;
++        const b = env.DEV.getByName(projectContainerName(restorer)) as unknown as DrillDev;
++        const cleanupAll = async (): Promise<unknown[]> => {
++          const cleanups: unknown[] = [];
++          try { cleanups.push(await a.drillCleanup(creator)); }
++          catch (error) { cleanups.push({ project: creator, error: error instanceof Error ? error.message : "cleanup failed" }); }
++          try { cleanups.push(await b.drillCleanup(restorer)); }
++          catch (error) { cleanups.push({ project: restorer, error: error instanceof Error ? error.message : "cleanup failed" }); }
++          return cleanups;
++        };
++        try {
++          const create = await a.drillCreateSnapshot(creator);
++          const restoreSameDo = await a.drillRestoreSameDo(creator);
++          const crossDo = await b.drillCrossRestore(restorer, create.snapshotId, create.record);
++          const cleanups = await cleanupAll();
++          return Response.json({
++            passed: create.doHashVerified && restoreSameDo.ok && crossDo.ok,
++            liveProof: restoreSameDo.ok ? "executed" : "failed",
++            creator, restorer,
++            runId: create.record.runId,
++            create: {
++              ok: true, snapshotId: create.snapshotId, image: create.image,
++              markerSha256: create.record.markerSha256, mutatedSha256: create.record.mutatedSha256,
++              doHashVerified: create.doHashVerified
++            },
++            restoreSameDo,
++            crossDo,
++            cleanup: cleanups
++          }, { headers: { "Cache-Control": "no-store" } });
++        } catch (error) {
++          const cleanups = await cleanupAll();
++          return Response.json({
++            passed: false, liveProof: "failed", creator, restorer,
++            error: error instanceof Error ? error.message : "Falló el ensayo de recuperación.",
++            cleanup: cleanups
++          }, { status: 422, headers: { "Cache-Control": "no-store" } });
++        }
++      }
+       if (url.pathname === "/api/dev/g8-verify" && request.method === "POST") {
+         if (!settingsOriginAllowed) {
+           return Response.json({ error: "Se requiere una solicitud autenticada del mismo origen." }, { status: 403 });
