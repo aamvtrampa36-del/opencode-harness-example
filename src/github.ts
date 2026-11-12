@@ -27,7 +27,7 @@ const MAX_FILE_BYTES = 100_000;
 const OWNER = "aamvtrampa36-del";
 const OPENCODE_REPO = OWNER + "/opencode-harness-example";
 export const OPENCODE_STAGING_BASE = "feat/staging-supervisor-control-20261111";
-const STAGING_REVIEW = /^opencode\\/staging-[a-f0-9]{16}$/;
+const STAGING_REVIEW = /^opencode\/staging-[a-f0-9]{16}$/;
 /** New OpenCode-only staging tasks are forked from a fixed, reviewed staging ref.
  * Legacy supervised branches and all other repositories stay on default main. */
 function reviewedBase(repo: string, branch: string, defaultBranch: string): string {
