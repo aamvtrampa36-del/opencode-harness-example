@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
   MOBILE_NOTE,
   RECEIPT_SCHEMA,
@@ -140,5 +141,29 @@ describe("http checks, receipt verdict and secret scan", () => {
     });
     expect(() => assertNoSecrets(receipt)).not.toThrow();
     expect(() => assertNoSecrets({ ...receipt, notes: ["sk-or-v1-abcdefabcdefabcdef"] })).toThrow();
+  });
+});
+
+
+describe("selftest CLI independent acceptance gates (real subprocess)", () => {
+  const run = (...args: string[]) => spawnSync(process.execPath,
+    ["scripts/selftest.mjs", "--branch", "opencode/verify-safety", ...args],
+    { encoding: "utf8", timeout: 30_000, env: process.env });
+  test("cannot claim commit linkage with an invented SHA", () => {
+    const result = run("--commit", "a".repeat(40));
+    expect(result.status).toBe(2);
+    expect(String(result.stderr)).toContain("does not match the actual Git HEAD");
+  });
+  test("cannot claim reused artifacts without a matching prior receipt", () => {
+    const head = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
+    expect(head.status).toBe(0);
+    const result = run("--commit", head.stdout.trim(), "--reuse-dist");
+    expect(result.status).toBe(2);
+    expect(String(result.stderr)).toContain("--reuse-dist requires --resume");
+  });
+  test("a partial --only preflight never passes as a complete candidate", () => {
+    const result = run("--allow-uncommitted", "--only", "preflight");
+    expect(result.status).toBe(2);
+    expect(String(result.stdout)).toContain("verdict=fail-closed");
   });
 });
