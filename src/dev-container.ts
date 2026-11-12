@@ -11,6 +11,7 @@ import {
   type SnapshotPreflightReport,
   type VerifyRestoreResult
 } from "./container-verify";
+import { drillCreateSnapshot, drillRestoreSameDo, drillCrossRestore, drillCleanup, type DrillHost } from "./container-recovery-do";
 import { RESTORE_PROJECT_SOURCE } from "./restore-project";
 import { GITHUB_IMPORT_SOURCE } from "./github-import-source";
 import { githubSourceArchive } from "./github-import";
@@ -687,6 +688,23 @@ export class DevContainer extends DurableObject<Env> {
       snapshotId: (await this.ctx.storage.get<string>("snapshotId")) ?? null,
       savedAt: (await this.ctx.storage.get<number>("savedAt")) ?? null
     };
+  }
+
+
+  /** Explicit Durable Object RPC methods — no dynamic prototype augmentation.
+   * Every helper refuses non-disposable projects and serializes mutations.
+   */
+  async drillCreateSnapshot(project: string) {
+    return drillCreateSnapshot(this as unknown as DrillHost, project);
+  }
+  async drillRestoreSameDo(project: string) {
+    return drillRestoreSameDo(this as unknown as DrillHost, project);
+  }
+  async drillCrossRestore(project: string, snapshotId: string, record: unknown) {
+    return drillCrossRestore(this as unknown as DrillHost, project, snapshotId, record);
+  }
+  async drillCleanup(project: string) {
+    return drillCleanup(this as unknown as DrillHost, project);
   }
 
   private async proxyHttp(path: string): Promise<Response> {
