@@ -3,6 +3,14 @@ import { MAX_SHELL_OUTPUT, validateCommand, validateProject } from "./dev-guard"
 import { PREVIEW_SOURCE } from "./preview-server";
 import { INSPECT_SOURCE, validateInspectionPath } from "./linux-inspect";
 import { chunkBackup, joinBackup, sha256Hex, MAX_ARCHIVE_BYTES, type StoredBackup } from "./durable-backup";
+import {
+  FS_VERIFY_SOURCE,
+  normalizeImageRef,
+  parseVerifyReport,
+  preflightSnapshotSupport,
+  type SnapshotPreflightReport,
+  type VerifyRestoreResult
+} from "./container-verify";
 
 /**
  * Opt-in Linux computer. There is exactly ONE named instance ("personal")
@@ -326,6 +334,96 @@ export class DevContainer extends DurableObject<Env> {
         "X-Content-Type-Options": "nosniff"
       }
     });
+  }
+
+  /**
+   * Reproducible, isolated proof that project files survive a backup and
+   * restore round trip. A freshly created payload is archived with tar+gzip,
+   * the live copy is corrupted, restore happens from the external archive
+   * and every SHA-256 anchor plus the machine identity is re-checked. The
+   * result carries ok:false on ANY failure; it never synthesizes success.
+   */
+  async verifyRestore(project: string): Promise<VerifyRestoreResult> {
+    const id = validateProject(project);
+    const runId = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+    // Serialize so the payload cannot be mutated while a checkpoint or shell
+    // command is in flight (same ordering as run()).
+    const previous = this.commandQueue;
+    let release = () => {};
+    this.commandQueue = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await this.verifyRestoreExclusive(id, runId);
+    } finally {
+      release();
+    }
+  }
+
+  private async verifyRestoreExclusive(id: string, runId: string): Promise<VerifyRestoreResult> {
+    const container = await this.ensureRunning();
+    this.busy++;
+    await this.ctx.storage.put("lastActivity", Date.now());
+    try {
+      const info = await container.inspect().catch(() => null);
+      const handle = await container.exec(
+        ["node", "--input-type=module", "-e", FS_VERIFY_SOURCE],
+        {
+          env: {
+            VERIFY_PROJECT: id,
+            VERIFY_ROOT: "/workspace/projects",
+            VERIFY_RUN_ID: runId,
+            VERIFY_NEGATIVE: "0"
+          },
+          signal: AbortSignal.timeout(120_000)
+        }
+      );
+      const output = await handle.output();
+      const report = parseVerifyReport(new TextDecoder().decode(output.stdout));
+      if (!report) {
+        throw new Error("La verificación de respaldo no produjo un informe analizable (exitCode=" + output.exitCode + ")");
+      }
+      return { ...report, exitCode: output.exitCode, containerImage: normalizeImageRef(info?.image) };
+    } finally {
+      this.busy--;
+      await this.ctx.storage.put("lastActivity", Date.now());
+      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+    }
+  }
+
+  /**
+   * Fail-closed snapshot preflight. The API surface is verifiable anywhere;
+   * a real snapshot/restore round trip needs the deployed Worker, so the
+   * result always reports liveProof: "pending-deployment" until it has been
+   * exercised against the real Container. inspect() exposes the concrete
+   * image reference (usually an OCI digest) for rollback bookkeeping.
+   */
+  async snapshotPreflight(): Promise<SnapshotPreflightReport> {
+    const container = this.ctx.container;
+    const preflight = preflightSnapshotSupport({
+      containerApiAvailable: Boolean(container),
+      hasSnapshotContainer: typeof container?.snapshotContainer === "function",
+      // snapshotDirectory is not in the committed Container typings, so its
+      // presence is probed structurally; absence reports UNSUPPORTED.
+      hasSnapshotDirectory: typeof (container as { snapshotDirectory?: unknown } | undefined)?.snapshotDirectory === "function"
+    });
+    let containerImage: string | null = null;
+    let inspectError: string | undefined;
+    if (container) {
+      try {
+        const info = await container.inspect();
+        containerImage = normalizeImageRef(info?.image);
+        if (!containerImage) inspectError = "container.inspect() returned an unusable image reference";
+      } catch (error) {
+        inspectError = error instanceof Error ? error.message.slice(0, 200) : "container.inspect() failed";
+      }
+    }
+    return {
+      ...preflight,
+      containerImage,
+      ...(inspectError ? { inspectError } : {}),
+      snapshotId: (await this.ctx.storage.get<string>("snapshotId")) ?? null,
+      savedAt: (await this.ctx.storage.get<number>("savedAt")) ?? null
+    };
   }
 
   private async proxyHttp(path: string): Promise<Response> {
