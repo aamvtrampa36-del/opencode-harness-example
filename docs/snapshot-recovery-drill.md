@@ -158,3 +158,12 @@ Cuando el propietario autorice el despliegue a Staging:
 - El ensayo no sustituye al respaldo DO independiente (`saveBackup`/
   `downloadSavedBackup`), que sigue siendo la vía que sobrevive a la expiración de
   30 días del snapshot.
+
+
+## 7. Revisión independiente y ejecución privada
+
+La revisión independiente encontró y corrigió dos defectos en el código generado por el agente: la mutación negativa se ejecutaba **antes** de crear el snapshot, y la recuperación cross-DO verificaba archivos con el nombre del DO restaurador en lugar del creador. Ahora el orden es `create → snapshotContainer → mutate → destroy → restore → verify`, y el segundo DO comprueba el marcador del origen.
+
+Se sustituyó el cambio dinámico de `DevContainer.prototype` por métodos RPC declarados explícitamente en `src/dev-container.ts`. **No se habilita la ruta HTTP descrita en la sección 5**: el fichero `docs/evidence/server-drill.patch` es solamente histórico. La invocación remota aprobada se realizará por el Workflow privado preexistente `opencode-supervisor-stage`, con parámetros `{"action":"recovery_drill"}`, sin cookies de navegador ni token expuesto. Cada fase tiene un `step.do` persistente y la limpieza se ejecuta incluso ante error. Un resultado `passed:false`, o error de cleanup, no puede declararse PASS.
+
+La PR de trabajo original aún requiere desplegar el conjunto en Staging y ejecutar el Workflow para obtener prueba real. Los tests de unidad y compilación no certifican ni la restauración cross-DO ni recuperación de datos persistentes ajenos al Container. La publicación a Producción permanece bloqueada hasta las pruebas obligatorias restantes.
