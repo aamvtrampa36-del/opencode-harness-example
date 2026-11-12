@@ -1247,7 +1247,8 @@ export default {
           return Response.json({ error: "Same-origin JSON request required" }, { status: 403 });
         }
         try {
-          const result = await env.DEV.getByName("personal").verifyRestore(verifyMatch[1]);
+          // Respect the same isolated per-project Container selection as Linux tools.
+          const result = await (await readableProject(verifyMatch[1])).verifyRestore(verifyMatch[1]);
           return Response.json(result, {
             status: result.ok && result.exitCode === 0 ? 200 : 422,
             headers: { "Cache-Control": "no-store" }
