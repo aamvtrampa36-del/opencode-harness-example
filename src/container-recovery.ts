@@ -146,6 +146,26 @@ export function assertCompatibleImage(before: unknown, after: unknown): string {
   return a;
 }
 
+/** The Cloudflare-managed image alias is resolved by the platform when
+ * restoring a snapshot. A digest string cannot be compared lexically to an
+ * image alias. Restrict the exception to Cloudflare's own exact Debian Trixie
+ * image family, with a full immutable digest, and report that digest equality
+ * was NOT independently observable before the snapshot.
+ */
+export function assertManagedSnapshotImage(
+  before: unknown, after: unknown
+): "exact-reference" | "cloudflare-managed-alias" {
+  const a = normalizeImageRef(before);
+  const b = normalizeImageRef(after);
+  if (!a || !b) throw new Error("Identidad de imagen no verificable");
+  if (a === b) return "exact-reference";
+  if (a === "cloudflare/debian-trixie" &&
+      /^registry\.cloudflare\.com\/[a-f0-9]+\/cf\/production\/node-24-trixie@sha256:[a-f0-9]{64}$/.test(b)) {
+    return "cloudflare-managed-alias";
+  }
+  throw new Error("Imagen incompatible: distintas familias o versiones de referencia no justificadas");
+}
+
 /**
  * The restored marker must hash to the pre-snapshot anchor and the deliberate
  * post-snapshot mutation must be absent. Any deviation means the restore did
@@ -350,6 +370,7 @@ export type DrillRestoreOutcome = {
   destroyedInstance: boolean;
   imageBefore: string | null;
   imageAfter: string | null;
+  imageIdentityProof?: "exact-reference" | "cloudflare-managed-alias";
   metadataBefore: {
     recordPresent: boolean; snapshotId: string | null; savedAt: number | null;
     handleMatchesRecord: boolean;
