@@ -181,8 +181,44 @@ if (!validation.ok) {
   process.exit(2);
 }
 
+// ---- independent source identity gate ---------------------------------------
+// A caller-supplied SHA does NOT prove the tested checkout matches that SHA.
+// No promotion receipt may claim commit linkage without verifying Git HEAD
+// and a clean tracked worktree. Local iteration can use --allow-uncommitted.
+let commitVerified = false;
+function rejectUnverifiableSource(reason) {
+  const receipt = buildReceipt({
+    runId, startedAt, finishedAt: new Date().toISOString(),
+    project, branch, commit, commitLinked: false,
+    runtime: { bun: process.versions.bun, node: null, platform: `${process.platform}/${process.arch}` },
+    buildArtifact: null, stages, checks, failClosed: reason, mobile: MOBILE_NOTE,
+  });
+  assertNoSecrets(receipt);
+  mkdirSync(dirname(receiptPath), { recursive: true });
+  writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + "\n");
+  console.error("FAIL-CLOSED: " + reason);
+  process.exit(2);
+}
+if (commit !== null) {
+  const head = spawnSync("git", ["rev-parse", "--verify", "HEAD"], { encoding: "utf8", timeout: 8000 });
+  const current = String(head.stdout ?? "").trim().toLowerCase();
+  if (head.status !== 0 || !/^[a-f0-9]{40}$/.test(current) || !current.startsWith(commit.toLowerCase())) {
+    rejectUnverifiableSource("supplied commit does not match the actual Git HEAD");
+  }
+  const clean = spawnSync("git", ["status", "--porcelain", "--untracked-files=no"], { encoding: "utf8", timeout: 8000 });
+  if (clean.status !== 0 || String(clean.stdout ?? "").trim()) {
+    rejectUnverifiableSource("tracked source files differ from the committed Git checkout");
+  }
+  commitVerified = true;
+  notes.push("Git HEAD and tracked-tree cleanliness verified for " + current);
+}
+if (argv["reuse-dist"] === true && !argv.resume) {
+  rejectUnverifiableSource("--reuse-dist requires --resume with a matching, previously verified build receipt");
+}
+
 // ---- stage selection (fresh or affected-only resume) ------------------------
 let selection = { run: [...STAGE_ORDER], skipped: [] };
+let priorReceipt = null;
 if (argv.resume) {
   let prior;
   try {
@@ -195,10 +231,19 @@ if (argv.resume) {
     console.error(`FAIL-CLOSED: unknown receipt schema ${JSON.stringify(prior.schema)}`);
     process.exit(2);
   }
+  if (prior.project !== project || prior.branch !== branch || prior.commit !== commit ||
+      prior.commitLinked !== commitVerified || !Array.isArray(prior.stages) ||
+      !prior.stages.some(s => s.id === "preflight" && s.ok === true) ||
+      !prior.stages.some(s => s.id === "build" && s.ok === true)) {
+    rejectUnverifiableSource("resume receipt is not attested to this exact project, branch, commit and successful prior build");
+  }
+  priorReceipt = prior;
   const priorArtifact = prior.buildArtifact?.clientIndexSha256 ?? null;
   const current = artifactState();
   const forceRebuild =
-    argv["force-build"] === true || !current || !priorArtifact || current.clientIndexSha256 !== priorArtifact;
+    argv["force-build"] === true || !current || !priorArtifact ||
+    current.clientIndexSha256 !== priorArtifact ||
+    current.workerEntrySha256 !== prior.buildArtifact?.workerEntrySha256;
   selection = selectStages({
     previous: (prior.stages ?? [])
       .filter((s) => STAGE_ORDER.includes(s.id))
@@ -206,7 +251,18 @@ if (argv.resume) {
     forceRebuild,
   });
   if (forceRebuild) notes.push("artifact hash changed or missing; build rerun");
-  notes.push(`resume: ${selection.run.join(",") || "nothing"} rerun, ${selection.skipped.length} skipped`);
+  // Always perform fresh liveness proof and fresh HTTP responses on resume.
+  if (!selection.run.includes("preflight")) {
+    selection.run.unshift("preflight");
+    selection.skipped = selection.skipped.filter(s => s.id !== "preflight");
+  }
+  for (const stage of ["serve", "http"]) {
+    if (!selection.run.includes(stage)) {
+      selection.run.push(stage);
+      selection.skipped = selection.skipped.filter(s => s.id !== stage);
+    }
+  }
+  notes.push(`resume: ${selection.run.join(",")} rerun, ${selection.skipped.length} attested stages skipped`);
 }
 if (argv.only) {
   const only = String(argv.only).split(",").map((s) => s.trim());
@@ -270,7 +326,10 @@ if (selection.run.includes("preflight")) {
 let artifact = artifactState();
 let buildFailed = false;
 if (selection.run.includes("build")) {
-  const reusable = argv["reuse-dist"] === true ? artifact : null;
+  const reusable = argv["reuse-dist"] === true && priorReceipt &&
+    priorReceipt.buildArtifact?.clientIndexSha256 === artifact?.clientIndexSha256 &&
+    priorReceipt.buildArtifact?.workerEntrySha256 === artifact?.workerEntrySha256
+    ? artifact : null;
   if (reusable && reusable.workerEntrySha256) {
     record({
       id: "build",
@@ -389,6 +448,10 @@ try {
   if (temp) rmSync(temp, { recursive: true, force: true });
 }
 
+// Partial/debug runs must never certify a full candidate.
+if (argv.only) failClosed = failClosed || "partial --only execution cannot attest a full candidate";
+if (selection.run.length === 0 && !selection.skipped.length) failClosed = failClosed || "no checks executed";
+
 // ---- receipt: machine-readable, commit-linked, secret-free -------------------
 const receipt = buildReceipt({
   runId,
@@ -397,7 +460,7 @@ const receipt = buildReceipt({
   project: validation.project,
   branch,
   commit,
-  commitLinked: commit !== null,
+  commitLinked: commitVerified,
   runtime: { bun: process.versions.bun, node: null, platform: `${process.platform}/${process.arch}` },
   buildArtifact: artifact,
   stages,
