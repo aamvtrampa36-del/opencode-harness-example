@@ -65,7 +65,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
     const job: SupervisorTask = {
       id: start.requestId, repository: start.repository,
-      project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId),
+      project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId, start.repository),
       fingerprint, createdAt: Date.now(), status: "preparing"
     };
     // Atomic reservation prevents duplicate branches and duplicate model spending.

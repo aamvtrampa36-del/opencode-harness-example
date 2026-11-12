@@ -7,17 +7,21 @@ const fake = (async (url: any, init: any = {}) => {
   calls.push({url:route, method:init.method||"GET", body:init.body?JSON.parse(init.body):undefined, headers:new Headers(init.headers||{})});
   let status=200;
   let body:any={};
-  if (route.endsWith("/repos/aamvtrampa36-del/cdf-cloud-engine")) {
-    body={full_name:"aamvtrampa36-del/cdf-cloud-engine",default_branch:"main",private:true};
+  if (route.endsWith("/repos/aamvtrampa36-del/cdf-cloud-engine") ||
+      route.endsWith("/repos/aamvtrampa36-del/opencode-harness-example")) {
+    body={full_name:route.split("/repos/")[1],default_branch:"main",private:true};
+  } else if (route.includes("/git/ref/heads/feat%2Fstaging-supervisor-control-20261111")) {
+    body={object:{sha:"7d1669cba0f3c8ee08626425aaf551c8d5bd4bf7"}};
   } else if (route.endsWith("/git/ref/heads/main")) {
-    body={object:{sha:"basecommit"}};
+    body={object:{sha:"a".repeat(40)}};
   } else if (route.endsWith("/git/refs")) {
-    status=201;body={ref:"refs/heads/opencode/new-feature",object:{sha:"basecommit"}};
+    status=201;body={ref:"refs/heads/opencode/new-feature",object:{sha:"7d1669cba0f3c8ee08626425aaf551c8d5bd4bf7"}};
   } else if (route.includes("/contents/docs/test.md?ref=opencode%2Fnew-feature")) {
     status=404;body={message:"Not Found"};
   } else if (route.endsWith("/contents/docs/test.md")) {
     body={commit:{sha:"newcommit"},content:{sha:"filehash"}};
-  } else if (route.includes("/compare/main...opencode%2Fnew-feature")) {
+  } else if (route.includes("/compare/feat%2Fstaging-supervisor-control-20261111...opencode%2Fstaging-a1234567890bcdef") ||
+             route.includes("/compare/main...opencode%2Fnew-feature")) {
     body={ahead_by:1,behind_by:0,total_commits:1,files:[{
       filename:"docs/test.md",status:"added",additions:1,deletions:0
     }]};
@@ -67,9 +71,26 @@ describe("GitHub scoped permissions",()=>{
   test("create review branch from current default branch, not main write",async()=>{
     calls.length=0;
     const r:any=await api.execute({action:"branch",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:"opencode/new-feature"});
-    expect(r.sha).toBe("basecommit");
+    expect(r.sha).toBe("a".repeat(40));
     expect(calls.at(-1)?.body.ref).toBe("refs/heads/opencode/new-feature");
     expect(calls.at(-1)?.headers.get("Authorization")).toBe("Bearer dummy-test-key");
+  });
+  test("pins OpenCode self-development to Staging and reviews against that base",async()=>{
+    calls.length=0;
+    const staged="opencode/staging-a1234567890bcdef";
+    const source="feat/staging-supervisor-control-20261111";
+    const r:any=await api.execute({action:"branch",repo:"aamvtrampa36-del/opencode-harness-example",branch:staged});
+    expect(r.source).toBe(source);
+    expect(r.sha).toBe("7d1669cba0f3c8ee08626425aaf551c8d5bd4bf7");
+    expect(calls.some(x=>x.url.includes("git/ref/heads/feat%2Fstaging-supervisor-control-20261111"))).toBe(true);
+    const review:any=await api.execute({action:"review",repo:"aamvtrampa36-del/opencode-harness-example",branch:staged});
+    expect(review.base).toBe(source);
+    const pr:any=await api.execute({action:"pr",repo:"aamvtrampa36-del/opencode-harness-example",branch:staged,title:"Staging fix"});
+    expect(pr.base).toBe(source);
+    expect(calls.at(-1)?.body.base).toBe(source);
+    calls.length=0;
+    await expect(api.execute({action:"branch",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:staged})).rejects.toThrow("OpenCode-only");
+    expect(calls.every(x=>x.method==="GET")).toBe(true);
   });
   test("reads a bounded diff only for the chosen review branch",async()=>{
     calls.length=0;

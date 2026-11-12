@@ -32,6 +32,9 @@ describe("OpenCode remote supervisor — fail closed", () => {
     expect(supervisorProject(input.requestId)).toBe("supervised-" + input.requestId);
     const branch = supervisorBranch(input.requestId);
     expect(branch).toBe("opencode/supervised-a1234567890bcdef");
+    expect(supervisorBranch(input.requestId, repos[0])).toBe("opencode/staging-a1234567890bcdef");
+    expect(supervisorBranch(input.requestId, repos[1])).toBe(branch);
+    expect(supervisorPrompt(input, supervisorBranch(input.requestId, repos[0]), supervisorProject(input.requestId))).toContain("NO main");
     expect(() => supervisorTaskKey("bad")).toThrow();
     for (const operation of ["write", "pr", "review"]) {
       expect(() => assertSupervisorBoundGitHubOperation(operation, branch, branch)).not.toThrow();

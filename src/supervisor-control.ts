@@ -51,9 +51,12 @@ export function supervisorTaskKey(id: string): string {
   return "supervisor:task:" + id;
 }
 
-export function supervisorBranch(id: string): string {
+export function supervisorBranch(id: string, repository?: string): string {
   supervisorTaskKey(id);
-  return "opencode/supervised-" + id;
+  // Only OpenCode's own self-improvement branches derive from Staging.
+  // Existing G9 and other repository tasks continue using the default branch.
+  return (repository === "aamvtrampa36-del/opencode-harness-example"
+    ? "opencode/staging-" : "opencode/supervised-") + id;
 }
 
 export function supervisorProject(id: string): string {
@@ -110,6 +113,9 @@ export function supervisorResponse(data: unknown, status = 200): Response {
 export function supervisorPrompt(task: SupervisorStart, branch: string, project: string): string {
   return "Tarea de desarrollo supervisada y REVERSIBLE. Repositorio autorizado: " +
     task.repository + ". Proyecto Linux exclusivo: " + project + ". Rama precreada: " + branch +
+    (branch.startsWith("opencode/staging-")
+      ? ". BASE REAL: feat/staging-supervisor-control-20261111, NO main. La importación Linux inicial puede contener main: usa git fetch para recuperar el commit exacto de staging en un checkout aislado; verifica HEAD y usa github.read con ref de Staging si hace falta. No presentes los archivos de main como si fuesen Staging"
+      : "") +
     ". Tienes permiso para leer el código autorizado, ejecutar pruebas y escribir SOLO en esa rama " +
     "usando la herramienta github; prepara exclusivamente una PR borrador. " +
     "La copia importada a Linux no contiene .git: usa github para crear commits. " +
