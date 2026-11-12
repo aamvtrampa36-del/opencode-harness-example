@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   DRILL_PROJECT_PREFIX, DRILL_ROOT_PATH, DRILL_SOURCE,
-  assertCompatibleImage, assertDrillProject, assertDrillRecordProject,
+  assertCompatibleImage, assertManagedSnapshotImage, assertDrillProject, assertDrillRecordProject,
   assertMarkerIntegrity, assertSnapshotHandle, drillProjectNames,
   evaluateDrillChecks, hashText, parseDrillRecord, parseDrillReport,
   type DrillRecord
@@ -106,6 +106,21 @@ describe("rechazo de imagen diferente", () => {
   test("equal valid references are accepted", () => {
     const ref = "sha256:" + "a".repeat(64);
     expect(assertCompatibleImage(ref, ref)).toBe(ref);
+  });
+});
+
+describe("Cloudflare-managed image aliases across snapshot restore", () => {
+  const canonical = "registry.cloudflare.com/bb6aa21e251466eda5c5c076cabc69ef/cf/production/node-24-trixie@sha256:" + "a".repeat(64);
+  test("accepts the platform-managed alias resolved to an immutable digest", () => {
+    expect(assertManagedSnapshotImage("cloudflare/debian-trixie", canonical))
+      .toBe("cloudflare-managed-alias");
+    expect(assertManagedSnapshotImage(canonical, canonical)).toBe("exact-reference");
+  });
+  test("rejects unrelated image families or malformed digests", () => {
+    expect(() => assertManagedSnapshotImage("cloudflare/debian-trixie", canonical.replace("/node-24-trixie", "/node-22-trixie"))).toThrow();
+    expect(() => assertManagedSnapshotImage("cloudflare/debian-trixie", canonical.replace(/a+$/, "short"))).toThrow();
+    expect(() => assertManagedSnapshotImage("cloudflare/debian-trixie", "ghcr.io/other@sha256:" + "a".repeat(64))).toThrow();
+    expect(() => assertManagedSnapshotImage("sha256:" + "a".repeat(64), "sha256:" + "b".repeat(64))).toThrow();
   });
 });
 
