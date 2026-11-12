@@ -295,9 +295,8 @@ export function preflightSnapshotSupport(input: SnapshotPreflightInput): Snapsho
   if (!input.hasSnapshotContainer) {
     reasons.push("container.snapshotContainer() is not exposed by the installed runtime/SDK");
   }
-  if (!input.hasSnapshotDirectory) {
-    reasons.push("container.snapshotDirectory() is not exposed by the installed runtime/SDK");
-  }
+  // Directory snapshot support is optional. A full filesystem snapshot only
+  // requires snapshotContainer() on a durable_object scheduled application.
   return {
     supported: reasons.length === 0,
     reasons,
@@ -350,33 +349,33 @@ export type RollbackPathStatus = {
 };
 
 /**
- * Honest assessment of each rollback path. With
- * scheduling_policy=durable_object, GET /versions legitimately returns [],
- * so versions-API rollback is unavailable and source redeploy is the path.
+ * Treat Workers deployments and Container application versions as separate
+ * resources. Container GET /versions may be [] for durable_object scheduling;
+ * this says nothing about Worker version rollback capability. A local tar
+ * round trip and unit-tested DO archive are not proof of disaster recovery.
  */
 export function evaluateRollbackPaths(input: {
-  versionsCount: number | null;
-  schedulingPolicy?: string;
+  workerVersionsCount: number | null;
+  containerSchedulingPolicy?: string;
 }): RollbackPathStatus[] {
-  const durableObject = input.schedulingPolicy === "durable_object";
   const workerVersions: RollbackPathStatus =
-    input.versionsCount === null
+    input.workerVersionsCount === null
       ? { path: "worker-versions-api", status: "requires-deployment",
-          reason: "GET /versions needs the deployed Worker and credentials" }
-      : input.versionsCount === 0 && durableObject
+          reason: "Worker deployment versions were not queried from Cloudflare" }
+      : input.workerVersionsCount === 0
         ? { path: "worker-versions-api", status: "unavailable",
-            reason: "scheduling_policy=durable_object keeps the version list empty; roll back by redeploying a previous git commit" }
+            reason: "No Worker deployment versions reported; Container application versions are unrelated" }
         : { path: "worker-versions-api", status: "available",
-            reason: "listed versions can be rolled back with wrangler rollback" };
+            reason: "Worker deployment versions are listed; verify bindings and rollback before promoting" };
   return [
     workerVersions,
-    { path: "worker-source-redeploy", status: "available",
-      reason: "redeploy a previous commit from git; owner-approved operation, not executed here" },
+    { path: "worker-source-redeploy", status: "requires-deployment",
+      reason: "Redeploy of an exact previous commit is possible in principle but not proven here" },
     { path: "container-image-restore", status: "requires-deployment",
-      reason: "start({containerSnapshot:{id}}) and inspect().image (OCI digest) only run in the deployed Worker" },
-    { path: "container-filesystem-restore", status: "available",
-      reason: "tar+gzip archive restored and hash-verified by verifyRestore (runs in any project container)" },
-    { path: "persistent-do-storage", status: "available",
-      reason: "versioned chunked backups in Durable Object SQLite with SHA-256 verification survive the 30-day snapshot expiry" }
+      reason: "Container image identity and snapshot restart require a live deployed isolated test" },
+    { path: "container-filesystem-restore", status: "requires-deployment",
+      reason: "Only a same-instance scratch tar+gzip round trip is proven, not a durable independent backup" },
+    { path: "persistent-do-storage", status: "requires-deployment",
+      reason: "Unit tests cover DO archive helpers, not live cross-version DO state restoration" },
   ];
 }
