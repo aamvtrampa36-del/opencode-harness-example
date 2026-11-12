@@ -45,7 +45,7 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
       let same: Awaited<ReturnType<DrillDev["drillRestoreSameDo"]>> | null = null;
       let cross: Awaited<ReturnType<DrillDev["drillCrossRestore"]>> | null = null;
       let error: string | null = null;
-      let cleanup: unknown[] = [];
+      let cleanup: Array<{ project: string; containerDestroyed: boolean; handleDeleted: number } | { project: string; cleanupError: string }> = [];
       try {
         create = await step.do("create-real-container-snapshot", opts,
           async () => a.drillCreateSnapshot(scope.creator));
@@ -60,7 +60,7 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
         error = e instanceof Error ? e.message.slice(0, 800) : "Unknown drill failure";
       } finally {
         cleanup = await step.do("cleanup-disposable-drill-containers", opts, async () => {
-          const results: unknown[] = [];
+          const results: typeof cleanup = [];
           for (const [host, project] of [[a, scope.creator], [b, scope.restorer]] as const) {
             try { results.push(await host.drillCleanup(project)); }
             catch (e) {
