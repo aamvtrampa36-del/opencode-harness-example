@@ -339,6 +339,7 @@ export default {
         }
         if (request.method === "POST" || request.method === "DELETE") {
           if (!settingsOriginAllowed) return Response.json({ error: "Origin and JSON required" }, { status: 403 });
+          const raw = await request.text();
           if (raw.length > 600) return Response.json({ error: "Request too large" }, { status: 413 });
           const body = JSON.parse(raw) as { repository?: string };
           try {
