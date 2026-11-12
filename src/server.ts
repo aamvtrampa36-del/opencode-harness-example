@@ -339,7 +339,6 @@ export default {
         }
         if (request.method === "POST" || request.method === "DELETE") {
           if (!settingsOriginAllowed) return Response.json({ error: "Origin and JSON required" }, { status: 403 });
-          const raw = await request.text();
           if (raw.length > 600) return Response.json({ error: "Request too large" }, { status: 413 });
           const body = JSON.parse(raw) as { repository?: string };
           try {
@@ -419,6 +418,19 @@ export default {
         headers.set("X-Content-Type-Options", "nosniff");
         headers.set("Cache-Control", "no-store");
         return new Response(file.body, { status: file.status, headers });
+      }
+      const verifyMatch = url.pathname.match(/^\/api\/dev\/verify\/([a-z][a-z0-9-]{0,39})$/);
+      if (verifyMatch) {
+        if (request.method !== "GET") return new Response("GET only", { status: 405 });
+        try {
+          const result = await env.DEV.getByName("personal").verifyRestore(verifyMatch[1]);
+          return Response.json(result, { headers: { "Cache-Control": "no-store" } });
+        } catch (error) {
+          return Response.json(
+            { error: error instanceof Error ? error.message : "Verify failed" },
+            { status: 500, headers: { "Cache-Control": "no-store" } }
+          );
+        }
       }
       const previewMatch = url.pathname.match(/^\/api\/dev\/preview\/([a-z][a-z0-9-]{0,39})(?:\/(.*))?$/);
       if (previewMatch) {
