@@ -91,7 +91,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
       await this.ctx.storage.put(key, job);
       const handle = this.harness.session(created.id);
       await handle.setAgent("build");
-      await handle.setModel(this.ai(MODEL_ID));
+      // G9 passed a real agent tool loop using the private OpenRouter connection.
+      // Prefer that verified tool-capable route; do not infer a tool call from prose.
+      let selected: { providerID: string; id: string } | undefined;
+      if (await this.isOpenRouterConfigured()) {
+        try {
+          const registration = await this.refreshOpenRouter();
+          if (registration.active) selected = {
+            providerID: "openrouter", id: MODEL_PRESETS.review.id
+          };
+        } catch { /* Only then use the native Cloudflare fallback. */ }
+      }
+      await handle.setModel(selected ?? this.ai(MODEL_ID));
       await handle.submit(supervisorPrompt(start, job.branch, job.project), { whenBusy: "followUp" });
       job.status = "running";
       await this.ctx.storage.put(key, job);
