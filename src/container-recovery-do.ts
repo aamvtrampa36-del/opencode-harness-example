@@ -6,7 +6,7 @@
  */
 import {
   DRILL_ROOT_PATH, DRILL_SOURCE,
-  assertCompatibleImage, assertDrillProject, assertDrillRecordProject,
+  assertManagedSnapshotImage, assertDrillProject, assertDrillRecordProject,
   assertMarkerIntegrity, assertSnapshotHandle, evaluateDrillChecks, hashText,
   parseDrillRecord, parseDrillReport,
   type DrillCheck, type DrillRecord, type DrillReport, type DrillRestoreOutcome
@@ -208,7 +208,7 @@ export async function drillRestoreSameDo(host: DrillHost, project: string): Prom
       await container.setInactivityTimeout(DRILL_INACTIVITY_MS);
       const info = await container.inspect().catch(() => null);
       outcome.imageAfter = normalizeImageRef(info?.image);
-      assertCompatibleImage(record.image, outcome.imageAfter);
+      outcome.imageIdentityProof = assertManagedSnapshotImage(record.image, outcome.imageAfter);
       const verifyOut = await execDrill(container, "verify", {
         DRILL_PROJECT: id, DRILL_RUN_ID: record.runId,
         DRILL_EXPECT_SHA256: record.markerSha256,
@@ -297,7 +297,7 @@ export async function drillCrossRestore(
     await container.setInactivityTimeout(DRILL_INACTIVITY_MS);
     const info = await container.inspect().catch(() => null);
     outcome.imageAfter = normalizeImageRef(info?.image);
-    assertCompatibleImage(record.image, outcome.imageAfter);
+    outcome.imageIdentityProof = assertManagedSnapshotImage(record.image, outcome.imageAfter);
     const verifyOut = await execDrill(container, "verify", {
       DRILL_PROJECT: record.project, DRILL_RUN_ID: record.runId,
       DRILL_EXPECT_SHA256: record.markerSha256,
