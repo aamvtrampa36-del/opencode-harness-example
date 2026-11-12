@@ -9,7 +9,8 @@
     "build": "vite build",
     "deploy": "vite build && wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "types": "wrangler types env.d.ts --include-runtime false"
+    "types": "wrangler types env.d.ts --include-runtime false",
+    "selftest": "bun scripts/selftest.mjs"
   },
   "dependencies": {
     "@cloudflare/computer": "0.10.0",

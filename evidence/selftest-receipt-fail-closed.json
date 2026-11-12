@@ -1,0 +1,22 @@
+{
+  "schema": "opencode-selftest-receipt/1",
+  "runId": "a1f0dff72533",
+  "startedAt": "2026-11-12T05:03:04.020Z",
+  "finishedAt": "2026-11-12T05:03:04.021Z",
+  "project": "selftest-candidate",
+  "branch": "main",
+  "commit": null,
+  "commitLinked": false,
+  "runtime": {
+    "bun": "1.4.4",
+    "node": null,
+    "platform": "linux/x64"
+  },
+  "buildArtifact": null,
+  "stages": [],
+  "checks": [],
+  "failClosed": "target.branch: Branch must be an isolated OpenCode review branch (opencode/*); got \"main\"",
+  "mobile": "Mobile execution stays with the existing compatible automation (.github/workflows/android-apk.yml builds and verifies the APK); this receipt claims no real device hardware.",
+  "verdict": "fail-closed",
+  "failClosedReason": "target.branch: Branch must be an isolated OpenCode review branch (opencode/*); got \"main\""
+}

@@ -1,0 +1,40 @@
+{
+  "schema": "opencode-selftest-receipt/1",
+  "runId": "bda48461bf6d",
+  "startedAt": "2026-11-12T05:19:22.450Z",
+  "finishedAt": "2026-11-12T05:19:44.743Z",
+  "project": "selftest-candidate",
+  "branch": "opencode/x",
+  "commit": null,
+  "commitLinked": false,
+  "runtime": {
+    "bun": "1.4.4",
+    "node": null,
+    "platform": "linux/x64"
+  },
+  "buildArtifact": null,
+  "stages": [
+    {
+      "id": "preflight",
+      "ok": true,
+      "exitCode": 0,
+      "ms": 14,
+      "logTail": "bun=1.4.4 proof=true writeProbe=true proofOut=\"SELFTEST_PROOF_OK:bda48461bf6d\""
+    },
+    {
+      "id": "build",
+      "ok": false,
+      "exitCode": 1,
+      "ms": 22276,
+      "logTail": "vite v8.3.6 building opencode_harness_example environment for production...\ntransforming...\n✓ 3971 modules transformed.\n\n$ vite build\n✗ Build failed in 15.90s\nerror during build:\nBuild failed with 1 error:\n\n\u001b[31m[builtin:vite-transform] \u001b[0mUnterminated string\n    \u001b[38;5;246m╭\u001b[0m\u001b[38;5;246m─\u001b[0m\u001b[38;5;246m[\u001b[0m src/tool-permissions.ts:26:27 \u001b[38;5;246m]\u001b[0m\n    \u001b[38;5;246m│\u001b[0m\n \u001b[38;5;246m26 │\u001b[0m \u001b[38;5;249mc\u001b[0m\u001b[38;5;249mo\u001b[0m\u001b[38;5;249mn\u001b[0m\u001b[38;5;249ms\u001b[0m\u001b[38;5;249mt\u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249mS\u001b[0m\u001b[38;5;249mE\u001b[0m\u001b[38;5;249mL\u001b[0m\u001b[38;5;249mF\u001b[0m\u001b[38;5;249mT\u001b[0m\u001b[38;5;249mE\u001b[0m\u001b[38;5;249mS\u001b[0m\u001b[38;5;249mT\u001b[0m\u001b[38;5;249m_\u001b[0m\u001b[38;5;249mS\u001b[0m\u001b[38;5;249mA\u001b[0m\u001b[38;5;249mB\u001b[0m\u001b[38;5;249mO\u001b[0m\u001b[38;5;249mT\u001b[0m\u001b[38;5;249mA\u001b[0m\u001b[38;5;249mG\u001b[0m\u001b[0m\u001b[38;5;249mE\u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m=\u001b[0m\u001b[38;5;249m \u001b[0m\"unterminated\n \u001b[38;5;240m   │\u001b[0m                           ───────┬──────  \n \u001b[38;5;240m   │\u001b[0m                                  ╰──────── \n\u001b[38;5;246m────╯\u001b[0m\n\n    at aggregateBindingErrorsIntoJsError (file:///workspace/projects/supervised-b8d16e02c7a4935f/node_modules/rolldown/dist/shared/error-BJ9uQLIS.mjs:50:18)\n    at unwrapBindingResult (file:///workspace/projects/supervised-b8d16e02c7a4935f/node_modules/rolldown/dist/shared/error-BJ9uQLIS.mjs:20:128)\n    at #build (file:///workspace/projects/supervised-b8d16e02c7a4935f/node_modules/rolldown/dist/shared/rolldown-DWd2aEL4.mjs:146:34)\n    at async buildEnvironment (file:///workspace/projects/supervised-b8d16e02c7a4935f/node_modules/vite/dist/node/chunks/node.js:34764:66)\n    at async Object.build (file:///workspace/projects/supervised-b8d16e02c7a4935f/node_modules/vite/dist/node/chunks/node.js:35185:19)\n    at async Promise.all (index 0)\n    at async Object.buildApp (file:///workspace/projects/supervised-b8d16e02c7a4935f/node_modules/@cloudflare/vite-plugin/dist/index.mjs:70216:3)\n    at async Object.buildApp (file:///workspace/projects/supervised-b8d16e02c7a4935f/node_modules/vite/dist/node/chunks/node.js:35177:6)\n    at async CAC.<anonymous> (file:///workspace/projects/supervised-b8d16e02c7a4935f/node_modules/vite/dist/node/cli.js:789:3) {\n  errors: [Getter/Setter]\n}\nerror: script \"build\" exited with code 1\n\nNODE_OPTIONS=--max-old-space-size=768\nartifact={\"clientIndexSha256\":\"9084bdfa7c1ba5f5053d780fb41471ec70e21d13b1a3adfa56b4836f01d4b67d\",\"assetCount\":305,\"workerEntrySha256\":\"965341a81e365814cd9036dd504f4b4b52e405ec8a9acc64a565a0ba117f3285\"}"
+    }
+  ],
+  "checks": [],
+  "failClosed": null,
+  "mobile": "Mobile execution stays with the existing compatible automation (.github/workflows/android-apk.yml builds and verifies the APK); this receipt claims no real device hardware.",
+  "notes": [
+    "repair: inspect .selftest/logs/build.log tail; fix the source error, then rerun with --resume",
+    "build failed; the dist left on disk is stale and was NOT certified; serve/http skipped"
+  ],
+  "verdict": "fail"
+}
