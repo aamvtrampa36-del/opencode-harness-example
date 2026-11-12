@@ -24,7 +24,8 @@
       "/api/dev/*",
       "/api/session/*",
       "/api/settings/*",
-      "/api/settings"
+      "/api/settings",
+      "/api/supervisor/*"
     ]
   },
   "durable_objects": {
@@ -76,6 +77,7 @@
     "crons": []
   },
   "vars": {
-    "G1_DEV_UNLIMITED_CHECKS": "true"
+    "G1_DEV_UNLIMITED_CHECKS": "true",
+    "OPENCODE_SUPERVISOR_ENABLED": "true"
   }
 }
