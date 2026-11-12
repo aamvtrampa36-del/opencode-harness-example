@@ -22,7 +22,9 @@ export function validateRemoteMcp(value: unknown): RemoteMcpConfig {
   if (typeof item.url !== "string" || item.url.length > 600) throw new Error("Invalid MCP URL");
   let url: URL;
   try { url = new URL(item.url); } catch { throw new Error("Invalid MCP URL"); }
-  const host = url.hostname.toLowerCase();
+  // Normalize the host: strip any trailing dots so "localhost.", "host.local."
+  // and "host.internal." are rejected exactly like their plain forms.
+  const host = url.hostname.toLowerCase().replace(/\.+$/, "");
   if (url.protocol !== "https:" || url.username || url.password || url.port && url.port !== "443" ||
       host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") ||
       host.endsWith(".internal") || host.includes(":") || /^\d+(\.\d+){3}$/.test(host) ||
