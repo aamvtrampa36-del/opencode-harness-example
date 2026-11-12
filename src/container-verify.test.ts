@@ -95,13 +95,14 @@ describe("snapshot preflight (fail-closed)", () => {
       containerApiAvailable: false, hasSnapshotContainer: false, hasSnapshotDirectory: false
     });
     expect(noBinding.supported).toBe(false);
-    expect(noBinding.reasons.length).toBe(3);
+    expect(noBinding.reasons.length).toBe(2);
     const partial = preflightSnapshotSupport({
       containerApiAvailable: true, hasSnapshotContainer: true, hasSnapshotDirectory: false
     });
-    expect(partial.supported).toBe(false);
+    expect(partial.supported).toBe(true);
     expect(partial.fullContainerSnapshot).toBe(true);
-    expect(partial.reasons.join(" ")).toContain("snapshotDirectory");
+    expect(partial.directorySnapshot).toBe(false);
+    expect(partial.liveProof).toBe("pending-deployment");
   });
 
   test("full API surface reports supported but live proof still pending deployment", () => {
@@ -154,15 +155,19 @@ describe("round trip integrity", () => {
 });
 
 describe("rollback path assessment", () => {
-  test("durable_object policy: versions API unavailable, source redeploy available", () => {
-    const statuses = evaluateRollbackPaths({ versionsCount: 0, schedulingPolicy: "durable_object" });
+  test("Container versions cannot suppress a known Worker rollback", () => {
+    const statuses = evaluateRollbackPaths({ workerVersionsCount: 3, containerSchedulingPolicy: "durable_object" });
     const by = Object.fromEntries(statuses.map((s) => [s.path, s]));
-    expect(by["worker-versions-api"].status).toBe("unavailable");
-    expect(by["worker-versions-api"].reason).toContain("durable_object");
-    expect(by["worker-source-redeploy"].status).toBe("available");
+    expect(by["worker-versions-api"].status).toBe("available");
+    expect(by["worker-source-redeploy"].status).toBe("requires-deployment");
     expect(by["container-image-restore"].status).toBe("requires-deployment");
-    expect(by["container-filesystem-restore"].status).toBe("available");
-    expect(by["persistent-do-storage"].status).toBe("available");
+    expect(by["container-filesystem-restore"].status).toBe("requires-deployment");
+    expect(by["persistent-do-storage"].status).toBe("requires-deployment");
+  });
+
+  test("missing Worker version evidence is not counted as available", () => {
+    const statuses = evaluateRollbackPaths({ workerVersionsCount: null, containerSchedulingPolicy: "durable_object" });
+    expect(statuses[0].status).toBe("requires-deployment");
   });
 });
 
