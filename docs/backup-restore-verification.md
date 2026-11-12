@@ -17,7 +17,7 @@ trabajo, sin desplegar**. Nada de este documento certifica producción.
   negativo (corrupción → FAIL), entorno inválido → FAIL, y tests de helpers puros.
 - `src/dev-container.ts`: métodos nuevos `verifyRestore(project)` y `snapshotPreflight()`.
   No se modificó el ciclo de vida existente (`ensureRunning`, checkpoints, alarm).
-- `src/server.ts`: ruta nueva `GET /api/dev/verify/:project` que devuelve el informe JSON.
+- `src/server.ts`: ruta nueva `POST /api/dev/verify/:project` (mismo Origin + Content-Type JSON; 200 solo si ok y exitCode=0) que devuelve el informe JSON.
 - `scripts/verify-backup-restore.mjs` (nuevo): corredor local con control negativo
   (`--expect-fail`). Sin dependencias nuevas; `package.json` y CI sin cambios.
 
@@ -108,3 +108,6 @@ bun scripts/check-invariants.mjs
 ## Corrección de revisión independiente
 
 Una revisión detectó dos falsas equivalencias y las corrigió: (1) `snapshotDirectory` NO es necesario para la instantánea completa `snapshotContainer`; la ausencia de esa API opcional no desactiva el soporte completo; (2) versiones de Containers != versiones de Workers. El resultado de la prueba `tar+gzip` utiliza `/tmp` del **mismo Container** y **no** prueba restauración tras pérdida de instancia. Los respaldos de DO están cubiertos por código y unit tests, no por un ensayo completo de restauración del estado productivo. Las puertas de producción permanecen pendientes.
+
+
+**Seguridad de la API:** la ruta de verificación crea y altera un fixture temporal y, por ello, **no puede activarse con GET**. Requiere POST con Origin de la aplicación autenticada y Content-Type JSON. Los informes fallidos responden HTTP 422, no HTTP 200. Esta ruta no da permisos adicionales al supervisor ni transforma pruebas locales de tar en respaldo durable.
