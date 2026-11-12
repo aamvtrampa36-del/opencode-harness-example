@@ -16,6 +16,10 @@ import { GITHUB_IMPORT_SOURCE } from "./github-import-source";
 import { githubSourceArchive } from "./github-import";
 import { validateIsolatedRegistration, type IsolatedProject } from "./project-container";
 import { assertRecoverableContainer, SNAPSHOT_TTL_MS } from "./snapshot-policy";
+import {
+  runRestoreProofFixture, validateRestoreProofFixtureId,
+  type RestoreProofContainer, type RestoreProofReport
+} from "./restore-proof";
 
 /**
  * Opt-in Linux computer. There is exactly ONE named instance ("personal")
@@ -687,6 +691,34 @@ export class DevContainer extends DurableObject<Env> {
       snapshotId: (await this.ctx.storage.get<string>("snapshotId")) ?? null,
       savedAt: (await this.ctx.storage.get<number>("savedAt")) ?? null
     };
+  }
+
+  /**
+   * Real, isolated rehearsal of snapshotContainer() -> destroy ->
+   * start({containerSnapshot}) on a freshly created, test-only DevContainer
+   * instance (name restore-proof-v1:<16 hex>). Any DO with prior state, any
+   * non-verifiable marker/sha256, any unknown image digest or missing datum
+   * fails closed. See restore-proof.ts; the private Workflow route calls
+   * this on a dedicated DO name, never on personal or project containers.
+   */
+  async proveRestoreFixture(raw: unknown): Promise<RestoreProofReport> {
+    const id = validateRestoreProofFixtureId(raw);
+    // Serialize so snapshot/destroy/start cannot race a shell command.
+    const previous = this.commandQueue;
+    let release = () => {};
+    this.commandQueue = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    this.busy++;
+    try {
+      return await runRestoreProofFixture({
+        id,
+        storage: this.ctx.storage,
+        container: (this.ctx.container ?? null) as unknown as RestoreProofContainer | null
+      });
+    } finally {
+      this.busy--;
+      release();
+    }
   }
 
   private async proxyHttp(path: string): Promise<Response> {
