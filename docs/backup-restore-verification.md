@@ -42,14 +42,13 @@ Control negativo (`--expect-fail`, exit 0 del corredor porque el veredicto esper
 - Archivo truncado 64 bytes → `restore-extracted: fail`, informe `ok:false`, exit 1 del script.
 - Demuestra que el harness detecta corrupción y NO emite PASS sintético.
 
-## B. Rollback de Worker — versions API NO disponible; camino real = redeploy
+## B. Rollback de Worker — independencia entre APIs
 
-Con `scheduling_policy=durable_object` (confirmado en `wrangler.jsonc`), `GET /versions`
-devuelve `[]` legítimamente: no hay versiones listables ni rollback por versions API.
-`evaluateRollbackPaths` lo declara `unavailable` con esa razón exacta. El camino real de
-rollback de Worker es **redeploy del commit anterior desde git** (`wrangler deploy` de una
-revisión previa), operación del propietario que NO se ejecutó en esta tarea (prohibido
-desplegar). Estado: camino documentado, sin prueba en vivo aquí.
+El resultado vacío de `GET /containers/applications/{id}/versions` corresponde a la aplicación **Container** con `scheduling_policy=durable_object`. NO es el historial del **Worker**. La API de despliegues `GET /workers/scripts/{name}/deployments` devuelve versiones del Worker y permite la reversión cuando los bindings siguen compatibles.
+
+En una ejecución anterior se comprobó el rollback real del Worker **Staging** desde `17d26f40-d71c-4eaa-869e-da2e1b2a11a4` a `d028f857-2dc9-4593-ac9b-9de6751c8dad` y de vuelta. Esta PR NO repitió esa prueba ni realizó despliegues.
+
+La evaluación `evaluateRollbackPaths` recibe exclusivamente el conteo de versiones de **Worker**, nunca el de Container. La existencia de un historial no confirma por sí sola que un rollback específico sea compatible con migraciones o bindings vigentes.
 
 ## C. Rollback de imagen de Container — requiere despliegue (bloqueo documentado)
 
@@ -105,3 +104,7 @@ bun scripts/check-invariants.mjs
 - La herramienta genérica de escritura de workspace está desactivada en sesiones de
   proyecto; los cambios se escribieron dentro del container Linux del proyecto y se
   publican vía la herramienta de GitHub solo en la rama precreada.
+
+## Corrección de revisión independiente
+
+Una revisión detectó dos falsas equivalencias y las corrigió: (1) `snapshotDirectory` NO es necesario para la instantánea completa `snapshotContainer`; la ausencia de esa API opcional no desactiva el soporte completo; (2) versiones de Containers != versiones de Workers. El resultado de la prueba `tar+gzip` utiliza `/tmp` del **mismo Container** y **no** prueba restauración tras pérdida de instancia. Los respaldos de DO están cubiertos por código y unit tests, no por un ensayo completo de restauración del estado productivo. Las puertas de producción permanecen pendientes.
