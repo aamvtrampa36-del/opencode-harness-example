@@ -52,3 +52,19 @@ El endpoint **no expone rutas para fusionar, modificar secretos, desplegar produ
 - Comprobar la misma petición autenticada desde el cliente remoto, negación sin token, idempotencia, aislamiento entre dos tareas, cancelación, revisión independiente, backup/restauración y costes antes de activar Producción.
 
 **Cierre del circuito futuro:** OpenCode Producción prepara una PR borrador; un supervisor independiente verifica artefactos, pruebas y permisos; Staging valida con datos aislados; solo una operación autorizada promueve la versión y después comprueba su reversión. Ningún agente aprueba su propia promoción.
+
+
+## Puente directo Cloudflare Workflows (sin token HTTP nuevo)
+
+Staging incluye además la clase `OpenCodeSupervisorWorkflow`, publicada únicamente mediante `wrangler.g1.jsonc`, nombre **`opencode-supervisor-stage`**. Esta vía usa los permisos existentes de la cuenta Cloudflare conectada a ChatGPT, no abre otra URL al público, y no requiere enviar una credencial al modelo ni a la conversación.
+
+Una invocación autorizada a la API de Workflows acepta `params` como cadena JSON, con operaciones:
+
+- `{"action":"start","requestId":"<16hex>","repository":"aamvtrampa36-del/opencode-harness-example","prompt":"..."}` — reserva tarea aislada en el DO supervisor y solicita ejecución al agente.
+- `{"action":"status","id":"<16hex>"}` — devuelve estado y herramientas realmente observadas; nunca aprueba el diff automáticamente.
+- `{"action":"review","id":"<16hex>"}` — consulta la comparación GitHub contra la rama por defecto de ese repositorio.
+- `{"action":"cancel","id":"<16hex>"}` — envía cancelación y persiste el estado.
+
+Cada llamada Workflows es una operación limitada, con registro propio y sin creación automática de despliegues. El procesamiento prolongado del agente ocurre en su sesión DO; para inspeccionarlo se invoca `status` explícitamente. **ChatGPT no está supervisando por sí solo cuando no hay una invocación activa o una automatización autorizada.** La publicación a producción queda fuera de la API del agente.
+
+**Seguridad de ambos canales:** la API HTTP conserva la obligación de superar Cloudflare Access y un bearer separado; mientras ese secreto no exista, está desactivada de hecho. La alternativa Workflows solo es accesible con permisos Cloudflare autorizados y debe comprobarse con una invocación real antes de afirmar que el control remoto está operativo.
