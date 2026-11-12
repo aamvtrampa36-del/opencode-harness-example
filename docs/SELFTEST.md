@@ -21,12 +21,12 @@ preview HTTP propio del proyecto.
 ```sh
 bun scripts/selftest.mjs --branch opencode/<tarea> --commit <sha>      # E2E esencial
 bun scripts/selftest.mjs --branch opencode/<tarea> --commit <sha> --full --reuse-dist
-bun scripts/selftest.mjs --resume .selftest/receipt-fail.json          # solo lo afectado
+bun scripts/selftest.mjs --branch opencode/<tarea> --commit <sha> --resume .selftest/receipt-fail.json  # solo lo afectado, con prueba viva
 ```
 
 Flags: `--project <slug>` (nombre servido, por defecto `selftest-candidate`),
 `--allow-uncommitted` (solo iteración local), `--receipt <ruta>`,
-`--only <a,b>`, `--force-build`. Códigos de salida: `0` pass, `1` fail,
+`--only <a,b>` (modo diagnóstico, resultado completo siempre fail-closed), `--force-build`. Códigos de salida: `0` pass, `1` fail,
 `2` fail-closed.
 
 ## Etapas
@@ -48,6 +48,10 @@ Flags: `--project <slug>` (nombre servido, por defecto `selftest-candidate`),
 real con SHA-256, artefacto, veredicto (`pass` | `fail` | `fail-closed`) y la
 nota móvil. Se niega a escribirse si contuviera un posible secreto
 (mismos patrones que `check-invariants.mjs`).
+
+## Verificación independiente del código
+
+El argumento `--commit` no es una etiqueta arbitraria: el ejecutor compara ese SHA con el Git HEAD real y comprueba que ningún archivo rastreado esté modificado. Si la comparación falla, devuelve `exit 2`, sin aceptar el recibo como candidato. El modo `--resume` exige mismo proyecto, rama, commit, prueba previa de arranque y artefactos con hashes de índice y Worker idénticos. Además repite siempre la prueba de vida y las respuestas HTTP. `--reuse-dist` solamente es válido con un recibo previo validado del mismo commit. Ningún `--only` puede certificar un ciclo completo.
 
 ## Fallar cerrado
 
@@ -104,3 +108,8 @@ archivo. No ejercita el runtime de workerd ni el bucle del agente en el
 Durable Object (eso requeriría `wrangler dev` con binding remoto de Workers AI,
 con coste); para eso siguen valiendo las pruebas de `test-preview.mjs` y el
 despliegue controlado.
+
+
+### Corrección tras revisión independiente (12 nov 2026)
+
+El informe y recibo anteriores pertenecen a una revisión previa: el campo `commitLinked` se basaba en la presencia de un texto SHA, no en `git rev-parse HEAD`; por tanto **no era garantía de procedencia**. La nueva revisión verifica HEAD y limpieza de fuentes, añade tres tests reales de los casos negativos y elimina el atajo de `--reuse-dist` sin evidencia anterior. Debe citarse el nuevo CI y una nueva ejecución positiva completa antes de afirmar que esta corrección supera todos los criterios. No se ha promovido a producción.
