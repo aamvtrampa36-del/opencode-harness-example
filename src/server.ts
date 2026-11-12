@@ -33,6 +33,13 @@ import { checkIsolation } from "./isolation-check";
 import { projectContainerName, repositoryProjectSlug } from "./project-container";
 import { checkIsolatedBackup } from "./isolated-backup-check";
 import { repositoryImportScope } from "./repository-import-scope";
+import {
+  SUPERVISOR_WORKSPACE, SUPERVISOR_API_PREFIX,
+  assertSupervisorBoundGitHubOperation, supervisorBearerAllowed,
+  supervisorBranch, supervisorFingerprint, supervisorProject,
+  supervisorPrompt, supervisorResponse, supervisorTaskKey,
+  validateSupervisorStart, type SupervisorTask
+} from "./supervisor-control";
 
 export const MODEL_ID = "@cf/openai/gpt-oss-20b";
 
@@ -44,6 +51,117 @@ export class OpenCodeAgent extends DurableObject<Env> {
     connect?: (key: string) => Promise<void>;
   } = {};
   private readonly mcpLifecycle: { reload?: () => Promise<void> } = {};
+  /** Remote supervisor tasks use a single dedicated DO, never arbitrary user workspaces. */
+  async startSupervisedTask(raw: unknown): Promise<unknown> {
+    const start = validateSupervisorStart(raw, await this.personalConfig.getAllowedRepositories());
+    const key = supervisorTaskKey(start.requestId);
+    const fingerprint = await supervisorFingerprint(start);
+    const old = await this.ctx.storage.get<SupervisorTask>(key);
+    if (old) {
+      if (old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
+      return { id: old.id, repository: old.repository, branch: old.branch, project: old.project,
+        session: old.session, status: old.status, error: old.error, reused: true };
+    }
+    const job: SupervisorTask = {
+      id: start.requestId, repository: start.repository,
+      project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId),
+      fingerprint, createdAt: Date.now(), status: "preparing"
+    };
+    // Atomic reservation prevents duplicate branches and duplicate model spending.
+    const reserved = await this.ctx.storage.transaction(async tx => {
+      const current = await tx.get<SupervisorTask>(key);
+      if (current) return current;
+      await tx.put(key, job);
+      return null;
+    });
+    if (reserved) {
+      if (reserved.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
+      return { id: reserved.id, repository: reserved.repository, branch: reserved.branch,
+        project: reserved.project, session: reserved.session, status: reserved.status, reused: true };
+    }
+    try {
+      // Fail before inference if private GitHub integration is unavailable.
+      await this.githubRunner.execute({ action: "branch", repo: job.repository, branch: job.branch });
+      const created = await this.harness.sessions.create();
+      await this.bindSessionScope(created.id, { project: job.project, repository: job.repository });
+      // The model may not create a second branch, or write outside its branch.
+      await this.ctx.storage.put("supervisor:session:" + created.id, job.id);
+      job.session = created.id;
+      await this.ctx.storage.put(key, job);
+      const handle = this.harness.session(created.id);
+      await handle.setAgent("build");
+      await handle.setModel(this.ai(MODEL_ID));
+      await handle.submit(supervisorPrompt(start, job.branch, job.project), { whenBusy: "followUp" });
+      job.status = "running";
+      await this.ctx.storage.put(key, job);
+      return { id: job.id, session: created.id, project: job.project,
+        repository: job.repository, branch: job.branch, status: job.status, reused: false };
+    } catch (error) {
+      job.status = "failed";
+      job.error = error instanceof Error ? error.message.slice(0, 230) : "No se pudo iniciar la tarea";
+      await this.ctx.storage.put(key, job);
+      return { id: job.id, status: job.status, error: job.error, branch: job.branch };
+    }
+  }
+
+  private async supervisedRecord(id: string): Promise<SupervisorTask> {
+    const job = await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(id));
+    if (!job) throw new Error("Tarea del supervisor inexistente");
+    return job;
+  }
+
+  async supervisedTaskStatus(id: string): Promise<unknown> {
+    const job = await this.supervisedRecord(id);
+    const base = { id: job.id, repository: job.repository, project: job.project,
+      branch: job.branch, session: job.session, startedAt: job.createdAt, error: job.error };
+    if (!job.session || job.status === "cancelled" || job.status === "failed")
+      return { ...base, status: job.status, reviewRequired: true };
+    const handle = this.harness.session(job.session);
+    const [busy, history] = await Promise.all([handle.busy(), handle.history()]);
+    let toolCalls = 0, completedTools = 0, failedTools = 0;
+    for (const message of history) {
+      if (message.type !== "assistant") continue;
+      for (const part of message.content ?? []) {
+        if (part.type !== "tool") continue;
+        toolCalls++;
+        if (part.state?.status === "completed") completedTools++;
+        if (part.state?.status === "error") failedTools++;
+      }
+    }
+    // A finished session is NOT evidence of accepted changes.
+    const status = busy ? "running" : history.some(x => x.type === "assistant") ? "finished" : "queued";
+    return { ...base, status, toolCalls, completedTools, failedTools, reviewRequired: true,
+      passed: false, verified: false };
+  }
+
+  async cancelSupervisedTask(id: string): Promise<unknown> {
+    const job = await this.supervisedRecord(id);
+    if (job.status === "cancelled" || job.status === "failed")
+      return { id, status: job.status };
+    if (job.session) {
+      try { await this.harness.session(job.session).abort(); }
+      catch { /* Always record the cancellation request. */ }
+    }
+    job.status = "cancelled";
+    await this.ctx.storage.put(supervisorTaskKey(id), job);
+    return { id, status: "cancelled" };
+  }
+
+  async supervisedTaskTranscript(id: string): Promise<string> {
+    const job = await this.supervisedRecord(id);
+    if (!job.session) throw new Error("La tarea todavía no tiene sesión");
+    return this.exportSessionData(job.session);
+  }
+
+  async supervisedTaskReview(id: string): Promise<unknown> {
+    const job = await this.supervisedRecord(id);
+    const result = await this.githubRunner.execute({
+      action: "review", repo: job.repository, branch: job.branch
+    });
+    return { id, repository: job.repository, branch: job.branch, review: result,
+      reviewRequired: true, approved: false };
+  }
+
   async refreshMcps(): Promise<{ refreshed: boolean }> {
     if (!this.mcpLifecycle.reload) return { refreshed: false };
     await this.mcpLifecycle.reload();
@@ -87,6 +205,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
     assertScopedTool(scope, action);
     if(action.kind === "github"){
+      const supervisedId = await this.ctx.storage.get<string>("supervisor:session:" + sessionID);
+      if (supervisedId) {
+        const task = await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(supervisedId));
+        if (!task || task.session !== sessionID || task.status === "cancelled" || task.status === "failed")
+          throw new Error("Supervisor: sesión no autorizada");
+        assertSupervisorBoundGitHubOperation(action.operation, action.branch, task.branch);
+      }
       const g9 = await this.ctx.storage.get<G9ProofState>("g9-selfdev-v1");
       if(g9?.session === sessionID) {
         assertG9BoundGitHubOperation(action.operation, action.branch);
@@ -661,6 +786,57 @@ export default {
       const settingsOriginAllowed =
         request.headers.get("Origin") === url.origin &&
         request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json");
+      // Cloudflare Access is the first gate. This second, secret-backed gate
+      // is required for programmatic clients and never accepts browser cookies alone.
+      if (url.pathname.startsWith(SUPERVISOR_API_PREFIX + "/")) {
+        const enabled = (env as Env & { OPENCODE_SUPERVISOR_ENABLED?: string })
+          .OPENCODE_SUPERVISOR_ENABLED === "true";
+        if (!enabled) return new Response("Not found", { status: 404 });
+        const secret = (env as Env & { OPENCODE_SUPERVISOR_TOKEN?: string })
+          .OPENCODE_SUPERVISOR_TOKEN ?? "";
+        if (secret.length < 32) return supervisorResponse({ error: "Supervisor no configurado" }, 503);
+        if (!await supervisorBearerAllowed(request.headers.get("Authorization"), secret)) {
+          return supervisorResponse({ error: "No autorizado" }, 401);
+        }
+        const origin = request.headers.get("Origin");
+        if (origin && origin !== url.origin) return supervisorResponse({ error: "Origen no permitido" }, 403);
+        const host = env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE);
+        if (url.pathname === SUPERVISOR_API_PREFIX + "/status" && request.method === "GET") {
+          return supervisorResponse({ status: "ready", capabilities: ["start", "status", "cancel", "review", "transcript"],
+            promotion: "external-only", access: "Cloudflare Access + bearer" });
+        }
+        if (url.pathname === SUPERVISOR_API_PREFIX + "/tasks" && request.method === "POST") {
+          if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json"))
+            return supervisorResponse({ error: "JSON obligatorio" }, 415);
+          const raw = await request.text();
+          if (raw.length > 6_000) return supervisorResponse({ error: "Solicitud demasiado grande" }, 413);
+          try {
+            return supervisorResponse(await host.startSupervisedTask(JSON.parse(raw)));
+          } catch (error) {
+            return supervisorResponse({ error: error instanceof Error ? error.message : "Tarea inválida" }, 422);
+          }
+        }
+        const task = url.pathname.match(/^\/api\/supervisor\/v1\/tasks\/([a-f0-9]{16})(?:\/(cancel|review|transcript))?$/);
+        if (!task) return supervisorResponse({ error: "Ruta no encontrada" }, 404);
+        try {
+          if (!task[2] && request.method === "GET")
+            return supervisorResponse(await host.supervisedTaskStatus(task[1]));
+          if (task[2] === "cancel" && request.method === "POST")
+            return supervisorResponse(await host.cancelSupervisedTask(task[1]));
+          if (task[2] === "review" && request.method === "GET")
+            return supervisorResponse(await host.supervisedTaskReview(task[1]));
+          if (task[2] === "transcript" && request.method === "GET") {
+            const transcript = JSON.parse(await host.supervisedTaskTranscript(task[1])) as {
+              messages: unknown; project?: unknown; repository?: unknown
+            };
+            const record = await host.supervisedTaskStatus(task[1]) as { session?: string };
+            return sessionExportResponse(record.session!, transcript);
+          }
+          return supervisorResponse({ error: "Método no permitido" }, 405);
+        } catch (error) {
+          return supervisorResponse({ error: error instanceof Error ? error.message : "Tarea no disponible" }, 422);
+        }
+      }
       if (url.pathname === "/api/session/export") {
         if (request.method !== "GET") return new Response("GET only", { status: 405 });
         const object = url.searchParams.get("object");
