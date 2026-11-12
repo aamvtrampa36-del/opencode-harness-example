@@ -20,7 +20,16 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
         .OPENCODE_SUPERVISOR_ENABLED !== "true") {
         throw new Error("SUPERVISOR_DISABLED");
       }
-      const command: unknown = event.payload;
+      // The Cloudflare Workflow REST API accepts JSON-encoded params; depending
+      // on the entrypoint these can reach run() as a string or parsed object.
+      const payload: unknown = event.payload;
+      if (typeof payload === "string" && payload.length > 6_000)
+        throw new Error("SUPERVISOR_PAYLOAD_TOO_LARGE");
+      let command: unknown = payload;
+      if (typeof payload === "string") {
+        try { command = JSON.parse(payload); }
+        catch { throw new Error("INVALID_SUPERVISOR_COMMAND_JSON"); }
+      }
       if (!command || typeof command !== "object" || Array.isArray(command))
         throw new Error("INVALID_SUPERVISOR_COMMAND");
       const args = command as Record<string, unknown>;
