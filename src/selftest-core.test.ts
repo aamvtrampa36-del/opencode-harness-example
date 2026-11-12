@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   MOBILE_NOTE,
   RECEIPT_SCHEMA,
@@ -146,9 +149,17 @@ describe("http checks, receipt verdict and secret scan", () => {
 
 
 describe("selftest CLI independent acceptance gates (real subprocess)", () => {
-  const run = (...args: string[]) => spawnSync(process.execPath,
-    ["scripts/selftest.mjs", "--branch", "opencode/verify-safety", ...args],
-    { encoding: "utf8", timeout: 30_000, env: process.env });
+  const run = (...args: string[]) => {
+    const scratch = mkdtempSync(join(tmpdir(), "opencode-negative-selftest-"));
+    try {
+      return spawnSync(process.execPath,
+        ["scripts/selftest.mjs", "--branch", "opencode/verify-safety",
+         "--receipt", join(scratch, "receipt.json"), ...args],
+        { encoding: "utf8", timeout: 30_000, env: process.env });
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  };
   test("cannot claim commit linkage with an invented SHA", () => {
     const result = run("--commit", "a".repeat(40));
     expect(result.status).toBe(2);
