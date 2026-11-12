@@ -1,25 +1,8 @@
 /**
- * Prototype augmentation that adds the snapshot recovery drill to DevContainer
- * WITHOUT touching src/dev-container.ts. The drill lives in
- * src/container-recovery.ts (pure guards, parsers and the in-container
- * program); this file binds it to the Durable Object lifecycle:
- *
- *   drillCreateSnapshot   - unique marker double-anchored by SHA-256, real
- *                           snapshotContainer(), handle persisted in the DO,
- *                           then a deliberate post-snapshot mutation.
- *   drillRestoreSameDo    - destroy ONLY this disposable instance, restore
- *                           with ctx.container.start({containerSnapshot}),
- *                           verify SHA-256 + mutation absence + image
- *                           compatibility + DO metadata before/after.
- *   drillCrossRestore     - a DIFFERENT DO attempts the creator's snapshot id;
- *                           a platform rejection is captured as pending
- *                           evidence, never attributed to application code.
- *   drillCleanup          - destroy the container, drop the handle; lastActivity
- *                           is kept so the disposable DO fails closed if reused.
- *
- * Safety: every method refuses projects whose slug does not start with
- * "snaprec-" (assertDrillProject); a missing or expired snapshot handle aborts
- * before anything is destroyed; a blank image is never used as a substitute.
+ * Snapshot recovery drill implementation for disposable DevContainer DOs.
+ * Explicit RPC methods are declared on the DevContainer class; this module
+ * contains guarded, queued implementation helpers. No prototype mutation.
+ * Only snaprec-* project names may be touched.
  */
 import {
   DRILL_ROOT_PATH, DRILL_SOURCE,
