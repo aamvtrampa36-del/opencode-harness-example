@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { PersonalSettings } from "./personal-settings";
 export { PersonalSettings };
+export { OpenCodeSupervisorWorkflow } from "./supervisor-workflow";
 import { DevContainer } from "./dev-container";
 export { DevContainer };
 import { Workspace, type DurableObjectStorageLike } from "@cloudflare/computer";
