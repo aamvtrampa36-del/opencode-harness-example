@@ -24,6 +24,21 @@ describe("remote MCP validation", () => {
       expect(() => validateRemoteMcp({ ...base, url })).toThrow();
     }
   });
+  test("reject trailing-dot variants of local or private endpoints", () => {
+    for (const url of [
+      "https://localhost./mcp", "https://host.local./mcp", "https://host.internal./mcp",
+      "https://sub.host.internal./mcp"
+    ]) {
+      expect(() => validateRemoteMcp({ ...base, url })).toThrow();
+    }
+  });
+  test("preserve a valid public endpoint, including trailing-dot form", () => {
+    const plain = validateRemoteMcp({ ...base, url: "https://mcp.example.org/mcp" });
+    expect(plain.url).toBe("https://mcp.example.org/mcp");
+    const dotted = validateRemoteMcp({ ...base, url: "https://mcp.example.org./mcp" });
+    expect(dotted.id).toBe("my-tools");
+    expect(dotted.enabled).toBe(true);
+  });
   test("reject invalid profile identifiers, tokens, and flags", () => {
     expect(() => validateRemoteMcp({ ...base, id: "../secret" })).toThrow();
     expect(() => validateRemoteMcp({ ...base, enabled: "yes" })).toThrow();
