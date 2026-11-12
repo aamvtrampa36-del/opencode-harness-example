@@ -29,7 +29,6 @@ import {
   type DrillCheck, type DrillRecord, type DrillReport, type DrillRestoreOutcome
 } from "./container-recovery";
 import { normalizeImageRef } from "./container-verify";
-import { DevContainer } from "./dev-container";
 
 // Mirrors the module-private lifecycle constants of src/dev-container.ts so
 // the drill integrates with the existing idle/checkpoint behavior unchanged.
@@ -39,7 +38,7 @@ const DRILL_CHECK_MS = 60_000;
 type DrillContainer = NonNullable<DurableObjectState["container"]>;
 
 /** Structural view of the DevContainer the drill binds to. */
-type DrillHost = {
+export type DrillHost = {
   ctx: DurableObjectState;
   ensureRunning(): Promise<DrillContainer>;
   busy: number;
@@ -111,7 +110,7 @@ async function withDrillQueue<T>(host: DrillHost, body: () => Promise<T>): Promi
  * handle persisted in THIS DO, and a deliberate post-snapshot mutation of
  * the live disk that a valid restore must NOT surface (control negativo).
  */
-async function drillCreateSnapshot(host: DrillHost, project: string): Promise<DrillCreateResult> {
+export async function drillCreateSnapshot(host: DrillHost, project: string): Promise<DrillCreateResult> {
   const id = assertDrillProject(project);
   const runId = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
   return await withDrillQueue(host, async () => {
@@ -131,6 +130,15 @@ async function drillCreateSnapshot(host: DrillHost, project: string): Promise<Dr
       if ((await hashText(create.markerContent)) !== create.markerSha256) {
         throw new Error("El SHA-256 del marcador difiere entre container y Durable Object");
       }
+      const info = await container.inspect().catch(() => null);
+      const image = normalizeImageRef(info?.image);
+      const snapshot = await container.snapshotContainer({ name: "opencode-drill-" + runId });
+      if (!snapshot || typeof snapshot.id !== "string" || !snapshot.id) {
+        throw new Error("snapshotContainer() no devolvió un identificador usable");
+      }
+      // The negative mutation MUST happen after the snapshot; otherwise the
+      // restored filesystem would correctly contain the mutation and the
+      // recovery drill could never pass.
       const mutateOut = await execDrill(container, "mutate", {
         DRILL_PROJECT: id, DRILL_RUN_ID: runId
       });
@@ -138,12 +146,6 @@ async function drillCreateSnapshot(host: DrillHost, project: string): Promise<Dr
       if (!mutate || !mutate.ok || mutateOut.exitCode !== 0 ||
           mutate.mutatedSha256 === create.markerSha256) {
         throw new Error("El control negativo posterior al snapshot no pudo aplicarse");
-      }
-      const info = await container.inspect().catch(() => null);
-      const image = normalizeImageRef(info?.image);
-      const snapshot = await container.snapshotContainer({ name: "opencode-drill-" + runId });
-      if (!snapshot || typeof snapshot.id !== "string" || !snapshot.id) {
-        throw new Error("snapshotContainer() no devolvió un identificador usable");
       }
       const savedAt = Date.now();
       const record: DrillRecord = {
@@ -179,7 +181,7 @@ async function drillCreateSnapshot(host: DrillHost, project: string): Promise<Dr
  * image compatibility, and DO metadata persistence before/after. A missing
  * or expired handle aborts before anything is destroyed (fail-closed).
  */
-async function drillRestoreSameDo(host: DrillHost, project: string): Promise<DrillRestoreOutcome> {
+export async function drillRestoreSameDo(host: DrillHost, project: string): Promise<DrillRestoreOutcome> {
   const id = assertDrillProject(project);
   return await withDrillQueue(host, async () => {
     const container = host.ctx.container;
@@ -194,6 +196,10 @@ async function drillRestoreSameDo(host: DrillHost, project: string): Promise<Dri
       savedAt: (await host.ctx.storage.get<number>("savedAt")) ?? null,
       handleMatchesRecord: snapshotKey === record.snapshotId
     };
+    if (!metadataBefore.handleMatchesRecord ||
+        metadataBefore.savedAt !== record.snapshotSavedAt) {
+      throw new Error("El handle del snapshot no coincide con el estado persistido; no se destruirá el Container");
+    }
     const outcome: DrillRestoreOutcome = {
       ok: false, phase: "restore-same-do", project: id, runId: record.runId,
       checks: [], destroyedInstance: false,
@@ -265,7 +271,7 @@ async function drillRestoreSameDo(host: DrillHost, project: string): Promise<Dri
  * application code); if the container boots but verification fails, it is
  * "verification-failed".
  */
-async function drillCrossRestore(
+export async function drillCrossRestore(
   host: DrillHost, project: string, sourceSnapshotId: string, sourceRecord: unknown
 ): Promise<DrillRestoreOutcome> {
   const id = assertDrillProject(project);
@@ -310,7 +316,7 @@ async function drillCrossRestore(
     outcome.imageAfter = normalizeImageRef(info?.image);
     assertCompatibleImage(record.image, outcome.imageAfter);
     const verifyOut = await execDrill(container, "verify", {
-      DRILL_PROJECT: id, DRILL_RUN_ID: record.runId,
+      DRILL_PROJECT: record.project, DRILL_RUN_ID: record.runId,
       DRILL_EXPECT_SHA256: record.markerSha256,
       DRILL_EXPECT_MANIFEST_SHA: record.manifestSha256,
       DRILL_MUTATION_ABSENT: "1"
@@ -338,7 +344,7 @@ async function drillCrossRestore(
  * deliberately KEPT: assertRecoverableContainer then refuses any future start
  * of this disposable DO (fail-closed reuse guard, no blank rebind).
  */
-async function drillCleanup(host: DrillHost, project: string): Promise<{
+export async function drillCleanup(host: DrillHost, project: string): Promise<{
   project: string; containerDestroyed: boolean; handleDeleted: number;
 }> {
   const id = assertDrillProject(project);
@@ -357,19 +363,3 @@ async function drillCleanup(host: DrillHost, project: string): Promise<{
   return { project: id, containerDestroyed, handleDeleted };
 }
 
-// Runtime binding: the DevContainer class itself stays untouched; the drill
-// API appears once this module is imported (server.ts imports it).
-Object.assign(DevContainer.prototype as unknown as Record<string, unknown>, {
-  drillCreateSnapshot(this: DevContainer, project: string) {
-    return drillCreateSnapshot(this as unknown as DrillHost, project);
-  },
-  drillRestoreSameDo(this: DevContainer, project: string) {
-    return drillRestoreSameDo(this as unknown as DrillHost, project);
-  },
-  drillCrossRestore(this: DevContainer, project: string, snapshotId: string, record: unknown) {
-    return drillCrossRestore(this as unknown as DrillHost, project, snapshotId, record);
-  },
-  drillCleanup(this: DevContainer, project: string) {
-    return drillCleanup(this as unknown as DrillHost, project);
-  }
-});
