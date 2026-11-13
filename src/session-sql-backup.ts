@@ -432,7 +432,7 @@ export function restorePlanStatements(snapshot: SqlSnapshot, target: CatalogTabl
   const ordered: SqlTableSnapshot[] = [];
   const referencesOf = (table: SqlTableSnapshot): string[] => {
     const names = new Set<string>();
-    const pattern = /\\bREFERENCES\\s+[`"']?([a-z][a-z0-9_]*)[`"']?\\s*\\(/gi;
+    const pattern = /\bREFERENCES\s+[`"']?([a-z][a-z0-9_]*)[`"']?\s*\(/gi;
     for (const match of table.createSql.matchAll(pattern)) {
       const dependency = match[1];
       if (dependency !== table.name) names.add(dependency);
