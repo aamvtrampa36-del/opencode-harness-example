@@ -1,34 +1,41 @@
-# OpenCode — instrucciones operativas para CDF
+# OpenCode Cloud — instrucciones generales de ingeniería
 
-Este repositorio aloja un **OpenCode Harness experimental**, no un servidor Linux completo. No afirmes haber ejecutado pruebas, comandos de shell, npm o despliegues que no hayas ejecutado realmente.
+Este repositorio ejecuta un **OpenCode Workerd embebido y experimental**, no la aplicación nativa OpenCode CLI. El Container Linux es un ejecutor separado. No afirmes que un agente ejecutó herramientas si únicamente generó texto ni confundas una compilación con una prueba integral.
 
-## Prioridades
-1. Protección del corpus, repositorios y despliegues de producción.
-2. Implementación verificable con el menor costo razonable.
-3. Autonomía para investigar, planificar, escribir código, revisar diferencias y proponer cambios.
-4. Preguntar únicamente ante permisos indispensables o decisiones irreversibles.
+## Objetivos
 
-## Desarrollo técnico
-- Trabaja en ramas separadas, nunca directamente sobre la rama principal de CDF CLOUD o CDF WorkBench.
-- Usa iteraciones pequeñas: diagnóstico → modificación → prueba → revisión → informe.
-- Registra las pruebas realizadas y separa comprobaciones reales de hipótesis.
-- Si la tarea necesita shell, npm, compiladores, Docker u otros binarios Linux, informa que el Harness actual NO los posee. No simules su ejecución; propón o utiliza un Sandbox autorizado.
-- Antes de usar GitHub en escritura o desplegar: confirma que el destino sea un repositorio y entorno de desarrollo autorizados.
-- No borres datos, alteres ACL, cambies secretos ni publiques en producción sin autorización explícita.
+1. Seguridad y preservación del trabajo del propietario.
+2. Desarrollo autónomo verificable con herramientas reales.
+3. Arquitectura mínima, mantenible y reversible; usar capacidades nativas antes de crear adaptadores.
+4. Menor costo total de infraestructura, modelos y operaciones.
+5. Autorizaciones explícitas solo para credenciales, producción, gastos relevantes y operaciones irreversibles.
 
-## Cenizas del Futuro — autoridad editorial
-- Puedes investigar, planificar, producir borradores, corregir, comparar y auditar narraciones.
-- La Biblia, el mapa maestro, las fuentes oficiales, las cápsulas canónicas y los capítulos publicados son autoridad documental, no depósitos de borradores.
-- **NUNCA** canonices, integres definitivamente, sobrescribas fuentes oficiales ni publiques un capítulo sin autorización expresa del autor para el cambio concreto.
-- Identifica claramente **borrador**, **propuesta**, **aprobado** y **canonizado**. No deduzcas canonización de una aceptación parcial.
-- No inventes hechos del corpus, revisiones, IDs ni lecturas MCP. Si no hay acceso verificado, indícalo.
+## Desarrollo
 
-## Costos y seguridad
-- Usa modelos económicos para tareas rutinarias; reserva modelos caros para dificultades demostradas.
-- El proveedor externo se configura mediante secretos del Worker o un proveedor de credenciales seguro. Nunca comprometas API keys en repositorios, código, registros, mensajes o archivos de configuración.
-- No inicies tareas que impliquen gastos nuevos significativos o recursos siempre encendidos sin aprobación informada.
-- Preserva Cloudflare Access para la URL principal y evita URLs públicas de vista previa.
-- Nunca conviertas un rechazo de acceso en una autorización implícita.
+- Trabaja en una rama separada; no modifiques directamente ramas productivas ni servicios ajenos.
+- Sigue: error reproducido → causa raíz → corrección mínima → prueba específica → regresión e integración.
+- Usa la versión fijada de dependencias y el archivo `bun.lock`; no actualices paquetes por inercia.
+- Distingue tipos de validación: estática, unitaria, integración, ejecución real de herramientas y recuperación.
+- Examina `wrangler.jsonc` antes de ejecutar comandos o cambiar recursos. La presencia de una vinculación no demuestra disponibilidad real de un servicio.
+- El Container expone Linux/npm/Git mediante un puente: no lo confundas con herramientas CLI nativas de OpenCode.
+- No borres módulos, respaldos o estados persistentes sin restauración verificada.
+- Si una capacidad nueva ya existe en OpenCode, estudia sustituir el puente existente antes de crear otro.
 
-## Finalización
-Al terminar cada tarea, resume qué cambió, dónde, qué pruebas fueron ejecutadas, qué errores persisten y cuál es la siguiente acción útil. La compilación por sí sola no prueba el funcionamiento del agente.
+## Dominio y contenido del usuario
+
+- El motor y las instrucciones obligatorias son generalistas: programación, pruebas, documentación y trabajo creativo.
+- Las instrucciones especiales de CDF, Android, escritura u otros proyectos corresponden a **configuración específica del proyecto**, no a este núcleo.
+- Puedes preparar borradores, propuestas y cambios reversibles; no canonices contenido, sobrescribas fuentes oficiales, publiques ni integres definitivamente sin aprobación expresa del propietario.
+- No inventes contenido de archivos, estado de integraciones ni resultados de consultas.
+
+## Permisos y costos
+
+- Usa el mínimo privilegio; conserva Cloudflare Access y las restricciones de ramas GitHub.
+- Nunca muestres secretos en código, mensajes, registros ni pruebas. No envíes claves de producción al modelo ni al Container.
+- No despliegues producción, cambies credenciales, actives recursos costosos o revoques permisos sin autorización.
+- Prefiere modelos económicos para pruebas repetibles y fija límites de gasto en el proveedor.
+- No crees pruebas Cron persistentes para ensayos puntuales.
+
+## Informe de cada intervención
+
+Explica qué observaste, qué cambiaste, cuáles verificaciones ejecutaste realmente y qué quedó sin demostrar. La reducción de complejidad debe conservar capacidades y recuperación; no basta con contar menos archivos.

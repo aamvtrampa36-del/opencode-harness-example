@@ -1,3 +1,4 @@
+import { trySendJson } from "./ws-send";
 import type { AgentMode } from "./protocol";
 import type { ModelPresetID } from "./model-presets";
 import type {
@@ -203,26 +204,35 @@ export function useOpenCodeSession(
     }
   });
 
+  // The UI must not silently discard a task when the socket closes between
+  // the user's tap and the actual send.
   const send = useCallback(
-    (message: ClientMessage) => {
-      if (agent.readyState === WebSocket.OPEN) {
-        agent.send(JSON.stringify(message));
-      }
-    },
+    (message: ClientMessage): boolean => trySendJson(agent, message),
     [agent]
   );
 
   /** Idle: starts a run. Busy: queued as a follow-up, or steers the run. */
   const submit = useCallback(
-    (text: string, whenBusy: "followUp" | "steer" = "followUp", model: ModelPresetID = "cloudflare", mode: AgentMode = "build", specialization?: string) => {
-      setState((current) => ({ ...current, error: undefined }));
-      send({ type: "submit", id: crypto.randomUUID(), text, whenBusy, model, mode, ...(specialization ? { specialization } : {}) });
+    (text: string, whenBusy: "followUp" | "steer" = "followUp", model: ModelPresetID = "cloudflare", mode: AgentMode = "build", specialization?: string, project?: string, repository?: string) => {
+      const accepted = send({ type: "submit", id: crypto.randomUUID(), text, whenBusy, model, mode,
+        ...(specialization ? { specialization } : {}),
+        ...(project ? { project } : {}),
+        ...(repository ? { repository } : {}) });
+      setState((current) => ({
+        ...current,
+        error: accepted ? undefined : "Sin conexión: la tarea no se envió. Reintenta cuando aparezca En línea."
+      }));
+      return accepted;
     },
     [send]
   );
 
   const abort = useCallback(
-    () => send({ type: "abort", id: crypto.randomUUID() }),
+    () => {
+      if (!send({ type: "abort", id: crypto.randomUUID() })) {
+        setState((current) => ({ ...current, error: "No se pudo enviar la orden de detener: conexión interrumpida." }));
+      }
+    },
     [send]
   );
 
@@ -265,7 +275,10 @@ export function useOpenCodeSession(
         }, 30_000);
         agent.addEventListener("message", onMessage);
         agent.addEventListener("close", onClose);
-        send(delegation ? { type: "delegate", id, project: delegation.project } : { type: "create", id });
+        if (!send(delegation ? { type: "delegate", id, project: delegation.project } : { type: "create", id })) {
+          done();
+          reject(new Error("Conexión interrumpida: la nueva conversación no se creó."));
+        }
       }),
     [agent, send]
   );

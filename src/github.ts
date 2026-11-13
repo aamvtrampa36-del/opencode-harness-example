@@ -18,12 +18,23 @@ export type GitHubAction =
   | { action: "read"; repo: string; path: string; ref?: string }
   | { action: "branch"; repo: string; branch: string }
   | { action: "write"; repo: string; path: string; branch: string; content: string; message?: string }
-  | { action: "pr"; repo: string; branch: string; title: string; body?: string };
+  | { action: "pr"; repo: string; branch: string; title: string; body?: string }
+  | { action: "review"; repo: string; branch: string };
 
 const BRANCH_RE = /^opencode\/[a-z0-9][a-z0-9._-]{0,59}$/;
 const MAX_FILE_BYTES = 100_000;
 
 const OWNER = "aamvtrampa36-del";
+const OPENCODE_REPO = OWNER + "/opencode-harness-example";
+export const OPENCODE_STAGING_BASE = "feat/staging-supervisor-control-20261111";
+const STAGING_REVIEW = /^opencode\/staging-[a-f0-9]{16}$/;
+/** New OpenCode-only staging tasks are forked from a fixed, reviewed staging ref.
+ * Legacy supervised branches and all other repositories stay on default main. */
+function reviewedBase(repo: string, branch: string, defaultBranch: string): string {
+  if (!STAGING_REVIEW.test(branch)) return defaultBranch;
+  if (repo !== OPENCODE_REPO) throw new Error("Staging review branches are OpenCode-only");
+  return OPENCODE_STAGING_BASE;
+}
 const REPOSITORY_FORMAT = /^[A-Za-z0-9_.-]{1,100}$/;
 
 /** Authorization stays per-account and is checked at every tool execution. */
@@ -57,6 +68,19 @@ function pathChecked(path: unknown): string {
     throw new Error("Invalid repository file path");
   }
   return path.split("/").map(encodeURIComponent).join("/");
+}
+/** Never update narrative canon or operational deployment configuration via a review tool. */
+function assertNonCanonicalWrite(repo: string, path: string): void {
+  const lower = path.toLowerCase();
+  if (lower.startsWith(".github/workflows/") ||
+      /^(?:canon|canonical|oficial|official|narrativa|narrative|prosa|chapters|capitulos|biblia|biblias|published|production)(?:\/|$)/.test(lower) ||
+      /(?:^|\/)(?:canon|canonical|oficial|official|narrativa|narrative|capitulos|chapters|biblias)(?:\/|$)/.test(lower) ||
+      /(?:^|\/)(?:\.env|\.dev\.vars|wrangler\.toml|wrangler\.jsonc?)(?:$|\/)/.test(lower)) {
+    throw new Error("Protected official/production path cannot be edited from OpenCode");
+  }
+  // Both CDF repositories contain operational and editorial data. G8 smoke
+  // artifacts belong under docs/opencode-g8/, never within a canonical source.
+  void repo;
 }
 function toBase64(value: string): string {
   const bytes = new TextEncoder().encode(value);
@@ -129,15 +153,20 @@ export class GitHubBridge {
       case "branch": {
         const branch = branchChecked(input.branch);
         const info = await this.api("GET", base);
-        const from = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(info.default_branch));
+        const source = reviewedBase(repo, branch, info.default_branch);
+        const from = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(source));
+        if (typeof from?.object?.sha !== "string" || !/^[0-9a-f]{40}$/.test(from.object.sha)) {
+          throw new Error("Source branch commit is unverifiable");
+        }
         const created = await this.api("POST", base + "/git/refs", {
           ref: "refs/heads/" + branch, sha: from.object.sha
         });
-        return { repo, branch, ref: created.ref, sha: created.object.sha };
+        return { repo, branch, source, ref: created.ref, sha: created.object.sha };
       }
       case "write": {
         const branch = branchChecked(input.branch);
         const safePath = pathChecked(input.path);
+        assertNonCanonicalWrite(repo, input.path);
         if (typeof input.content !== "string") throw new Error("File content must be plain text");
         const current = await this.api("GET", base + "/contents/" + safePath + "?ref=" + encodeURIComponent(branch), undefined, true);
         const result = await this.api("PUT", base + "/contents/" + safePath, {
@@ -148,17 +177,41 @@ export class GitHubBridge {
         });
         return { repo, branch, path: input.path, commitSha: result.commit?.sha, fileSha: result.content?.sha };
       }
+      case "review": {
+        const branch = branchChecked(input.branch);
+        const info = await this.api("GET", base);
+        const source = reviewedBase(repo, branch, info.default_branch);
+        const comparison = await this.api("GET", base + "/compare/" +
+          encodeURIComponent(source) + "..." + encodeURIComponent(branch));
+        const files = Array.isArray(comparison.files) ? comparison.files : [];
+        // GitHub truncates large comparisons. Never claim a complete review
+        // when it returns more than the bounded safe set.
+        return {
+          repo, branch, base: source,
+          aheadBy: comparison.ahead_by,
+          behindBy: comparison.behind_by,
+          totalCommits: comparison.total_commits,
+          truncated: files.length >= 300,
+          files: files.slice(0, 300).map((item: any) => ({
+            path: item.filename,
+            status: item.status,
+            additions: item.additions,
+            deletions: item.deletions
+          }))
+        };
+      }
       case "pr": {
         const branch = branchChecked(input.branch);
         if (typeof input.title !== "string" || !input.title.trim() || input.title.length > 160) {
           throw new Error("Pull request title must be between 1 and 160 characters");
         }
         const info = await this.api("GET", base);
+        const source = reviewedBase(repo, branch, info.default_branch);
         const created = await this.api("POST", base + "/pulls", {
           title: input.title, body: (input.body || "").slice(0, 5000),
-          head: branch, base: info.default_branch, draft: true
+          head: branch, base: source, draft: true
         });
-        return { repo, number: created.number, url: created.html_url, draft: created.draft, base: info.default_branch, head: branch };
+        return { repo, number: created.number, url: created.html_url, draft: created.draft, base: source, head: branch };
       }
       default:
         throw new Error("Unsupported GitHub action");

@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
+import { aggregateIncident, type IncidentRecord } from "./incident-diagnostics";
 import { ALLOWED_REPOS, normalizeOwnedRepository } from "./github";
-import { MAX_SPECIALIZATIONS, validateSpecialization, type Specialization } from "./specializations";
+import { MAX_SPECIALIZATIONS, mergeSpecializations, validateSpecialization, type Specialization } from "./specializations";
 import { publicMcp, validateRemoteMcp, type PublicMcpConfig, type RemoteMcpConfig } from "./mcp-config";
 
 /**
@@ -55,6 +56,21 @@ async function checkProvider(url: string, token: string): Promise<KeyUsage> {
 }
 
 export class PersonalSettings extends DurableObject<Env> {
+  /** Read-only owner-scoped incident ledger, without prompt or credential text. */
+  async listIncidents(): Promise<IncidentRecord[]> {
+    return (await this.ctx.storage.get<IncidentRecord[]>("incident-ledger-v1")) ?? [];
+  }
+
+  async recordIncident(observation: unknown): Promise<IncidentRecord> {
+    // Serializes parallel agent/tool reports, preventing lost duplicate counts.
+    return this.ctx.storage.transaction(async (tx) => {
+      const previous = (await tx.get<IncidentRecord[]>("incident-ledger-v1")) ?? [];
+      const updated = aggregateIncident(previous, observation);
+      await tx.put("incident-ledger-v1", updated);
+      return updated[0];
+    });
+  }
+
   /** Bound AI inference expense: at most two optional tool-loop checks per UTC day. */
   async reserveAgentCheck(): Promise<boolean> {
     const day = new Date().toISOString().slice(0, 10);
@@ -111,8 +127,10 @@ export class PersonalSettings extends DurableObject<Env> {
       (await this.getRemoteMcps()).filter(config => config.id !== id));
   }
 
+  /** Return the seven virtual defaults plus persisted overrides/custom entries. */
   async listSpecializations(): Promise<Specialization[]> {
-    return (await this.ctx.storage.get<Specialization[]>("specializations-v1")) ?? [];
+    const saved = (await this.ctx.storage.get<Specialization[]>("specializations-v1")) ?? [];
+    return mergeSpecializations(saved);
   }
 
   async getSpecialization(id: string): Promise<Specialization | undefined> {
@@ -122,19 +140,23 @@ export class PersonalSettings extends DurableObject<Env> {
 
   async saveSpecialization(input: unknown): Promise<Specialization> {
     const next = validateSpecialization(input);
-    const all = await this.listSpecializations();
+    // Only custom edits are persisted. Defaults are virtual, preventing a
+    // rollout from overwriting any prior user data.
+    const saved = (await this.ctx.storage.get<Specialization[]>("specializations-v1")) ?? [];
+    const all = mergeSpecializations(saved);
     if (!all.some(p => p.id === next.id) && all.length >= MAX_SPECIALIZATIONS) {
       throw new Error("The specialization limit has been reached");
     }
     await this.ctx.storage.put("specializations-v1",
-      [...all.filter(p => p.id !== next.id), next].sort((a,b) => a.id.localeCompare(b.id)));
+      [...saved.filter(p => p.id !== next.id), next].sort((a,b) => a.id.localeCompare(b.id)));
     return next;
   }
 
+  /** Deleting an override restores that built-in; custom templates are removed. */
   async removeSpecialization(id: string): Promise<void> {
     if (!/^[a-z][a-z0-9-]{1,39}$/.test(id)) throw new Error("Invalid specialization ID");
-    const all = await this.listSpecializations();
-    await this.ctx.storage.put("specializations-v1", all.filter(p => p.id !== id));
+    const saved = (await this.ctx.storage.get<Specialization[]>("specializations-v1")) ?? [];
+    await this.ctx.storage.put("specializations-v1", saved.filter(p => p.id !== id));
   }
 
   async connectOpenRouter(raw: unknown): Promise<{ configured: true; usage: KeyUsage }> {

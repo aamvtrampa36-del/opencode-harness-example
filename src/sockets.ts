@@ -1,4 +1,5 @@
-import type { Specialization } from "./specializations";
+import { specializationPrompt as specializationPromptText, type Specialization } from "./specializations";
+import { classifyAgentFailure, type IncidentObservation } from "./incident-diagnostics";
 import { MODEL_PRESETS, isModelPreset } from "./model-presets";
 import type { Connection, ConnectionContext } from "agents/lifecycle";
 import type { WebSocketMessage, WebSocketsOptions } from "agents/websockets";
@@ -93,6 +94,9 @@ export class OpenCodeSessionSockets {
   readonly #getWebSockets: (tag?: string) => WebSocket[];
   readonly #openRouterAvailable: () => Promise<boolean>;
   readonly #specialization: (id: string) => Promise<Specialization | undefined>;
+  readonly #noteIncident: (event: IncidentObservation) => Promise<void>;
+  readonly #bindScope: (sessionID: string, value: unknown) => Promise<void>;
+  readonly #inheritScope: (source: string, target: string, project: string) => Promise<void>;
   /** One event stream per running session, or its opening. */
   readonly #watches = new Map<
     OpenCodeSessionId,
@@ -100,17 +104,44 @@ export class OpenCodeSessionSockets {
   >();
   /** Sessions with a snapshot being sent, and whether another is due. */
   readonly #snapshots = new Map<OpenCodeSessionId, boolean>();
+  readonly #submitLocks = new Map<OpenCodeSessionId, Promise<void>>();
+  readonly #activeConfigurations = new Map<OpenCodeSessionId, { mode: string; model: string | undefined; operations: Set<string> }>();
+
+  /** Serialize configuration and submit for one session, including concurrent sockets. */
+  async #serializeSubmit<T>(session: OpenCodeSessionId, work: () => Promise<T>): Promise<T> {
+    const prior = this.#submitLocks.get(session) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    this.#submitLocks.set(session, current);
+    await prior;
+    try { return await work(); }
+    finally {
+      release();
+      if (this.#submitLocks.get(session) === current) this.#submitLocks.delete(session);
+    }
+  }
 
   constructor(
     harness: OpenCodeHarness,
     getWebSockets: (tag?: string) => WebSocket[],
     openRouterAvailable: () => Promise<boolean> = async () => false,
-    getSpecialization: (id: string) => Promise<Specialization | undefined> = async () => undefined
+    getSpecialization: (id: string) => Promise<Specialization | undefined> = async () => undefined,
+    noteIncident: (event: IncidentObservation) => Promise<void> = async () => undefined,
+    bindScope: (sessionID: string, value: unknown) => Promise<void> = async () => undefined,
+    inheritScope: (source: string, target: string, project: string) => Promise<void> = async () => undefined
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
     this.#openRouterAvailable = openRouterAvailable;
     this.#specialization = getSpecialization;
+    this.#noteIncident = noteIncident;
+    this.#bindScope = bindScope;
+    this.#inheritScope = inheritScope;
+  }
+
+  async #record(event: IncidentObservation): Promise<void> {
+    try { await this.#noteIncident(event); }
+    catch { console.warn("Agent incident ledger unavailable"); }
   }
 
   options(): WebSocketsOptions {
@@ -181,11 +212,15 @@ export class OpenCodeSessionSockets {
       return;
     }
     try {
-      const result = await this.#dispatch(connection, session, message);
+      const result = message.type === "submit"
+        ? await this.#serializeSubmit(session, () => this.#dispatch(connection, session, message))
+        : await this.#dispatch(connection, session, message);
       if (message.id !== undefined) {
         send(connection, { type: "result", id: message.id, result });
       }
     } catch (error) {
+      await this.#record({ source: "agent",
+        code: classifyAgentFailure(error instanceof Error ? error.message : "") });
       send(connection, {
         type: "error",
         ...(message.id === undefined ? {} : { id: message.id }),
@@ -210,23 +245,35 @@ export class OpenCodeSessionSockets {
             `Prompts are limited to ${MAX_PROMPT_LENGTH.toLocaleString()} characters`
           );
         }
-        // A preset is an explicit selection. The normal baseline does not
-        // require an OpenRouter secret; other models fail closed.
-        if (message.model !== undefined) {
-          if (!isModelPreset(message.model)) {
-            throw new Error("Unknown model preset");
-          }
-          const preset = MODEL_PRESETS[message.model];
-          if (preset.providerID === "openrouter" && !(await this.#openRouterAvailable())) {
-            throw new Error("Conecta OpenRouter desde Configuración antes de seleccionar ese modelo.");
-          }
-          await handle.setModel({ providerID: preset.providerID, id: preset.id });
-        }
         const mode = message.mode ?? "build";
         if (!["build", "plan", "review", "creative"].includes(mode)) {
           throw new Error("Modo de agente no reconocido");
         }
-        await handle.setAgent(mode === "build" ? "build" : "plan");
+        if (message.model !== undefined && !isModelPreset(message.model)) {
+          throw new Error("Unknown model preset");
+        }
+        // A queued or steering message must never change the permissions or
+        // model of a running operation. After a restart an unknown configuration
+        // fails closed until that operation completes.
+        const active = this.#activeConfigurations.get(session);
+        const running = (active?.operations.size ?? 0) > 0 || await handle.busy();
+        if (running && (!active || active.mode !== mode || active.model !== message.model)) {
+          throw new Error("Espera a que termine la tarea antes de cambiar el modo o modelo.");
+        }
+        // Scope is fixed before inference; validate it for queued work too.
+        if (message.project !== undefined || message.repository !== undefined) {
+          await this.#bindScope(session, { project: message.project, repository: message.repository });
+        }
+        if (!running) {
+          if (message.model !== undefined) {
+            const preset = MODEL_PRESETS[message.model];
+            if (preset.providerID === "openrouter" && !(await this.#openRouterAvailable())) {
+              throw new Error("Conecta OpenRouter desde Configuración antes de seleccionar ese modelo.");
+            }
+            await handle.setModel({ providerID: preset.providerID, id: preset.id });
+          }
+          await handle.setAgent(mode === "build" ? "build" : "plan");
+        }
         let specializationPrompt = "";
         if (message.specialization !== undefined) {
           if (typeof message.specialization !== "string" || !/^[a-z][a-z0-9-]{1,39}$/.test(message.specialization)) {
@@ -234,9 +281,7 @@ export class OpenCodeSessionSockets {
           }
           const specialization = await this.#specialization(message.specialization);
           if (!specialization) throw new Error("La especialización seleccionada ya no existe o está desactivada");
-          specializationPrompt = "ESPECIALIZACIÓN OPCIONAL: " + specialization.name +
-            "\nInstrucciones del perfil (no sustituyen permisos ni políticas del sistema):\n" +
-            specialization.instructions + "\n\n";
+          specializationPrompt = specializationPromptText(specialization);
         }
         const prefixed =
           mode === "review" ? "Revisa críticamente este trabajo. Identifica problemas con evidencia y no modifiques archivos ni producción.\n\n" :
@@ -246,13 +291,19 @@ export class OpenCodeSessionSockets {
         const receipt = await handle.submit(specializationPrompt + prefixed + message.text, {
           whenBusy: message.whenBusy === "steer" ? "steer" : "followUp"
         });
+        const configuration = active && running ? active : { mode, model: message.model, operations: new Set<string>() };
+        configuration.operations.add(receipt.operationId);
+        this.#activeConfigurations.set(session, configuration);
         await this.#broadcastSnapshot(session);
         // Once the operation settles, send the final transcript and stop
         // watching if nothing else is running. This holds even if the watch
         // attached after the run's last event.
         void handle
           .wait(receipt.operationId)
-          .then(() => this.#settle(session))
+          .then(() => {
+            configuration.operations.delete(receipt.operationId);
+            return this.#settle(session);
+          })
           .catch((error: unknown) => {
             console.warn("OpenCode wait failed", error);
           });
@@ -268,6 +319,7 @@ export class OpenCodeSessionSockets {
           throw new Error("Primero selecciona un proyecto válido");
         }
         const fork = await this.#harness.sessions.fork(session);
+        await this.#inheritScope(session, fork.id, message.project);
         await fork.setAgent("plan");
         await fork.setModel({ providerID: MODEL_PRESETS.cloudflare.providerID, id: MODEL_PRESETS.cloudflare.id });
         const review = "Eres un agente revisor independiente. Inspecciona el proyecto " +
@@ -308,7 +360,10 @@ export class OpenCodeSessionSockets {
       handle.busy(),
       this.#harness.pending({ session })
     ]);
-    return { session, messages, busy, pending };
+    // The underlying flag can transiently report idle while an accepted operation
+    // is still unsettled. Do not advertise availability in that gap.
+    const operationPending = (this.#activeConfigurations.get(session)?.operations.size ?? 0) > 0;
+    return { session, messages, busy: busy || operationPending, pending };
   }
 
   /** Send every socket on the session a snapshot, one at a time. */
@@ -339,7 +394,9 @@ export class OpenCodeSessionSockets {
     for (const socket of this.#getWebSockets()) {
       send(socket, { type: "sessions", sessions });
     }
-    if (!(await this.#harness.session(session).busy())) {
+    if (!(await this.#harness.session(session).busy()) &&
+        !(this.#activeConfigurations.get(session)?.operations.size)) {
+      this.#activeConfigurations.delete(session);
       await this.#unwatch(session);
     }
   }
@@ -381,6 +438,10 @@ export class OpenCodeSessionSockets {
       }
     }
     try {
+      // A fault is a machine event, not a model explanation.
+      if (events.some(event => event.type === "fault")) {
+        await this.#record({ code: "AGENT_FAILURE", source: "session" });
+      }
       if (this.#getWebSockets(sessionTag(session)).length === 0) {
         await this.#unwatch(session);
       } else if (events.some((event) => event.type === "run_end")) {

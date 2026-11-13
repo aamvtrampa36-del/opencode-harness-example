@@ -25,6 +25,8 @@ export type ClientMessage =
       readonly model?: ModelPresetID;
       readonly mode?: AgentMode;
       readonly specialization?: string;
+      readonly project?: string;
+      readonly repository?: string;
     }
   | { readonly type: "abort"; readonly id?: string }
   | { readonly type: "create"; readonly id?: string }

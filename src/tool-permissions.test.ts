@@ -10,12 +10,12 @@ describe("native OpenCode tool execution permissions", () => {
     for (const action of ["branch", "write", "pr", "delete"]) {
       expect(() => assertAgentToolPermission("plan", "github", { action })).toThrow();
     }
-    for (const action of ["repo", "read"]) {
+    for (const action of ["repo", "read", "review"]) {
       expect(() => assertAgentToolPermission("plan", "github", { action })).not.toThrow();
     }
   });
   test("plan allows read-only workspace operations, not edit or exec", () => {
-    for (const tool of ["read", "glob", "grep"]) {
+    for (const tool of ["read", "glob", "grep", "ls", "find", "stat"]) {
       expect(() => assertAgentToolPermission("plan", "workspace", { tool })).not.toThrow();
     }
     for (const tool of ["write", "edit", "exec", "patch", "shell"]) {

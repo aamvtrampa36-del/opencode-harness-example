@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { gunzipSync } from "node:zlib";
-import { PREVIEW_SOURCE } from "../src/preview-server.ts";
+import { PREVIEW_SOURCE, PREVIEW_PORT } from "../src/preview-server.ts";
 
 const temp = mkdtempSync(join(tmpdir(), "opencode-preview-"));
 const folder = join(temp, "preview-check", "dist");
@@ -16,11 +16,12 @@ writeFileSync(join(temp, "preview-check", ".env"), "SECRET_DO_NOT_ARCHIVE=untrus
 mkdirSync(join(temp, "preview-check", "node_modules"));
 writeFileSync(join(temp, "preview-check", "node_modules", "private.txt"), "PRIVATE_DEPENDENCY_DATA");
 
+const port = PREVIEW_PORT;
 const child = spawn("node", ["--input-type=module", "-e", PREVIEW_SOURCE], {
-  env: { ...process.env, PREVIEW_ROOT: temp },
+  env: { ...process.env, PREVIEW_ROOT: temp, PREVIEW_PORT: String(port) },
   stdio: "ignore"
 });
-const endpoint = "http://127.0.0.1:4321";
+const endpoint = "http://127.0.0.1:" + port;
 try {
   let ready = false;
   for (let attempt = 0; attempt < 60; attempt++) {

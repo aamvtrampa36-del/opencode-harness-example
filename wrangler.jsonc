@@ -22,8 +22,10 @@
       "/agents/*",
       "/api/health",
       "/api/dev/*",
+      "/api/session/*",
       "/api/settings/*",
-      "/api/settings"
+      "/api/settings",
+      "/api/supervisor/*"
     ]
   },
   "durable_objects": {
@@ -70,5 +72,8 @@
       "class_name": "DevContainer",
       "scheduling_policy": "durable_object"
     }
-  ]
+  ],
+  "vars": {
+    "OPENCODE_SUPERVISOR_ENABLED": "false"
+  }
 }
