@@ -233,6 +233,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   /** Trusted lookup for read-only GitHub tools. No LLM-provided repository. */
+  /** Source of truth for Linux tool project IDs; the model cannot change it. */
+  async sessionProject(sessionID: string): Promise<string> {
+    const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
+    return scope?.project ?? "";
+  }
+
   async sessionRepository(sessionID: string): Promise<string> {
     const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
     if (!scope?.repository) {
@@ -751,7 +757,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
           ),
           workspacePlugin(this.workspace, {}, this.linuxRunner, this.githubRunner,
             (sessionID, action) => this.enforceSessionScope(sessionID, action),
-            (sessionID) => this.sessionRepository(sessionID))
+            (sessionID) => this.sessionRepository(sessionID),
+            (sessionID) => this.sessionProject(sessionID))
         ]
       }),
     // Low effort: with more, the model sometimes writes its whole answer
