@@ -1,5 +1,9 @@
 # OpenCode Cloud — Plan maestro ejecutable V1 (2026-11-08)
 
+**ADENDA V1 PERSONAL (13 noviembre 2026) — CRITERIO ACTUAL PARA PUBLICACIÓN:** El propietario aceptó explícitamente perder historiales de conversaciones y estados internos prescindibles tras fallos graves; **B2 SQL+KV integral, RPO/RTO formales y recuperación automática avanzada no son gates de lanzamiento**. Se exige una V1 funcional desde Android, autodesarrollo de código verificable, aislamiento/autorización, protección de proyectos y archivos importantes (GitHub o backup independiente para material sin commits), reversión practicable, CI de la candidata y despliegue/productivo verificado bajo autorización específica. No perder archivos importantes no confirmados. La demostración de rollback conjunto en Staging y recuperación de SQL de ensayo ya existe, sin necesidad de repetirla salvo regresión. **G9 quedó aprobado EN STAGING en 11 nov; publicación productiva continúa separada y pendiente.** Véase `docs/OPENCODE_V1_RECOVERY_GATES_20261113.md` (sección «Contrato de aceptación vigente»). Esta adenda prevalece sobre requisitos de recuperación exhaustiva citados en secciones históricas, pero conserva controles esenciales.
+
+
+
 **Producto**: alternativa personal a Codex Cloud para tres proyectos: OpenCode Cloud, CDF CLOUD y WorkBench. **Estado**: EN DESARROLLO; ninguna prueba CI equivale a autonomía verificada. **Cambios**: solo en rama y PR, no en producción.
 
 ## 0. Decisión de alcance y criterio de éxito
