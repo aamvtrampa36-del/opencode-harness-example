@@ -49,7 +49,7 @@ export const OPENROUTER_AUTO = ["openrouter/auto", "openrouter/auto-code"] as co
 
 export function isOpenRouterSelection(value: unknown): value is `openrouter:${string}` {
   return typeof value === "string" && value.length <= 160 &&
-    /^openrouter:[a-z0-9][a-z0-9._:+/-]*/[a-z0-9][a-z0-9._:+/-]*$/i.test(value);
+    new RegExp("^openrouter:[a-z0-9][a-z0-9._:+/-]*/[a-z0-9][a-z0-9._:+/-]*$", "i").test(value);
 }
 
 export function isModelSelection(value: unknown): value is ModelSelectionID {
