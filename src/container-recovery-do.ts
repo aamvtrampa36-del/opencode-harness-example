@@ -345,3 +345,4 @@ export async function drillCleanup(host: DrillHost, project: string): Promise<{
   await host.ctx.storage.put("lastActivity", Date.now());
   return { project: id, containerDestroyed, handleDeleted };
 }
+
