@@ -129,15 +129,9 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
         add: (spec: any) => toolSpecs.set(spec.name,spec)
       })}
     } as any);
-    expect(toolSpecs.has("read")).toBe(true);
-    await expect(toolSpecs.get("read").execute(
-      {path:"/other-project/secret.txt"}, {id:"test-read",sessionID:"ses_test",agent:"plan"}
-    )).rejects.toThrow("workspace");
-    for (const name of ["ls", "find", "grep", "glob", "stat"]) {
-      if (!toolSpecs.has(name)) continue;
-      await expect(toolSpecs.get(name).execute(
-        {}, {id:"test-" + name,sessionID:"ses_test",agent:"plan"}
-      )).rejects.toThrow("workspace");
+    // In the new scoped design the model cannot select shared Workspace tools at all.
+    for (const name of ["read", "ls", "find", "grep", "glob", "stat", "exec"]) {
+      expect(toolSpecs.has(name)).toBe(false);
     }
   });
 });
