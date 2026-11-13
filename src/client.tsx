@@ -914,15 +914,20 @@ function App() {
 
   return (
     <div
-      className={`relative grid h-dvh overflow-hidden bg-kumo-elevated text-kumo-default ${
+      className={`relative grid h-dvh overflow-hidden bg-kumo-base text-kumo-default ${
         sessionsOpen
           ? "lg:grid-cols-[minmax(220px,18vw)_minmax(520px,1fr)]"
           : "grid-cols-1"
       }`}
     >
       {sessionsOpen ? (
+        <button type="button" aria-label="Cerrar panel de conversaciones"
+          onClick={() => setSessionsOpen(false)}
+          className="fixed inset-0 z-30 bg-black/45 lg:hidden" />
+      ) : null}
+      {sessionsOpen ? (
         <aside
-          className="absolute inset-0 z-20 flex min-h-0 flex-col border-r border-kumo-line bg-kumo-base lg:static"
+          className="absolute inset-y-0 left-0 z-40 flex w-[min(88vw,340px)] min-h-0 flex-col border-r border-kumo-line bg-kumo-base shadow-2xl lg:static lg:w-auto lg:shadow-none"
           aria-label="Conversaciones"
         >
           <div className="flex h-[68px] shrink-0 items-center justify-between gap-2 border-b border-kumo-line px-4">
@@ -988,9 +993,9 @@ function App() {
       ) : null}
 
       <section className="flex min-h-0 min-w-0 flex-col" aria-label="Chat">
-        <header className="shrink-0 border-b border-kumo-line bg-kumo-base">
-          <div className="mx-auto flex min-h-[68px] max-w-3xl flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-5">
-            <div className="flex min-w-0 items-center gap-3">
+        <header className="relative z-20 shrink-0 border-b border-kumo-line bg-kumo-base">
+          <div className="mx-auto flex min-h-[60px] max-w-5xl flex-col gap-0 px-3 py-2 sm:gap-1 sm:px-5">
+            <div className="flex w-full min-w-0 items-center justify-between gap-1.5">
               <Button
                 variant="ghost"
                 shape="square"
@@ -1003,12 +1008,18 @@ function App() {
                 <h1 className="truncate text-base font-semibold">
                   OpenCode Cloud
                 </h1>
-                <p className="truncate text-xs text-kumo-subtle">
-                  Sesión <code>{session}</code>
-                </p>
+                <p className="hidden truncate text-xs text-kumo-subtle sm:block">Sesión <code>{session}</code></p>
+              </div>
+              <div className="ml-auto flex shrink-0 items-center gap-1">
+                <ModelPicker value={openRouterAvailable ? modelPreset : "cloudflare"}
+                  onChange={selectModel} routerReady={openRouterAvailable} disabled={busy} />
+                <Button type="button" variant="ghost" shape="square"
+                  aria-label="Mostrar opciones de OpenCode" aria-expanded={actionsOpen}
+                  className="sm:hidden" onClick={() => setActionsOpen(open => !open)}
+                  icon={<GearIcon size={18} />} />
               </div>
             </div>
-            <div className="flex w-full min-w-0 items-center gap-1.5 overflow-x-auto pb-1 sm:w-auto sm:shrink-0 sm:pb-0">
+            <div className={`absolute inset-x-2 top-full z-30 ${actionsOpen ? "flex" : "hidden"} max-h-[65dvh] flex-col gap-2 overflow-y-auto rounded-2xl border border-kumo-line bg-kumo-base p-3 shadow-xl sm:static sm:flex sm:max-h-none sm:w-full sm:flex-row sm:flex-wrap sm:items-center sm:gap-1.5 sm:overflow-visible sm:rounded-none sm:border-0 sm:p-0 sm:shadow-none`}>
               <Button type="button" variant="ghost" size="sm"
                 aria-label="Gestionar mis proyectos" title="Ver proyectos creados"
                 onClick={() => { setProjectsOpen(v => !v); void loadProjects(); }}>
@@ -1142,8 +1153,8 @@ function App() {
           </div>
         </header>
 
-        <main ref={mainRef} className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-3xl space-y-5 px-5 py-6">
+        <main ref={mainRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-kumo-base">
+          <div className="mx-auto max-w-3xl space-y-6 px-4 py-6 sm:px-5 sm:py-8">
             {projectsOpen ? (
               <section className="rounded-xl border border-kumo-line bg-kumo-base p-4" aria-label="Mis proyectos">
                 <div className="flex items-center justify-between gap-2">
@@ -1424,25 +1435,25 @@ function App() {
           </div>
         </main>
 
-        <div className="shrink-0 border-t border-kumo-line bg-kumo-base">
+        <div className="shrink-0 bg-kumo-base pb-[env(safe-area-inset-bottom)]">
           <form
             onSubmit={(event) => {
               event.preventDefault();
               submit();
             }}
-            className="mx-auto max-w-3xl px-5 pt-4"
+            className="mx-auto max-w-3xl px-3 pt-2 sm:px-5"
           >
             <p role="status" className="mb-2 text-xs text-kumo-subtle">
               Los proyectos anteriores se conservan. Para editarlos, restaura una copia con un nombre nuevo.
             </p>
-            <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-kumo-subtle">
+            <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-2 text-[11px] text-kumo-subtle">
               <span>Proyecto: <strong className="text-kumo-default">{project || "Sin seleccionar"}</strong></span>
               <button type="button" className="underline"
                 onClick={() => { setProjectsOpen(true); void loadProjects(); }}>Cambiar proyecto</button>
               <span aria-live="polite">{busy ? "Ejecutando" : "Disponible"} · {toolsCompleted} herramientas completadas en esta sesión{toolsFailed ? " · " + toolsFailed + " fallidas" : ""}</span>
               <span title="El cambio de consumo de OpenRouter es de cuenta, no una factura de la tarea">{lastCost}</span>
             </div>
-            <div className="flex items-end gap-3 rounded-xl border border-kumo-line bg-kumo-base p-3 shadow-sm transition-shadow focus-within:border-transparent focus-within:ring-2 focus-within:ring-kumo-ring">
+            <div className="flex items-end gap-2 rounded-[26px] border border-kumo-line bg-kumo-elevated p-2.5 shadow-lg transition-shadow focus-within:ring-2 focus-within:ring-kumo-ring">
               <InputArea
                 value={prompt}
                 onValueChange={setPrompt}
@@ -1459,7 +1470,7 @@ function App() {
                 }
                 aria-label="Escribir a OpenCode"
                 disabled={!connected}
-                rows={2}
+                rows={1}
                 className="flex-1 !bg-transparent !shadow-none !ring-0 !outline-none focus:!ring-0"
               />
               {busy ? (
@@ -1496,7 +1507,7 @@ function App() {
               )}
             </div>
           </form>
-          <div className="flex items-center justify-center gap-2 px-5 py-3">
+          <div className="hidden items-center justify-center gap-2 px-5 py-3 sm:flex">
             <span className="hidden text-[10px] text-kumo-inactive sm:inline">
               Enter para enviar · Shift+Enter para salto de línea
             </span>
