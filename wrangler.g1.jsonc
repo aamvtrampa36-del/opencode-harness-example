@@ -41,6 +41,10 @@
       {
         "name": "SETTINGS",
         "class_name": "PersonalSettings"
+      },
+      {
+        "name": "SESSION_BK",
+        "class_name": "SessionBackupDrillAgent"
       }
     ]
   },
@@ -61,6 +65,12 @@
       "tag": "v3",
       "new_sqlite_classes": [
         "PersonalSettings"
+      ]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": [
+        "SessionBackupDrillAgent"
       ]
     }
   ],
