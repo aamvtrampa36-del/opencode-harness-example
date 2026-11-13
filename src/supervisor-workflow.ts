@@ -1,13 +1,18 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { SUPERVISOR_WORKSPACE, supervisorTaskKey, type SupervisorStart } from "./supervisor-control";
 import { drillProjectNames } from "./container-recovery";
+import {
+  assertR2Bucket, createTamperedProbe, deleteRunPrefix, externalBackupProjectNames
+} from "./external-backup";
 import { projectContainerName } from "./project-container";
 import type { DrillDev } from "./container-recovery-do";
+import type { ExtBkDev } from "./external-backup-do";
 
 type SupervisorWorkflowCommand =
   | { action: "start"; requestId: string; repository: string; prompt: string }
   | { action: "status" | "cancel" | "review"; id: string }
-  | { action: "recovery_drill" };
+  | { action: "recovery_drill" }
+  | { action: "external_backup_drill" };
 
 /**
  * Private supervisory control plane: the Cloudflare account's Workflow API
@@ -79,6 +84,90 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
         sameDoPassed: Boolean(same?.ok && same?.destroyedInstance),
         crossDoPassed: Boolean(cross?.ok),
         error, create, same, cross, cleanup, cleanupOk
+      };
+    }
+    if (args.action === "external_backup_drill") {
+      // Staging-only private Cloudflare Workflow, same access shape as
+      // recovery_drill: the account Workflow API is the caller; no public
+      // route and no agent tool can invoke this destructive disposable test.
+      if ((this.env as Env & { OPENCODE_SUPERVISOR_ENABLED?: string })
+        .OPENCODE_SUPERVISOR_ENABLED !== "true") throw new Error("SUPERVISOR_DISABLED");
+      if (Object.keys(args).some(k => k !== "action")) throw new Error("UNKNOWN_EXTBK_FIELD");
+
+      const opts = { retries: { limit: 0, delay: "1 second" as const } };
+      const scope = await step.do("allocate-disposable-extbk-scope", opts, async () =>
+        externalBackupProjectNames(crypto.randomUUID().replace(/-/g, "").slice(0, 12)));
+      const a = this.env.DEV.getByName(projectContainerName(scope.creator)) as unknown as ExtBkDev;
+      const b = this.env.DEV.getByName(projectContainerName(scope.restorer)) as unknown as ExtBkDev;
+      const bucketOf = () => assertR2Bucket(
+        (this.env as Env & { RECOVERY_R2?: unknown }).RECOVERY_R2,
+        "workflow.opencode-supervisor-stage");
+      let create: Awaited<ReturnType<ExtBkDev["extBackupCreate"]>> | null = null;
+      let destroyed: Awaited<ReturnType<ExtBkDev["extBackupDestroyInstance"]>> | null = null;
+      let restore: Awaited<ReturnType<ExtBkDev["extBackupCrossRestore"]>> | null = null;
+      let tamper: {
+        probe: Awaited<ReturnType<typeof createTamperedProbe>>;
+        result: Awaited<ReturnType<ExtBkDev["extBackupTamperProbe"]>>;
+      } | null = null;
+      let missing: Awaited<ReturnType<ExtBkDev["extBackupMissingProbe"]>> | null = null;
+      let error: string | null = null;
+      let r2Cleanup: { deleted: number; keys: string[] } | { error: string } = { deleted: 0, keys: [] };
+      let cleanup: Array<{ project: string; containerDestroyed: boolean; recordsDeleted: number } | { project: string; cleanupError: string }> = [];
+      try {
+        create = await step.do("create-extbk-backup-upload-r2", opts,
+          async () => a.extBackupCreate(scope.creator, scope.runId));
+        destroyed = await step.do("destroy-creator-instance", opts,
+          async () => a.extBackupDestroyInstance(scope.creator));
+        if (!destroyed.destroyedInstance) {
+          throw new Error("La instancia creadora no llegó a destruirse; se omite la restauración cruzada");
+        }
+        restore = await step.do("restore-cross-do-from-r2", opts,
+          async () => b.extBackupCrossRestore(scope.restorer, create!.manifest, create!.manifestSha256));
+        if (!restore.ok) {
+          throw new Error("La restauración cruzada desde R2 no pasó; se omiten las sondas");
+        }
+        tamper = await step.do("probe-tampered-backup", opts, async () => {
+          const probe = await createTamperedProbe(bucketOf(), scope.runId);
+          const result = await b.extBackupTamperProbe(scope.restorer, scope.runId, create!.manifest);
+          return { probe, result };
+        });
+        missing = await step.do("probe-missing-backup", opts,
+          async () => b.extBackupMissingProbe(scope.restorer, scope.runId));
+      } catch (e) {
+        error = e instanceof Error ? e.message.slice(0, 800) : "Unknown external backup drill failure";
+      } finally {
+        const outcome = await step.do("cleanup-extbk-drill", opts, async () => {
+          let r2: { deleted: number; keys: string[] } | { error: string } = { deleted: 0, keys: [] };
+          if (create) {
+            try { r2 = await deleteRunPrefix(bucketOf(), scope.runId); }
+            catch (e) { r2 = { error: e instanceof Error ? e.message : "R2 cleanup failed" }; }
+          }
+          const dos: typeof cleanup = [];
+          for (const [host, project] of [[a, scope.creator], [b, scope.restorer]] as const) {
+            try { dos.push(await host.extBackupCleanup(project)); }
+            catch (e) { dos.push({ project, cleanupError: e instanceof Error ? e.message : "failed" }); }
+          }
+          return { r2, dos };
+        });
+        r2Cleanup = outcome.r2;
+        cleanup = outcome.dos;
+      }
+      const r2Clean = !("error" in r2Cleanup) && r2Cleanup.deleted >= 2;
+      const cleanupOk = cleanup.length === 2 &&
+        cleanup.every(x => x !== null && typeof x === "object" && !("cleanupError" in x)) && r2Clean;
+      return {
+        schema: "opencode.external-backup.drill.v1",
+        scope,
+        passed: Boolean(create && destroyed?.destroyedInstance && restore?.ok &&
+          tamper?.result?.rejectedAsExpected && tamper?.result?.originalIntact &&
+          missing?.rejectedAsExpected && cleanupOk),
+        createPassed: Boolean(create),
+        destroyPassed: Boolean(destroyed?.destroyedInstance),
+        crossRestorePassed: Boolean(restore?.ok),
+        tamperRejected: Boolean(tamper?.result?.rejectedAsExpected),
+        missingRejected: Boolean(missing?.rejectedAsExpected),
+        r2Cleanup, cleanup, cleanupOk, error,
+        create, destroyed, restore, tamper, missing
       };
     }
     return step.do("supervised-opencode-operation", {
