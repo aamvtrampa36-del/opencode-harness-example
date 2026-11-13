@@ -119,7 +119,7 @@ export type SqlSnapshotBody = {
   tableSetFingerprint: string;
 };
 
-export type SqlSnapshot = SqlSnapshotBody & { snapshotSha256: string };
+export type SqlSnapshot = SqlSnapshotBody;
 
 export type NormalReads = { sessionIds: string[]; historyById: Record<string, unknown[]> };
 export type NormalReadFingerprints = { sessionIds: string[]; historyDigests: Record<string, string> };
@@ -149,7 +149,10 @@ export function assertSupervisorEnabled(env: unknown): void {
 export function validateSessionBackupDrillCommand(args: unknown): void {
   if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error("INVALID_SUPERVISOR_COMMAND");
   const keys = Object.keys(args as Record<string, unknown>);
-  if (keys.length !== 1 || keys[0] !== "action") throw new Error("UNKNOWN_SESSIONBK_FIELD");
+  if (keys.length !== 1 || keys[0] !== "action" ||
+      (args as Record<string, unknown>).action !== "session_backup_drill") {
+    throw new Error("UNKNOWN_SESSIONBK_FIELD");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +181,9 @@ export function isOwnedSessionBackupKey(key: unknown): key is string {
   if (typeof key !== "string" || !key.startsWith(SQLBK_KEY_PREFIX)) return false;
   const rest = key.slice(SQLBK_KEY_PREFIX.length);
   const runId = rest.split("/")[0];
-  return RUN_ID.test(runId) && !key.includes("..");
+  if (!RUN_ID.test(runId) || key.includes("..")) return false;
+  const allowed = sessionBackupKeys(runId);
+  return key === allowed.snapshot || key === allowed.manifest;
 }
 
 // ---------------------------------------------------------------------------
@@ -325,7 +330,7 @@ export function parseSqlSnapshot(raw: unknown): SqlSnapshot | null {
     if (typeof t.sha256 !== "string" || !HEX64.test(t.sha256)) return null;
     if (!Array.isArray(t.rows)) return null;
     const columns = t.columns as string[];
-    if (t.rows.length > MAX_SQLBK_ROWS) return null;
+    if (t.rows.length > MAX_SQLBK_ROWS || t.rows.length !== t.rowCount) return null;
     const rows: SqlRow[] = [];
     for (const r of t.rows) {
       if (!r || typeof r !== "object" || Array.isArray(r)) return null;
@@ -348,9 +353,9 @@ export function parseSqlSnapshot(raw: unknown): SqlSnapshot | null {
       rows, rowCount: t.rowCount, sha256: t.sha256
     });
   }
-  const snapshotSha256 = input.snapshotSha256;
-  if (typeof snapshotSha256 !== "string" || !HEX64.test(snapshotSha256)) return null;
-  return { schema: SESSION_SQL_BACKUP_SCHEMA, createdAt: input.createdAt, tables, tableSetFingerprint: input.tableSetFingerprint, snapshotSha256 };
+  // Snapshot bytes deliberately contain only SqlSnapshotBody. Its digest is an
+  // independent trust anchor supplied by R2/manifest, never a self-asserted field.
+  return { schema: SESSION_SQL_BACKUP_SCHEMA, createdAt: input.createdAt, tables, tableSetFingerprint: input.tableSetFingerprint };
 }
 
 /**
@@ -589,21 +594,26 @@ export function parseSessionBackupManifest(raw: unknown): SessionBackupManifest 
   if (typeof input.tableSetFingerprint !== "string" || !HEX64.test(input.tableSetFingerprint)) return null;
   if (!Array.isArray(input.tables)) return null;
   const tables: { name: string; rowCount: number; sha256: string }[] = [];
+  const tableNames = new Set<string>();
   for (const entry of input.tables) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
     const t = entry as Record<string, unknown>;
-    if (!validTableName(t.name)) return null;
+    if (!validTableName(t.name) || tableNames.has(t.name)) return null;
     if (typeof t.rowCount !== "number" || !Number.isSafeInteger(t.rowCount) || t.rowCount < 0) return null;
+    if (t.rowCount > 0 && SECRET_TABLE.test(t.name)) return null;
     if (typeof t.sha256 !== "string" || !HEX64.test(t.sha256)) return null;
+    tableNames.add(t.name);
     tables.push({ name: t.name, rowCount: t.rowCount, sha256: t.sha256 });
   }
   const reads = input.normalReads;
   if (!reads || typeof reads !== "object" || Array.isArray(reads)) return null;
   const normalReads = reads as Record<string, unknown>;
-  if (!Array.isArray(normalReads.sessionIds) ||
-      normalReads.sessionIds.some(id => typeof id !== "string" || id.length === 0)) return null;
+  if (!Array.isArray(normalReads.sessionIds) || normalReads.sessionIds.length === 0 ||
+      normalReads.sessionIds.some(id => typeof id !== "string" || id.length === 0) ||
+      new Set(normalReads.sessionIds).size !== normalReads.sessionIds.length) return null;
   if (!normalReads.historyDigests || typeof normalReads.historyDigests !== "object" ||
       Array.isArray(normalReads.historyDigests)) return null;
+  if (Object.keys(normalReads.historyDigests).length !== normalReads.sessionIds.length) return null;
   for (const [id, digest] of Object.entries(normalReads.historyDigests as Record<string, unknown>)) {
     if (typeof digest !== "string" || !HEX64.test(digest)) return null;
     if (!(normalReads.sessionIds as string[]).includes(id)) return null;
