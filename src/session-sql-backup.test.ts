@@ -41,7 +41,9 @@ function fakeSql(tables: Record<string, FakeTable>): SqlLike {
         }
         return {
           columnNames: table.columns,
-          toArray: () => table.rows.map(row => {
+          toArray: () => table.rows
+            .filter(row => !query.includes("WHERE \"key\" <> 'models-dev:catalog'") || row.key !== "models-dev:catalog")
+            .map(row => {
             const clone: Record<string, unknown> = {};
             for (const column of table.columns) clone[column] = row[column] ?? null;
             return clone;
@@ -65,11 +67,14 @@ function fakeSql(tables: Record<string, FakeTable>): SqlLike {
         table.rows = [];
         return { columnNames: [], toArray: () => [] };
       }
-      const countMatch = query.match(/^SELECT COUNT\(\*\) AS n FROM "([^"]+)"$/);
+      const countMatch = query.match(/^SELECT COUNT\(\*\) AS n FROM "([^"]+)"(?: WHERE "key" <> 'models-dev:catalog')?$/);
       if (countMatch) {
         const table = tables[countMatch[1]];
         if (!table) throw new Error("no such table: " + countMatch[1]);
-        return { columnNames: ["n"], toArray: () => [{ n: table.rows.length }] };
+        const actual = query.includes("WHERE \"key\" <> 'models-dev:catalog'")
+          ? table.rows.filter(row => row.key !== "models-dev:catalog").length
+          : table.rows.length;
+        return { columnNames: ["n"], toArray: () => [{ n: actual }] };
       }
       throw new Error("unsupported fake SQL: " + query);
     }
@@ -101,7 +106,12 @@ const baseTables = (): Record<string, FakeTable> => ({
 const catalogOf = (tables: Record<string, FakeTable>): CatalogTable[] =>
   Object.entries(tables)
     .filter(([name]) => name.startsWith("opencode_"))
-    .map(([name, t]) => ({ name, createSql: t.createSql, columns: t.columns, rowCount: t.rows.length }));
+    .map(([name, t]) => ({
+      name, createSql: t.createSql, columns: t.columns,
+      rowCount: name === "opencode_kv"
+        ? t.rows.filter(row => row.key !== "models-dev:catalog").length
+        : t.rows.length
+    }));
 
 function harnessOf(list: Array<{ id: string }>, history: Record<string, unknown[]> = {}) {
   return {
@@ -152,6 +162,31 @@ describe("B2 SQL snapshot building", () => {
     for (const entry of digests) {
       expect(entry.sha256).toBe(plan.expectedDigests[entry.name]);
     }
+  });
+
+  test("session backup excludes only regenerable model catalogue, not user KV", async () => {
+    const tables = baseTables();
+    tables.opencode_kv = {
+      createSql: 'CREATE TABLE `opencode_kv` (`key` text PRIMARY KEY,`value` text)',
+      columns: ["key", "value"],
+      rows: [
+        { key: "models-dev:catalog", value: "regenerable-large-cache" },
+        { key: "session:important-setting", value: "must survive restore" }
+      ]
+    };
+    const built = await buildSqlSnapshot(fakeSql(tables), "2026-11-13T00:00:00.000Z");
+    const snapshot = await verifySnapshotJson(built.snapshotJson, built.snapshotSha256);
+    const kv = snapshot.tables.find(t => t.name === "opencode_kv")!;
+    expect(kv.rowCount).toBe(1);
+    expect(kv.rows).toEqual([{ key: "session:important-setting", value: "must survive restore" }]);
+    const targetTables = baseTables();
+    targetTables.opencode_kv = { ...tables.opencode_kv, rows: [] };
+    const plan = restorePlanStatements(snapshot, catalogOf(targetTables));
+    const realTarget = fakeSql(targetTables);
+    applyRestorePlan(realTarget, plan);
+    verifyRestoredContentSync(realTarget, plan, snapshot);
+    const digests = await digestRestoredTables(realTarget, snapshot, plan.tableOrder);
+    expect(digests.find(t => t.name === "opencode_kv")?.rowCount).toBe(1);
   });
 
   test("SQLite foreign keys insert parent before dependent; cycles are rejected", async () => {
