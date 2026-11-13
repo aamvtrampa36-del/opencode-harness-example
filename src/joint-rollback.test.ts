@@ -288,7 +288,7 @@ describe("verify fail-closed con host falso: nada se destruye ante metadata invÃ
       .rejects.toThrow(/JOINT_HANDLE_MISMATCH/);
     expect(calls.ensureRunning).toBe(0);
     expect(store.get(JOINT_RECORD_KEY)).toEqual(rec);
-    expect(store.has(JOINT_RECEIPT_KEY)).toBeUndefined();
+    expect(store.has(JOINT_RECEIPT_KEY)).toBe(false);
   });
 
   test("rotaciÃ³n del checkpoint normal durante la ventana: el verify PROSIGUE (gate en el handle privado)", async () => {
