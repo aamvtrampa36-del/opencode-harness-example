@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { canonicalJson } from "./external-backup";
 import {
   applyRestorePlan, assertManifestDigest, assertR2Bucket, assertSupervisorEnabled,
   buildSessionBackupManifest, buildSqlSnapshot, captureNormalReads, deleteSessionBackupPrefix,
@@ -6,7 +7,7 @@ import {
   isOwnedSessionBackupKey, normalReadFingerprints, parseSessionBackupManifest, parseSqlSnapshot,
   restorePlanStatements, sessionBackupDrillScope, sessionBackupKeys, uploadSessionBackup,
   validateSessionBackupDrillCommand, verifyNormalReadFingerprints, verifyRestoredContentSync,
-  verifySnapshotJson, SESSION_V2_TABLE, type CatalogTable, type SqlLike, type SqlRow
+  verifySnapshotJson, SESSION_V2_TABLE, type CatalogTable, type SqlLike
 } from "./session-sql-backup";
 
 const RUN_ID = "sqlbak-0123456789ab";
@@ -14,6 +15,11 @@ const CREATE_SESSION = 'CREATE TABLE `opencode_session_v2` (`id` text PRIMARY KE
 const CREATE_MESSAGE = 'CREATE TABLE `opencode_session_message` (`id` text PRIMARY KEY,`session_id` text NOT NULL,`type` text,`payload` text,`time_created` integer NOT NULL)';
 
 type FakeTable = { createSql: string; columns: string[]; rows: Record<string, unknown>[] };
+
+async function digestHex(text: string): Promise<string> {
+  const raw = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+  return Array.from(raw).map(b => b.toString(16).padStart(2, "0")).join("");
+}
 
 /** In-memory SqlLike stub: supports exactly the queries the module issues. */
 function fakeSql(tables: Record<string, FakeTable>): SqlLike {
@@ -25,16 +31,16 @@ function fakeSql(tables: Record<string, FakeTable>): SqlLike {
           toArray: () => Object.entries(tables).map(([name, t]) => ({ name, sql: t.createSql }))
         };
       }
-      const match = query.match(/^SELECT \* FROM "([^"]+)"/);
-      if (match) {
-        const table = tables[match[1]];
-        if (!table) throw new Error("no such table: " + match[1]);
+      const selectMatch = query.match(/^SELECT \* FROM "([^"]+)"/);
+      if (selectMatch) {
+        const table = tables[selectMatch[1]];
+        if (!table) throw new Error("no such table: " + selectMatch[1]);
         if (query.endsWith("WHERE 0")) {
           return { columnNames: table.columns, toArray: () => [] };
         }
-        const columnMatch = query.match(/^INSERT INTO "([^"]+)" \(([^)]*)\) VALUES \((.*)\)$/);
-        if (columnMatch) {
-          const columns = columnMatch[2].split(",").map(c => c.trim().replace(/^"|"$/g, ""));
+        const insertMatch = query.match(/^INSERT INTO "([^"]+)" \(([^)]*)\) VALUES \((.*)\)$/);
+        if (insertMatch) {
+          const columns = insertMatch[2].split(",").map(c => c.trim().replace(/^"|"$/g, ""));
           const row: Record<string, unknown> = {};
           columns.forEach((column, i) => { row[column] = bindings[i]; });
           table.rows.push(row);
@@ -68,7 +74,10 @@ function fakeSql(tables: Record<string, FakeTable>): SqlLike {
 }
 
 const baseTables = (): Record<string, FakeTable> => ({
-  opencode_app_settings: { createSql: 'CREATE TABLE `opencode_app_settings` (`key` text PRIMARY KEY,`value` text)', columns: ["key", "value"], rows: [{ key: "lang", value: "es" }] },
+  opencode_app_settings: {
+    createSql: 'CREATE TABLE `opencode_app_settings` (`key` text PRIMARY KEY,`value` text)',
+    columns: ["key", "value"], rows: [{ key: "lang", value: "es" }]
+  },
   [SESSION_V2_TABLE]: {
     createSql: CREATE_SESSION,
     columns: ["id", "title", "time_created"],
@@ -82,8 +91,14 @@ const baseTables = (): Record<string, FakeTable> => ({
     columns: ["id", "session_id", "type", "payload", "time_created"],
     rows: [{ id: "msg_1", session_id: "ses_b2", type: "user", payload: "Responde exactamente con: B2_OK", time_created: 1794420001000 }]
   },
+  // Internal SQLite and app tables (no `opencode_` prefix) must be excluded.
   sqlite_stat1: { createSql: "internal", columns: ["tbl", "idx", "stat"], rows: [{ tbl: "x", idx: null, stat: "1 1" }] }
 });
+
+const catalogOf = (tables: Record<string, FakeTable>): CatalogTable[] =>
+  Object.entries(tables)
+    .filter(([name]) => name.startsWith("opencode_"))
+    .map(([name, t]) => ({ name, createSql: t.createSql, columns: t.columns, rowCount: t.rows.length }));
 
 function harnessOf(list: Array<{ id: string }>, history: Record<string, unknown[]> = {}) {
   return {
@@ -100,43 +115,33 @@ function harnessOf(list: Array<{ id: string }>, history: Record<string, unknown[
   };
 }
 
+async function makeSnapshot() {
+  const built = await buildSqlSnapshot(fakeSql(baseTables()), "2026-11-13T00:00:00.000Z");
+  return { built, snapshot: await verifySnapshotJson(built.snapshotJson, built.snapshotSha256) };
+}
+
 describe("B2 SQL snapshot building", () => {
   test("snapshots only opencode_ tables with stable canonical digests", async () => {
-    const built = await buildSqlSnapshot(fakeSql(baseTables()), "2026-11-13T00:00:00.000Z");
-    expect(built.body.tables.map(t => t.name)).toEqual(["opencode_app_settings", "opencode_session_message", SESSION_V2_TABLE]);
+    const { built } = await makeSnapshot();
+    expect(built.body.tables.map(t => t.name))
+      .toEqual(["opencode_app_settings", "opencode_session_message", SESSION_V2_TABLE]);
     expect(built.totalRows).toBe(4);
-    expect(built.snapshotJson).toBe(JSON.parse(JSON.stringify(built.snapshotJson)) && built.snapshotJson);
+    expect(built.snapshotJson).not.toContain("sqlite_stat1");
     const rebuilt = await buildSqlSnapshot(fakeSql(baseTables()), "2026-11-13T00:00:00.000Z");
     expect(rebuilt.snapshotSha256).toBe(built.snapshotSha256);
     expect(rebuilt.body.tableSetFingerprint).toBe(built.body.tableSetFingerprint);
-    // The non-OpenCode table is excluded from the snapshot entirely.
-    expect(built.snapshotJson).not.toContain("opencode_app_settings" === "" ? "x" : "sqlite_stat1");
-    expect(built.snapshotJson).not.toContain("app_settings");
   });
 
   test("round-trips: parse, verify, plan, apply and re-digest restore identical rows", async () => {
-    const built = await buildSqlSnapshot(fakeSql(baseTables()), "2026-11-13T00:00:00.000Z");
-    const snapshot = await verifySnapshotJson(built.snapshotJson, built.snapshotSha256);
-    const parsed = parseSqlSnapshot(JSON.parse(built.snapshotJson));
-    expect(parsed).not.toBeNull();
-    const catalog = JSON.parse(JSON.stringify(
-      Object.entries(baseTables())
-        .filter(([name]) => name.startsWith("opencode_"))
-        .map(([name, t]) => ({ name, createSql: t.createSql, columns: t.columns, rowCount: t.rows.length }))
-    )) as CatalogTable[];
-    const plan = restorePlanStatements(snapshot, catalog);
+    const { built, snapshot } = await makeSnapshot();
+    expect(parseSqlSnapshot(JSON.parse(built.snapshotJson))).not.toBeNull();
+    const plan = restorePlanStatements(snapshot, catalogOf(baseTables()));
     // Deletes run children-first (reverse order), inserts run parents-first.
     expect(plan.tableOrder[0]).toBe(SESSION_V2_TABLE);
-    const deleteCount = plan.statements.filter(s => s.text.startsWith("DELETE")).length;
-    expect(deleteCount).toBe(3);
-    expect(plan.statements[0].text.startsWith("DELETE FROM \"opencode_session_message\"")).toBe(true);
-    const restored = fakeSql(baseTables());
-    for (const table of Object.values(restored instanceof Map ? {} : {})) void table;
-    const target = fakeSql({
-      opencode_app_settings: { createSql: catalog[0].createSql, columns: ["key", "value"], rows: [{ key: "seed", value: "x" }] },
-      [SESSION_V2_TABLE]: { createSql: CREATE_SESSION, columns: ["id", "title", "time_created"], rows: [{ id: "seed", title: null, time_created: 1 }] },
-      opencode_session_message: { createSql: CREATE_MESSAGE, columns: ["id", "session_id", "type", "payload", "time_created"], rows: [] }
-    });
+    expect(plan.statements.filter(s => s.text.startsWith("DELETE")).length).toBe(3);
+    expect(plan.statements[0].text.startsWith('DELETE FROM "opencode_session_message"')).toBe(true);
+    // The target starts pre-populated (replace mode wipes it inside the plan).
+    const target = fakeSql(baseTables());
     applyRestorePlan(target, plan);
     verifyRestoredContentSync(target, plan, snapshot);
     const digests = await digestRestoredTables(target, snapshot, plan.tableOrder);
@@ -167,7 +172,6 @@ describe("B2 SQL snapshot building", () => {
     };
     await expect(buildSqlSnapshot(fakeSql(secret), "2026-11-13T00:00:00.000Z"))
       .rejects.toThrow("SQLBK_SECRET_TABLE_NOT_EXPORTED");
-    // Empty credential-like tables are harmless and get snapshotted.
     const empty = baseTables();
     empty.opencode_credential = {
       createSql: 'CREATE TABLE `opencode_credential` (`id` text PRIMARY KEY,`secret` text)',
@@ -178,32 +182,35 @@ describe("B2 SQL snapshot building", () => {
   });
 
   test("verifySnapshotJson rejects tampering, non-canonical input and bad digests", async () => {
-    const built = await buildSqlSnapshot(fakeSql(baseTables()), "2026-11-13T00:00:00.000Z");
+    const { built } = await makeSnapshot();
     await expect(verifySnapshotJson(built.snapshotJson, "0".repeat(64)))
       .rejects.toThrow("SQLBK_SNAPSHOT_DIGEST_MISMATCH");
     await expect(verifySnapshotJson(built.snapshotJson, "nothex"))
       .rejects.toThrow("SQLBK_SNAPSHOT_DIGEST_UNTRUSTED");
-    // A structurally valid snapshot with a wrong per-table digest must fail.
-    const parsed = JSON.parse(built.snapshotJson) as { tables: { sha256: string }[] };
-    parsed.tables[0].sha256 = "f".repeat(64);
-    const tampered = JSON.stringify(parsed);
-    await expect(verifySnapshotJson(tampered, built.snapshotSha256))
+    await expect(verifySnapshotJson("{}", await digestHex("{}")))
+      .rejects.toThrow("SQLBK_SNAPSHOT_MALFORMED");
+    // Byte-level tampering with the original digest is refused.
+    const byteTampered = built.snapshotJson.replace("ses_a1", "ses_zz");
+    await expect(verifySnapshotJson(byteTampered, built.snapshotSha256))
       .rejects.toThrow("SQLBK_SNAPSHOT_DIGEST_MISMATCH");
+    // A structurally valid snapshot with a wrong per-table digest is refused.
+    const tableTampered = JSON.parse(built.snapshotJson) as { tables: { sha256: string }[] };
+    tableTampered.tables[0].sha256 = "f".repeat(64);
+    const tableTamperedJson = canonicalJson(tableTampered);
+    await expect(verifySnapshotJson(tableTamperedJson, await digestHex(tableTamperedJson)))
+      .rejects.toThrow("SQLBK_TABLE_DIGEST_MISMATCH");
+    // A wrong table-set fingerprint is refused too.
+    const setTampered = JSON.parse(built.snapshotJson) as { tableSetFingerprint: string };
+    setTampered.tableSetFingerprint = "e".repeat(64);
+    const setTamperedJson = canonicalJson(setTampered);
+    await expect(verifySnapshotJson(setTamperedJson, await digestHex(setTamperedJson)))
+      .rejects.toThrow("SQLBK_TABLESET_DIGEST_MISMATCH");
   });
 });
 
 describe("B2 restore planner rejections", () => {
-  const makeSnapshot = async () => {
-    const built = await buildSqlSnapshot(fakeSql(baseTables()), "2026-11-13T00:00:00.000Z");
-    return verifySnapshotJson(built.snapshotJson, built.snapshotSha256);
-  };
-  const catalogOf = (tables: Record<string, FakeTable>): CatalogTable[] =>
-    Object.entries(tables)
-      .filter(([name]) => name.startsWith("opencode_"))
-      .map(([name, t]) => ({ name, createSql: t.createSql, columns: t.columns, rowCount: t.rows.length }));
-
   test("rejects missing table, different CREATE SQL, different columns and extra target table", async () => {
-    const snapshot = await makeSnapshot();
+    const { snapshot } = await makeSnapshot();
     const missing = catalogOf(baseTables()).filter(t => t.name !== "opencode_app_settings");
     expect(() => restorePlanStatements(snapshot, missing)).toThrow("SQLBK_SCHEMA_MISMATCH:falta");
     const differentCreate = catalogOf(baseTables());
@@ -217,9 +224,9 @@ describe("B2 restore planner rejections", () => {
   });
 
   test("replace-mode deletes pre-existing rows and still yields snapshot digests", async () => {
-    const snapshot = await makeSnapshot();
+    const { snapshot } = await makeSnapshot();
     const plan = restorePlanStatements(snapshot, catalogOf(baseTables()));
-    const target = fakeSql(baseTables()); // pre-populated: rows will be replaced
+    const target = fakeSql(baseTables());
     applyRestorePlan(target, plan);
     verifyRestoredContentSync(target, plan, snapshot);
   });
@@ -321,7 +328,7 @@ describe("B2 R2 transport", () => {
   }
 
   test("upload pins digests, manifest goes last, download verifies everything", async () => {
-    const built = await buildSqlSnapshot(fakeSql(baseTables()), "2026-11-13T00:00:00.000Z");
+    const { built } = await makeSnapshot();
     const reads = await captureNormalReads(harnessOf([{ id: "ses_1" }], { ses_1: [{ type: "user", text: "hola" }] }));
     const fingerprints = await normalReadFingerprints(reads);
     const manifest = buildSessionBackupManifest({
@@ -332,17 +339,13 @@ describe("B2 R2 transport", () => {
     const bucket = memoryBucket();
     const uploaded = await uploadSessionBackup(bucket, built.snapshotJson, built.snapshotSha256, manifest);
     expect(uploaded.manifestBytes).toBeGreaterThan(0);
-    const manifestSha256 = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(manifest)))
-      .then(buffer => Array.from(new Uint8Array(buffer)).map(b => b.toString(16).padStart(2, "0")).join(""));
-    expect(uploaded.manifestSha256).toBe(manifestSha256);
+    expect(uploaded.manifestSha256).toBe(await digestHex(canonicalJson(manifest)));
     await assertManifestDigest(manifest, uploaded.manifestSha256);
     const downloaded = await downloadVerifiedSessionBackup(bucket, RUN_ID, uploaded.manifestSha256);
     expect(downloaded.snapshotJson).toBe(built.snapshotJson);
     expect(downloaded.manifest.normalReads.sessionIds).toEqual(["ses_1"]);
-    // A manifest digest mismatch must refuse the download.
     await expect(downloadVerifiedSessionBackup(bucket, RUN_ID, "f".repeat(64)))
       .rejects.toThrow("SQLBK_MANIFEST_DIGEST_MISMATCH");
-    // Cleanup removes exactly the drill prefix.
     const removed = await deleteSessionBackupPrefix(bucket, RUN_ID);
     expect(removed.deleted).toBe(2);
     const after = await downloadVerifiedSessionBackup(bucket, RUN_ID, uploaded.manifestSha256)
