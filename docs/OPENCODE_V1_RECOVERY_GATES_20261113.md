@@ -1,5 +1,32 @@
 # OpenCode Cloud V1 — Estado comprobable de recuperación y publicación
 
+## Corte de Producción V1 publicada — 13 noviembre 2026 UTC
+
+**ESTADO VERIFICADO:** Publicación técnica de OpenCode Cloud V1 efectuada, **sin declarar aún PASS funcional autenticado en Producción**. Se conservó el riesgo residual de pérdida de historiales prescindibles aceptado expresamente por el propietario. Esta sección prevalece sobre la matriz histórica de publicación pendiente y sobre los bloqueos B2 integral/RPO-RTO anteriores.
+
+| Gate | Resultado | Evidencia |
+| --- | --- | --- |
+| Autorización del titular | **APROBADA** | Permiso expreso para fusionar PR #47, desplegar y revertir ante fallo crítico; afirmó no tener trabajo importante sin respaldo GitHub |
+| PR #47 → `main` | **PASS** | PR fusionada, SHA de merge `9549448fc627b367cb22db4617261a50b6f56983`; HEAD candidato previo `31f794238eecd679ca38993914a8c03e4d9f1115` |
+| CI de candidata | **PASS** | GitHub Actions `43367568532`: tests, preview, TS, build e invariantes |
+| Build + deploy producto | **PASS** | Cloudflare Build `25e5e8bf-f6b7-437c-983e-8eef1d038f44` `stopped/success`, commit `9549448fc627b367cb22db4617261a50b6f56983`; Worker Prod `3a908ed2-8e54-400d-a071-fd49d665a36c` 100% del tráfico |
+| Configuración / control de acceso | **PASS configuración** | Migración DO `v3`; bindings OpenCodeAgent, DEV, SETTINGS y AI/LOADER; variable `OPENCODE_SUPERVISOR_ENABLED` false. Cloudflare Access para hostname Prod `self_hosted`, una política, sin debilitar autenticación |
+| Reversión disponible | **PASS referencia de versión** | Worker previo `1d70eb77-316e-408d-bd14-5f19b171dedf` sigue en historial; ensayo conjunto en Staging PASS. No se ha ejecutado rollback productivo destructivo |
+| Test E2E autenticado de Producción | **PENDIENTE** | La interfaz privada tras Access requiere sesión autenticada del titular. No existe evidencia independiente del flujo sesión → herramienta → proyecto real en Prod |
+| Pérdida de historiales SQL/KV | **ACEPTADA/NO BLOQUEA** | El titular acepta pérdida de conversaciones recientes y estado interno prescindible. B2 ampliado cancelado, evidencia SQL de ensayo preservada |
+
+**Configuración de Builds antes de la publicación:** se corrigió la configuración ya existente del Worker Prod (rama `main`) para ejecutar `bun install --frozen-lockfile && bun test && bun run typecheck && bun scripts/test-preview.mjs && bun scripts/check-invariants.mjs && bun run build` y `bunx wrangler deploy`. Se conservaron token, repositorio y auto-build; sin nuevos servicios.
+
+**Evidencias limitadas:** el despliegue de Worker y los metadatos de Access prueban instalación y configuración, **no** que un usuario autenticado pueda interactuar correctamente. No confundir test de Stage ni HTTP de CI con smoke productivo. Los mecanismos GitHub respaldan commits y proyectos confirmados, no historial prescindible ni archivos Linux no confirmados. El propietario confirmó aceptar este alcance.
+
+**Único cierre pendiente:** prueba manual mínima desde Android sobre `https://opencode-harness-example.cdf-cloud-mvp-20261019.workers.dev`: ingresar por Cloudflare Access, abrir una sesión nueva, ejecutar una herramienta y comprobar que los cambios de prueba permanecen en una rama autorizada. Sin evidencia de esa interacción no declarar G9 cerrado integralmente. Si surge error funcional crítico, reevaluar reversión a versión anterior según controles reales (el rollback de Worker no revierte DO ni otros datos).
+
+**Nota de trazabilidad:** futuras ediciones puramente documentales de `main` pueden originar nuevas builds del mismo código. Verificar la versión productiva efectiva antes de registrar cierre final.
+
+---
+
+
+
 ## Contrato de aceptación vigente: V1 personal pragmática (13 de noviembre de 2026)
 
 **DECISIÓN DEL PROPIETARIO: recuperar lo suficiente, no recuperar todo.** Este proyecto es privado, no comercial y de uso individual. El propietario **acepta expresamente** perder conversaciones recientes, historiales y estado interno prescindible de OpenCode ante fallos graves, siempre que se preserven los proyectos, archivos importantes y cambios de código confirmados. Esa aceptación **sustituye el anterior requisito de B2 integral como gate obligatorio de publicación**. Los apartados B2 y «Decisiones y protección» históricos más abajo conservan su valor de auditoría, pero NO representan los criterios vigentes.
