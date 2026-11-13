@@ -31,9 +31,10 @@ import { OpenCodeHarness } from "agents/harness/opencode";
 import { Lifecycle } from "agents/lifecycle";
 import { createAI } from "agents/models/opencode";
 import {
-  drillCleanupStorage, drillCreateFixture, drillExportSnapshot, drillRestoreCommit,
-  drillRestorePrepare, drillRestoreVerify, drillRestoreWipe,
-  type DrillStorage, type SessionHarnessLike, type SqlLike
+  drillCleanupStorage, drillCreateFixture, drillExportSnapshotToR2,
+  drillRestoreFromR2, drillVerifyFromR2,
+  drillRestorePrepare, drillRestoreWipe,
+  type DrillStorage, type SessionHarnessLike, type SqlLike, assertR2Bucket
 } from "./session-sql-backup";
 
 /** Same default Workers AI model the main agent uses; no secret involved. */
@@ -82,9 +83,15 @@ export class SessionBackupDrillAgent extends DurableObject<Env> {
     return drillCreateFixture(this.env, this.drillHarness(), input);
   }
 
-  /** Snapshots every `opencode_` table plus the normal-read fingerprints. */
-  async sessionBackupDrillExport(input: unknown): Promise<unknown> {
-    return drillExportSnapshot(this.env, this.drillHarness(), this.drillSql(), input);
+  /** R2 bound only inside the DO: never expose full session bytes to Workflow steps. */
+  private backupBucket() {
+    return assertR2Bucket((this.env as Env & { RECOVERY_R2?: unknown }).RECOVERY_R2,
+      "SessionBackupDrillAgent");
+  }
+
+  /** Export and upload inside this disposable DO, returning only checksums/receipt. */
+  async sessionBackupDrillExportToR2(input: unknown): Promise<unknown> {
+    return drillExportSnapshotToR2(this.env, this.drillHarness(), this.drillSql(), this.backupBucket(), input);
   }
 
   /** Atomic wipe (`deleteAll`) of this disposable restore object. */
@@ -97,14 +104,14 @@ export class SessionBackupDrillAgent extends DurableObject<Env> {
     return drillRestorePrepare(this.env, this.drillHarness(), this.drillSql());
   }
 
-  /** Applies the snapshot inside ONE storage.transaction (all-or-nothing). */
-  async sessionBackupDrillRestoreCommit(input: unknown): Promise<unknown> {
-    return drillRestoreCommit(this.env, this.drillSql(), this.drillStorage(), input);
+  /** Downloads verified bytes from R2 inside the target DO, then commits atomically. */
+  async sessionBackupDrillRestoreFromR2(input: unknown): Promise<unknown> {
+    return drillRestoreFromR2(this.env, this.drillSql(), this.drillStorage(), this.backupBucket(), input);
   }
 
-  /** Post-commit digests + normal read path equality against the manifest. */
-  async sessionBackupDrillRestoreVerify(input: unknown): Promise<unknown> {
-    return drillRestoreVerify(this.env, this.drillHarness(), this.drillSql(), input);
+  /** Checks normal history/SQL against the R2-anchored manifest without leaking rows. */
+  async sessionBackupDrillVerifyFromR2(input: unknown): Promise<unknown> {
+    return drillVerifyFromR2(this.env, this.drillHarness(), this.drillSql(), this.backupBucket(), input);
   }
 
   /** Drains this disposable object after the drill (`deleteAll`). */
