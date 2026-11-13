@@ -424,11 +424,36 @@ export function restorePlanStatements(snapshot: SqlSnapshot, target: CatalogTabl
       throw new Error("SQLBK_SCHEMA_MISMATCH:adicional:" + targetTable.name);
     }
   }
-  const ordered = [...snapshot.tables].sort((a, b) => {
-    if (a.name === SESSION_V2_TABLE) return -1;
-    if (b.name === SESSION_V2_TABLE) return 1;
-    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
-  });
+  // Respect the actual SQLite FK dependency graph. Alphabetical order inserts
+  // opencode_event BEFORE its parent opencode_event_sequence, and session_v2
+  // BEFORE project; both fail with real SQLITE_CONSTRAINT_FOREIGNKEY.
+  const sortedByName = [...snapshot.tables].sort((a, b) => a.name.localeCompare(b.name));
+  const states = new Map<string, "visiting" | "visited">();
+  const ordered: SqlTableSnapshot[] = [];
+  const referencesOf = (table: SqlTableSnapshot): string[] => {
+    const names = new Set<string>();
+    const pattern = /\\bREFERENCES\\s+[`"']?([a-z][a-z0-9_]*)[`"']?\\s*\\(/gi;
+    for (const match of table.createSql.matchAll(pattern)) {
+      const dependency = match[1];
+      if (dependency !== table.name) names.add(dependency);
+    }
+    return [...names].sort();
+  };
+  const byName = new Map(sortedByName.map(table => [table.name, table]));
+  const visit = (table: SqlTableSnapshot): void => {
+    const current = states.get(table.name);
+    if (current === "visited") return;
+    if (current === "visiting") throw new Error("SQLBK_FK_CYCLE:" + table.name);
+    states.set(table.name, "visiting");
+    for (const name of referencesOf(table)) {
+      const parent = byName.get(name);
+      if (!parent) throw new Error("SQLBK_FK_PARENT_MISSING:" + name);
+      visit(parent);
+    }
+    states.set(table.name, "visited");
+    ordered.push(table);
+  };
+  for (const table of sortedByName) visit(table);
   const statements: RestoreStatement[] = [];
   for (const table of [...ordered].reverse()) {
     statements.push({ text: 'DELETE FROM "' + table.name + '"', bindings: [] });
