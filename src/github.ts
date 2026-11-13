@@ -25,6 +25,16 @@ const BRANCH_RE = /^opencode\/[a-z0-9][a-z0-9._-]{0,59}$/;
 const MAX_FILE_BYTES = 100_000;
 
 const OWNER = "aamvtrampa36-del";
+const OPENCODE_REPO = OWNER + "/opencode-harness-example";
+export const OPENCODE_STAGING_BASE = "feat/staging-supervisor-control-20261111";
+const STAGING_REVIEW = /^opencode\/staging-[a-f0-9]{16}$/;
+/** New OpenCode-only staging tasks are forked from a fixed, reviewed staging ref.
+ * Legacy supervised branches and all other repositories stay on default main. */
+function reviewedBase(repo: string, branch: string, defaultBranch: string): string {
+  if (!STAGING_REVIEW.test(branch)) return defaultBranch;
+  if (repo !== OPENCODE_REPO) throw new Error("Staging review branches are OpenCode-only");
+  return OPENCODE_STAGING_BASE;
+}
 const REPOSITORY_FORMAT = /^[A-Za-z0-9_.-]{1,100}$/;
 
 /** Authorization stays per-account and is checked at every tool execution. */
@@ -143,11 +153,15 @@ export class GitHubBridge {
       case "branch": {
         const branch = branchChecked(input.branch);
         const info = await this.api("GET", base);
-        const from = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(info.default_branch));
+        const source = reviewedBase(repo, branch, info.default_branch);
+        const from = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(source));
+        if (typeof from?.object?.sha !== "string" || !/^[0-9a-f]{40}$/.test(from.object.sha)) {
+          throw new Error("Source branch commit is unverifiable");
+        }
         const created = await this.api("POST", base + "/git/refs", {
           ref: "refs/heads/" + branch, sha: from.object.sha
         });
-        return { repo, branch, ref: created.ref, sha: created.object.sha };
+        return { repo, branch, source, ref: created.ref, sha: created.object.sha };
       }
       case "write": {
         const branch = branchChecked(input.branch);
@@ -166,13 +180,14 @@ export class GitHubBridge {
       case "review": {
         const branch = branchChecked(input.branch);
         const info = await this.api("GET", base);
+        const source = reviewedBase(repo, branch, info.default_branch);
         const comparison = await this.api("GET", base + "/compare/" +
-          encodeURIComponent(info.default_branch) + "..." + encodeURIComponent(branch));
+          encodeURIComponent(source) + "..." + encodeURIComponent(branch));
         const files = Array.isArray(comparison.files) ? comparison.files : [];
         // GitHub truncates large comparisons. Never claim a complete review
         // when it returns more than the bounded safe set.
         return {
-          repo, branch, base: info.default_branch,
+          repo, branch, base: source,
           aheadBy: comparison.ahead_by,
           behindBy: comparison.behind_by,
           totalCommits: comparison.total_commits,
@@ -191,11 +206,12 @@ export class GitHubBridge {
           throw new Error("Pull request title must be between 1 and 160 characters");
         }
         const info = await this.api("GET", base);
+        const source = reviewedBase(repo, branch, info.default_branch);
         const created = await this.api("POST", base + "/pulls", {
           title: input.title, body: (input.body || "").slice(0, 5000),
-          head: branch, base: info.default_branch, draft: true
+          head: branch, base: source, draft: true
         });
-        return { repo, number: created.number, url: created.html_url, draft: created.draft, base: info.default_branch, head: branch };
+        return { repo, number: created.number, url: created.html_url, draft: created.draft, base: source, head: branch };
       }
       default:
         throw new Error("Unsupported GitHub action");

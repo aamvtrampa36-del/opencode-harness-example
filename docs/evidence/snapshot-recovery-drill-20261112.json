@@ -1,0 +1,145 @@
+{
+  "schema": "opencode-drill-evidence-v1",
+  "generatedAt": "2026-11-12T18:12:56.601Z",
+  "task": "snapshot recovery drill (staging-only, disposable DOs)",
+  "repo": "aamvtrampa36-del/opencode-harness-example",
+  "branch": "opencode/staging-ad42c8f71e905b63",
+  "baseCommit": "3e9010b2e9b9ec5d122dda8f0bfb166ba66451b9",
+  "baseRef": "feat/staging-supervisor-control-20261111",
+  "localTestCommit": "4c0c671557487ca1b5271832c16af126b8ee5f49",
+  "environment": {
+    "node": "v24.22.1",
+    "kernel": "6.18.56-cloudflare-microvm-2026.10.9",
+    "platform": "linux/x64",
+    "note": "Linux Container of test project supervised-ad42c8f71e905b63 (Debian)"
+  },
+  "commands": [
+    {
+      "cmd": "git clone --branch feat/staging-supervisor-control-20261111 --depth 1",
+      "exitCode": 0,
+      "note": "isolated checkout; HEAD verified = baseCommit"
+    },
+    {
+      "cmd": "bun install --frozen-lockfile",
+      "exitCode": 0,
+      "note": "672 packages"
+    },
+    {
+      "cmd": "bun test (with drill changes)",
+      "exitCode": 0,
+      "result": {
+        "pass": 197,
+        "fail": 0,
+        "files": 39,
+        "expectCalls": 806
+      }
+    },
+    {
+      "cmd": "bun run typecheck (NODE_OPTIONS=--max-old-space-size=1024)",
+      "exitCode": 0,
+      "result": {
+        "errors": 0
+      }
+    },
+    {
+      "cmd": "bun scripts/verify-backup-restore.mjs",
+      "exitCode": 0
+    },
+    {
+      "cmd": "bun scripts/verify-backup-restore.mjs --expect-fail",
+      "exitCode": 0,
+      "note": "corruption detected, no synthetic PASS"
+    },
+    {
+      "cmd": "bun test (restructured: augmentation + patch wiring)",
+      "exitCode": 0,
+      "result": {
+        "pass": 197,
+        "fail": 0,
+        "files": 39,
+        "expectCalls": 806
+      }
+    },
+    {
+      "cmd": "bun run typecheck after restructure (NODE_OPTIONS=--max-old-space-size=1024)",
+      "exitCode": 0,
+      "result": {
+        "errors": 0
+      }
+    }
+  ],
+  "files": {
+    "src/container-recovery.ts": {
+      "blobSha": "a28584e80156e2f77f4ca59d96fa8a48fc04f53e",
+      "lines": 523,
+      "status": "new (published)"
+    },
+    "src/container-recovery.test.ts": {
+      "blobSha": "b9639fe72291fb4a03814f486944d885da8774da",
+      "lines": 277,
+      "status": "new (published)"
+    },
+    "src/container-recovery-do.ts": {
+      "blobSha": "7c4ddb294df899d0ccd7a31dd41b42d66f9ef733",
+      "lines": 375,
+      "status": "new (prototype augmentation binding; published)"
+    },
+    "src/server.ts": {
+      "status": "NOT modified on branch; wiring delivered as docs/evidence/server-drill.patch (+50 lines vs base 3e9010b2, applied and tested locally)"
+    },
+    "src/dev-container.ts": {
+      "status": "UNTOUCHED on branch (base blob 1469da7aecc2a7382af0dcbed84c9fafa8af8fe1)"
+    },
+    "docs/snapshot-recovery-drill.md": {
+      "status": "new"
+    },
+    "docs/evidence/server-drill.patch": {
+      "blobSha": "de7c9066fa5ff5282d66667e4341a18a6d991b35",
+      "status": "machine-readable wiring patch"
+    }
+  },
+  "requiredRejectionTests": [
+    {
+      "name": "imagen diferente",
+      "guard": "assertCompatibleImage",
+      "result": "pass"
+    },
+    {
+      "name": "snapshot ausente",
+      "guard": "assertSnapshotHandle",
+      "result": "pass",
+      "note": "aborta sin destruir y sin imagen vacía; TTL 30d incluido"
+    },
+    {
+      "name": "marker alterado",
+      "guard": "assertMarkerIntegrity + real DRILL_SOURCE run",
+      "result": "pass",
+      "note": "create→mutate→verify con ancla pre-snapshot ⇒ ok:false, exit≠0"
+    },
+    {
+      "name": "operación fuera del proyecto",
+      "guard": "assertDrillProject/assertDrillRecordProject",
+      "result": "pass",
+      "note": "solo slugs snaprec-*; nonce 12 hex"
+    }
+  ],
+  "realExecution": {
+    "drillProgramInContainer": "REAL (node spawn, phases create/mutate/verify)",
+    "sameDoRestoreLive": "PENDING-DEPLOYMENT (prohibido desplegar en esta tarea)",
+    "crossDoRestoreLive": "PENDING-DEPLOYMENT; si la plataforma lo rechaza queda documentado como start-rejected, sin atribución a código"
+  },
+  "priorE2EReceiptReused": "#43261446743 (no se repitieron pruebas E2E anteriores)",
+  "constraints": [
+    "no merge",
+    "no deploy",
+    "no main",
+    "no ACL changes",
+    "no production",
+    "draft PR only in opencode/* branch"
+  ],
+  "structure": {
+    "devContainerModified": false,
+    "serverWiring": "patch docs/evidence/server-drill.patch (owner applies before deploying)",
+    "publishedModuleBinding": "src/container-recovery-do.ts attaches drill methods to DevContainer.prototype on import"
+  }
+}

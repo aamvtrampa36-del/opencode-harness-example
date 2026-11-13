@@ -1,0 +1,145 @@
+{
+  "schema": "opencode-selftest-receipt/1",
+  "runId": "50aeacc63582",
+  "startedAt": "2026-11-12T05:17:05.558Z",
+  "finishedAt": "2026-11-12T05:18:01.352Z",
+  "project": "selftest-candidate",
+  "branch": "opencode/supervised-b8d16e02c7a4935f",
+  "commit": "7e3b3bd2f97c59db1f288c7a19effc100aaa6edd",
+  "commitLinked": true,
+  "runtime": {
+    "bun": "1.4.4",
+    "node": null,
+    "platform": "linux/x64"
+  },
+  "buildArtifact": {
+    "clientIndexSha256": "9084bdfa7c1ba5f5053d780fb41471ec70e21d13b1a3adfa56b4836f01d4b67d",
+    "assetCount": 305,
+    "workerEntrySha256": "965341a81e365814cd9036dd504f4b4b52e405ec8a9acc64a565a0ba117f3285"
+  },
+  "stages": [
+    {
+      "id": "preflight",
+      "ok": true,
+      "exitCode": 0,
+      "ms": 13,
+      "logTail": "bun=1.4.4 proof=true writeProbe=true proofOut=\"SELFTEST_PROOF_OK:50aeacc63582\""
+    },
+    {
+      "id": "build",
+      "ok": true,
+      "exitCode": 0,
+      "ms": 54770,
+      "logTail": "8;5;249mt\u001b[0m\u001b[38;5;249mS\u001b[0m\u001b[38;5;249mc\u001b[0m\u001b[38;5;249mh\u001b[0m\u001b[38;5;249me\u001b[0m\u001b[38;5;249mm\u001b[0m\u001b[38;5;249ma\u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m?\u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249mz\u001b[0m\u001b[38;5;249m.\u001b[0m\u001b[38;5;249mf\u001b[0m\u001b[38;5;249mr\u001b[0m\u001b[38;5;249mo\u001b[0m\u001b[38;5;249mm\u001b[0m\u001b[38;5;249mJ\u001b[0m\u001b[38;5;249mS\u001b[0m\u001b[38;5;249mO\u001b[0m\u001b[38;5;249mN\u001b[0m\u001b[38;5;249mS\u001b[0m\u001b[38;5;249mc\u001b[0m\u001b[38;5;249mh\u001b[0m\u001b[38;5;249me\u001b[0m\u001b[38;5;249mm\u001b[0m\u001b[38;5;249ma\u001b[0m\u001b[38;5;249m(\u001b[0m\u001b[38;5;249ms\u001b[0m\u001b[38;5;249mo\u001b[0m\u001b[38;5;249mu\u001b[0m\u001b[38;5;249mr\u001b[0m\u001b[38;5;249mc\u001b[0m\u001b[38;5;249me\u001b[0m\u001b[38;5;249mI\u001b[0m\u001b[38;5;249mn\u001b[0m\u001b[38;5;249mp\u001b[0m\u001b[38;5;249mu\u001b[0m\u001b[38;5;249mt\u001b[0m\u001b[38;5;249mS\u001b[0m\u001b[38;5;249mc\u001b[0m\u001b[38;5;249mh\u001b[0m\u001b[38;5;249me\u001b[0m\u001b[38;5;249mm\u001b[0m\u001b[38;5;249ma\u001b[0m\u001b[38;5;249m)\u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m:\u001b[0m\u001b[38;5;249m \u001b[0mz.fromJSONSchema\u001b[38;5;249m(\u001b[0m\u001b[38;5;249m{\u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249mt\u001b[0m\u001b[38;5;249my\u001b[0m\u001b[38;5;249mp\u001b[0m\u001b[38;5;249me\u001b[0m\u001b[38;5;249m:\u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m\"\u001b[0m\u001b[38;5;249mo\u001b[0m\u001b[38;5;249mb\u001b[0m\u001b[38;5;249mj\u001b[0m\u001b[38;5;249me\u001b[0m\u001b[38;5;249mc\u001b[0m\u001b[38;5;249mt\u001b[0m\u001b[38;5;249m\"\u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m}\u001b[0m\u001b[38;5;249m)\u001b[0m\u001b[38;5;249m,\u001b[0m\n \u001b[38;5;240m     │\u001b[0m                                                                                                ────────┬───────  \n \u001b[38;5;240m     │\u001b[0m                                                                                                        ╰───────── \n\u001b[38;5;246m──────╯\u001b[0m\n\n\u001b[33m[IMPORT_IS_UNDEFINED] \u001b[0mImport `fromJSONSchema` will always be undefined because there is no matching export in 'node_modules/zod/v4/classic/external.js'\n      \u001b[38;5;246m╭\u001b[0m\u001b[38;5;246m─\u001b[0m\u001b[38;5;246m[\u001b[0m node_modules/agents/dist/client-DMWujQJ1.js:2105:45 \u001b[38;5;246m]\u001b[0m\n      \u001b[38;5;246m│\u001b[0m\n \u001b[38;5;246m2105 │\u001b[0m \u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249mo\u001b[0m\u001b[38;5;249mu\u001b[0m\u001b[38;5;249mt\u001b[0m\u001b[38;5;249mp\u001b[0m\u001b[38;5;249mu\u001b[0m\u001b[38;5;249mt\u001b[0m\u001b[38;5;249mS\u001b[0m\u001b[38;5;249mc\u001b[0m\u001b[38;5;249mh\u001b[0m\u001b[38;5;249me\u001b[0m\u001b[38;5;249mm\u001b[0m\u001b[38;5;249ma\u001b[0m\u001b[38;5;249m:\u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249ms\u001b[0m\u001b[38;5;249mo\u001b[0m\u001b[38;5;249mu\u001b[0m\u001b[38;5;249mr\u001b[0m\u001b[38;5;249mc\u001b[0m\u001b[38;5;249me\u001b[0m\u001b[38;5;249mO\u001b[0m\u001b[38;5;249mu\u001b[0m\u001b[38;5;249mt\u001b[0m\u001b[38;5;249mp\u001b[0m\u001b[0m\u001b[38;5;249mu\u001b[0m\u001b[38;5;249mt\u001b[0m\u001b[38;5;249mS\u001b[0m\u001b[0m\u001b[38;5;249mc\u001b[0m\u001b[38;5;249mh\u001b[0m\u001b[38;5;249me\u001b[0m\u001b[38;5;249mm\u001b[0m\u001b[38;5;249ma\u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m?\u001b[0m\u001b[38;5;249m \u001b[0mz.fromJSONSchema\u001b[38;5;249m(\u001b[0m\u001b[38;5;249ms\u001b[0m\u001b[38;5;249mo\u001b[0m\u001b[38;5;249mu\u001b[0m\u001b[38;5;249mr\u001b[0m\u001b[38;5;249mc\u001b[0m\u001b[38;5;249me\u001b[0m\u001b[38;5;249mO\u001b[0m\u001b[38;5;249mu\u001b[0m\u001b[38;5;249mt\u001b[0m\u001b[38;5;249mp\u001b[0m\u001b[0m\u001b[38;5;249mu\u001b[0m\u001b[38;5;249mt\u001b[0m\u001b[38;5;249mS\u001b[0m\u001b[0m\u001b[38;5;249mc\u001b[0m\u001b[38;5;249mh\u001b[0m\u001b[38;5;249me\u001b[0m\u001b[38;5;249mm\u001b[0m\u001b[38;5;249ma\u001b[0m\u001b[38;5;249m)\u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m:\u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249mv\u001b[0m\u001b[38;5;249mo\u001b[0m\u001b[38;5;249mi\u001b[0m\u001b[38;5;249md\u001b[0m\u001b[38;5;249m \u001b[0m\u001b[38;5;249m0\u001b[0m\n \u001b[38;5;240m     │\u001b[0m                                                            ────────┬───────  \n \u001b[38;5;240m     │\u001b[0m                                                                    ╰───────── \n\u001b[38;5;246m──────╯\u001b[0m\n\n[plugin builtin:vite-reporter] \n(!) Some chunks are larger than 500 kB after minification. Consider:\n- Using dynamic import() to code-split the application\n- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting\n- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.\n\nNODE_OPTIONS=--max-old-space-size=768\nartifact={\"clientIndexSha256\":\"9084bdfa7c1ba5f5053d780fb41471ec70e21d13b1a3adfa56b4836f01d4b67d\",\"assetCount\":305,\"workerEntrySha256\":\"965341a81e365814cd9036dd504f4b4b52e405ec8a9acc64a565a0ba117f3285\"}"
+    },
+    {
+      "id": "serve",
+      "ok": true,
+      "exitCode": 0,
+      "ms": 910,
+      "logTail": "preview ready at http://127.0.0.1:4321 (pid 4423, runtime node, root /tmp/selftest-e2e-riM1c6)"
+    },
+    {
+      "id": "http",
+      "ok": true,
+      "exitCode": 0,
+      "ms": 71,
+      "logTail": "functional-index: 200 text/html; charset=utf-8 matchesDisk=true\nfunctional-asset: 200 text/javascript; charset=utf-8 matchesDisk=true\nnegative-404: 404 text/plain matchesDisk=null\nnegative-source-isolation: 403  matchesDisk=null\nnegative-method: 405  matchesDisk=null"
+    }
+  ],
+  "checks": [
+    {
+      "id": "functional-index",
+      "ok": true,
+      "request": {
+        "method": "GET",
+        "path": "/selftest-candidate/dist/"
+      },
+      "expected": {
+        "status": 200,
+        "contentType": "text/html",
+        "bodyEqualsDisk": "index.html"
+      },
+      "actual": {
+        "status": 200,
+        "contentType": "text/html; charset=utf-8",
+        "bodySha256": "9084bdfa7c1ba5f5053d780fb41471ec70e21d13b1a3adfa56b4836f01d4b67d",
+        "bodyMatchesDisk": true
+      }
+    },
+    {
+      "id": "functional-asset",
+      "ok": true,
+      "request": {
+        "method": "GET",
+        "path": "/selftest-candidate/dist/assets/index-CVW9SWPW.js"
+      },
+      "expected": {
+        "status": 200,
+        "contentType": "javascript",
+        "bodyEqualsDisk": "assets/index-CVW9SWPW.js"
+      },
+      "actual": {
+        "status": 200,
+        "contentType": "text/javascript; charset=utf-8",
+        "bodySha256": "4083a32b181588ded0620e46a10b6eb9bf512f2e37584b7f2b13ad664936f490",
+        "bodyMatchesDisk": true
+      }
+    },
+    {
+      "id": "negative-404",
+      "ok": true,
+      "request": {
+        "method": "GET",
+        "path": "/selftest-candidate/dist/missing-50aeacc63582.js"
+      },
+      "expected": {
+        "status": 404
+      },
+      "actual": {
+        "status": 404,
+        "contentType": "text/plain",
+        "bodySha256": "ec1d5dc73b8534170e462241f54b952515116d8df95ad7c9546337df41cf4ba4",
+        "bodyMatchesDisk": null
+      }
+    },
+    {
+      "id": "negative-source-isolation",
+      "ok": true,
+      "request": {
+        "method": "GET",
+        "path": "/selftest-candidate/package.json"
+      },
+      "expected": {
+        "status": 403
+      },
+      "actual": {
+        "status": 403,
+        "contentType": null,
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bodyMatchesDisk": null
+      }
+    },
+    {
+      "id": "negative-method",
+      "ok": true,
+      "request": {
+        "method": "POST",
+        "path": "/selftest-candidate/dist/"
+      },
+      "expected": {
+        "status": 405
+      },
+      "actual": {
+        "status": 405,
+        "contentType": null,
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bodyMatchesDisk": null
+      }
+    }
+  ],
+  "failClosed": null,
+  "mobile": "Mobile execution stays with the existing compatible automation (.github/workflows/android-apk.yml builds and verifies the APK); this receipt claims no real device hardware.",
+  "notes": [],
+  "verdict": "pass"
+}

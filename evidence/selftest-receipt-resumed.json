@@ -1,0 +1,148 @@
+{
+  "schema": "opencode-selftest-receipt/1",
+  "runId": "3360c6317913",
+  "startedAt": "2026-11-12T05:09:11.769Z",
+  "finishedAt": "2026-11-12T05:10:08.936Z",
+  "project": "selftest-candidate",
+  "branch": "opencode/x",
+  "commit": null,
+  "commitLinked": false,
+  "runtime": {
+    "bun": "1.4.4",
+    "node": null,
+    "platform": "linux/x64"
+  },
+  "buildArtifact": {
+    "clientIndexSha256": "9084bdfa7c1ba5f5053d780fb41471ec70e21d13b1a3adfa56b4836f01d4b67d",
+    "assetCount": 305,
+    "workerEntrySha256": "965341a81e365814cd9036dd504f4b4b52e405ec8a9acc64a565a0ba117f3285"
+  },
+  "stages": [
+    {
+      "id": "preflight",
+      "ok": true,
+      "exitCode": null,
+      "ms": 0,
+      "logTail": "not rerun: passed previously",
+      "skippedBecause": "passed previously"
+    },
+    {
+      "id": "build",
+      "ok": true,
+      "exitCode": 0,
+      "ms": 56188,
+      "logTail": "(vite build output; same artifact hash as the certified build)"
+    },
+    {
+      "id": "serve",
+      "ok": true,
+      "exitCode": 0,
+      "ms": 708,
+      "logTail": "preview ready at http://127.0.0.1:4321 (pid 4107, runtime node, root /tmp/selftest-e2e-NS10he)"
+    },
+    {
+      "id": "http",
+      "ok": true,
+      "exitCode": 0,
+      "ms": 90,
+      "logTail": "functional-index: 200 text/html; charset=utf-8 matchesDisk=true\nfunctional-asset: 200 text/javascript; charset=utf-8 matchesDisk=true\nnegative-404: 404 text/plain matchesDisk=null\nnegative-source-isolation: 403  matchesDisk=null\nnegative-method: 405  matchesDisk=null"
+    }
+  ],
+  "checks": [
+    {
+      "id": "functional-index",
+      "ok": true,
+      "request": {
+        "method": "GET",
+        "path": "/selftest-candidate/dist/"
+      },
+      "expected": {
+        "status": 200,
+        "contentType": "text/html",
+        "bodyEqualsDisk": "index.html"
+      },
+      "actual": {
+        "status": 200,
+        "contentType": "text/html; charset=utf-8",
+        "bodySha256": "9084bdfa7c1ba5f5053d780fb41471ec70e21d13b1a3adfa56b4836f01d4b67d",
+        "bodyMatchesDisk": true
+      }
+    },
+    {
+      "id": "functional-asset",
+      "ok": true,
+      "request": {
+        "method": "GET",
+        "path": "/selftest-candidate/dist/assets/index-CVW9SWPW.js"
+      },
+      "expected": {
+        "status": 200,
+        "contentType": "javascript",
+        "bodyEqualsDisk": "assets/index-CVW9SWPW.js"
+      },
+      "actual": {
+        "status": 200,
+        "contentType": "text/javascript; charset=utf-8",
+        "bodySha256": "4083a32b181588ded0620e46a10b6eb9bf512f2e37584b7f2b13ad664936f490",
+        "bodyMatchesDisk": true
+      }
+    },
+    {
+      "id": "negative-404",
+      "ok": true,
+      "request": {
+        "method": "GET",
+        "path": "/selftest-candidate/dist/missing-3360c6317913.js"
+      },
+      "expected": {
+        "status": 404
+      },
+      "actual": {
+        "status": 404,
+        "contentType": "text/plain",
+        "bodySha256": "ec1d5dc73b8534170e462241f54b952515116d8df95ad7c9546337df41cf4ba4",
+        "bodyMatchesDisk": null
+      }
+    },
+    {
+      "id": "negative-source-isolation",
+      "ok": true,
+      "request": {
+        "method": "GET",
+        "path": "/selftest-candidate/package.json"
+      },
+      "expected": {
+        "status": 403
+      },
+      "actual": {
+        "status": 403,
+        "contentType": null,
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bodyMatchesDisk": null
+      }
+    },
+    {
+      "id": "negative-method",
+      "ok": true,
+      "request": {
+        "method": "POST",
+        "path": "/selftest-candidate/dist/"
+      },
+      "expected": {
+        "status": 405
+      },
+      "actual": {
+        "status": 405,
+        "contentType": null,
+        "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bodyMatchesDisk": null
+      }
+    }
+  ],
+  "failClosed": null,
+  "mobile": "Mobile execution stays with the existing compatible automation (.github/workflows/android-apk.yml builds and verifies the APK); this receipt claims no real device hardware.",
+  "notes": [
+    "resume: build,serve,http rerun, 1 skipped"
+  ],
+  "verdict": "pass"
+}
