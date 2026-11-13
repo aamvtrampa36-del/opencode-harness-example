@@ -1,5 +1,31 @@
 # OpenCode Cloud V1 — Estado comprobable de recuperación y publicación
 
+## Corte independiente posterior — B2 SQL y C aprobados (13 noviembre 2026 UTC)
+
+**La matriz histórica que sigue corresponde a un corte anterior y se mantiene como trazabilidad; ESTE apartado prevalece para los resultados comprobados más recientes. G9 sigue ABIERTO: no se ha ejecutado publicación productiva.**
+
+| Gate | Estado real | Evidencia |
+| --- | --- | --- |
+| Autodesarrollo y CI recuperable | PASS Staging | PR #39, #53; [Actions #43361777201](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/43361777201), 273 tests, 0 fallos |
+| A/B1: Container + R2 sintético | PASS fixture | Workflows `oc_v1_full_snapshot_drill_20261112_02` y `oc_v1_external_r2_real_drill_20261113_01` |
+| C: Worker+Container+DO rollback conjunto | PASS fixture real Staging | `g9_joint_fix_prepare_20261113_01` + `g9_joint_fix_verify_20261113_01`, Worker revertido y restablecido; `passed:true` |
+| B2: SQL sesiones reales de prueba | PASS Staging, alcance SQL | `g9_session_cacheexcluded_real_20261113_01`: `passed:true`, 20 tablas, 3 sesiones; `sqlDigestsMatch:true`, `normalReadsMatch:true`, `cleanupOk:true`, origen y destino DO distintos |
+| B2 integral: metadatos KV+archivos+asociaciones | **BLOQUEA CIERRE** | SQL `opencode_*` no contiene `supervisor:task:*`, `supervisor:session:*`, `g8-scope:*` ni el estado de archivos Container |
+| D: preparación, backup y publicación productiva | **NO REALIZADO** | No hay preflight completo ni CI/E2E de una candidata exacta que incorpore todos los cambios ni pruebas prod |
+
+**Versiones comprobadas:** Staging commit `b0b7fae2058f500a42064827cd2443f34964f343` / Worker `3036b35a-f00d-4a82-9d94-ccd86b8c0e19` (100%); Producción Worker `1d70eb77-316e-408d-bd14-5f19b171dedf` (100%, intacto). La PR #47 continúa draft; su rama de lanzamiento todavía no coincide con el HEAD de Staging. No atribuir al nuevo corte evidencia de producción.
+
+**Bloqueo arquitectónico de publicación:** `wrangler.jsonc` de Producción conserva `main: src/server.ts`, DO bindings `OpenCodeAgent`, `DEV`, `SETTINGS` y migraciones v1–v3, **sin R2 RECOVERY_R2**. La configuración `wrangler.g1.jsonc` de Staging utiliza `src/entrypoint.ts`, clase `SessionBackupDrillAgent` en `SESSION_BK` (migración v4), R2 y Workflow privado. La clase y Workflow del drill están diseñados únicamente para Staging. **No copiar ciegamente la configuración Staging a Producción**: las migraciones de clase DO pueden impedir rollback. Antes de promover, se requiere un procedimiento genuino de respaldar/restaurar los datos productivos conservando la compatibilidad, y una configuración apta para Production explícitamente revisada.
+
+**Recuperación técnica:** usar `ctx.storage.list/get/put/transaction` (KV de DO no es legible mediante `sql.exec` de su tabla interna); preservar relaciones entre sesiones, tareas, ámbito del proyecto, rama/commit Git y archivos. Exportación consistente a R2 con hashes y rechazo de manifiestos corruptos; restauración íntegra en entidades de ensayo nuevas. No reabrir C ni B2 SQL sin regresión. Medir RPO y RTO representativos: los ~2,23 s de restauración de un fixture pequeño NO son RTO productivo.
+
+**Intervención actual:** OpenCode supervisor tarea `b2fda8136e4c902a`, rama aislada `opencode/staging-b2fda8136e4c902a`, aborda la parte pendiente de B2. Su trabajo requiere PR borrador, CI independiente y prueba real de RESTAURACIÓN INTEGRAL antes de integrarse. No es una prueba aprobada ni autorización de lanzamiento.
+
+**Siguiente paso tras B2:** congelar candidata exacta, evaluar enlaces/bindings productivos, CI + recuperación negativa y funcional, generar backup de Producción recuperable, verificar compatibilidad de rollback, ejecutar publicación solo con autorización aplicable, realizar smoke real y registrar el resultado. No inventar G10; el próximo tramo es operación estable y mantenimiento de OpenCode para CDF Cloud y WorkBench.
+
+---
+
+
 **Corte:** 2026-11-13 UTC. **Autoridad:** evidencias independientes GitHub Actions, Cloudflare Worker Deployments, Workflows y R2 privado. **Objeto:** OpenCode Cloud, no CDF Cloud ni WorkBench.
 
 **Dictamen:** todavía NO apto para promoción a Producción. El autodesarrollo, las pruebas recuperables y la recuperación de un Container descartable tienen evidencias positivas. El backup externo real de prueba también ha pasado. **NO** se ha verificado la restauración de archivos/sesiones reales ni la recuperación conjunta final Worker+Container+DO.
