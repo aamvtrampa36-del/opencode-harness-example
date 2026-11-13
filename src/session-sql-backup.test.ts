@@ -38,14 +38,6 @@ function fakeSql(tables: Record<string, FakeTable>): SqlLike {
         if (query.endsWith("WHERE 0")) {
           return { columnNames: table.columns, toArray: () => [] };
         }
-        const insertMatch = query.match(/^INSERT INTO "([^"]+)" \(([^)]*)\) VALUES \((.*)\)$/);
-        if (insertMatch) {
-          const columns = insertMatch[2].split(",").map(c => c.trim().replace(/^"|"$/g, ""));
-          const row: Record<string, unknown> = {};
-          columns.forEach((column, i) => { row[column] = bindings[i]; });
-          table.rows.push(row);
-          return { columnNames: [], toArray: () => [] };
-        }
         return {
           columnNames: table.columns,
           toArray: () => table.rows.map(row => {
@@ -54,6 +46,16 @@ function fakeSql(tables: Record<string, FakeTable>): SqlLike {
             return clone;
           })
         };
+      }
+      const insertMatch = query.match(/^INSERT INTO "([^"]+)" \(([^)]*)\) VALUES \((.*)\)$/);
+      if (insertMatch) {
+        const table = tables[insertMatch[1]];
+        if (!table) throw new Error("no such table: " + insertMatch[1]);
+        const columns = insertMatch[2].split(",").map(c => c.trim().replace(/^"|"$/g, ""));
+        const row: Record<string, unknown> = {};
+        columns.forEach((column, i) => { row[column] = bindings[i]; });
+        table.rows.push(row);
+        return { columnNames: [], toArray: () => [] };
       }
       const deleteMatch = query.match(/^DELETE FROM "([^"]+)"$/);
       if (deleteMatch) {
@@ -356,7 +358,8 @@ describe("B2 R2 transport", () => {
   test("cleanup never touches foreign keys and refuses unknown run ids", async () => {
     const bucket = memoryBucket([
       { key: "opencode-sqlbk-v1/other-run/x.json", body: "{}" },
-      { key: "opencode-sqlbk-v1/" + RUN_ID + "/snapshot.json", body: "{}" }
+      { key: "opencode-sqlbk-v1/" + RUN_ID + "/snapshot.json", body: "{}" },
+      { key: "opencode-sqlbk-v1/" + RUN_ID + "/unexpected.txt", body: "{}" }
     ]);
     await expect(deleteSessionBackupPrefix(bucket, RUN_ID))
       .rejects.toThrow("ajenas");
