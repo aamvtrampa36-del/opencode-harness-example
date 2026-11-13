@@ -330,14 +330,11 @@ describe("verify fail-closed con host falso: nada se destruye ante metadata invÃ
 
   test("nonce incorrecto en la invocaciÃ³n: mismatch, sin efectos", async () => {
     const rec = jointRecordFixture();
-    const { host, store, calls } = fakeHost(seedScope());
-    void seedScope;
-    const h2 = fakeHost(seedScope(rec));
-    await expect(jointVerifyCleanupDrill(h2.host, hexNonce()))
+    const { host, store, calls } = fakeHost(seedScope(rec));
+    await expect(jointVerifyCleanupDrill(host, hexNonce()))
       .rejects.toThrow(/JOINT_METADATA_MISMATCH/);
-    expect(h2.calls.ensureRunning).toBe(0);
-    expect(h2.store.get(JOINT_RECORD_KEY)).toEqual(rec);
-    void host; void store; void calls;
+    expect(calls.ensureRunning).toBe(0);
+    expect(store.get(JOINT_RECORD_KEY)).toEqual(rec);
   });
 
   test("registro vencido: verify rechaza y exige joint_cleanup", async () => {
