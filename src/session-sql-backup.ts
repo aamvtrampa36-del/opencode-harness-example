@@ -64,7 +64,8 @@ const SECRET_TABLE = /credential|secret|token|api[_-]?key|private[_-]?key|passph
 
 export const MAX_SQLBK_TABLES = 64;
 export const MAX_SQLBK_ROWS = 5_000;
-export const MAX_SNAPSHOT_CHARS = 512_000;
+/** Memory-bounded 16 MiB envelope; larger than actual small-fixture SQLite state but still safely limited. */
+export const MAX_SNAPSHOT_CHARS = 16 * 1024 * 1024;
 export const MAX_FIXTURE_SESSIONS = 8;
 export const TURN_TIMEOUT_MS = 240_000;
 export const TURN_POLL_MS = 5_000;
@@ -692,7 +693,11 @@ export async function downloadVerifiedSessionBackup(
   if (!manifest) throw new Error("SQLBK_MANIFEST_MALFORMED");
   const snapshotObject = await bucket.get(keys.snapshot);
   if (!snapshotObject) throw new Error("SQLBK_SNAPSHOT_AUSENTE (fail-closed; no se restaura nada)");
-  const snapshotJson = new TextDecoder().decode(new Uint8Array(await snapshotObject.arrayBuffer()));
+  const snapshotBytes = new Uint8Array(await snapshotObject.arrayBuffer());
+  if (snapshotBytes.byteLength !== manifest.snapshotBytes) {
+    throw new Error("SQLBK_SNAPSHOT_SIZE_MISMATCH");
+  }
+  const snapshotJson = new TextDecoder().decode(snapshotBytes);
   await verifySnapshotJson(snapshotJson, manifest.snapshotSha256);
   return { manifest, snapshotJson };
 }
@@ -804,6 +809,63 @@ export async function drillExportSnapshot(
     historyDigests: fingerprints.historyDigests,
     manifest, manifestSha256
   };
+}
+
+/**
+ * Export and upload INSIDE the isolated Durable Object. The Workflow step
+ * receives only a compact receipt; session SQL bytes never enter Workflow
+ * event payloads, step outputs, or their diagnostic logs.
+ */
+export async function drillExportSnapshotToR2(
+  env: unknown, harness: SessionHarnessLike, sql: SqlLike, bucket: R2LikeBucket, input: unknown
+): Promise<unknown> {
+  assertSupervisorEnabled(env);
+  const result = await drillExportSnapshot(env, harness, sql, input) as {
+    runId: string; createdAt: string; snapshotJson: string; snapshotSha256: string;
+    totalRows: number; tableCount: number; tableSetFingerprint: string;
+    listIds: string[]; manifest: SessionBackupManifest;
+  };
+  const uploaded = await uploadSessionBackup(bucket, result.snapshotJson, result.snapshotSha256, result.manifest);
+  return {
+    ok: true, uploaded: true, runId: result.runId, createdAt: result.createdAt,
+    snapshotSha256: result.snapshotSha256,
+    totalRows: result.totalRows, tableCount: result.tableCount,
+    tableSetFingerprint: result.tableSetFingerprint, listIds: result.listIds,
+    ...uploaded
+  };
+}
+
+/** Load verified data directly from private R2 inside the target DO. */
+export async function drillRestoreFromR2(
+  env: unknown, sql: SqlLike, storage: DrillStorage, bucket: R2LikeBucket, input: unknown
+): Promise<unknown> {
+  assertSupervisorEnabled(env);
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("SQLBK_R2_RESTORE_INPUT");
+  const args = input as Record<string, unknown>;
+  if (Object.keys(args).some(k => k !== "runId" && k !== "manifestSha256") ||
+      typeof args.runId !== "string" || typeof args.manifestSha256 !== "string" ||
+      !HEX64.test(args.manifestSha256)) throw new Error("SQLBK_R2_RESTORE_INPUT");
+  const { manifest, snapshotJson } = await downloadVerifiedSessionBackup(bucket, args.runId, args.manifestSha256);
+  return drillRestoreCommit(env, sql, storage, {
+    snapshotJson, snapshotSha256: manifest.snapshotSha256
+  });
+}
+
+/** Verify SQL and the normal OpenCode history path without returning session bytes. */
+export async function drillVerifyFromR2(
+  env: unknown, harness: SessionHarnessLike, sql: SqlLike, bucket: R2LikeBucket, input: unknown
+): Promise<unknown> {
+  assertSupervisorEnabled(env);
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("SQLBK_R2_VERIFY_INPUT");
+  const args = input as Record<string, unknown>;
+  if (Object.keys(args).some(k => k !== "runId" && k !== "manifestSha256") ||
+      typeof args.runId !== "string" || typeof args.manifestSha256 !== "string" ||
+      !HEX64.test(args.manifestSha256)) throw new Error("SQLBK_R2_VERIFY_INPUT");
+  const { manifest } = await downloadVerifiedSessionBackup(bucket, args.runId, args.manifestSha256);
+  return drillRestoreVerify(env, harness, sql, {
+    manifest, manifestSha256: args.manifestSha256,
+    snapshotSha256: manifest.snapshotSha256
+  });
 }
 
 export async function drillRestoreWipe(env: unknown, storage: DrillStorage): Promise<unknown> {
