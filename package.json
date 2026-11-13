@@ -3,6 +3,7 @@
   "description": "Experimental: OpenCode v2 hosted on a Durable Object with OpenCodeHarness",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.4.4",
   "version": "0.0.0",
   "scripts": {
     "start": "vite dev",
