@@ -10,9 +10,8 @@ import { assertJointNonce, jointReceipt, jointScope, JOINT_SCHEMA } from "./join
 import type { DrillDev } from "./container-recovery-do";
 import type { JointDev } from "./joint-rollback-do";
 import {
-  deleteSessionBackupPrefix, sessionBackupDrillScope, uploadSessionBackup,
-  validateSessionBackupDrillCommand, SESSION_SQL_DRILL_SCHEMA,
-  type SessionBackupManifest
+  deleteSessionBackupPrefix, sessionBackupDrillScope,
+  validateSessionBackupDrillCommand, SESSION_SQL_DRILL_SCHEMA
 } from "./session-sql-backup";
 import type { SessionBackupDrillAgent } from "./session-sql-backup-do";
 
@@ -236,28 +235,34 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
       try {
         create = await step.do("create-fixture-sessions", opts, async () =>
           source.sessionBackupDrillCreate({ turn: true }));
-        exported = await step.do("export-opencode-sql", opts, async () =>
-          source.sessionBackupDrillExport({ runId: scope.runId }));
+        // Keep private session SQL bytes inside DO/R2, never in Workflow step outputs.
+        exported = await step.do("export-upload-sessions-direct-r2", opts, async () =>
+          source.sessionBackupDrillExportToR2({ runId: scope.runId }));
         const exportData = exported as {
-          snapshotJson?: string; snapshotSha256?: string; manifest?: SessionBackupManifest;
+          ok?: boolean; uploaded?: boolean; runId?: string;
+          snapshotSha256?: string; manifestSha256?: string;
+          snapshotBytes?: number; manifestBytes?: number;
         } | null;
-        if (!exportData?.snapshotJson || !exportData.snapshotSha256 || !exportData.manifest) {
-          throw new Error("La exportación del SQL de sesiones no produjo snapshot verificado");
+        if (!exportData?.ok || !exportData.uploaded || exportData.runId !== scope.runId ||
+            !exportData.snapshotSha256 || !exportData.manifestSha256 ||
+            !Number.isSafeInteger(exportData.snapshotBytes) ||
+            !Number.isSafeInteger(exportData.manifestBytes)) {
+          throw new Error("La exportación privada R2 no devolvió un recibo verificable");
         }
-        upload = await step.do("upload-session-backup-r2", opts, async () =>
-          uploadSessionBackup(bucketOf(), exportData.snapshotJson!, exportData.snapshotSha256!,
-            exportData.manifest!));
+        upload = {
+          snapshotBytes: exportData.snapshotBytes!, manifestBytes: exportData.manifestBytes!,
+          manifestSha256: exportData.manifestSha256
+        };
         wipe = await step.do("wipe-restore-do", opts, async () => restore.sessionBackupDrillRestoreWipe());
         prepared = await step.do("prepare-restore-do", opts, async () =>
           restore.sessionBackupDrillRestorePrepare());
         commit = await step.do("commit-restore-atomically", opts, async () =>
-          restore.sessionBackupDrillRestoreCommit({
-            snapshotJson: exportData.snapshotJson!, snapshotSha256: exportData.snapshotSha256!
+          restore.sessionBackupDrillRestoreFromR2({
+            runId: scope.runId, manifestSha256: upload!.manifestSha256
           }));
         verified = await step.do("verify-restore-normal-reads", opts, async () =>
-          restore.sessionBackupDrillRestoreVerify({
-            manifest: exportData.manifest!, manifestSha256: upload!.manifestSha256,
-            snapshotSha256: exportData.snapshotSha256!
+          restore.sessionBackupDrillVerifyFromR2({
+            runId: scope.runId, manifestSha256: upload!.manifestSha256
           }));
       } catch (e) {
         error = e instanceof Error ? e.message.slice(0, 800) : "Unknown session backup drill failure";
@@ -281,7 +286,8 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
         cleanup = outcome.dos;
       }
       const verifiedOk = Boolean((verified as { ok?: unknown } | null)?.ok);
-      const r2Clean = !("error" in r2Cleanup) && r2Cleanup.deleted >= 2;
+      const r2Clean = !("error" in r2Cleanup) &&
+        (upload ? r2Cleanup.deleted === 2 : r2Cleanup.deleted >= 0);
       const cleanupOk = cleanup.length === 2 &&
         cleanup.every(x => x !== null && typeof x === "object" && !("cleanupError" in x) &&
           (x as { wiped?: unknown }).wiped === true) && r2Clean;
