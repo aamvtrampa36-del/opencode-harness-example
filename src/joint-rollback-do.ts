@@ -12,10 +12,11 @@ import {
 } from "./container-recovery";
 import { normalizeImageRef } from "./container-verify";
 import {
-  JOINT_LIVE_KEYS, JOINT_RECEIPT_KEY, JOINT_RECORD_KEY, JOINT_SCHEMA,
+  JOINT_HANDLE_KEY, JOINT_LIVE_KEYS, JOINT_RECEIPT_KEY, JOINT_RECORD_KEY, JOINT_SCHEMA,
   JOINT_PREPARE_TTL_MS, JOINT_VERIFY_LEASE_MS, assertJointHandleMatch, assertJointNonce,
-  assertJointRecordIdentity, assertJointVerifyState, jointEmergencyAllowed,
-  jointReceipt, jointScope, parseJointRecord,
+  assertJointRecordIdentity, assertJointVerifyState, classifyJointLiveHandle,
+  jointEmergencyAllowed, jointHandleFrom, jointReceipt, jointScope, parseJointHandle,
+  parseJointRecord,
   type JointEmergencyResult, type JointPrepareResult, type JointRecord,
   type JointVerifyOutcome
 } from "./joint-rollback";
@@ -89,9 +90,19 @@ async function jointDispose(
  * controlled Worker rollback. No mutation is applied here: the negative
  * control belongs to the verify phase, AFTER the rollback window.
  *
+ * Besides the SHARED lifecycle keys (snapshotId/savedAt, still written so the
+ * normal recovery path restores this container from the trial snapshot during
+ * the rollback window), the trial persists its own PRIVATE handle
+ * (JOINT_HANDLE_KEY). The lifecycle's alarm() may legitimately rotate the
+ * shared keys with fresh opencode-workspace checkpoints while the window is
+ * open (DO alarms survive the Worker rollback); the private handle is the
+ * stable anchor joint_verify_cleanup correlates against.
+ *
  * Idempotent: a fresh "prepared" record for the SAME nonce is returned
- * unchanged (replayed:true) without a second snapshot. A foreign record
- * (other nonce), an expired one, or a "verifying" one abort fail-closed.
+ * unchanged (replayed:true) without a second snapshot; a missing private
+ * handle is repaired from the already identity-verified record and the SHARED
+ * keys are NEVER rewritten on replay. A foreign record (other nonce), an
+ * expired one, or a "verifying" one aborts fail-closed.
  */
 export async function jointPrepareDrill(host: DrillHost, nonce: string): Promise<JointPrepareResult> {
   const { project, scope } = jointProjectOf(nonce);
@@ -108,6 +119,14 @@ export async function jointPrepareDrill(host: DrillHost, nonce: string): Promise
       }
       if (existing.state !== "prepared") {
         throw new Error("JOINT_STATE_INVALID: el scope tiene una verificación en curso o terminada (estado " + existing.state + ")");
+      }
+      // Repair (migration from the pre-fix layout, or a crash between the two
+      // writes): rebuild the private handle from the verified record. The
+      // SHARED keys are deliberately left untouched: the normal checkpoint may
+      // legitimately have rotated them to a NEWER snapshot and dragging them
+      // back would make the next recovery restore an older version.
+      if (!parseJointHandle(await host.ctx.storage.get(JOINT_HANDLE_KEY), nonce)) {
+        await host.ctx.storage.put(JOINT_HANDLE_KEY, jointHandleFrom(existing));
       }
       return {
         project, scope, record: existing, snapshotId: existing.snapshotId,
@@ -151,10 +170,13 @@ export async function jointPrepareDrill(host: DrillHost, nonce: string): Promise
         state: "prepared", stateSince: savedAt,
         createdAt: new Date(savedAt).toISOString()
       };
-      // The live handle uses the SAME keys the existing lifecycle already
-      // reads (snapshotId/savedAt), plus the dedicated joint record.
+      // The SHARED keys keep the existing lifecycle working (recovery during
+      // the rollback window restores THIS trial snapshot). The PRIVATE handle
+      // is written BEFORE the record so a crash mid-way can only leave a
+      // handle without record, which every reader refuses fail-closed.
       await host.ctx.storage.put("snapshotId", snapshot.id);
       await host.ctx.storage.put("savedAt", savedAt);
+      await host.ctx.storage.put(JOINT_HANDLE_KEY, jointHandleFrom(record));
       await host.ctx.storage.put(JOINT_RECORD_KEY, record);
       return {
         project, scope, record, snapshotId: snapshot.id, image,
@@ -172,15 +194,17 @@ export async function jointPrepareDrill(host: DrillHost, nonce: string): Promise
  * joint_verify_cleanup (creator DO), runs AFTER the external supervisor has
  * rolled the Worker back to another Stage version and restored the original
  * candidate version. Sequence, in one queued pass:
- *   1. metadata survival: the joint record + live handle must still be
- *      present, correlated (nonce/scope/handle) and unexpired; anything else
- *      aborts BEFORE destroying anything.
+ *   1. metadata survival: the joint record + the trial's PRIVATE handle must
+ *      still be present, correlated (nonce/scope/handle) and unexpired; the
+ *      SHARED lifecycle keys are read as EVIDENCE only (the normal checkpoint
+ *      may have rotated them during the window — expected, never a failure);
+ *      anything else aborts BEFORE destroying anything.
  *   2. negative control on the live disk AFTER the rollback window: mutate
  *      the marker + drop a post-snapshot file (when the live disk is still
  *      pristine; if the platform already rebuilt the disk this is reported
  *      as evidence, never faked).
  *   3. destroy ONLY this disposable instance and restore from the recorded
- *      snapshot handle (never a blank image).
+ *      snapshot handle (never a blank image, never a rotated checkpoint).
  *   4. verify: marker SHA-256 equals the pre-rollback anchor, manifest bytes
  *      identical, post-snapshot mutation ABSENT, image identity compatible.
  *   5. receipt + terminal cleanup, EVEN ON FAILURE (dispose in the flow).
@@ -198,14 +222,26 @@ export async function jointVerifyCleanupDrill(host: DrillHost, nonce: string): P
     assertJointRecordIdentity(record, nonce);
     const liveSnapshotId = (await host.ctx.storage.get<string>("snapshotId")) ?? null;
     const liveSavedAt = (await host.ctx.storage.get<number>("savedAt")) ?? null;
-    assertJointHandleMatch(record, liveSnapshotId, liveSavedAt);
+    // Fail-closed gate on the trial's PRIVATE handle. The SHARED keys are
+    // owned by the normal lifecycle: its alarm() checkpoints every couple of
+    // minutes and overwrites them with a fresh opencode-workspace snapshot,
+    // and DO alarms keep running while the Worker is rolled back. Requiring
+    // shared-key equality aborted every real verification with
+    // JOINT_HANDLE_MISMATCH before its restore even started (incident
+    // oc_v1_joint_verify_20261113_01, nonce 871ea5456848); rotation is now
+    // evidence, never a failure. The restore below stays anchored to
+    // record.snapshotId, never to the rotated shared handle.
+    const privateHandle = parseJointHandle(await host.ctx.storage.get(JOINT_HANDLE_KEY), nonce);
+    assertJointHandleMatch(record, privateHandle?.snapshotId ?? null, privateHandle?.savedAt ?? null);
     assertJointVerifyState(record, now);
     const metadataSurvived = {
       recordPresent: true,
       snapshotId: liveSnapshotId,
       savedAt: liveSavedAt,
       nonceMatches: true,
-      handleMatchesRecord: true
+      handleMatchesRecord: true,
+      privateHandleVerified: true,
+      sharedHandleState: classifyJointLiveHandle(record, liveSnapshotId, liveSavedAt)
     };
     // Lease: mark the verification in flight before anything destructive.
     await host.ctx.storage.put(JOINT_RECORD_KEY, { ...record, state: "verifying", stateSince: now });
