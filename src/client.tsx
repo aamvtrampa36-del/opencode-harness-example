@@ -3,7 +3,8 @@ import { readSessionMode, saveSessionMode } from "./session-mode";
 import { isInternalReminder } from "./message-display";
 import { repositoryProjectSlug } from "./project-container";
 import { SettingsPanel } from "./settings-panel";
-import { MODEL_PRESETS, isModelPreset, type ModelPresetID } from "./model-presets";
+import { MODEL_PRESETS, isModelSelection, resolveModelSelection, type ModelSelectionID } from "./model-presets";
+import { ModelPicker } from "./model-picker";
 import type { Specialization } from "./specializations";
 import {
   Badge,
@@ -50,6 +51,10 @@ const OBJECT_KEY = "opencode-harness-object";
 const SESSION_KEY = "opencode-harness-session";
 const ROOT_SESSION = "ses_root";
 const MODEL_KEY = "opencode-model-preset";
+function modelForSession(session: string): ModelSelectionID {
+  const stored = localStorage.getItem(MODEL_KEY + ":" + session) ?? localStorage.getItem(MODEL_KEY);
+  return isModelSelection(stored) ? stored : "economy";
+}
 const PROJECT_PREFIX = "opencode-active-project:";
 const SPECIALIZATION_KEY = "opencode-specialization";
 const REPOSITORY_PREFIX = "opencode-session-repository:";
@@ -365,6 +370,7 @@ function App() {
   const [g9Message, setG9Message] = useState("");
   const [linkCopied, setLinkCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [availableProjects, setAvailableProjects] = useState<{ name: string; lastUsedAt: number }[]>([]);
   const [projectError, setProjectError] = useState("");
@@ -417,10 +423,11 @@ function App() {
       .then(data => setAuthorizedRepos(data.repositories ?? []))
       .catch(() => setAuthorizedRepos([]));
   }, []);
-  const [modelPreset, setModelPreset] = useState<ModelPresetID>(() => {
-    const stored = localStorage.getItem(MODEL_KEY);
-    return isModelPreset(stored) ? stored : "economy";
-  });
+  const [modelPreset, setModelPreset] = useState<ModelSelectionID>(() => modelForSession(session));
+  const selectModel = (next: ModelSelectionID) => {
+    setModelPreset(next);
+    localStorage.setItem(MODEL_KEY + ":" + session, next);
+  };
   const [sessionsOpen, setSessionsOpen] = useState(
     () => window.matchMedia("(min-width: 1100px)").matches
   );
@@ -498,6 +505,7 @@ function App() {
     localStorage.setItem(SESSION_KEY, next);
     setSession(next);
     setAgentMode(readSessionMode(localStorage, object, next));
+    setModelPreset(modelForSession(next));
     setProject(localStorage.getItem(PROJECT_PREFIX + next) ?? "");
     setRepository(localStorage.getItem(REPOSITORY_PREFIX + next) ?? "");
     // On narrow screens the conversation list is an overlay, not a second grid row.
@@ -867,7 +875,7 @@ function App() {
         specialization || undefined, project || undefined, repository || undefined);
       if (accepted) setPrompt((current) => current.trim() === text ? "" : current);
     };
-    if (!busy && MODEL_PRESETS[selectedModel].providerID === "openrouter") {
+    if (!busy && resolveModelSelection(selectedModel).providerID === "openrouter") {
       setLastCost("Consultando consumo de la clave OpenRouter…");
       void fetch("/api/settings/openrouter/usage", { cache: "no-store" })
         .then(async response => {
@@ -1090,8 +1098,7 @@ function App() {
                     const available = openRouterAvailable ||
                       MODEL_PRESETS[preferred].providerID !== "openrouter";
                     const nextModel = available ? preferred : "cloudflare";
-                    setModelPreset(nextModel);
-                    localStorage.setItem(MODEL_KEY, nextModel);
+                    selectModel(nextModel);
                   }
                 }}
                 className="max-w-[132px] rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 text-xs text-kumo-default">
@@ -1108,29 +1115,7 @@ function App() {
                 <option value="review">Revisar</option>
                 <option value="creative">Escritura</option>
               </select>
-              <select
-                aria-label="Modelo de IA"
-                disabled={busy}
-                title={openRouterAvailable ? "Seleccionar modelo" : "Conecta OpenRouter desde Configuración"}
-                value={openRouterAvailable ? modelPreset : "cloudflare"}
-                onChange={(event) => {
-                  const next = event.currentTarget.value;
-                  if (!isModelPreset(next)) return;
-                  setModelPreset(next);
-                  localStorage.setItem(MODEL_KEY, next);
-                }}
-                className="max-w-[152px] rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 text-xs text-kumo-default sm:max-w-[240px]"
-              >
-                {Object.entries(MODEL_PRESETS).map(([id, preset]) => (
-                  <option
-                    key={id}
-                    value={id}
-                    disabled={preset.providerID === "openrouter" && !openRouterAvailable}
-                  >
-                    {preset.label}{preset.tier === "premium" ? " ($$)" : ""}
-                  </option>
-                ))}
-              </select>
+              
               <Button type="button" variant="ghost" size="sm"
                 aria-label="Configurar conexiones y modelos"
                 title="OpenRouter, GitHub y presupuesto"
