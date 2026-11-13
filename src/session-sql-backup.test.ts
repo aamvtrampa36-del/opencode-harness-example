@@ -13,7 +13,7 @@ import {
 
 const RUN_ID = "sqlbak-0123456789ab";
 const CREATE_SESSION = 'CREATE TABLE `opencode_session_v2` (`id` text PRIMARY KEY,`title` text,`time_created` integer NOT NULL)';
-const CREATE_MESSAGE = 'CREATE TABLE `opencode_session_message` (`id` text PRIMARY KEY,`session_id` text NOT NULL,`type` text,`payload` text,`time_created` integer NOT NULL)';
+const CREATE_MESSAGE = 'CREATE TABLE `opencode_session_message` (`id` text PRIMARY KEY,`session_id` text NOT NULL,`type` text,`payload` text,`time_created` integer NOT NULL, FOREIGN KEY (`session_id`) REFERENCES `opencode_session_v2`(`id`) ON DELETE CASCADE)';
 
 type FakeTable = { createSql: string; columns: string[]; rows: Record<string, unknown>[] };
 
@@ -140,7 +140,8 @@ describe("B2 SQL snapshot building", () => {
     expect(parseSqlSnapshot(JSON.parse(built.snapshotJson))).not.toBeNull();
     const plan = restorePlanStatements(snapshot, catalogOf(baseTables()));
     // Deletes run children-first (reverse order), inserts run parents-first.
-    expect(plan.tableOrder[0]).toBe(SESSION_V2_TABLE);
+    expect(plan.tableOrder.indexOf(SESSION_V2_TABLE))
+      .toBeLessThan(plan.tableOrder.indexOf("opencode_session_message"));
     expect(plan.statements.filter(s => s.text.startsWith("DELETE")).length).toBe(3);
     expect(plan.statements[0].text.startsWith('DELETE FROM "opencode_session_message"')).toBe(true);
     // The target starts pre-populated (replace mode wipes it inside the plan).
@@ -151,6 +152,32 @@ describe("B2 SQL snapshot building", () => {
     for (const entry of digests) {
       expect(entry.sha256).toBe(plan.expectedDigests[entry.name]);
     }
+  });
+
+  test("SQLite foreign keys insert parent before dependent; cycles are rejected", async () => {
+    const tables = baseTables();
+    tables.opencode_event_sequence = {
+      createSql: 'CREATE TABLE `opencode_event_sequence` (`aggregate_id` text PRIMARY KEY)',
+      columns: ["aggregate_id"], rows: [{ aggregate_id: "event_root" }]
+    };
+    tables.opencode_event = {
+      createSql: 'CREATE TABLE `opencode_event` (`id` text PRIMARY KEY,`aggregate_id` text, FOREIGN KEY (`aggregate_id`) REFERENCES `opencode_event_sequence`(`aggregate_id`))',
+      columns: ["id", "aggregate_id"], rows: [{ id: "evt_a", aggregate_id: "event_root" }]
+    };
+    const built = await buildSqlSnapshot(fakeSql(tables), "2026-11-13T00:00:00.000Z");
+    const snapshot = await verifySnapshotJson(built.snapshotJson, built.snapshotSha256);
+    const plan = restorePlanStatements(snapshot, catalogOf(tables));
+    expect(plan.tableOrder.indexOf("opencode_event_sequence"))
+      .toBeLessThan(plan.tableOrder.indexOf("opencode_event"));
+    expect(plan.tableOrder.indexOf(SESSION_V2_TABLE))
+      .toBeLessThan(plan.tableOrder.indexOf("opencode_session_message"));
+    const impossible = JSON.parse(JSON.stringify(snapshot)) as typeof snapshot;
+    impossible.tables.find(t => t.name === "opencode_event_sequence")!.createSql =
+      'CREATE TABLE `opencode_event_sequence` (id text, FOREIGN KEY(id) REFERENCES `opencode_event`(id))';
+    const catalog = catalogOf(tables);
+    const amended = catalog.map(t => t.name === "opencode_event_sequence" ?
+      { ...t, createSql: impossible.tables.find(x => x.name === t.name)!.createSql } : t);
+    expect(() => restorePlanStatements(impossible, amended)).toThrow("SQLBK_FK_CYCLE");
   });
 
   test("rejects unsupported value types, non-finite numbers and missing schema", async () => {
