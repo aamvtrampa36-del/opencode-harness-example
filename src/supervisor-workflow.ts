@@ -301,7 +301,6 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
         wipePassed: Boolean(wipe),
         preparePassed: Boolean(prepared),
         commitPassed: Boolean(commit),
-        verified: verifiedOk,
         normalReadsVerified: verifiedOk &&
           Boolean((verified as { normalReadsMatch?: unknown } | null)?.normalReadsMatch),
         export: exportSummary ? {
