@@ -293,7 +293,7 @@ describe("verify fail-closed con host falso: nada se destruye ante metadata invÃ
 
   test("rotaciÃ³n del checkpoint normal durante la ventana: el verify PROSIGUE (gate en el handle privado)", async () => {
     const rec = jointRecordFixture();
-    const { host, calls } = fakeHost(seedScope(rec, {
+    const { host, store, calls } = fakeHost(seedScope(rec, {
       snapshotId: "chk-opencode-workspace-rotado",
       savedAt: rec.snapshotSavedAt + 120_000
     }));
