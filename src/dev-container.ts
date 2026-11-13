@@ -12,6 +12,11 @@ import {
   type VerifyRestoreResult
 } from "./container-verify";
 import { drillCreateSnapshot, drillRestoreSameDo, drillCrossRestore, drillCleanup, type DrillHost } from "./container-recovery-do";
+import { jointPrepareDrill, jointVerifyCleanupDrill, jointEmergencyCleanupDrill } from "./joint-rollback-do";
+import {
+  extBackupCreate, extBackupCleanup, extBackupCrossRestore, extBackupDestroyInstance,
+  extBackupMissingProbe, extBackupTamperProbe, type ExtBkHost
+} from "./external-backup-do";
 import { RESTORE_PROJECT_SOURCE } from "./restore-project";
 import { GITHUB_IMPORT_SOURCE } from "./github-import-source";
 import { githubSourceArchive } from "./github-import";
@@ -706,7 +711,39 @@ export class DevContainer extends DurableObject<Env> {
   async drillCleanup(project: string) {
     return drillCleanup(this as unknown as DrillHost, project);
   }
+  /** Joint Worker+Container+DO rollback drill (staging-only, private Workflow). */
+  async jointPrepare(nonce: string) {
+    return jointPrepareDrill(this as unknown as DrillHost, nonce);
+  }
+  async jointVerifyCleanup(nonce: string) {
+    return jointVerifyCleanupDrill(this as unknown as DrillHost, nonce);
+  }
+  async jointEmergencyCleanup(nonce: string, reason: string) {
+    return jointEmergencyCleanupDrill(this as unknown as DrillHost, nonce, reason);
+  }
 
+  /** External R2 backup + cross-restore drill — explicit RPC methods.
+   * Every helper refuses non-disposable projects; the bucket is resolved
+   * from the staging-only RECOVERY_R2 binding (wrangler.g1.jsonc) and the
+   * drill fails closed when it is absent. */
+  async extBackupCreate(project: string, runId: string) {
+    return extBackupCreate(this as unknown as ExtBkHost, this.env.RECOVERY_R2, project, runId);
+  }
+  async extBackupDestroyInstance(project: string) {
+    return extBackupDestroyInstance(this as unknown as ExtBkHost, project);
+  }
+  async extBackupCrossRestore(project: string, manifest: unknown, expectedManifestSha256: string) {
+    return extBackupCrossRestore(this as unknown as ExtBkHost, this.env.RECOVERY_R2, project, manifest, expectedManifestSha256);
+  }
+  async extBackupTamperProbe(project: string, runId: string, manifest: unknown) {
+    return extBackupTamperProbe(this as unknown as ExtBkHost, this.env.RECOVERY_R2, project, runId, manifest);
+  }
+  async extBackupMissingProbe(project: string, runId: string) {
+    return extBackupMissingProbe(this as unknown as ExtBkHost, this.env.RECOVERY_R2, project, runId);
+  }
+  async extBackupCleanup(project: string) {
+    return extBackupCleanup(this as unknown as ExtBkHost, project);
+  }
   private async proxyHttp(path: string): Promise<Response> {
     const container = await this.ensureRunning();
     this.busy++;

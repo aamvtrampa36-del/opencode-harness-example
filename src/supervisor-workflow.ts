@@ -1,13 +1,23 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { SUPERVISOR_WORKSPACE, supervisorTaskKey, type SupervisorStart } from "./supervisor-control";
 import { drillProjectNames } from "./container-recovery";
+import {
+  assertR2Bucket, createTamperedProbe, deleteRunPrefix, externalBackupProjectNames
+} from "./external-backup";
+import type { ExtBkDev } from "./external-backup-do";
 import { projectContainerName } from "./project-container";
+import { assertJointNonce, jointReceipt, jointScope, JOINT_SCHEMA } from "./joint-rollback";
 import type { DrillDev } from "./container-recovery-do";
+import type { JointDev } from "./joint-rollback-do";
 
 type SupervisorWorkflowCommand =
   | { action: "start"; requestId: string; repository: string; prompt: string }
   | { action: "status" | "cancel" | "review"; id: string }
-  | { action: "recovery_drill" };
+  | { action: "recovery_drill" }
+  | { action: "joint_prepare" }
+  | { action: "joint_verify_cleanup"; nonce: string }
+  | { action: "joint_cleanup"; nonce: string; reason?: string }
+  | { action: "external_backup_drill" };
 
 /**
  * Private supervisory control plane: the Cloudflare account's Workflow API
@@ -28,6 +38,17 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
       throw new Error("INVALID_SUPERVISOR_COMMAND");
     }
     const args = command as Record<string, unknown>;
+    if (args.action === "joint_prepare" || args.action === "joint_verify_cleanup" ||
+        args.action === "joint_cleanup") {
+      // Staging-only private Cloudflare Workflow actions for the JOINT
+      // Worker+Container+DO rollback rehearsal. Same isolation as
+      // recovery_drill: no public route, no agent tool, no production data.
+      if ((this.env as Env & { OPENCODE_SUPERVISOR_ENABLED?: string })
+        .OPENCODE_SUPERVISOR_ENABLED !== "true") throw new Error("SUPERVISOR_DISABLED");
+      return await this.runJointDrill(
+        args as Extract<SupervisorWorkflowCommand,
+          { action: "joint_prepare" | "joint_verify_cleanup" | "joint_cleanup" }>, step);
+    }
     if (args.action === "recovery_drill") {
       // Staging-only private Cloudflare Workflow. Neither a public API route
       // nor an agent tool can invoke this destructive, disposable test.
@@ -81,6 +102,90 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
         error, create, same, cross, cleanup, cleanupOk
       };
     }
+    if (args.action === "external_backup_drill") {
+      // Staging-only private Cloudflare Workflow, same access shape as
+      // recovery_drill: the account Workflow API is the caller; no public
+      // route and no agent tool can invoke this destructive disposable test.
+      if ((this.env as Env & { OPENCODE_SUPERVISOR_ENABLED?: string })
+        .OPENCODE_SUPERVISOR_ENABLED !== "true") throw new Error("SUPERVISOR_DISABLED");
+      if (Object.keys(args).some(k => k !== "action")) throw new Error("UNKNOWN_EXTBK_FIELD");
+
+      const opts = { retries: { limit: 0, delay: "1 second" as const } };
+      const scope = await step.do("allocate-disposable-extbk-scope", opts, async () =>
+        externalBackupProjectNames(crypto.randomUUID().replace(/-/g, "").slice(0, 12)));
+      const a = this.env.DEV.getByName(projectContainerName(scope.creator)) as unknown as ExtBkDev;
+      const b = this.env.DEV.getByName(projectContainerName(scope.restorer)) as unknown as ExtBkDev;
+      const bucketOf = () => assertR2Bucket(
+        (this.env as Env & { RECOVERY_R2?: unknown }).RECOVERY_R2,
+        "workflow.opencode-supervisor-stage");
+      let create: Awaited<ReturnType<ExtBkDev["extBackupCreate"]>> | null = null;
+      let destroyed: Awaited<ReturnType<ExtBkDev["extBackupDestroyInstance"]>> | null = null;
+      let restore: Awaited<ReturnType<ExtBkDev["extBackupCrossRestore"]>> | null = null;
+      let tamper: {
+        probe: Awaited<ReturnType<typeof createTamperedProbe>>;
+        result: Awaited<ReturnType<ExtBkDev["extBackupTamperProbe"]>>;
+      } | null = null;
+      let missing: Awaited<ReturnType<ExtBkDev["extBackupMissingProbe"]>> | null = null;
+      let error: string | null = null;
+      let r2Cleanup: { deleted: number; keys: string[] } | { error: string } = { deleted: 0, keys: [] };
+      let cleanup: Array<{ project: string; containerDestroyed: boolean; recordsDeleted: number } | { project: string; cleanupError: string }> = [];
+      try {
+        create = await step.do("create-extbk-backup-upload-r2", opts,
+          async () => a.extBackupCreate(scope.creator, scope.runId));
+        destroyed = await step.do("destroy-creator-instance", opts,
+          async () => a.extBackupDestroyInstance(scope.creator));
+        if (!destroyed.destroyedInstance) {
+          throw new Error("La instancia creadora no llegó a destruirse; se omite la restauración cruzada");
+        }
+        restore = await step.do("restore-cross-do-from-r2", opts,
+          async () => b.extBackupCrossRestore(scope.restorer, create!.manifest, create!.manifestSha256));
+        if (!restore.ok) {
+          throw new Error("La restauración cruzada desde R2 no pasó; se omiten las sondas");
+        }
+        tamper = await step.do("probe-tampered-backup", opts, async () => {
+          const probe = await createTamperedProbe(bucketOf(), scope.runId);
+          const result = await b.extBackupTamperProbe(scope.restorer, scope.runId, create!.manifest);
+          return { probe, result };
+        });
+        missing = await step.do("probe-missing-backup", opts,
+          async () => b.extBackupMissingProbe(scope.restorer, scope.runId));
+      } catch (e) {
+        error = e instanceof Error ? e.message.slice(0, 800) : "Unknown external backup drill failure";
+      } finally {
+        const outcome = await step.do("cleanup-extbk-drill", opts, async () => {
+          let r2: { deleted: number; keys: string[] } | { error: string } = { deleted: 0, keys: [] };
+          if (create) {
+            try { r2 = await deleteRunPrefix(bucketOf(), scope.runId); }
+            catch (e) { r2 = { error: e instanceof Error ? e.message : "R2 cleanup failed" }; }
+          }
+          const dos: typeof cleanup = [];
+          for (const [host, project] of [[a, scope.creator], [b, scope.restorer]] as const) {
+            try { dos.push(await host.extBackupCleanup(project)); }
+            catch (e) { dos.push({ project, cleanupError: e instanceof Error ? e.message : "failed" }); }
+          }
+          return { r2, dos };
+        });
+        r2Cleanup = outcome.r2;
+        cleanup = outcome.dos;
+      }
+      const r2Clean = !("error" in r2Cleanup) && r2Cleanup.deleted >= 2;
+      const cleanupOk = cleanup.length === 2 &&
+        cleanup.every(x => x !== null && typeof x === "object" && !("cleanupError" in x)) && r2Clean;
+      return {
+        schema: "opencode.external-backup.drill.v1",
+        scope,
+        passed: Boolean(create && destroyed?.destroyedInstance && restore?.ok &&
+          tamper?.result?.rejectedAsExpected && tamper?.result?.originalIntact &&
+          missing?.rejectedAsExpected && cleanupOk),
+        createPassed: Boolean(create),
+        destroyPassed: Boolean(destroyed?.destroyedInstance),
+        crossRestorePassed: Boolean(restore?.ok),
+        tamperRejected: Boolean(tamper?.result?.rejectedAsExpected),
+        missingRejected: Boolean(missing?.rejectedAsExpected),
+        r2Cleanup, cleanup, cleanupOk, error,
+        create, destroyed, restore, tamper, missing
+      };
+    }
     return step.do("supervised-opencode-operation", {
       retries: { limit: 0, delay: "1 second" }
     }, async () => {
@@ -120,5 +225,104 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
       }
       throw new Error("UNKNOWN_SUPERVISOR_ACTION");
     });
+  }
+
+  /** Disposable DevContainer DO for the creator half of a joint scope. */
+  private jointDev(nonce: string): JointDev {
+    return this.env.DEV.getByName(projectContainerName(jointScope(nonce).creator)) as unknown as JointDev;
+  }
+
+  private async runJointDrill(
+    args: Extract<SupervisorWorkflowCommand,
+      { action: "joint_prepare" | "joint_verify_cleanup" | "joint_cleanup" }>,
+    step: WorkflowStep
+  ) {
+    const opts = { retries: { limit: 0, delay: "1 second" as const } };
+    const msg = (e: unknown) =>
+      e instanceof Error ? e.message.slice(0, 800) : "Unknown joint failure";
+    const emergencyFallback = (nonce: string, cleanupError: unknown) => ({
+      project: jointScope(nonce).creator, containerDestroyed: false,
+      handleDeleted: 0, alreadyClean: false,
+      receipt: jointReceipt({
+        outcome: "emergency", nonce, scope: jointScope(nonce),
+        error: "la limpieza de emergencia también falló: " + msg(cleanupError)
+      })
+    });
+    if (args.action === "joint_prepare") {
+      if (Object.keys(args).some(k => k !== "action")) throw new Error("UNKNOWN_JOINT_FIELD");
+      const nonce = await step.do("allocate-joint-nonce", opts, async () =>
+        crypto.randomUUID().replace(/-/g, "").slice(0, 12));
+      const scope = jointScope(nonce);
+      const dev = this.jointDev(nonce);
+      let prepare: Awaited<ReturnType<JointDev["jointPrepare"]>> | null = null;
+      let error: string | null = null;
+      let emergency: Awaited<ReturnType<JointDev["jointEmergencyCleanup"]>> | null = null;
+      try {
+        prepare = await step.do("joint-prepare-snapshot-and-metadata", opts,
+          async () => dev.jointPrepare(nonce));
+      } catch (e) {
+        error = msg(e);
+        emergency = await step.do("joint-prepare-emergency-cleanup", opts, async () =>
+          dev.jointEmergencyCleanup(nonce, "prepare-failed")
+            .catch((cleanupError: unknown) => emergencyFallback(nonce, cleanupError)));
+      }
+      return {
+        schema: "opencode.joint-rollback.prepare.v1",
+        nonce, scope,
+        passed: Boolean(prepare) && !error,
+        replayed: prepare?.replayed ?? false,
+        handle: prepare?.snapshotId ?? null,
+        prepare, error, emergency,
+        nextStep: "SUPERVISOR EXTERNO (nunca el agente): anote el nonce, verifique la " +
+          "versión actual del Worker, ejecute el rollback reversible a OTRA versión " +
+          "Stage mediante la API de Cloudflare, verifique el cambio de versión, " +
+          "restaure la versión candidata original, verifique de nuevo, y SOLO " +
+          "ENTONCES invoque joint_verify_cleanup con este nonce (dentro de 6 h)."
+      };
+    }
+    if (args.action === "joint_verify_cleanup") {
+      if (Object.keys(args).some(k => k !== "action" && k !== "nonce")) {
+        throw new Error("UNKNOWN_JOINT_FIELD");
+      }
+      const nonce = assertJointNonce(args.nonce);
+      const scope = jointScope(nonce);
+      const dev = this.jointDev(nonce);
+      let outcome: Awaited<ReturnType<JointDev["jointVerifyCleanup"]>> | null = null;
+      let error: string | null = null;
+      let emergency: Awaited<ReturnType<JointDev["jointEmergencyCleanup"]>> | null = null;
+      try {
+        outcome = await step.do("joint-verify-and-cleanup", opts,
+          async () => dev.jointVerifyCleanup(nonce));
+      } catch (e) {
+        error = msg(e);
+        emergency = await step.do("joint-verify-emergency-cleanup", opts, async () =>
+          dev.jointEmergencyCleanup(nonce, "verify-failed")
+            .catch((cleanupError: unknown) => emergencyFallback(nonce, cleanupError)));
+      }
+      return {
+        schema: JOINT_SCHEMA, action: "joint_verify_cleanup", nonce, scope,
+        passed: outcome?.ok === true,
+        metadataSurvived: outcome?.metadataSurvived ?? null,
+        receipt: outcome?.receipt ?? null,
+        outcome, error, emergency
+      };
+    }
+    // args.action === "joint_cleanup" (emergency break-glass)
+    if (Object.keys(args).some(k => k !== "action" && k !== "nonce" && k !== "reason")) {
+      throw new Error("UNKNOWN_JOINT_FIELD");
+    }
+    const nonce = assertJointNonce(args.nonce);
+    const scope = jointScope(nonce);
+    const reason = typeof args.reason === "string" ? args.reason : "";
+    let cleanup: Awaited<ReturnType<JointDev["jointEmergencyCleanup"]>> | null = null;
+    let error: string | null = null;
+    try {
+      cleanup = await step.do("joint-emergency-cleanup", opts,
+        async () => this.jointDev(nonce).jointEmergencyCleanup(nonce, reason));
+    } catch (e) { error = msg(e); }
+    return {
+      schema: JOINT_SCHEMA, action: "joint_cleanup", nonce, scope, reason,
+      passed: Boolean(cleanup) && !error, cleanup, error
+    };
   }
 }
