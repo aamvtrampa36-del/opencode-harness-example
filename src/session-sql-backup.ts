@@ -551,6 +551,27 @@ export async function normalReadFingerprints(reads: NormalReads): Promise<Normal
   return { sessionIds: reads.sessionIds, historyDigests };
 }
 
+/**
+ * Fingerprint each normal session read SEQUENTIALLY and discard its messages
+ * before reading the next. A real OpenCode turn can hold >8 MB of instruction
+ * and event blobs; accumulating all histories can reset 128 MB DO isolates.
+ */
+export async function captureNormalReadFingerprints(harness: SessionHarnessLike): Promise<NormalReadFingerprints> {
+  const listed = await harness.sessions.list();
+  if (listed.length > MAX_FIXTURE_SESSIONS) throw new Error("SQLBK_TOO_MANY_FIXTURE_SESSIONS");
+  const ids: string[] = [];
+  const digests: Record<string, string> = {};
+  for (const session of listed) {
+    const id = session?.id;
+    if (typeof id !== "string" || !id || ids.includes(id)) throw new Error("SQLBK_SESSION_LIST_MALFORMED");
+    ids.push(id);
+    const history = await harness.session(id).history();
+    if (!Array.isArray(history)) throw new Error("SQLBK_HISTORY_NOT_ARRAY:" + id);
+    digests[id] = await sha256Hex(textBytes(canonicalJson(history)));
+  }
+  return { sessionIds: ids, historyDigests: digests };
+}
+
 /** Pure comparison of fingerprints; content is never included in the result. */
 export function verifyNormalReadFingerprints(
   expected: NormalReadFingerprints,
@@ -812,8 +833,7 @@ export async function drillExportSnapshot(
   // SQL first, then the normal reads: the snapshot must reflect the state
   // before any read-path side effect.
   const built = await buildSqlSnapshot(sql, createdAt);
-  const reads = await captureNormalReads(harness);
-  const fingerprints = await normalReadFingerprints(reads);
+  const fingerprints = await captureNormalReadFingerprints(harness);
   const manifest = buildSessionBackupManifest({
     runId, createdAt,
     snapshotJson: built.snapshotJson,
@@ -975,19 +995,25 @@ export async function drillRestoreVerify(
   const fingerprint = await tableSetFingerprintOf(catalog);
   if (fingerprint !== manifest.tableSetFingerprint) throw new Error("SQLBK_TABLESET_DIGEST_MISMATCH");
   const liveByName = new Map(catalog.map(t => [t.name, t]));
-  const allDigestsMatch = (await Promise.all(
-    manifest.tables.map(async expected => {
-      const live = liveByName.get(expected.name);
-      if (!live || live.rowCount !== expected.rowCount) return false;
-      const raw = sql.exec('SELECT * FROM "' + expected.name + '" ORDER BY rowid').toArray();
-      const rows = raw.map((entry, index) => normalizeRow(live, entry, index));
-      return await tableDigest(expected.name, live.columns, rows) === expected.sha256;
-    })
-  )).every(x => x);
+  let allDigestsMatch = true;
+  // Process large tables one at a time; Promise.all() keeps ALL snapshot rows
+  // and serialization buffers in memory at once, exceeding the DO isolate cap.
+  for (const expected of manifest.tables) {
+    const live = liveByName.get(expected.name);
+    if (!live || live.rowCount !== expected.rowCount) {
+      allDigestsMatch = false;
+      break;
+    }
+    const rows = sql.exec('SELECT * FROM "' + expected.name + '" ORDER BY rowid')
+      .toArray().map((entry, index) => normalizeRow(live, entry, index));
+    if ((await tableDigest(expected.name, live.columns, rows)) !== expected.sha256) {
+      allDigestsMatch = false;
+      break;
+    }
+  }
   if (!allDigestsMatch) throw new Error("SQLBK_POST_COMMIT_DIGEST_MISMATCH");
   // 2) Normal read path.
-  const reads = await captureNormalReads(harness);
-  const actualFingerprints = await normalReadFingerprints(reads);
+  const actualFingerprints = await captureNormalReadFingerprints(harness);
   const outcome = verifyNormalReadFingerprints(manifest.normalReads, actualFingerprints);
   return {
     ok: allDigestsMatch && outcome.ok,

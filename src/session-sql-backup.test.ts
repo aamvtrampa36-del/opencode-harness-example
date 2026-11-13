@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { canonicalJson } from "./external-backup";
 import {
   applyRestorePlan, assertManifestDigest, assertR2Bucket, assertSupervisorEnabled,
-  buildSessionBackupManifest, buildSqlSnapshot, captureNormalReads, deleteSessionBackupPrefix,
+  buildSessionBackupManifest, buildSqlSnapshot, captureNormalReads, captureNormalReadFingerprints, deleteSessionBackupPrefix,
   digestRestoredTables, drillExportSnapshot, drillExportSnapshotToR2, drillRestoreFromR2,
   drillVerifyFromR2, drillRestoreWipe, downloadVerifiedSessionBackup,
   isOwnedSessionBackupKey, normalReadFingerprints, parseSessionBackupManifest, parseSqlSnapshot,
@@ -263,6 +263,16 @@ describe("B2 restore planner rejections", () => {
 });
 
 describe("B2 normal read fingerprints", () => {
+  test("sequential normal-read fingerprints match the existing digest contract", async () => {
+    const source = harnessOf([{ id: "ses_1" }, { id: "ses_2" }], {
+      ses_1: [{ type: "user", text: "hola" }],
+      ses_2: [{ type: "assistant", text: "B2_OK" }]
+    });
+    const previous = await normalReadFingerprints(await captureNormalReads(source));
+    const compact = await captureNormalReadFingerprints(source);
+    expect(compact).toEqual(previous);
+  });
+
   test("same ids in the same order with same content pass", async () => {
     const harness = harnessOf([{ id: "ses_1" }, { id: "ses_2" }], {
       ses_1: [], ses_2: [{ type: "user", text: "hola" }]
