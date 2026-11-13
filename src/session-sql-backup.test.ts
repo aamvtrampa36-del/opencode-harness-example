@@ -3,7 +3,8 @@ import { canonicalJson } from "./external-backup";
 import {
   applyRestorePlan, assertManifestDigest, assertR2Bucket, assertSupervisorEnabled,
   buildSessionBackupManifest, buildSqlSnapshot, captureNormalReads, deleteSessionBackupPrefix,
-  digestRestoredTables, drillExportSnapshot, drillRestoreWipe, downloadVerifiedSessionBackup,
+  digestRestoredTables, drillExportSnapshot, drillExportSnapshotToR2, drillRestoreFromR2,
+  drillVerifyFromR2, drillRestoreWipe, downloadVerifiedSessionBackup,
   isOwnedSessionBackupKey, normalReadFingerprints, parseSessionBackupManifest, parseSqlSnapshot,
   restorePlanStatements, sessionBackupDrillScope, sessionBackupKeys, uploadSessionBackup,
   validateSessionBackupDrillCommand, verifyNormalReadFingerprints, verifyRestoredContentSync,
@@ -328,6 +329,40 @@ describe("B2 R2 transport", () => {
       }
     };
   }
+
+  test("isolated DO uploads and restores real-format SQL via R2, exposing receipt only", async () => {
+    const env = { OPENCODE_SUPERVISOR_ENABLED: "true" };
+    const bucket = memoryBucket();
+    const sourceRead = harnessOf([{ id: "ses_1" }], { ses_1: [{ type: "user", text: "hola" }] });
+    const result = await drillExportSnapshotToR2(env, sourceRead, fakeSql(baseTables()), bucket, { runId: RUN_ID });
+    const receipt = result as { ok: boolean; uploaded: boolean; manifestSha256: string; snapshotSha256: string; snapshotBytes: number };
+    expect(receipt.ok).toBe(true);
+    expect(receipt.uploaded).toBe(true);
+    expect(receipt.snapshotBytes).toBeGreaterThan(0);
+    expect(JSON.stringify(result)).not.toContain("snapshotJson");
+    expect(JSON.stringify(result)).not.toContain("hola");
+    const target = fakeSql(baseTables());
+    const storage = { transaction: async (fn: () => unknown) => fn() };
+    const restored = await drillRestoreFromR2(env, target, storage, bucket,
+      { runId: RUN_ID, manifestSha256: receipt.manifestSha256 }) as { ok: boolean };
+    expect(restored.ok).toBe(true);
+    const verified = await drillVerifyFromR2(env,
+      harnessOf([{ id: "ses_1" }], { ses_1: [{ type: "user", text: "hola" }] }),
+      target, bucket, { runId: RUN_ID, manifestSha256: receipt.manifestSha256 }) as { ok: boolean; normalReadsMatch: boolean };
+    expect(verified.ok).toBe(true);
+    expect(verified.normalReadsMatch).toBe(true);
+    await expect(drillRestoreFromR2(env, fakeSql(baseTables()), storage, bucket,
+      { runId: RUN_ID, manifestSha256: "0".repeat(64) }))
+      .rejects.toThrow("SQLBK_MANIFEST_DIGEST_MISMATCH");
+    await expect(drillRestoreFromR2(env, fakeSql(baseTables()), storage, bucket,
+      { runId: RUN_ID, manifestSha256: receipt.manifestSha256, extra: "forbidden" }))
+      .rejects.toThrow("SQLBK_R2_RESTORE_INPUT");
+    await expect(drillVerifyFromR2(env, sourceRead, target, bucket,
+      { runId: RUN_ID, manifestSha256: "0".repeat(64) }))
+      .rejects.toThrow("SQLBK_MANIFEST_DIGEST_MISMATCH");
+    await expect(drillExportSnapshotToR2({}, sourceRead, fakeSql(baseTables()), bucket,
+      { runId: RUN_ID })).rejects.toThrow("SUPERVISOR_DISABLED");
+  });
 
   test("upload pins digests, manifest goes last, download verifies everything", async () => {
     const { built } = await makeSnapshot();
