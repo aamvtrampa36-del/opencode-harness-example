@@ -47,11 +47,11 @@ export type DrillDev = {
   }>;
 };
 
-function sleepDrill(ms: number): Promise<void> {
+export function sleepDrill(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitUntilDrill(predicate: () => boolean, timeoutMs: number): Promise<void> {
+export async function waitUntilDrill(predicate: () => boolean, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() > deadline) {
@@ -61,7 +61,7 @@ async function waitUntilDrill(predicate: () => boolean, timeoutMs: number): Prom
   }
 }
 
-async function execDrill(
+export async function execDrill(
   container: DrillContainer,
   phase: DrillReport["phase"],
   env: Record<string, string>
@@ -78,7 +78,7 @@ async function execDrill(
 }
 
 /** Same serialization as run(): shell writes and drill phases never overlap. */
-async function withDrillQueue<T>(host: DrillHost, body: () => Promise<T>): Promise<T> {
+export async function withDrillQueue<T>(host: DrillHost, body: () => Promise<T>): Promise<T> {
   const queued = host as DrillHost & { busy: number; commandQueue: Promise<void> };
   const previous = queued.commandQueue;
   let release = () => {};
@@ -345,4 +345,3 @@ export async function drillCleanup(host: DrillHost, project: string): Promise<{
   await host.ctx.storage.put("lastActivity", Date.now());
   return { project: id, containerDestroyed, handleDeleted };
 }
-
