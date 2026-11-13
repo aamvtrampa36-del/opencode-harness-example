@@ -47,7 +47,7 @@ export type DrillDev = {
   }>;
 };
 
-export function sleepDrill(ms: number): Promise<void> {
+function sleepDrill(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
