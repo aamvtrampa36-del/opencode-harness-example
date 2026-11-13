@@ -9,6 +9,12 @@ import { projectContainerName } from "./project-container";
 import { assertJointNonce, jointReceipt, jointScope, JOINT_SCHEMA } from "./joint-rollback";
 import type { DrillDev } from "./container-recovery-do";
 import type { JointDev } from "./joint-rollback-do";
+import {
+  deleteSessionBackupPrefix, sessionBackupDrillScope, uploadSessionBackup,
+  validateSessionBackupDrillCommand, SESSION_SQL_DRILL_SCHEMA,
+  type SessionBackupManifest
+} from "./session-sql-backup";
+import type { SessionBackupDrillAgent } from "./session-sql-backup-do";
 
 type SupervisorWorkflowCommand =
   | { action: "start"; requestId: string; repository: string; prompt: string }
@@ -17,7 +23,8 @@ type SupervisorWorkflowCommand =
   | { action: "joint_prepare" }
   | { action: "joint_verify_cleanup"; nonce: string }
   | { action: "joint_cleanup"; nonce: string; reason?: string }
-  | { action: "external_backup_drill" };
+  | { action: "external_backup_drill" }
+  | { action: "session_backup_drill" };
 
 /**
  * Private supervisory control plane: the Cloudflare account's Workflow API
@@ -184,6 +191,127 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
         missingRejected: Boolean(missing?.rejectedAsExpected),
         r2Cleanup, cleanup, cleanupOk, error,
         create, destroyed, restore, tamper, missing
+      };
+    }
+    if (args.action === "session_backup_drill") {
+      // Staging-only private Cloudflare Workflow action (B2): verifiable
+      // backup of the OpenCodeHarness PRIVATE session SQL (the `opencode_*`
+      // tables inside a Durable Object's own SQLite) and cross-DO restore
+      // with normal-read verification. Same access shape as
+      // recovery_drill/external_backup_drill: the account Workflow API is the
+      // caller; no public route and no agent tool can invoke this. Both ends
+      // are disposable "opencode-sqlbak-*" objects created here in the
+      // dedicated SESSION_BK namespace; real user workspaces (UUID names) and
+      // the supervisor workspace are never read, exported or restored.
+      if ((this.env as Env & { OPENCODE_SUPERVISOR_ENABLED?: string })
+        .OPENCODE_SUPERVISOR_ENABLED !== "true") throw new Error("SUPERVISOR_DISABLED");
+      validateSessionBackupDrillCommand(args);
+
+      const opts = { retries: { limit: 0, delay: "1 second" as const } };
+      const scope = await step.do("allocate-disposable-sessionbk-scope", opts, async () =>
+        sessionBackupDrillScope(crypto.randomUUID().replace(/-/g, "").slice(0, 12)));
+      // Fail closed when the staging binding is absent: never simulate.
+      const namespace = (this.env as Env & {
+        SESSION_BK?: DurableObjectNamespace<SessionBackupDrillAgent>;
+      }).SESSION_BK;
+      if (!namespace) {
+        throw new Error("SESSION_BK binding no disponible: el DO de ensayo solo existe en " +
+          "wrangler.g1.jsonc y requiere despliegue de Staging de esta rama");
+      }
+      const source = namespace.getByName(scope.source);
+      const restore = namespace.getByName(scope.restore);
+      const bucketOf = () => assertR2Bucket(
+        (this.env as Env & { RECOVERY_R2?: unknown }).RECOVERY_R2,
+        "workflow.opencode-supervisor-stage");
+      let create: unknown = null;
+      let exported: unknown = null;
+      let upload: { snapshotBytes: number; manifestBytes: number; manifestSha256: string } | null = null;
+      let wipe: unknown = null;
+      let prepared: unknown = null;
+      let commit: unknown = null;
+      let verified: unknown = null;
+      let error: string | null = null;
+      let r2Cleanup: { deleted: number; keys: string[] } | { error: string } = { deleted: 0, keys: [] };
+      let cleanup: Array<{ object: string; wiped: boolean } | { object: string; cleanupError: string }> = [];
+      try {
+        create = await step.do("create-fixture-sessions", opts, async () =>
+          source.sessionBackupDrillCreate({ turn: true }));
+        exported = await step.do("export-opencode-sql", opts, async () =>
+          source.sessionBackupDrillExport({ runId: scope.runId }));
+        const exportData = exported as {
+          snapshotJson?: string; snapshotSha256?: string; manifest?: SessionBackupManifest;
+        } | null;
+        if (!exportData?.snapshotJson || !exportData.snapshotSha256 || !exportData.manifest) {
+          throw new Error("La exportación del SQL de sesiones no produjo snapshot verificado");
+        }
+        upload = await step.do("upload-session-backup-r2", opts, async () =>
+          uploadSessionBackup(bucketOf(), exportData.snapshotJson!, exportData.snapshotSha256!,
+            exportData.manifest!));
+        wipe = await step.do("wipe-restore-do", opts, async () => restore.sessionBackupDrillRestoreWipe());
+        prepared = await step.do("prepare-restore-do", opts, async () =>
+          restore.sessionBackupDrillRestorePrepare());
+        commit = await step.do("commit-restore-atomically", opts, async () =>
+          restore.sessionBackupDrillRestoreCommit({
+            snapshotJson: exportData.snapshotJson!, snapshotSha256: exportData.snapshotSha256!
+          }));
+        verified = await step.do("verify-restore-normal-reads", opts, async () =>
+          restore.sessionBackupDrillRestoreVerify({
+            manifest: exportData.manifest!, manifestSha256: upload!.manifestSha256,
+            snapshotSha256: exportData.snapshotSha256!
+          }));
+      } catch (e) {
+        error = e instanceof Error ? e.message.slice(0, 800) : "Unknown session backup drill failure";
+      } finally {
+        const outcome = await step.do("cleanup-sessionbk-drill", opts, async () => {
+          let r2: { deleted: number; keys: string[] } | { error: string } = { deleted: 0, keys: [] };
+          try { r2 = await deleteSessionBackupPrefix(bucketOf(), scope.runId); }
+          catch (e) { r2 = { error: e instanceof Error ? e.message : "R2 cleanup failed" }; }
+          const dos: typeof cleanup = [];
+          for (const [host, name] of [[source, scope.source], [restore, scope.restore]] as const) {
+            try {
+              const result = await host.sessionBackupDrillCleanup() as { wiped?: unknown } | null;
+              dos.push({ object: name, wiped: result?.wiped === true });
+            } catch (e) {
+              dos.push({ object: name, cleanupError: e instanceof Error ? e.message : "failed" });
+            }
+          }
+          return { r2, dos };
+        });
+        r2Cleanup = outcome.r2;
+        cleanup = outcome.dos;
+      }
+      const verifiedOk = Boolean((verified as { ok?: unknown } | null)?.ok);
+      const r2Clean = !("error" in r2Cleanup) && r2Cleanup.deleted >= 2;
+      const cleanupOk = cleanup.length === 2 &&
+        cleanup.every(x => x !== null && typeof x === "object" && !("cleanupError" in x) &&
+          (x as { wiped?: unknown }).wiped === true) && r2Clean;
+      // The result never carries row content: only counts, digests and ids.
+      const exportSummary = (exported ?? null) as {
+        runId?: string; createdAt?: string; snapshotSha256?: string; totalRows?: number;
+        tableCount?: number; tableSetFingerprint?: string; listIds?: string[];
+      } | null;
+      return {
+        schema: SESSION_SQL_DRILL_SCHEMA,
+        scope,
+        passed: Boolean(create && exported && upload && wipe && prepared && commit &&
+          verifiedOk && cleanupOk && !error),
+        fixturePassed: Boolean(create),
+        exportPassed: Boolean(exported),
+        uploadPassed: Boolean(upload),
+        wipePassed: Boolean(wipe),
+        preparePassed: Boolean(prepared),
+        commitPassed: Boolean(commit),
+        verified: verifiedOk,
+        normalReadsVerified: verifiedOk &&
+          Boolean((verified as { normalReadsMatch?: unknown } | null)?.normalReadsMatch),
+        export: exportSummary ? {
+          runId: exportSummary.runId, createdAt: exportSummary.createdAt,
+          snapshotSha256: exportSummary.snapshotSha256, totalRows: exportSummary.totalRows,
+          tableCount: exportSummary.tableCount, tableSetFingerprint: exportSummary.tableSetFingerprint,
+          listIds: exportSummary.listIds, manifestSha256: upload?.manifestSha256 ?? null
+        } : null,
+        r2Cleanup, cleanup, cleanupOk, error,
+        create, wipe, prepared, commit, verified
       };
     }
     return step.do("supervised-opencode-operation", {
