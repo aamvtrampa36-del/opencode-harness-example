@@ -1,6 +1,7 @@
 import { specializationPrompt as specializationPromptText, type Specialization } from "./specializations";
 import { classifyAgentFailure, type IncidentObservation } from "./incident-diagnostics";
-import { MODEL_PRESETS, isModelPreset } from "./model-presets";
+import { MODEL_PRESETS, isModelSelection, isOpenRouterSelection, resolveModelSelection } from "./model-presets";
+import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import type { Connection, ConnectionContext } from "agents/lifecycle";
 import type { WebSocketMessage, WebSocketsOptions } from "agents/websockets";
 import {
@@ -249,7 +250,7 @@ export class OpenCodeSessionSockets {
         if (!["build", "plan", "review", "creative"].includes(mode)) {
           throw new Error("Modo de agente no reconocido");
         }
-        if (message.model !== undefined && !isModelPreset(message.model)) {
+        if (message.model !== undefined && !isModelSelection(message.model)) {
           throw new Error("Unknown model preset");
         }
         // A queued or steering message must never change the permissions or
@@ -266,11 +267,14 @@ export class OpenCodeSessionSockets {
         }
         if (!running) {
           if (message.model !== undefined) {
-            const preset = MODEL_PRESETS[message.model];
-            if (preset.providerID === "openrouter" && !(await this.#openRouterAvailable())) {
+            const selected = resolveModelSelection(message.model);
+            if (selected.providerID === "openrouter" && !(await this.#openRouterAvailable())) {
               throw new Error("Conecta OpenRouter desde Configuración antes de seleccionar ese modelo.");
             }
-            await handle.setModel({ providerID: preset.providerID, id: preset.id });
+            if (isOpenRouterSelection(message.model)) {
+              await assertOpenRouterModelSupportsTools(selected.id);
+            }
+            await handle.setModel({ providerID: selected.providerID, id: selected.id });
           }
           await handle.setAgent(mode === "build" ? "build" : "plan");
         }
