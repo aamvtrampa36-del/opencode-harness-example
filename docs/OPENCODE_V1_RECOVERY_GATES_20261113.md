@@ -1,5 +1,34 @@
 # OpenCode Cloud V1 — Estado comprobable de recuperación y publicación
 
+## Contrato de aceptación vigente: V1 personal pragmática (13 de noviembre de 2026)
+
+**DECISIÓN DEL PROPIETARIO: recuperar lo suficiente, no recuperar todo.** Este proyecto es privado, no comercial y de uso individual. El propietario **acepta expresamente** perder conversaciones recientes, historiales y estado interno prescindible de OpenCode ante fallos graves, siempre que se preserven los proyectos, archivos importantes y cambios de código confirmados. Esa aceptación **sustituye el anterior requisito de B2 integral como gate obligatorio de publicación**. Los apartados B2 y «Decisiones y protección» históricos más abajo conservan su valor de auditoría, pero NO representan los criterios vigentes.
+
+### Matriz de cierre actual y evidencias
+
+| Requisito vigente | Estado verificable | Decisión |
+| --- | --- | --- |
+| UI Android utilizable y autodesarrollo real con herramientas y PR | PASS histórico en Staging | Acta G9 §12, matriz E2E 12/12, PR #30 y CI #300; sin regresión observada |
+| Aislamiento, permisos y bloqueo de ramas/repos indebidos | PASS para escenario probado en Staging | Guards del repositorio, supervisión y tests; mantener Access/credenciales |
+| Persistencia de código confirmado en GitHub | PASS mecanismo | Commits/ramas/PR verificables; **NO** confundir con protección de archivos locales no confirmados |
+| Restauración práctica de Container y reversión Worker/Container/DO | PASS en fixture descartable, no en datos productivos | `g9_joint_fix_verify_20261113_01`, `oc_v1_external_r2_real_drill_20261113_01` |
+| Recuperar todos los KV, SQL e historiales y RPO/RTO formal | **ACEPTACIÓN DE RIESGO / NO BLOQUEA** | `g9_session_cacheexcluded_real_20261113_01` pasó SQL, pero no se necesita restauración total |
+| Archivos irrecuperables fuera de GitHub | **PENDIENTE COMPROBACIÓN PREPUBLICACIÓN** | Verificar si existen en proyectos reales; respaldar solo los indispensables o confirmar que no los hay |
+| Candidata exacta, CI de código, configuración y reversión compatible | **PARCIAL** | PR #47 está draft; los principales archivos compartidos con Staging coincidían en SHA de GitHub al verificar; integración de las herramientas de B2 SQL exclusivas de Staging NO es obligatoria |
+| Producción V1 operativa: autorización, despliegue y pruebas funcionales | **PENDIENTE** | Worker productivo observado `1d70eb77-316e-408d-bd14-5f19b171dedf` al inicio de este corte; comprobar versión otra vez antes de actuar |
+
+**Trabajo descartado por rendimiento marginal:** el agente de B2 integral `b2fda8136e4c902a` fue cancelado ordenadamente por Workflow `g9_pragmatic_cancel_b2_20261113_01` con `status:cancelled`. Su rama `opencode/staging-b2fda8136e4c902a` no contenía commits nuevos al compararla; 62 herramientas, una fallida al último seguimiento. No se elimina el código SQL/R2 ya ensayado ni la evidencia de CI.
+
+**Respaldo/configuración de referencia:** recibo privado R2 `evidence/g9-production-readonly-preflight-20261113.json` (3051 bytes, SHA-256 `7a348a50f6c9e809b745eebe30538f9e0a442b7286eafd27f2ee7386f771b749`, releído y cotejado). Solo contiene versiones y bindings, **no un respaldo de datos de Producción**. Producción aún carecía de `RECOVERY_R2`, `SESSION_BK` y Workflow; mantener el esquema v1-v3 de `wrangler.jsonc` y evitar migraciones de clases exclusivamente de Staging en Producción.
+
+**Bloqueo restante real:** comprobar/proteger los archivos únicos que pudieran existir fuera de GitHub; congelar el commit exacto de la candidata #47 y validar CI pertinente; confirmar alcance de cambios de configuración y autorización productiva específica; desplegar y verificar el flujo autenticado real de acceso/sesión/herramientas/proyecto. No exigir recuperación completa de sesiones ni RPO/RTO formal. No declarar publicación antes de smoke en Producción.
+
+**Después del cierre:** uso estable de OpenCode Cloud para CDF Cloud/WorkBench, mantenimiento correctivo y mejoras de recuperación solo si aparecen problemas reales.
+
+---
+
+
+
 ## Corte independiente posterior — B2 SQL y C aprobados (13 noviembre 2026 UTC)
 
 **La matriz histórica que sigue corresponde a un corte anterior y se mantiene como trazabilidad; ESTE apartado prevalece para los resultados comprobados más recientes. G9 sigue ABIERTO: no se ha ejecutado publicación productiva.**
