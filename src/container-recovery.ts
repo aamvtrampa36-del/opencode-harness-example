@@ -34,7 +34,8 @@ export const DRILL_PROJECT_PREFIX = "snaprec-";
 /** Root the drill owns inside every project Container. */
 export const DRILL_ROOT_PATH = "/workspace/projects";
 const HEX64 = /^[a-f0-9]{64}$/;
-const NONCE = /^[a-f0-9]{12}$/;
+/** Shared by the recovery drill and the joint Worker+Container+DO rollback drill. */
+export const NONCE = /^[a-f0-9]{12}$/;
 const SNAPSHOT_ID = /^[A-Za-z0-9._:-]{1,256}$/;
 
 /** Drill methods refuse everything that is not a disposable snaprec-* project. */

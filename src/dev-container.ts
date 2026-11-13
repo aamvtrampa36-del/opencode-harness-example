@@ -12,6 +12,7 @@ import {
   type VerifyRestoreResult
 } from "./container-verify";
 import { drillCreateSnapshot, drillRestoreSameDo, drillCrossRestore, drillCleanup, type DrillHost } from "./container-recovery-do";
+import { jointPrepareDrill, jointVerifyCleanupDrill, jointEmergencyCleanupDrill } from "./joint-rollback-do";
 import { RESTORE_PROJECT_SOURCE } from "./restore-project";
 import { GITHUB_IMPORT_SOURCE } from "./github-import-source";
 import { githubSourceArchive } from "./github-import";
@@ -705,6 +706,16 @@ export class DevContainer extends DurableObject<Env> {
   }
   async drillCleanup(project: string) {
     return drillCleanup(this as unknown as DrillHost, project);
+  }
+  /** Joint Worker+Container+DO rollback drill (staging-only, private Workflow). */
+  async jointPrepare(nonce: string) {
+    return jointPrepareDrill(this as unknown as DrillHost, nonce);
+  }
+  async jointVerifyCleanup(nonce: string) {
+    return jointVerifyCleanupDrill(this as unknown as DrillHost, nonce);
+  }
+  async jointEmergencyCleanup(nonce: string, reason: string) {
+    return jointEmergencyCleanupDrill(this as unknown as DrillHost, nonce, reason);
   }
 
   private async proxyHttp(path: string): Promise<Response> {
