@@ -195,6 +195,23 @@ function validTableName(name: unknown): name is string {
   return typeof name === "string" && TABLE_NAME.test(name) && name.startsWith("opencode_");
 }
 
+/**
+ * The models.dev catalogue is a regenerable model-discovery cache, not a
+ * session, task, permission or user setting. A real fixture stored ~6.9 MB
+ * under this single key, exhausting a 128 MB Durable Object isolate during
+ * restore. Exclude ONLY this exact disposable cache entry, never arbitrary KV.
+ */
+export const REGENERABLE_MODELS_CATALOG_KEY = "models-dev:catalog";
+function restorableFilter(name: string): string {
+  return name === "opencode_kv" ? ' WHERE "key" <> \'models-dev:catalog\'' : "";
+}
+function restorableRowsSql(name: string): string {
+  return 'SELECT * FROM "' + name + '"' + restorableFilter(name) + " ORDER BY rowid";
+}
+function restorableCountSql(name: string): string {
+  return 'SELECT COUNT(*) AS n FROM "' + name + '"' + restorableFilter(name);
+}
+
 /** Every `opencode_*` table with its CREATE SQL, columns and row count. */
 export function readOpencodeCatalog(sql: SqlLike): CatalogTable[] {
   const master = sql.exec("SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name").toArray();
@@ -207,7 +224,7 @@ export function readOpencodeCatalog(sql: SqlLike): CatalogTable[] {
     for (const column of columns) {
       if (!COLUMN_NAME.test(column)) throw new Error("SQLBK_UNSUPPORTED_COLUMN_NAME:" + row.name + ":" + column);
     }
-    const counted = sql.exec('SELECT COUNT(*) AS n FROM "' + row.name + '"').toArray();
+    const counted = sql.exec(restorableCountSql(row.name)).toArray();
     const n = (counted[0] as { n?: unknown } | undefined)?.n;
     if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 0) {
       throw new Error("SQLBK_ROW_COUNT_UNREADABLE:" + row.name);
@@ -247,7 +264,7 @@ async function tableDigest(name: string, columns: string[], rows: SqlRow[]): Pro
 
 async function tableSnapshot(sql: SqlLike, table: CatalogTable): Promise<SqlTableSnapshot> {
   if (table.rowCount > MAX_SQLBK_ROWS) throw new Error("SQLBK_TABLE_TOO_LARGE:" + table.name);
-  const raw = sql.exec('SELECT * FROM "' + table.name + '" ORDER BY rowid').toArray();
+  const raw = sql.exec(restorableRowsSql(table.name)).toArray();
   const rows = raw.map((entry, index) => normalizeRow(table, entry, index));
   return {
     name: table.name,
@@ -495,7 +512,7 @@ export function verifyRestoredContentSync(sql: SqlLike, plan: RestorePlan, snaps
   for (const name of plan.tableOrder) {
     const table = snapshot.tables.find(t => t.name === name);
     if (!table) throw new Error("SQLBK_READBACK_TABLE_MISSING:" + name);
-    const raw = sql.exec('SELECT * FROM "' + name + '" ORDER BY rowid').toArray();
+    const raw = sql.exec(restorableRowsSql(name)).toArray();
     if (raw.length !== table.rows.length) throw new Error("SQLBK_READBACK_COUNT_MISMATCH:" + name);
     const normalized = raw.map((entry, index) => normalizeRow(table, entry, index));
     const live = canonicalJson({ name, columns: table.columns, rows: normalized });
@@ -512,7 +529,7 @@ export async function digestRestoredTables(sql: SqlLike, snapshot: SqlSnapshot, 
   for (const name of order) {
     const table = snapshot.tables.find(t => t.name === name);
     if (!table) throw new Error("SQLBK_READBACK_TABLE_MISSING:" + name);
-    const raw = sql.exec('SELECT * FROM "' + name + '" ORDER BY rowid').toArray();
+    const raw = sql.exec(restorableRowsSql(name)).toArray();
     const rows = raw.map((entry, index) => normalizeRow(table, entry, index));
     out.push({ name, rowCount: rows.length, sha256: await tableDigest(name, table.columns, rows) });
   }
@@ -1004,7 +1021,7 @@ export async function drillRestoreVerify(
       allDigestsMatch = false;
       break;
     }
-    const rows = sql.exec('SELECT * FROM "' + expected.name + '" ORDER BY rowid')
+    const rows = sql.exec(restorableRowsSql(expected.name))
       .toArray().map((entry, index) => normalizeRow(live, entry, index));
     if ((await tableDigest(expected.name, live.columns, rows)) !== expected.sha256) {
       allDigestsMatch = false;
