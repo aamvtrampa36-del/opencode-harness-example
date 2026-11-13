@@ -73,6 +73,14 @@
       "scheduling_policy": "durable_object"
     }
   ],
+  // Staging-only private R2 bucket for the external backup drill (pendiente B).
+  // Never declared in wrangler.jsonc; no token or ACL change is required.
+  "r2_buckets": [
+    {
+      "binding": "RECOVERY_R2",
+      "bucket_name": "opencode-v1-recovery-20261112"
+    }
+  ],
   "triggers": {
     "crons": []
   },
