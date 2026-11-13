@@ -7,10 +7,11 @@ import { join } from "node:path";
 import { DRILL_SOURCE, assertDrillProject, hashText, parseDrillReport } from "./container-recovery";
 import { projectContainerName } from "./project-container";
 import {
-  JOINT_PREPARE_TTL_MS, JOINT_RECEIPT_KEY, JOINT_RECORD_KEY, JOINT_VERIFY_LEASE_MS,
+  JOINT_HANDLE_KEY, JOINT_PREPARE_TTL_MS, JOINT_RECEIPT_KEY, JOINT_RECORD_KEY, JOINT_VERIFY_LEASE_MS,
   assertJointHandleMatch, assertJointNonce, assertJointRecordIdentity, assertJointVerifyState,
-  jointEmergencyAllowed, jointReceipt, jointScope, parseJointReceipt, parseJointRecord,
-  type JointRecord
+  classifyJointLiveHandle, jointEmergencyAllowed, jointHandleFrom, jointReceipt, jointScope,
+  parseJointHandle, parseJointReceipt, parseJointRecord,
+  type JointHandle, type JointRecord
 } from "./joint-rollback";
 import {
   jointEmergencyCleanupDrill, jointPrepareDrill, jointVerifyCleanupDrill
@@ -38,6 +39,35 @@ function jointRecordFixture(overrides: Partial<JointRecord> = {}): JointRecord {
     snapshotSavedAt: now, image: null, identitySha256: null,
     state: "prepared", stateSince: now, createdAt: new Date(now).toISOString(),
     ...overrides
+  };
+}
+
+/**
+ * Fixture with the metadata of the REAL failed run oc_v1_joint_prepare_
+ * staging_20261113_01 / oc_v1_joint_verify_20261113_01 (nonce 871ea5456848,
+ * snapshotId 56a36205-4bee-4b07-b5f8-95ba55634d90). ONLY a data fixture for
+ * regression tests: the real nonce was already cleaned and is never invoked
+ * against any Workflow here.
+ */
+function incidentRecord(overrides: Partial<JointRecord> = {}): JointRecord {
+  return jointRecordFixture({
+    nonce: "871ea5456848",
+    snapshotId: "56a36205-4bee-4b07-b5f8-95ba55634d90",
+    ...overrides
+  });
+}
+
+/**
+ * Consistent post-prepare seed: record + PRIVATE handle + SHARED lifecycle
+ * keys, all in sync (what joint_prepare writes on success).
+ */
+function seedScope(rec: JointRecord, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    [JOINT_RECORD_KEY]: rec,
+    [JOINT_HANDLE_KEY]: jointHandleFrom(rec),
+    snapshotId: rec.snapshotId,
+    savedAt: rec.snapshotSavedAt,
+    ...extra
   };
 }
 
@@ -136,6 +166,47 @@ describe("registro joint: parse estricto (fail-closed)", () => {
   });
 });
 
+describe("handle privado: ancla estable e independiente del checkpoint normal", () => {
+  test("jointHandleFrom/parseJointHandle: ida y vuelta estricta", () => {
+    const rec = jointRecordFixture();
+    const handle = jointHandleFrom(rec);
+    const expected: JointHandle = {
+      version: 1, kind: "joint-rollback-handle-v1",
+      nonce: rec.nonce, snapshotId: rec.snapshotId, savedAt: rec.snapshotSavedAt
+    };
+    expect(handle).toEqual(expected);
+    expect(parseJointHandle(handle)).toEqual(expected);
+    expect(parseJointHandle(handle, rec.nonce)).toEqual(expected);
+    const bad: Array<[string, unknown]> = [
+      ["null", null],
+      ["string", "hola"],
+      ["version", { ...expected, version: 2 }],
+      ["kind", { ...expected, kind: "otro" }],
+      ["nonce formato", { ...expected, nonce: "NOPE" }],
+      ["snapshotId vacío", { ...expected, snapshotId: "" }],
+      ["snapshotId traversal", { ...expected, snapshotId: "../escape" }],
+      ["savedAt", { ...expected, savedAt: "ayer" }],
+      ["savedAt infinito", { ...expected, savedAt: Number.POSITIVE_INFINITY }]
+    ];
+    for (const [name, value] of bad) {
+      expect(parseJointHandle(value)).toBeNull();
+    }
+    // Nonce ajeno en la correlación: null (fail-closed).
+    expect(parseJointHandle(handle, "ffffffffffff")).toBeNull();
+  });
+
+  test("classifyJointLiveHandle: match, rotated, missing, diverged", () => {
+    const rec = jointRecordFixture();
+    expect(classifyJointLiveHandle(rec, rec.snapshotId, rec.snapshotSavedAt)).toBe("match");
+    // El checkpoint normal del DO rota las claves compartidas hacia ADELANTE.
+    expect(classifyJointLiveHandle(rec, "chk-opencode-workspace-nuevo", rec.snapshotSavedAt + 120_000))
+      .toBe("rotated");
+    expect(classifyJointLiveHandle(rec, null, null)).toBe("missing");
+    expect(classifyJointLiveHandle(rec, "otro-id", rec.snapshotSavedAt)).toBe("diverged");
+    expect(classifyJointLiveHandle(rec, rec.snapshotId, rec.snapshotSavedAt - 1)).toBe("diverged");
+  });
+});
+
 describe("correlación de metadata y caducidad", () => {
   test("metadata mismatch: registro de otro nonce/scope es rechazado", () => {
     const rec = jointRecordFixture();
@@ -177,33 +248,89 @@ describe("verify fail-closed con host falso: nada se destruye ante metadata inv�
     expect(store.size).toBe(0);
   });
 
-  test("borrado indebido: registro vivo pero claves del handle eliminadas", async () => {
-    const rec = jointRecordFixture();
-    const { host, store, calls } = fakeHost({ [JOINT_RECORD_KEY]: rec });
-    await expect(jointVerifyCleanupDrill(host, rec.nonce))
-      .rejects.toThrow(/JOINT_HANDLE_MISMATCH/);
-    expect(calls.ensureRunning).toBe(0);
-    expect(store.get(JOINT_RECORD_KEY)).toEqual(rec);
-  });
-
-  test("divergencia de savedAt entre registro y estado vivo", async () => {
-    const rec = jointRecordFixture();
-    const { host, store, calls } = fakeHost({
-      [JOINT_RECORD_KEY]: rec,
-      snapshotId: rec.snapshotId,
-      savedAt: rec.snapshotSavedAt + 1
-    });
-    await expect(jointVerifyCleanupDrill(host, rec.nonce))
-      .rejects.toThrow(/JOINT_HANDLE_MISMATCH/);
-    expect(calls.ensureRunning).toBe(0);
-    expect(store.get(JOINT_RECORD_KEY)).toEqual(rec);
-  });
-
-  test("nonce incorrecto en la invocación: mismatch, sin efectos", async () => {
+  test("borrado indebido: registro vivo pero handle PRIVADO eliminado (solo claves compartidas NO bastan)", async () => {
     const rec = jointRecordFixture();
     const { host, store, calls } = fakeHost({
       [JOINT_RECORD_KEY]: rec, snapshotId: rec.snapshotId, savedAt: rec.snapshotSavedAt
     });
+    await expect(jointVerifyCleanupDrill(host, rec.nonce))
+      .rejects.toThrow(/JOINT_HANDLE_MISMATCH/);
+    expect(calls.ensureRunning).toBe(0);
+    expect(store.get(JOINT_RECORD_KEY)).toEqual(rec);
+  });
+
+  test("divergencia del handle privado vs registro: rechazo antes de tocar nada", async () => {
+    const rec = jointRecordFixture();
+    const tampered: JointHandle = { ...jointHandleFrom(rec), snapshotId: "tampered-snapshot-id" };
+    const { host, store, calls } = fakeHost({
+      [JOINT_RECORD_KEY]: rec, [JOINT_HANDLE_KEY]: tampered,
+      snapshotId: rec.snapshotId, savedAt: rec.snapshotSavedAt
+    });
+    await expect(jointVerifyCleanupDrill(host, rec.nonce))
+      .rejects.toThrow(/JOINT_HANDLE_MISMATCH/);
+    expect(calls.ensureRunning).toBe(0);
+    expect(store.get(JOINT_RECORD_KEY)).toEqual(rec);
+  });
+
+  test("INCIDENTE REAL 20261113 (nonce 871ea5456848): claves compartidas rotadas y sin handle privado => JOINT_HANDLE_MISMATCH, sin efectos", async () => {
+    // Replica EXACTA del estado que produjo passed:false en
+    // oc_v1_joint_verify_20261113_01: el registro quedó anclado al snapshot
+    // 56a36205-4bee-4b07-b5f8-95ba55634d90 (savedAt 1794535902230) mientras el
+    // checkpoint normal del DO sobrescribía las claves compartidas. Con el
+    // handle privado ausente (estado pre-fix) el verify sigue fail-closed.
+    const rec = incidentRecord({ snapshotSavedAt: 1794535902230 });
+    const { host, store, calls } = fakeHost({
+      [JOINT_RECORD_KEY]: rec,
+      snapshotId: "chk-opencode-workspace-rotado",
+      savedAt: rec.snapshotSavedAt + 123_000
+    });
+    await expect(jointVerifyCleanupDrill(host, rec.nonce))
+      .rejects.toThrow(/JOINT_HANDLE_MISMATCH/);
+    expect(calls.ensureRunning).toBe(0);
+    expect(store.get(JOINT_RECORD_KEY)).toEqual(rec);
+    expect(store.has(JOINT_RECEIPT_KEY)).toBe(false);
+  });
+
+  test("rotación del checkpoint normal durante la ventana: el verify PROSIGUE (gate en el handle privado)", async () => {
+    const rec = jointRecordFixture();
+    const { host, store, calls } = fakeHost(seedScope(rec, {
+      snapshotId: "chk-opencode-workspace-rotado",
+      savedAt: rec.snapshotSavedAt + 120_000
+    }));
+    // Sin Container en el fake: el gate de metadata PASA (ya no hay
+    // JOINT_HANDLE_MISMATCH por rotación) y la fase de Container falla de
+    // forma controlada; el dispose terminal limpia y deja recibo.
+    const outcome = await jointVerifyCleanupDrill(host, rec.nonce);
+    expect(outcome.ok).toBe(false);
+    expect(outcome.error).toMatch(/Linux Container binding/);
+    expect(outcome.metadataSurvived.handleMatchesRecord).toBe(true);
+    expect(outcome.metadataSurvived.privateHandleVerified).toBe(true);
+    expect(outcome.metadataSurvived.sharedHandleState).toBe("rotated");
+    expect(outcome.handleDeleted).toBe(4);
+    expect(outcome.receipt?.outcome).toBe("failed");
+    expect(calls.ensureRunning).toBe(0);
+    // Terminal disposal: el scope joint queda muerto (4 claves vivas).
+    expect(store.has(JOINT_RECORD_KEY)).toBe(false);
+    expect(store.has(JOINT_HANDLE_KEY)).toBe(false);
+    expect(store.has("snapshotId")).toBe(false);
+    expect(store.has("savedAt")).toBe(false);
+    expect(store.has(JOINT_RECEIPT_KEY)).toBe(true);
+  });
+
+  test("handle privado íntegro con claves compartidas borradas: evidencia 'missing', verify prosigue", async () => {
+    const rec = jointRecordFixture();
+    const { host } = fakeHost({
+      [JOINT_RECORD_KEY]: rec, [JOINT_HANDLE_KEY]: jointHandleFrom(rec)
+    });
+    const outcome = await jointVerifyCleanupDrill(host, rec.nonce);
+    expect(outcome.metadataSurvived.sharedHandleState).toBe("missing");
+    expect(outcome.metadataSurvived.snapshotId).toBeNull();
+    expect(outcome.error).toMatch(/Linux Container binding/);
+  });
+
+  test("nonce incorrecto en la invocación: mismatch, sin efectos", async () => {
+    const rec = jointRecordFixture();
+    const { host, store, calls } = fakeHost(seedScope(rec));
     await expect(jointVerifyCleanupDrill(host, hexNonce()))
       .rejects.toThrow(/JOINT_METADATA_MISMATCH/);
     expect(calls.ensureRunning).toBe(0);
@@ -212,9 +339,7 @@ describe("verify fail-closed con host falso: nada se destruye ante metadata inv�
 
   test("registro vencido: verify rechaza y exige joint_cleanup", async () => {
     const rec = jointRecordFixture({ snapshotSavedAt: Date.now() - JOINT_PREPARE_TTL_MS - 1 });
-    const { host, store, calls } = fakeHost({
-      [JOINT_RECORD_KEY]: rec, snapshotId: rec.snapshotId, savedAt: rec.snapshotSavedAt
-    });
+    const { host, store, calls } = fakeHost(seedScope(rec));
     await expect(jointVerifyCleanupDrill(host, rec.nonce)).rejects.toThrow(/JOINT_EXPIRED/);
     expect(calls.ensureRunning).toBe(0);
     expect(store.get(JOINT_RECORD_KEY)).toEqual(rec);
@@ -222,9 +347,7 @@ describe("verify fail-closed con host falso: nada se destruye ante metadata inv�
 
   test("verificación ya en vuelo: segundo verify concurrente es rechazado", async () => {
     const rec = jointRecordFixture({ state: "verifying", stateSince: Date.now() });
-    const { host, store, calls } = fakeHost({
-      [JOINT_RECORD_KEY]: rec, snapshotId: rec.snapshotId, savedAt: rec.snapshotSavedAt
-    });
+    const { host, store, calls } = fakeHost(seedScope(rec));
     await expect(jointVerifyCleanupDrill(host, rec.nonce)).rejects.toThrow(/JOINT_STATE_INVALID/);
     expect(calls.ensureRunning).toBe(0);
     expect(store.get(JOINT_RECORD_KEY)).toEqual(rec);
@@ -247,27 +370,25 @@ describe("lease de verificación y limpieza de emergencia", () => {
 
   test("emergencia durante verify en vuelo: bloqueada, nada se toca", async () => {
     const rec = jointRecordFixture({ state: "verifying", stateSince: Date.now() });
-    const { host, store } = fakeHost({
-      [JOINT_RECORD_KEY]: rec, snapshotId: rec.snapshotId, savedAt: rec.snapshotSavedAt
-    });
+    const { host, store } = fakeHost(seedScope(rec));
     await expect(jointEmergencyCleanupDrill(host, rec.nonce, "prueba"))
       .rejects.toThrow(/JOINT_VERIFY_IN_FLIGHT/);
     expect(store.get(JOINT_RECORD_KEY)).toEqual(rec);
     expect(store.get(JOINT_RECEIPT_KEY)).toBeUndefined();
   });
 
-  test("emergencia sobre scope prepared: borra SOLO las claves vivas y deja recibo", async () => {
+  test("emergencia sobre scope prepared: borra SOLO las 4 claves vivas y deja recibo", async () => {
     const rec = jointRecordFixture();
-    const { host, store } = fakeHost({
-      [JOINT_RECORD_KEY]: rec, snapshotId: rec.snapshotId, savedAt: rec.snapshotSavedAt,
+    const { host, store } = fakeHost(seedScope(rec, {
       lastActivity: 123456, "recovery-drill-record-v1": { x: 1 },
       "opencode-fake-foreign-key": "keep-me"
-    });
+    }));
     const result = await jointEmergencyCleanupDrill(host, rec.nonce, "prueba de emergencia");
     expect(result.containerDestroyed).toBe(false); // no container in fake
-    expect(result.handleDeleted).toBe(3);
+    expect(result.handleDeleted).toBe(4);
     expect(result.alreadyClean).toBe(false);
     expect(store.has(JOINT_RECORD_KEY)).toBe(false);
+    expect(store.has(JOINT_HANDLE_KEY)).toBe(false);
     expect(store.has("snapshotId")).toBe(false);
     expect(store.has("savedAt")).toBe(false);
     // lastActivity is refreshed (kept, fail-closed reuse guard) and foreign
@@ -284,11 +405,10 @@ describe("lease de verificación y limpieza de emergencia", () => {
 
   test("emergencia es idempotente: segunda pasada reporta alreadyClean", async () => {
     const rec = jointRecordFixture();
-    const { host, store } = fakeHost({
-      [JOINT_RECORD_KEY]: rec, snapshotId: rec.snapshotId, savedAt: rec.snapshotSavedAt
-    });
+    const { host, store } = fakeHost(seedScope(rec));
     const first = await jointEmergencyCleanupDrill(host, rec.nonce, "primera");
     expect(first.alreadyClean).toBe(false);
+    expect(first.handleDeleted).toBe(4);
     const second = await jointEmergencyCleanupDrill(host, rec.nonce, "segunda");
     expect(second.alreadyClean).toBe(true);
     expect(second.handleDeleted).toBe(0);
@@ -312,13 +432,37 @@ describe("lease de verificación y limpieza de emergencia", () => {
 describe("joint_prepare: idempotencia y fail-closed (host falso)", () => {
   test("replay: registro fresco del MISMO nonce devuelve el mismo handle sin nuevo snapshot", async () => {
     const rec = jointRecordFixture();
-    const { host, calls } = fakeHost({
-      [JOINT_RECORD_KEY]: rec, snapshotId: rec.snapshotId, savedAt: rec.snapshotSavedAt
-    });
+    const { host, calls } = fakeHost(seedScope(rec));
     const result = await jointPrepareDrill(host, rec.nonce);
     expect(result.replayed).toBe(true);
     expect(result.snapshotId).toBe(rec.snapshotId);
     expect(result.record.createdAt).toBe(rec.createdAt);
+    expect(calls.ensureRunning).toBe(0);
+  });
+
+  test("replay REGRESIVO de rotación: NO reescribe claves compartidas rotadas por el checkpoint", async () => {
+    const rec = jointRecordFixture();
+    const rotated = { snapshotId: "chk-opencode-workspace-nuevo", savedAt: rec.snapshotSavedAt + 120_000 };
+    const { host, store, calls } = fakeHost(seedScope(rec, rotated));
+    const result = await jointPrepareDrill(host, rec.nonce);
+    expect(result.replayed).toBe(true);
+    expect(result.snapshotId).toBe(rec.snapshotId);
+    // Las claves compartidas siguen en el checkpoint MÁS NUEVO del ciclo de
+    // vida: arrastrarlas hacia atrás haría que la próxima recuperación
+    // restaurara una versión anterior (restauración desde versión equivocada).
+    expect(store.get("snapshotId")).toBe(rotated.snapshotId);
+    expect(store.get("savedAt")).toBe(rotated.savedAt);
+    expect(calls.ensureRunning).toBe(0);
+  });
+
+  test("replay repara el handle privado ausente (migración pre-fix) desde el registro verificado", async () => {
+    const rec = jointRecordFixture();
+    const { host, store, calls } = fakeHost({
+      [JOINT_RECORD_KEY]: rec, snapshotId: rec.snapshotId, savedAt: rec.snapshotSavedAt
+    });
+    const result = await jointPrepareDrill(host, rec.nonce);
+    expect(result.replayed).toBe(true);
+    expect(store.get(JOINT_HANDLE_KEY)).toEqual(jointHandleFrom(rec));
     expect(calls.ensureRunning).toBe(0);
   });
 
@@ -343,6 +487,7 @@ describe("joint_prepare: idempotencia y fail-closed (host falso)", () => {
     const { host, store } = fakeHost();
     await expect(jointPrepareDrill(host, nonce)).rejects.toThrow(/no container available/);
     expect(store.has(JOINT_RECORD_KEY)).toBe(false);
+    expect(store.has(JOINT_HANDLE_KEY)).toBe(false);
     expect(store.has("snapshotId")).toBe(false);
     expect(store.has("savedAt")).toBe(false);
   });
@@ -398,6 +543,8 @@ describe("prueba sintética retenida: integración real corta con node", () => {
         createdAt: new Date().toISOString()
       };
       expect(parseJointRecord(record)?.markerSha256).toBe(create!.markerSha256);
+      // The PRIVATE handle derived from the real record parses and matches.
+      expect(parseJointHandle(jointHandleFrom(record), nonce)).toEqual(jointHandleFrom(record));
       // Malformed hash (not hex64) is refused by the strict parser...
       expect(parseJointRecord({ ...record, markerSha256: "x".repeat(64) })).toBeNull();
       // ...while a well-formed but TAMPERED hash passes the format check and

@@ -2,7 +2,10 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "opencode-g1-staging",
   "preview_urls": false,
-  "main": "src/server.ts",
+  // Staging entrypoint: the production Worker (src/server.ts) re-exported
+  // unchanged plus the disposable B2 drill class. wrangler.jsonc (production)
+  // keeps main: "src/server.ts" and is untouched.
+  "main": "src/entrypoint.ts",
   "compatibility_date": "2026-06-11",
   "compatibility_flags": [
     "nodejs_compat"
@@ -41,6 +44,10 @@
       {
         "name": "SETTINGS",
         "class_name": "PersonalSettings"
+      },
+      {
+        "name": "SESSION_BK",
+        "class_name": "SessionBackupDrillAgent"
       }
     ]
   },
@@ -61,6 +68,12 @@
       "tag": "v3",
       "new_sqlite_classes": [
         "PersonalSettings"
+      ]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": [
+        "SessionBackupDrillAgent"
       ]
     }
   ],

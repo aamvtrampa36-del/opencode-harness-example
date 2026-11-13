@@ -20,6 +20,12 @@
  *     proyectos importados ni datos reales).
  *   - Sin endpoints públicos: solo la API de Workflow de Cloudflare
  *     autenticada puede invocar estas acciones (igual que recovery_drill).
+ *   - Ancla PRIVADA del ensayo: joint_prepare guarda, junto al registro, un
+ *     handle privado (JOINT_HANDLE_KEY) con el snapshot del ensayo; la
+ *     verificación correlaciona ESE handle con el registro. Las claves
+ *     compartidas snapshotId/savedAt del ciclo de vida son SOLO evidencia:
+ *     el checkpoint normal del DO las rota legítimamente durante la ventana
+ *     (incidente oc_v1_joint_verify_20261113_01, nonce 871ea5456848).
  *   - Idempotencia: joint_prepare repetido devuelve el MISMO registro sin
  *     crear un segundo snapshot (replayed). Un registro ajeno al nonce, o
  *     vencido, o en estado distinto de "prepared", aborta.
@@ -43,6 +49,13 @@ export const JOINT_RECORD_KEY = "joint-rollback-record-v1";
 /** DO storage key of the audit tombstone (KEPT after cleanup, keeps nothing alive). */
 export const JOINT_RECEIPT_KEY = "joint-rollback-receipt-v1";
 /**
+ * DO storage key of the joint trial's PRIVATE snapshot handle. Written only
+ * by joint_prepare (and by its replay repair) and read only by the joint
+ * verify; the normal lifecycle (alarm checkpoint, startOrRecover) never
+ * touches it, so it is the stable, rotation-independent anchor of the trial.
+ */
+export const JOINT_HANDLE_KEY = "joint-rollback-handle-v1";
+/**
  * Window granted to the external supervisor to perform the reversible Worker
  * rollback and return to the candidate version. After it, verification is
  * refused (fail-closed) and only joint_cleanup is allowed.
@@ -50,8 +63,11 @@ export const JOINT_RECEIPT_KEY = "joint-rollback-receipt-v1";
 export const JOINT_PREPARE_TTL_MS = 6 * 60 * 60_000;
 /** How long an in-flight verification blocks the emergency cleanup. */
 export const JOINT_VERIFY_LEASE_MS = 15 * 60_000;
-/** The EXACT live keys every cleanup deletes. Nothing else, ever. */
-export const JOINT_LIVE_KEYS = ["snapshotId", "savedAt", JOINT_RECORD_KEY] as const;
+/**
+ * The EXACT live keys every cleanup deletes: the two shared lifecycle handle
+ * keys, the joint record and the joint private handle. Nothing else, ever.
+ */
+export const JOINT_LIVE_KEYS = ["snapshotId", "savedAt", JOINT_RECORD_KEY, JOINT_HANDLE_KEY] as const;
 
 export type JointRecordState = "prepared" | "verifying";
 
@@ -74,6 +90,21 @@ export type JointRecord = {
   state: JointRecordState;
   stateSince: number;
   createdAt: string;
+};
+
+/**
+ * Private, stable snapshot anchor of one joint trial. Unlike the SHARED
+ * snapshotId/savedAt keys (owned by the normal lifecycle, which rotates them
+ * with fresh checkpoints), this handle is only written by the joint drill, so
+ * verify can correlate it against the record without mistaking a routine
+ * lifecycle checkpoint for tampering.
+ */
+export type JointHandle = {
+  version: 1;
+  kind: "joint-rollback-handle-v1";
+  nonce: string;
+  snapshotId: string;
+  savedAt: number;
 };
 
 /** Audit tombstone: written by every terminal path, deleted by nothing. */
@@ -113,10 +144,17 @@ export type JointVerifyOutcome = {
   runId: string;
   metadataSurvived: {
     recordPresent: boolean;
+    /** SHARED lifecycle key, reported as EVIDENCE (may be legitimately rotated). */
     snapshotId: string | null;
+    /** SHARED lifecycle key, reported as EVIDENCE (may be legitimately rotated). */
     savedAt: number | null;
     nonceMatches: boolean;
+    /** The joint-PRIVATE handle matches the record: the actual fail-closed gate. */
     handleMatchesRecord: boolean;
+    /** The private handle key was present and record-consistent. */
+    privateHandleVerified: boolean;
+    /** Evidence about the SHARED lifecycle keys after the rollback window. */
+    sharedHandleState: SharedHandleState;
   };
   metadataAfter: { recordPresent: boolean; snapshotIdMatches: boolean };
   liveContainer: {
@@ -209,11 +247,59 @@ export function parseJointRecord(raw: unknown): JointRecord | null {
   };
 }
 
+/** The private handle is derived from the record: both must always agree. */
+export function jointHandleFrom(record: JointRecord): JointHandle {
+  return {
+    version: 1, kind: "joint-rollback-handle-v1",
+    nonce: record.nonce, snapshotId: record.snapshotId, savedAt: record.snapshotSavedAt
+  };
+}
+
+/** Strict parser for the private handle; nonce mismatch (when given) is null. */
+export function parseJointHandle(raw: unknown, nonce?: string): JointHandle | null {
+  if (!raw || typeof raw !== "object") return null;
+  const h = raw as Record<string, unknown>;
+  if (h.version !== 1 || h.kind !== "joint-rollback-handle-v1") return null;
+  if (typeof h.nonce !== "string" || !NONCE.test(h.nonce)) return null;
+  if (typeof h.snapshotId !== "string" || !SNAPSHOT_ID.test(h.snapshotId)) return null;
+  if (typeof h.savedAt !== "number" || !Number.isFinite(h.savedAt)) return null;
+  if (nonce !== undefined && h.nonce !== nonce) return null;
+  return {
+    version: 1, kind: "joint-rollback-handle-v1",
+    nonce: h.nonce, snapshotId: h.snapshotId, savedAt: h.savedAt
+  };
+}
+
+/**
+ * Lifecycle state of the SHARED snapshotId/savedAt keys relative to the
+ * record, used as EVIDENCE in the verify outcome (never as a gate):
+ *   - "match": untouched, still the trial's snapshot.
+ *   - "rotated": the normal checkpoint wrote a NEWER snapshot (savedAt moved
+ *     forward). Expected during the rollback window: alarm() runs in the DO
+ *     regardless of the Worker version. Never a failure.
+ *   - "missing": both shared keys are gone.
+ *   - "diverged": anything else (older savedAt, rewritten savedAt with a
+ *     different id, partial deletion). Reported for the audit trail.
+ */
+export type SharedHandleState = "match" | "rotated" | "missing" | "diverged";
+
+export function classifyJointLiveHandle(
+  record: JointRecord, liveSnapshotId: unknown, liveSavedAt: unknown
+): SharedHandleState {
+  if (liveSnapshotId === null && liveSavedAt === null) return "missing";
+  if (liveSnapshotId === record.snapshotId && liveSavedAt === record.snapshotSavedAt) return "match";
+  if (typeof liveSavedAt === "number" && Number.isFinite(liveSavedAt) &&
+      liveSavedAt > record.snapshotSavedAt) return "rotated";
+  return "diverged";
+}
+
 /**
  * Metadata correlation: the record must belong to THIS nonce and scope, and
- * the DO's live handle keys must still match the record exactly. Any
- * divergence (nonce distinto, handle borrado, savedAt reescrito) aborts the
- * verify before anything is destroyed.
+ * the live handle must still match the record exactly. Any divergence (nonce
+ * distinto, handle borrado, savedAt reescrito) aborts the verify before
+ * anything is destroyed. The "live handle" compared here is the trial's
+ * PRIVATE handle (JOINT_HANDLE_KEY): the shared lifecycle keys rotate
+ * legitimately and are evidence, never a gate.
  */
 export function assertJointRecordIdentity(record: JointRecord, nonce: string): void {
   assertJointNonce(nonce);
@@ -228,7 +314,7 @@ export function assertJointHandleMatch(
   record: JointRecord, liveSnapshotId: unknown, liveSavedAt: unknown
 ): void {
   if (liveSnapshotId !== record.snapshotId || liveSavedAt !== record.snapshotSavedAt) {
-    throw new Error("JOINT_HANDLE_MISMATCH: el handle vivo del DO difiere del registro (borrado indebido o divergencia); no se destruirá el Container");
+    throw new Error("JOINT_HANDLE_MISMATCH: el handle del ensayo difiere del registro (borrado indebido o divergencia del ancla); no se destruirá el Container");
   }
 }
 
