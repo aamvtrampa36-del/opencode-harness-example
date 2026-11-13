@@ -721,7 +721,8 @@ export async function drillCreateFixture(
   assertSupervisorEnabled(env);
   const options = (input && typeof input === "object" && !Array.isArray(input) ? input : {}) as { turn?: unknown };
   const turn = options.turn === true;
-  const a = await harness.sessions.create();
+  // First fixture session stays metadata-only (no messages).
+  await harness.sessions.create();
   const b = await harness.sessions.create();
   let turnRan = false;
   if (turn) {
