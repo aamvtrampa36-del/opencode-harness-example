@@ -40,7 +40,7 @@ try {
 
   const conversationsButton = page.getByRole("button", { name: "Conversaciones", exact: true });
   await conversationsButton.click();
-  const conversations = page.getByRole("navigation", { name: "Conversaciones" });
+  const conversations = page.getByRole("navigation", { name: "Lista de conversaciones" });
   await conversations.waitFor({ state: "visible" });
   assert.equal(await conversations.locator('button[aria-current="page"]').count(), 1);
   await page.getByRole("button", { name: "Cerrar lista de conversaciones" }).click();
@@ -59,7 +59,7 @@ try {
 
   await conversationsButton.click();
   await conversations.waitFor({ state: "visible" });
-  const otherConversation = conversations.locator('button:not([aria-current="page"])').first();
+  const otherConversation = conversations.locator('button[data-session-id]:not([aria-current="page"])').first();
   await otherConversation.waitFor({ state: "visible" });
   await otherConversation.click();
   await page.waitForFunction(

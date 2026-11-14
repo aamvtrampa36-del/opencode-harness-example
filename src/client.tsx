@@ -963,7 +963,7 @@ function App() {
               icon={<PlusIcon size={16} />}
             />
           </div>
-          <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
+          <nav aria-label="Lista de conversaciones" className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
             {sessions.map((info) => (
               <button
                 type="button"
