@@ -18,6 +18,7 @@ import { OpenCodeSessionSockets } from "./sockets";
 import { workspacePlugin } from "./workspace";
 import { openRouterCredentialPlugin } from "./openrouter";
 import { MODEL_PRESETS } from "./model-presets";
+import { getOpenRouterCatalogue } from "./openrouter-catalog";
 import { GitHubBridge } from "./github";
 import { verifyG8Proofs, G8_PROOFS } from "./g8-smoke";
 import { assessG8LiveHistory, g8LivePrompt, G8_LIVE_CHECK_VERSION, type G8LiveCheck } from "./g8-live-agent";
@@ -232,6 +233,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   /** Trusted lookup for read-only GitHub tools. No LLM-provided repository. */
+  /** Source of truth for Linux tool project IDs; the model cannot change it. */
+  async sessionProject(sessionID: string): Promise<string> {
+    const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
+    return scope?.project ?? "";
+  }
+
   async sessionRepository(sessionID: string): Promise<string> {
     const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
     if (!scope?.repository) {
@@ -750,7 +757,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
           ),
           workspacePlugin(this.workspace, {}, this.linuxRunner, this.githubRunner,
             (sessionID, action) => this.enforceSessionScope(sessionID, action),
-            (sessionID) => this.sessionRepository(sessionID))
+            (sessionID) => this.sessionRepository(sessionID),
+            (sessionID) => this.sessionProject(sessionID))
         ]
       }),
     // Low effort: with more, the model sometimes writes its whole answer
@@ -872,6 +880,19 @@ export default {
           githubConfigured: existing.githubConfigured ||
             Boolean((env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN)
         }, { headers: { "Cache-Control": "no-store" } });
+      }
+      if (url.pathname === "/api/settings/openrouter/models" && request.method === "GET") {
+        const active = (await personal.status()).openRouterConfigured ||
+          Boolean((env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY);
+        if (!active) return Response.json({ error: "Conecta OpenRouter para seleccionar modelos." },
+          { status: 409, headers: { "Cache-Control": "no-store" } });
+        try {
+          return Response.json({ models: await getOpenRouterCatalogue() },
+            { headers: { "Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff" } });
+        } catch (error) {
+          return Response.json({ error: error instanceof Error ? error.message : "Catálogo no disponible." },
+            { status: 503, headers: { "Cache-Control": "no-store" } });
+        }
       }
       if (url.pathname === "/api/settings/openrouter/usage" && request.method === "GET") {
         const usage = await personal.openRouterUsage();

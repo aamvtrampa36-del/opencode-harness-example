@@ -9,6 +9,7 @@ import type { Plugin } from "@opencode/plugin";
 import type { GitHubAction } from "./github";
 import type { ScopedToolAction } from "./project-scope";
 import { executeBoundRepositoryAction } from "./scoped-github";
+import { resolveScopedLinuxProject } from "./scoped-linux-tools";
 
 /**
  * OpenCode's tools that need a local filesystem or process. The Workers
@@ -116,7 +117,8 @@ export function workspacePlugin(
   linux?: LinuxRunner,
   github?: GitHubRunner,
   scopeGuard?: (sessionID: string, action: ScopedToolAction) => Promise<void>,
-  getBoundRepository?: (sessionID: string) => Promise<string>
+  getBoundRepository?: (sessionID: string) => Promise<string>,
+  getBoundProject?: (sessionID: string) => Promise<string>
 ): Plugin.Plugin {
   const { tools, execute } = createPiTools({
     ...options,
@@ -130,6 +132,9 @@ export function workspacePlugin(
       }
     }
   });
+  const sharedWorkspaceToolNames = tools.map((tool) => tool.name.replace(/[^a-zA-Z0-9_-]/g, "_"));
+  const projectToolNames = ["linux", "inspect_linux", "github", "repo_review", "repo_info", "repo_read"];
+  const githubToolNames = ["github", "repo_review", "repo_info", "repo_read"];
 
   return {
     id: "example.workspace",
@@ -143,6 +148,38 @@ export function workspacePlugin(
             "\n\nPLAN/REVIEW MODE: Only analyze and inspect. Do not modify files, change Git branches, perform deployments, publish narrative or install packages. Provide grounded observations and a concise plan. The user must switch to Develop before implementing changes.";
         });
       });
+      if (scopeGuard && ctx.session) {
+        // Tool definitions are shared by the Worker, but the model context is
+        // per session. Expose the shared Workspace only for confirmed
+        // unscoped conversations and isolated project tools after binding.
+        await ctx.session.hook("context", async ({ sessionID, tools: available }) => {
+          let project: string | undefined;
+          try {
+            if (!getBoundProject) throw new Error("Session scope is unavailable");
+            project = await getBoundProject(sessionID);
+          } catch {
+            project = undefined;
+          }
+
+          if (project !== "") {
+            for (const name of sharedWorkspaceToolNames) delete available[name];
+          }
+          if (!project) {
+            for (const name of projectToolNames) delete available[name];
+            return;
+          }
+
+          let repository = "";
+          try {
+            repository = await getBoundRepository?.(sessionID) ?? "";
+          } catch {
+            // A project without an approved repository still has Linux tools.
+          }
+          if (!repository) {
+            for (const name of githubToolNames) delete available[name];
+          }
+        });
+      }
       await ctx.tool.transform((editor) => {
         for (const id of LOCAL_TOOLS) editor.remove(id);
         if (linux) {
@@ -152,18 +189,19 @@ export function workspacePlugin(
             input: {
               type: "object",
               properties: {
-                project: { type: "string", description: "Project ID, e.g. primera-app (lowercase letters, digits, hyphen)" },
+                project: { type: "string", description: "Optional legacy project ID. Normally omit it: the target is derived from the authorized session, not model input." },
                 command: { type: "string", description: "Shell script to execute INSIDE the project directory; no more than 12000 characters" }
               },
-              required: ["project", "command"],
+              required: ["command"],
               additionalProperties: false
             },
             options: { codemode: false },
             async execute(input, context) {
               assertAgentToolPermission(context.agent, "linux");
-              const p = input as { project: string; command: string };
-              if (scopeGuard) await scopeGuard(context.sessionID, { kind: "linux", project: p.project });
-              const result = await linux.run(p.project, p.command, context.sessionID);
+              const p = input as { project?: string; command: string };
+              const target = await resolveScopedLinuxProject(context.sessionID, p.project, getBoundProject);
+              if (scopeGuard) await scopeGuard(context.sessionID, { kind: "linux", project: target });
+              const result = await linux.run(target, p.command, context.sessionID);
               return { content: JSON.stringify(result) };
 
             }
@@ -176,18 +214,19 @@ export function workspacePlugin(
             input: {
               type: "object",
               properties: {
-                project: { type: "string", description: "Existing project slug, e.g. primera-app" },
+                project: { type: "string", description: "Optional legacy project ID; the authorized session determines the target automatically." },
                 action: { type: "string", enum: ["list", "read"], description: "List folder or read text file" },
                 path: { type: "string", description: "Relative path under project, empty string for project root listing" }
               },
-              required: ["project", "action", "path"],
+              required: ["action", "path"],
               additionalProperties: false
             },
             options: { codemode: false },
             async execute(input, context) {
-              const p = input as { project: string; action: "list" | "read"; path: string };
-              if (scopeGuard) await scopeGuard(context.sessionID, { kind: "linux", project: p.project });
-              return { content: JSON.stringify(await linux.inspect(p.project, p.action, p.path, context.sessionID)) };
+              const p = input as { project?: string; action: "list" | "read"; path: string };
+              const target = await resolveScopedLinuxProject(context.sessionID, p.project, getBoundProject);
+              if (scopeGuard) await scopeGuard(context.sessionID, { kind: "linux", project: target });
+              return { content: JSON.stringify(await linux.inspect(target, p.action, p.path, context.sessionID)) };
             }
           });
         }
@@ -284,6 +323,8 @@ export function workspacePlugin(
             }
           });
         }
+        // The context hook above limits these shared tools to unscoped
+        // conversations; project sessions use isolated Linux/GitHub tools.
         for (const declared of tools) {
           const tool =
             declared.name === "exec" ? describeExec(declared) : declared;

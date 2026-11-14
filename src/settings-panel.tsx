@@ -138,7 +138,8 @@ export function SettingsPanel({
   const fieldStyle = "w-full rounded-md border border-kumo-line bg-kumo-base px-3 py-2 text-sm text-kumo-default";
   const buttonStyle = "rounded-md border border-kumo-line px-3 py-2 text-sm font-medium hover:bg-kumo-elevated disabled:opacity-50";
   return (
-    <section className="mx-auto my-3 w-full max-w-3xl rounded-xl border border-kumo-line bg-kumo-base p-4" aria-label="Configuración de proveedores">
+    <section role="dialog" aria-modal="true" aria-label="Configuración de proveedores"
+      className="w-full rounded-t-[24px] border border-kumo-line bg-kumo-base p-4 sm:rounded-2xl sm:p-6">
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-base font-semibold">Configuración de OpenCode</h2>
         <button type="button" className={buttonStyle} onClick={onClose}>Cerrar</button>
