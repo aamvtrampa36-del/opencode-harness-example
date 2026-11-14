@@ -132,6 +132,9 @@ export function workspacePlugin(
       }
     }
   });
+  const sharedWorkspaceToolNames = tools.map((tool) => tool.name.replace(/[^a-zA-Z0-9_-]/g, "_"));
+  const projectToolNames = ["linux", "inspect_linux", "github", "repo_review", "repo_info", "repo_read"];
+  const githubToolNames = ["github", "repo_review", "repo_info", "repo_read"];
 
   return {
     id: "example.workspace",
@@ -145,6 +148,38 @@ export function workspacePlugin(
             "\n\nPLAN/REVIEW MODE: Only analyze and inspect. Do not modify files, change Git branches, perform deployments, publish narrative or install packages. Provide grounded observations and a concise plan. The user must switch to Develop before implementing changes.";
         });
       });
+      if (scopeGuard && ctx.session) {
+        // Tool definitions are shared by the Worker, but the model context is
+        // per session. Expose the shared Workspace only for confirmed
+        // unscoped conversations and isolated project tools after binding.
+        await ctx.session.hook("context", async ({ sessionID, tools: available }) => {
+          let project: string | undefined;
+          try {
+            if (!getBoundProject) throw new Error("Session scope is unavailable");
+            project = await getBoundProject(sessionID);
+          } catch {
+            project = undefined;
+          }
+
+          if (project !== "") {
+            for (const name of sharedWorkspaceToolNames) delete available[name];
+          }
+          if (!project) {
+            for (const name of projectToolNames) delete available[name];
+            return;
+          }
+
+          let repository = "";
+          try {
+            repository = await getBoundRepository?.(sessionID) ?? "";
+          } catch {
+            // A project without an approved repository still has Linux tools.
+          }
+          if (!repository) {
+            for (const name of githubToolNames) delete available[name];
+          }
+        });
+      }
       await ctx.tool.transform((editor) => {
         for (const id of LOCAL_TOOLS) editor.remove(id);
         if (linux) {
@@ -288,10 +323,9 @@ export function workspacePlugin(
             }
           });
         }
-        // Do not advertise shared Workspace tools in the scoped deployment. Previously
-        // the model saw ls/find against /bundle even though execution was denied.
-        // Linux/GitHub tools replace those capabilities without sharing DO files.
-        for (const declared of scopeGuard ? [] : tools) {
+        // The context hook above limits these shared tools to unscoped
+        // conversations; project sessions use isolated Linux/GitHub tools.
+        for (const declared of tools) {
           const tool =
             declared.name === "exec" ? describeExec(declared) : declared;
           editor.add({

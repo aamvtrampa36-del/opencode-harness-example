@@ -431,7 +431,7 @@ function App() {
   const [sessionsOpen, setSessionsOpen] = useState(
     () => window.matchMedia("(min-width: 1100px)").matches
   );
-  const endRef = useRef<HTMLDivElement>(null);
+  const autoFollowConversation = useRef(true);
   const pendingUsage = useRef<{ session: string; project: string; base: number } | null>(null);
   const wasBusy = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
@@ -460,7 +460,11 @@ function App() {
   });
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
+    const main = mainRef.current;
+    if (!main || !autoFollowConversation.current) return;
+    // Keep the header and composer fixed. scrollIntoView can also move the
+    // page viewport on mobile; scroll only the conversation panel instead.
+    main.scrollTo({ top: main.scrollHeight, behavior: "auto" });
   }, [messages, live, busy]);
 
   useEffect(() => {
@@ -502,6 +506,7 @@ function App() {
   const toolsFailed = toolsObserved.filter((part) => part.state.status === "error").length;
 
   const choose = (next: string) => {
+    autoFollowConversation.current = true;
     localStorage.setItem(SESSION_KEY, next);
     setSession(next);
     setAgentMode(readSessionMode(localStorage, object, next));
@@ -862,6 +867,7 @@ function App() {
   const submit = (whenBusy: "followUp" | "steer" = "followUp") => {
     const text = prompt.trim();
     if (!text || !connected) return;
+    autoFollowConversation.current = true;
     // Clear only after the client socket accepts the message; never lose the
     // task draft on an immediate connection failure.
     // Link the chosen project to the task; server-side isolation is addressed in G8.
@@ -1001,7 +1007,10 @@ function App() {
                 shape="square"
                 aria-label="Conversaciones"
                 aria-expanded={sessionsOpen}
-                onClick={() => setSessionsOpen((open) => !open)}
+                onClick={() => setSessionsOpen((open) => {
+                  if (!open) autoFollowConversation.current = false;
+                  return !open;
+                })}
                 icon={<ListIcon size={16} />}
               />
               <div className="min-w-0">
@@ -1153,7 +1162,11 @@ function App() {
           </div>
         </header>
 
-        <main ref={mainRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-kumo-base">
+        <main ref={mainRef} onScroll={(event) => {
+          const element = event.currentTarget;
+          autoFollowConversation.current =
+            element.scrollHeight - element.scrollTop - element.clientHeight < 96;
+        }} className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-kumo-base">
           <div className="mx-auto max-w-3xl space-y-6 px-4 py-6 sm:px-5 sm:py-8">
             {projectsOpen ? (
               <section className="rounded-xl border border-kumo-line bg-kumo-base p-4" aria-label="Mis proyectos">
@@ -1431,7 +1444,6 @@ function App() {
               </div>
             ) : null}
 
-            <div ref={endRef} />
           </div>
         </main>
 

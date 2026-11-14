@@ -41,6 +41,12 @@ function rig(routerReady: boolean) {
 }
 
 describe("actual session model dispatch", () => {
+  test("the economical simple profile keeps its configured provider model", async () => {
+    const app = rig(true);
+    await app.send("economy");
+    expect(app.configured).toEqual([{providerID:"openrouter",id:"deepseek/deepseek-v4.1-flash-1017"}]);
+    expect(app.requests).toHaveLength(1);
+  });
   test("the Auto Code choice reaches the real harness model setter", async () => {
     const app = rig(true);
     await app.send("openrouter:openrouter/auto-code");
@@ -52,6 +58,21 @@ describe("actual session model dispatch", () => {
     const app = rig(true);
     await app.send("openrouter:openrouter/auto");
     expect(app.configured).toEqual([{ providerID: "openrouter", id: "openrouter/auto" }]);
+  });
+  test("a concrete tool-capable OpenRouter model reaches the session setter", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({data:[{
+      id:"openai/gpt-4.1-mini", name:"GPT-4.1 mini",
+      supported_parameters:["tools"], pricing:{prompt:"0.000001",completion:"0.000004"}
+    }]}), {status:200,headers:{"content-type":"application/json"}});
+    try {
+      const app = rig(true);
+      await app.send("openrouter:openai/gpt-4.1-mini");
+      expect(app.configured).toEqual([{providerID:"openrouter",id:"openai/gpt-4.1-mini"}]);
+      expect(app.requests).toHaveLength(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
   test("no private credential means no OpenRouter invocation", async () => {
     const app = rig(false);
