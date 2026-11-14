@@ -22,9 +22,9 @@
 
 ## Cloudflare
 
-- Antes de este despliegue candidato, Staging servía `2200edc9-e94d-4846-86de-ff2e7cafdfa7` en `opencode-g1-staging`.
+- Al comenzar esta aceptación, Staging servía `91a88a43-8ef4-408b-ba0e-15c266b16ea5` en `opencode-g1-staging`.
 - Producción continúa en `ded98d4d-7bd9-45d5-8176-8ace6431ec5b`.
-- El disparador de Cloudflare existente construye desde la rama de esta PR con `wrangler.g1.jsonc` y despliega al Worker exclusivo de Staging.
+- El Worker de Staging ahora sigue la rama de esta PR; el disparador anterior de G9 quedó cerrado y no se reabrió. El build usa `wrangler.g1.jsonc` y solo despliega al Worker exclusivo de Staging.
 
 ## Acceso remoto de prueba
 
