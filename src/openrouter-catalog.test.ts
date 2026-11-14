@@ -22,9 +22,15 @@ describe("OpenRouter model selection", () => {
     const models = parseOpenRouterCatalogue({ data: [
       { id: "sample/chat", name: "Plain chat", supported_parameters: [] },
       { id: "sample/coder", name: "Coding Model", context_length: 32768,
-        supported_parameters: ["tools"], pricing: { prompt: "0.000001", completion: "0.000002" } }
+        supported_parameters: ["tools"], pricing: { prompt: "0.000001", completion: "0.000002" } },
+      { id: "google/gemini-4-hydrogen", name: "Google: Gemini 4 Hydrogen",
+        supported_parameters: ["tools"] },
+      { id: "google/gemini-4-hydrogen:batch", name: "Google: Gemini 4 Hydrogen (batch)",
+        supported_parameters: ["tools"] }
     ] });
     expect(models.find(x => x.id === "sample/chat")).toBeUndefined();
+    expect(models.find(x => x.id === "google/gemini-4-hydrogen")).toBeDefined();
+    expect(models.find(x => x.id === "google/gemini-4-hydrogen:batch")).toBeUndefined();
     expect(models.find(x => x.id === "sample/coder")).toMatchObject({
       contextLength: 32768, promptPerMillion: 1, completionPerMillion: 2, tools: true
     });

@@ -29,6 +29,11 @@ export function parseOpenRouterCatalogue(payload: unknown): OpenRouterCatalogMod
     const data = entry as Record<string, unknown>;
     const id = data.id;
     if (typeof id !== "string" || !isOpenRouterSelection("openrouter:" + id)) continue;
+    // OpenCode resolves the trailing colon as a model variant. OpenRouter's
+    // :batch catalogue entry currently reaches that resolver as
+    // `...gemini-4-hydrogen:batch` and fails before inference, so don't offer
+    // batch variants until the harness can resolve them correctly.
+    if (id.endsWith(":batch")) continue;
     const declared = data.supported_parameters;
     const supportsTools = OPENROUTER_AUTO.some(auto => auto === id) ||
       (Array.isArray(declared) && declared.includes("tools"));

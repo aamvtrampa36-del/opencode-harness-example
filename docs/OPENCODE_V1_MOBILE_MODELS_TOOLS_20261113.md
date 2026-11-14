@@ -6,6 +6,7 @@
 
 - El chat solo sigue los fragmentos nuevos mientras el lector permanezca al final. Abrir conversaciones pausa el seguimiento; el scroll queda dentro del panel para mantener visibles la cabecera y la entrada.
 - Los perfiles simples siguen intactos. Los modelos OpenRouter concretos, `openrouter/auto` y `openrouter/auto-code` llegan a `handle.setModel` por sesión.
+- Staging registró `ModelUnavailableError` para `google/gemini-4-hydrogen:batch` antes de llamar al proveedor. Se quitó la variante `:batch` del catálogo del selector y de su validación; el modelo Gemini 4 Hydrogen normal se conserva.
 - El hook de contexto ofrece `read/ls/find` en conversaciones sin proyecto; las sesiones con proyecto reciben Linux aislado y GitHub solo cuando hay un repositorio vinculado. La validación de ámbito también se mantiene en la ejecución.
 
 ## Verificación
@@ -13,6 +14,7 @@
 - Suite completa: **285 pruebas aprobadas**; también pasaron `typecheck`, `vite build`, preview HTTP e invariantes.
 - Playwright, 393 × 852: menú lateral y nueva conversación funcionan; no hay scroll horizontal; la cabecera permanece fija; nuevos fragmentos no fuerzan el scroll si se está leyendo arriba. Esta prueba local usa una respuesta WebSocket simulada.
 - Las pruebas del harness verifican el envío del perfil económico, un modelo concreto con herramientas, Auto Router y Auto Code; las pruebas de herramientas cubren sesión sin proyecto, Linux y repositorio GitHub.
+- Tras la corrección: prueba de catálogo de OpenRouter, `typecheck`, compilación y consulta no facturable al catálogo público aprobados. No se repitió la llamada pagada al modelo.
 
 ## Límites
 
