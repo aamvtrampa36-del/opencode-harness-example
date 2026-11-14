@@ -14,7 +14,22 @@ body,
 }
 
 body {
+  height: 100dvh;
   min-height: 100vh;
+  overflow: hidden;
+  overscroll-behavior-y: none;
+}
+
+button,
+input,
+select,
+textarea,
+a {
+  touch-action: manipulation;
+}
+
+main {
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Streamdown theme bridge — maps shadcn-style tokens to Kumo semantics */

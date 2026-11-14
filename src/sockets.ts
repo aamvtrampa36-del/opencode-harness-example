@@ -299,6 +299,15 @@ export class OpenCodeSessionSockets {
         configuration.operations.add(receipt.operationId);
         this.#activeConfigurations.set(session, configuration);
         await this.#broadcastSnapshot(session);
+        const activeSessions = await this.#harness.sessions.list();
+        for (const socket of this.#getWebSockets()) {
+          send(socket, {
+            type: "sessions",
+            sessions: activeSessions.map((info) =>
+              info.id === session ? { ...info, busy: true } : info
+            )
+          });
+        }
         // Once the operation settles, send the final transcript and stop
         // watching if nothing else is running. This holds even if the watch
         // attached after the run's last event.

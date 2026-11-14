@@ -26,6 +26,13 @@
 - Producción continúa en `ded98d4d-7bd9-45d5-8176-8ace6431ec5b`.
 - El disparador de Cloudflare existente construye desde la rama de esta PR con `wrangler.g1.jsonc` y despliega al Worker exclusivo de Staging.
 
+## Acceso remoto de prueba
+
+- `.github/workflows/staging-mobile-e2e.yml` permite ejecutar Playwright en Staging a 393 × 852. No se ejecuta con cada commit; la acción es manual para evitar consumo involuntario.
+- Requiere una política `Service Auth` con un token de servicio limitado a la aplicación Access de Staging y los secretos de repositorio `CF_ACCESS_CLIENT_ID` y `CF_ACCESS_CLIENT_SECRET`. La regla del propietario permanece activa.
+- La credencial no se creó en esta sesión porque no hay un canal seguro para guardarla directamente en GitHub Actions Secrets. El propietario debe crear el token en Cloudflare Access, guardarlo allí y avisar para añadir la política limitada; no debe pegar el secreto en el chat.
+- La prueba de navegador excluye Producción. El mensaje real de OpenRouter es opcional y usa el perfil económico; el flujo normal de CI no consume saldo.
+
 ## Publicación
 
 Mantener la candidata sin merge ni despliegue productivo. Solicitar aprobación explícita del propietario solo cuando concluyan las pruebas de Staging que dependen de su sesión autenticada.

@@ -11,7 +11,8 @@
     "deploy": "vite build && wrangler deploy",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types env.d.ts --include-runtime false",
-    "selftest": "bun scripts/selftest.mjs"
+    "selftest": "bun scripts/selftest.mjs",
+    "test:staging:mobile": "node scripts/test-staging-mobile.mjs"
   },
   "dependencies": {
     "@cloudflare/computer": "0.10.0",
@@ -32,6 +33,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.2.1",
+    "playwright": "1.65.1",
     "tailwindcss": "4.3.5",
     "typescript": "6.0.3",
     "vite": "8.3.6",

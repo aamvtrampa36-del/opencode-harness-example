@@ -46,6 +46,9 @@ describe("actual session model dispatch", () => {
     await app.send("economy");
     expect(app.configured).toEqual([{providerID:"openrouter",id:"deepseek/deepseek-v4.1-flash-1017"}]);
     expect(app.requests).toHaveLength(1);
+    const sessions = app.sent.map(message => JSON.parse(message) as { type?: string; sessions?: { id: string; busy: boolean }[] })
+      .find(message => message.type === "sessions");
+    expect(sessions?.sessions).toEqual([{ id: "ses_root", busy: true }]);
   });
   test("the Auto Code choice reaches the real harness model setter", async () => {
     const app = rig(true);

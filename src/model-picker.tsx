@@ -45,6 +45,15 @@ export function ModelPicker({ value, onChange, routerReady, disabled = false }: 
     return () => { ignore = true; };
   }, [open, level, routerReady, models.length]);
 
+  useEffect(() => {
+    if (!open) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [open]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return models.filter(m => !q || m.name.toLowerCase().includes(q) ||
@@ -59,9 +68,9 @@ export function ModelPicker({ value, onChange, routerReady, disabled = false }: 
 
   return (
     <div className="shrink-0">
-      <button type="button" disabled={disabled} aria-label="Elegir modelo de IA"
+      <button type="button" disabled={disabled} aria-label={`Elegir modelo de IA: ${current}`}
         aria-haspopup="dialog" aria-expanded={open}
-        className="flex min-h-10 max-w-[48vw] items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-left text-sm font-medium hover:bg-kumo-elevated disabled:opacity-50 sm:max-w-[240px]"
+        className="flex min-h-10 max-w-[42vw] items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-left text-sm font-medium hover:bg-kumo-elevated disabled:opacity-50 sm:max-w-[240px]"
         onClick={() => { setLevel(isModelPreset(value) ? "simple" : "advanced"); setOpen(true); }}>
         <span className="truncate">{current}</span>
         <span aria-hidden="true" className="text-kumo-subtle">⌄</span>
@@ -70,7 +79,7 @@ export function ModelPicker({ value, onChange, routerReady, disabled = false }: 
         <div className="fixed inset-0 z-[90] flex items-end justify-center bg-black/45 sm:items-center sm:p-4"
           onMouseDown={event => { if (event.target === event.currentTarget) setOpen(false); }}>
           <section role="dialog" aria-modal="true" aria-label="Seleccionar modelo"
-            className="flex max-h-[86dvh] w-full max-w-[460px] flex-col overflow-hidden rounded-t-[28px] border border-kumo-line bg-kumo-base p-4 shadow-2xl sm:rounded-[28px]">
+            className="flex max-h-[86dvh] w-full max-w-[460px] flex-col overflow-hidden rounded-t-[28px] border border-kumo-line bg-kumo-base p-4 pb-[env(safe-area-inset-bottom)] shadow-2xl sm:rounded-[28px] sm:pb-4">
             <div className="mb-4 flex items-center justify-between gap-2">
               <h2 className="text-lg font-semibold">Elegir modelo</h2>
               <button type="button" aria-label="Cerrar selector" className="rounded-xl px-3 py-2 hover:bg-kumo-elevated"
@@ -93,7 +102,7 @@ export function ModelPicker({ value, onChange, routerReady, disabled = false }: 
                 {Object.entries(MODEL_PRESETS).map(([id, preset]) => (
                   <button key={id} type="button" role="option" aria-selected={value === id}
                     disabled={preset.providerID === "openrouter" && !routerReady}
-                    className="flex min-h-12 w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm hover:bg-kumo-elevated disabled:opacity-40"
+                    className={`flex min-h-12 w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm hover:bg-kumo-elevated disabled:opacity-40 ${value === id ? "bg-kumo-elevated font-semibold" : ""}`}
                     onClick={() => pick(id as ModelSelectionID)}>
                     <span>{preset.label}</span><span aria-hidden="true">{value === id ? "✓" : ""}</span>
                   </button>
@@ -108,7 +117,8 @@ export function ModelPicker({ value, onChange, routerReady, disabled = false }: 
                     <div className="grid grid-cols-2 gap-2">
                       {OPENROUTER_AUTO.map(id => (
                         <button key={id} type="button"
-                          className="min-h-14 rounded-xl border border-kumo-line p-2 text-left text-sm hover:bg-kumo-elevated"
+                          aria-pressed={value === "openrouter:" + id}
+                          className={`min-h-14 rounded-xl border p-2 text-left text-sm hover:bg-kumo-elevated ${value === "openrouter:" + id ? "border-kumo-accent bg-kumo-elevated" : "border-kumo-line"}`}
                           onClick={() => pick(("openrouter:" + id) as ModelSelectionID)}>
                           <strong className="block">{routerName(id)}</strong>
                           <span className="text-xs text-kumo-subtle">Costo según el modelo elegido</span>
@@ -128,7 +138,7 @@ export function ModelPicker({ value, onChange, routerReady, disabled = false }: 
                       {catalogError ? <p role="alert" className="p-3 text-sm text-kumo-danger">{catalogError}</p> : null}
                       {filtered.map(model => (
                         <button key={model.id} type="button" role="option" aria-selected={value === "openrouter:" + model.id}
-                          className="block w-full rounded-xl px-3 py-2.5 text-left hover:bg-kumo-elevated"
+                          className={`block w-full rounded-xl px-3 py-2.5 text-left hover:bg-kumo-elevated ${value === "openrouter:" + model.id ? "bg-kumo-elevated" : ""}`}
                           onClick={() => pick(("openrouter:" + model.id) as ModelSelectionID)}>
                           <span className="block truncate text-sm font-medium">{model.name}</span>
                           <span className="block truncate text-xs text-kumo-subtle">{model.id}</span>

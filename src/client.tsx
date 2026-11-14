@@ -13,7 +13,6 @@ import {
   InputArea,
   PoweredByCloudflare,
   Surface,
-  Text
 } from "@cloudflare/kumo";
 import {
   BrainIcon,
@@ -22,7 +21,6 @@ import {
   FilePlusIcon,
   GearIcon,
   GitBranchIcon,
-  InfoIcon,
   ListIcon,
   LinkIcon,
   DownloadSimpleIcon,
@@ -431,13 +429,21 @@ function App() {
   const [sessionsOpen, setSessionsOpen] = useState(
     () => window.matchMedia("(min-width: 1100px)").matches
   );
+  useEffect(() => {
+    if (!actionsOpen && !projectsOpen && !settingsOpen) return;
+    const closeOverlays = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setActionsOpen(false);
+      setProjectsOpen(false);
+      setSettingsOpen(false);
+    };
+    window.addEventListener("keydown", closeOverlays);
+    return () => window.removeEventListener("keydown", closeOverlays);
+  }, [actionsOpen, projectsOpen, settingsOpen]);
   const autoFollowConversation = useRef(true);
   const pendingUsage = useRef<{ session: string; project: string; base: number } | null>(null);
   const wasBusy = useRef(false);
   const mainRef = useRef<HTMLElement>(null);
-  useEffect(() => {
-    if (projectsOpen) mainRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-  }, [projectsOpen]);
   const {
     status,
     openRouterAvailable,
@@ -962,6 +968,9 @@ function App() {
               <button
                 type="button"
                 key={info.id}
+                data-session-id={info.id}
+                aria-current={info.id === session ? "page" : undefined}
+                aria-label={`Conversación ${info.title ?? (info.id === ROOT_SESSION ? "Principal" : info.id.slice(-10))}${info.busy ? " · tarea en curso" : ""}`}
                 onClick={() => choose(info.id)}
                 className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ${
                   info.id === session
@@ -1000,7 +1009,7 @@ function App() {
 
       <section className="flex min-h-0 min-w-0 flex-col" aria-label="Chat">
         <header className="relative z-20 shrink-0 border-b border-kumo-line bg-kumo-base">
-          <div className="mx-auto flex min-h-[60px] max-w-5xl flex-col gap-0 px-3 py-2 sm:gap-1 sm:px-5">
+          <div className="mx-auto max-w-5xl px-3 py-2 sm:px-5">
             <div className="flex w-full min-w-0 items-center justify-between gap-1.5">
               <Button
                 variant="ghost"
@@ -1017,35 +1026,39 @@ function App() {
                 <h1 className="truncate text-base font-semibold">
                   OpenCode Cloud
                 </h1>
-                <p className="hidden truncate text-xs text-kumo-subtle sm:block">Sesión <code>{session}</code></p>
+                <p role="status" aria-live="polite" className="truncate text-[11px] text-kumo-subtle">
+                  {busy ? "Tarea en curso" : connected ? "En línea" : status === "connecting" ? "Conectando" : "Reconectando"}
+                </p>
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-1">
                 <ModelPicker value={openRouterAvailable ? modelPreset : "cloudflare"}
                   onChange={selectModel} routerReady={openRouterAvailable} disabled={busy} />
                 <Button type="button" variant="ghost" shape="square"
                   aria-label="Mostrar opciones de OpenCode" aria-expanded={actionsOpen}
-                  className="sm:hidden" onClick={() => setActionsOpen(open => !open)}
+                  aria-controls="opencode-options"
+                  onClick={() => setActionsOpen(open => !open)}
                   icon={<GearIcon size={18} />} />
               </div>
             </div>
-            <div className={`absolute inset-x-2 top-full z-30 ${actionsOpen ? "flex" : "hidden"} max-h-[65dvh] flex-col gap-2 overflow-y-auto rounded-2xl border border-kumo-line bg-kumo-base p-3 shadow-xl sm:static sm:flex sm:max-h-none sm:w-full sm:flex-row sm:flex-wrap sm:items-center sm:gap-1.5 sm:overflow-visible sm:rounded-none sm:border-0 sm:p-0 sm:shadow-none`}>
+            <div id="opencode-options" aria-label="Opciones de OpenCode"
+              className={`absolute inset-x-2 top-full z-30 ${actionsOpen ? "flex sm:grid" : "hidden"} max-h-[70dvh] flex-col gap-2 overflow-y-auto overscroll-contain rounded-2xl border border-kumo-line bg-kumo-base p-3 shadow-xl sm:left-auto sm:right-5 sm:w-[min(94vw,520px)] sm:grid-cols-2 sm:gap-2`}>
               <Button type="button" variant="ghost" size="sm"
                 aria-label="Gestionar mis proyectos" title="Ver proyectos creados"
-                onClick={() => { setProjectsOpen(v => !v); void loadProjects(); }}>
+                onClick={() => { setActionsOpen(false); setProjectsOpen(true); void loadProjects(); }}>
                 <CodeIcon size={16} />
-                <span className="hidden sm:inline">Proyectos</span>
+                <span>Proyectos</span>
               </Button>
               <Button
                 type="button"
                 size="sm"
                 variant="secondary"
                 disabled={!connected}
-                onClick={() => startNewApp("web")}
+                onClick={() => { setActionsOpen(false); startNewApp("web"); }}
                 aria-label="Crear nueva aplicación"
                 title="Crea una sesión nueva y redacta tu idea de aplicación"
               >
                 <PlusIcon size={14} />
-                <span className="hidden sm:inline">Crear app</span>
+                <span>Crear app</span>
               </Button>
               <a
                 href={"/api/session/export?" + new URLSearchParams({ object, session }).toString()}
@@ -1071,7 +1084,7 @@ function App() {
                   )}
                 >
                   <EyeIcon size={16} />
-                  <span className="hidden sm:inline">Ver app</span>
+                  <span>Ver app</span>
                 </Button>
               ) : null}
               {project ? (
@@ -1101,10 +1114,11 @@ function App() {
                   navigator.clipboard.writeText(shared.toString())
                     .then(() => setLinkCopied(true))
                     .catch(() => setLinkCopied(false));
+                  setActionsOpen(false);
                 }}
               >
                 <LinkIcon size={16} />
-                <span className="hidden sm:inline">{linkCopied ? "Copiado" : "Vincular"}</span>
+                <span>{linkCopied ? "Copiado" : "Vincular"}</span>
               </Button>
               <select aria-label="Plantilla de trabajo" title="Plantilla editable: cambia instrucciones, modo y modelo sugerido"
                 disabled={busy} value={specialization} onChange={(e) => {
@@ -1139,9 +1153,9 @@ function App() {
               <Button type="button" variant="ghost" size="sm"
                 aria-label="Configurar conexiones y modelos"
                 title="OpenRouter, GitHub y presupuesto"
-                onClick={() => setSettingsOpen(open => !open)}>
+                onClick={() => { setActionsOpen(false); setSettingsOpen(true); }}>
                 <GearIcon size={17} />
-                <span className="hidden sm:inline">Configurar</span>
+                <span>Configurar</span>
               </Button>
               <Badge variant={connected ? "success" : "secondary"}>
                 {connected
@@ -1169,12 +1183,21 @@ function App() {
         }} className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-kumo-base">
           <div className="mx-auto max-w-3xl space-y-6 px-4 py-6 sm:px-5 sm:py-8">
             {projectsOpen ? (
-              <section className="rounded-xl border border-kumo-line bg-kumo-base p-4" aria-label="Mis proyectos">
+              <div className="fixed inset-0 z-[80] flex items-end justify-center bg-black/45 sm:items-center sm:p-4"
+                onMouseDown={event => { if (event.target === event.currentTarget) setProjectsOpen(false); }}>
+              <section role="dialog" aria-modal="true" aria-label="Mis proyectos"
+                className="max-h-[92dvh] w-full max-w-3xl overflow-y-auto overscroll-contain rounded-t-[24px] border border-kumo-line bg-kumo-base p-4 shadow-2xl sm:rounded-2xl"
+                onMouseDown={event => event.stopPropagation()}>
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="text-base font-semibold">Proyectos del entorno Linux</h2>
-                  <button className="rounded border border-kumo-line px-2 py-1 text-xs" type="button"
-                    onClick={() => void loadProjects()}>Actualizar</button>
+                  <div className="flex shrink-0 gap-2">
+                    <button className="min-h-10 rounded-lg border border-kumo-line px-3 py-2 text-xs" type="button"
+                      onClick={() => void loadProjects()}>Actualizar</button>
+                    <button className="min-h-10 rounded-lg border border-kumo-line px-3 py-2 text-xs" type="button"
+                      aria-label="Cerrar proyectos" onClick={() => setProjectsOpen(false)}>Cerrar</button>
+                  </div>
                 </div>
+                <p className="mt-2 text-xs text-kumo-subtle">Elige un proyecto para iniciar una conversación aislada. Las copias se guardan y recuperan manualmente.</p>
                 <div className="mt-3 space-y-2 rounded-md border border-kumo-line p-3" aria-label="Repositorio aislado G8">
                   <label className="block text-sm font-medium" htmlFor="repo-g8">Repositorio GitHub para la tarea</label>
                   <p className="text-xs text-kumo-subtle">
@@ -1326,44 +1349,18 @@ function App() {
                   </div>
                 ) : null}
               </section>
+              </div>
             ) : null}
             {settingsOpen ? (
-              <SettingsPanel workspace={object} onClose={() => setSettingsOpen(false)}
-                onChanged={() => { void refreshIntegrations(); void refreshSpecializations(); }} />
-            ) : null}
-            <Surface className="rounded-xl p-3 ring ring-kumo-line">
-              <div className="flex gap-3">
-                <InfoIcon size={18} weight="bold" className="mt-0.5 shrink-0 text-kumo-accent" />
-                <div className="min-w-0 space-y-1">
-                  <Text size="sm" bold>Tu espacio de desarrollo</Text>
-                  <p className="text-xs text-kumo-subtle">
-                    Crea aplicaciones con Linux, consulta conversaciones anteriores o prepara borradores narrativos.
-                    Los proyectos pueden descargarse; las copias automáticas externas aún no están configuradas.
-                  </p>
-                  {project ? (
-                    <button className="mt-1 rounded-md border border-kumo-line px-3 py-1.5 text-xs"
-                      type="button" disabled={!connected}
-                      title="Crea otra sesión de revisión independiente; utiliza tokens de IA"
-                      onClick={() => create({ project }).then(next => {
-                        localStorage.setItem(PROJECT_PREFIX + next, project);
-                        choose(next);
-                        setModeForSession(next, "review");
-                      }, fail)}>
-                      Delegar revisión independiente (consume tokens)
-                    </button>
-                  ) : null}
-                  {integrations ? (
-                    <p className="text-xs text-kumo-subtle">
-                      OpenRouter: {integrations.openRouterConfigured ? "configurado" : "pendiente"} ·
-                      GitHub: {integrations.githubConfigured ? "configurado" : "pendiente"}.
-                      {(!integrations.openRouterConfigured || !integrations.githubConfigured) ? (
-                        <> <button className="underline" type="button" onClick={() => setSettingsOpen(true)}>Conectar desde aquí</button></>
-                      ) : null}
-                    </p>
-                  ) : null}
+              <div className="fixed inset-0 z-[80] flex items-end justify-center bg-black/45 sm:items-center sm:p-4"
+                onMouseDown={event => { if (event.target === event.currentTarget) setSettingsOpen(false); }}>
+                <div className="max-h-[92dvh] w-full max-w-3xl overflow-y-auto overscroll-contain rounded-t-[24px] bg-kumo-base shadow-2xl sm:rounded-2xl"
+                  onMouseDown={event => event.stopPropagation()}>
+                  <SettingsPanel workspace={object} onClose={() => setSettingsOpen(false)}
+                    onChanged={() => { void refreshIntegrations(); void refreshSpecializations(); }} />
                 </div>
               </div>
-            </Surface>
+            ) : null}
 
             {empty ? (
               <div className="py-10 sm:py-16">
@@ -1448,24 +1445,31 @@ function App() {
         </main>
 
         <div className="shrink-0 bg-kumo-base pb-[env(safe-area-inset-bottom)]">
+          <div className="mx-auto flex max-w-3xl items-center gap-2 px-3 pt-1 sm:px-5">
+            <button type="button" aria-label="Cambiar proyecto"
+              onClick={() => { setProjectsOpen(true); void loadProjects(); }}
+              className="flex min-h-10 min-w-0 max-w-[60%] items-center gap-2 rounded-xl px-3 text-left text-xs font-medium hover:bg-kumo-elevated">
+              <CodeIcon size={15} className="shrink-0 text-kumo-subtle" />
+              <span className="truncate">{project || "Elegir proyecto"}</span>
+            </button>
+            <details className="relative ml-auto text-xs">
+              <summary className="min-h-10 cursor-pointer list-none rounded-xl px-3 py-2.5 text-kumo-subtle hover:bg-kumo-elevated">
+                Actividad
+              </summary>
+              <div className="absolute bottom-full right-0 z-30 mb-2 w-[min(88vw,340px)] space-y-2 rounded-xl border border-kumo-line bg-kumo-base p-3 text-xs shadow-xl">
+                <p aria-live="polite">{toolsCompleted} herramientas completadas{toolsFailed ? ` · ${toolsFailed} fallidas` : ""} en esta sesión.</p>
+                <p title="El cambio de consumo de OpenRouter es de cuenta, no una factura de la tarea">{lastCost}</p>
+              </div>
+            </details>
+          </div>
           <form
             onSubmit={(event) => {
               event.preventDefault();
               submit();
             }}
-            className="mx-auto max-w-3xl px-3 pt-2 sm:px-5"
+            className="mx-auto max-w-3xl px-3 pt-1 sm:px-5"
           >
-            <p role="status" className="mb-2 text-xs text-kumo-subtle">
-              Los proyectos anteriores se conservan. Para editarlos, restaura una copia con un nombre nuevo.
-            </p>
-            <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-2 text-[11px] text-kumo-subtle">
-              <span>Proyecto: <strong className="text-kumo-default">{project || "Sin seleccionar"}</strong></span>
-              <button type="button" className="underline"
-                onClick={() => { setProjectsOpen(true); void loadProjects(); }}>Cambiar proyecto</button>
-              <span aria-live="polite">{busy ? "Ejecutando" : "Disponible"} · {toolsCompleted} herramientas completadas en esta sesión{toolsFailed ? " · " + toolsFailed + " fallidas" : ""}</span>
-              <span title="El cambio de consumo de OpenRouter es de cuenta, no una factura de la tarea">{lastCost}</span>
-            </div>
-            <div className="flex items-end gap-2 rounded-[26px] border border-kumo-line bg-kumo-elevated p-2.5 shadow-lg transition-shadow focus-within:ring-2 focus-within:ring-kumo-ring">
+            <div className="flex min-h-[52px] items-end gap-2 rounded-[26px] border border-kumo-line bg-kumo-elevated p-2.5 shadow-lg transition-shadow focus-within:ring-2 focus-within:ring-kumo-ring">
               <InputArea
                 value={prompt}
                 onValueChange={setPrompt}
