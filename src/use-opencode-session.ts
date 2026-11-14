@@ -1,6 +1,6 @@
 import { trySendJson } from "./ws-send";
 import type { AgentMode } from "./protocol";
-import type { ModelPresetID } from "./model-presets";
+import type { ModelSelectionID } from "./model-presets";
 import type {
   OpenCodeMessage,
   OpenCodePendingOperation,
@@ -213,7 +213,7 @@ export function useOpenCodeSession(
 
   /** Idle: starts a run. Busy: queued as a follow-up, or steers the run. */
   const submit = useCallback(
-    (text: string, whenBusy: "followUp" | "steer" = "followUp", model: ModelPresetID = "cloudflare", mode: AgentMode = "build", specialization?: string, project?: string, repository?: string) => {
+    (text: string, whenBusy: "followUp" | "steer" = "followUp", model: ModelSelectionID = "cloudflare", mode: AgentMode = "build", specialization?: string, project?: string, repository?: string) => {
       const accepted = send({ type: "submit", id: crypto.randomUUID(), text, whenBusy, model, mode,
         ...(specialization ? { specialization } : {}),
         ...(project ? { project } : {}),

@@ -24,6 +24,11 @@ describe("G8 project isolation", () => {
     expect(()=>assertScopedTool(a,{kind:"github",repo:repos[0]})).not.toThrow();
     expect(()=>assertScopedTool(a,{kind:"linux",project:"cdf-cloud"})).not.toThrow();
   });
+  test("keeps the shared Workspace available only to conversations without a project", () => {
+    const a=validateProjectScope({project:"cdf-cloud",repository:repos[0]},repos);
+    expect(()=>assertScopedTool(undefined,{kind:"workspace-write"})).not.toThrow();
+    expect(()=>assertScopedTool(a,{kind:"workspace-write"})).toThrow("desactivada");
+  });
   test("cannot silently change the scoped project of a session", () => {
     const a=validateProjectScope({project:"cdf-cloud",repository:repos[0]},repos);
     expect(requireSameScope(a,{...a})).toEqual(a);

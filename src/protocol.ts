@@ -1,5 +1,5 @@
 export type AgentMode = "build" | "plan" | "review" | "creative";
-import type { ModelPresetID } from "./model-presets";
+import type { ModelSelectionID } from "./model-presets";
 import type {
   OpenCodeMessage,
   OpenCodePendingOperation,
@@ -22,7 +22,7 @@ export type ClientMessage =
       readonly id?: string;
       readonly text: string;
       readonly whenBusy?: OpenCodeWhenBusy;
-      readonly model?: ModelPresetID;
+      readonly model?: ModelSelectionID;
       readonly mode?: AgentMode;
       readonly specialization?: string;
       readonly project?: string;

@@ -44,6 +44,12 @@ export function requireSameScope(existing: ProjectScope | undefined, next: Proje
 
 /** Tool arguments are treated as untrusted even when an LLM generated them. */
 export function assertScopedTool(scope: ProjectScope | undefined, tool: ScopedToolAction): void {
+  if (tool.kind === "workspace-write") {
+    // The shared Workspace is the fallback for conversations with no project.
+    // A project-bound session must use its isolated Linux or GitHub tools.
+    if (scope) throw new Error("Herramienta de workspace global desactivada para sesiones de proyectos");
+    return;
+  }
   if (!scope) throw new Error("Sesión sin proyecto asignado: selecciona proyecto y envía una tarea nueva");
   if (tool.kind === "linux") {
     if (tool.project !== scope.project) throw new Error("Herramienta Linux bloqueada: proyecto distinto al de la sesión");
@@ -55,8 +61,4 @@ export function assertScopedTool(scope: ProjectScope | undefined, tool: ScopedTo
     }
     return;
   }
-  // The global persistent workspace is not project-isolated. While a
-  // project-bound task runs, all generic reads and writes are disabled;
-  // use the scoped Linux project or the scoped GitHub bridge instead.
-  throw new Error("Herramienta de workspace global desactivada para sesiones de proyectos");
 }

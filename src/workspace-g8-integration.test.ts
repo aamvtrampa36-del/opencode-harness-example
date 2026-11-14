@@ -118,26 +118,61 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
     expect(runs).toEqual([{project:"cdf-cloud-engine",session:"ses_test"}]);
   });
 
-  test("project sessions cannot read the shared global workspace", async () => {
+  test("session context exposes global tools only without a project", async () => {
     const toolSpecs = new Map<string, any>();
-    const plugin = workspacePlugin({} as Workspace, {}, undefined, undefined,
-      async (_session, action) => assertScopedTool({project:"cdf-cloud-engine"}, action));
+    const repo = "aamvtrampa36-del/cdf-cloud-engine";
+    let filterContext: ((event: {sessionID: string; tools: Record<string, unknown>}) => void | Promise<void>) | undefined;
+    const plugin = workspacePlugin(
+      {} as Workspace,
+      {},
+      { inspect: async () => ({}), run: async () => ({}) } as any,
+      { execute: async () => ({}) },
+      async (session, action) => {
+        if (session !== "ses_project" && session !== "ses_repo") throw new Error("unexpected session");
+        assertScopedTool({project:"cdf-cloud-engine", ...(session === "ses_repo" ? {repository:repo} : {})}, action);
+      },
+      async (session) => {
+        if (session !== "ses_repo") throw new Error("No repository bound");
+        return repo;
+      },
+      async (session) => session === "ses_free" ? "" : "cdf-cloud-engine"
+    );
     await plugin.setup({
       agent: {transform: async () => undefined},
       tool: {transform: async (cb: (ed:any)=>unknown) => cb({
         remove: () => undefined,
         add: (spec: any) => toolSpecs.set(spec.name,spec)
-      })}
+      })},
+      session: {hook: async (name: string, callback: typeof filterContext) => {
+        expect(name).toBe("context");
+        filterContext = callback;
+        return {dispose: async () => undefined};
+      }}
     } as any);
-    expect(toolSpecs.has("read")).toBe(true);
-    await expect(toolSpecs.get("read").execute(
-      {path:"/other-project/secret.txt"}, {id:"test-read",sessionID:"ses_test",agent:"plan"}
-    )).rejects.toThrow("workspace");
-    for (const name of ["ls", "find", "grep", "glob", "stat"]) {
-      if (!toolSpecs.has(name)) continue;
-      await expect(toolSpecs.get(name).execute(
-        {}, {id:"test-" + name,sessionID:"ses_test",agent:"plan"}
-      )).rejects.toThrow("workspace");
-    }
+
+    const getTools = () => Object.fromEntries([...toolSpecs.keys()].map(name => [name, {}]));
+    const unscoped = getTools();
+    await filterContext!({sessionID:"ses_free", tools:unscoped});
+    expect(unscoped).toHaveProperty("read");
+    expect(unscoped).toHaveProperty("ls");
+    expect(unscoped).toHaveProperty("find");
+    expect(unscoped).not.toHaveProperty("linux");
+    expect(unscoped).not.toHaveProperty("github");
+
+    const projectOnly = getTools();
+    await filterContext!({sessionID:"ses_project", tools:projectOnly});
+    expect(projectOnly).not.toHaveProperty("read");
+    expect(projectOnly).not.toHaveProperty("ls");
+    expect(projectOnly).not.toHaveProperty("find");
+    expect(projectOnly).toHaveProperty("linux");
+    expect(projectOnly).toHaveProperty("inspect_linux");
+    expect(projectOnly).not.toHaveProperty("github");
+
+    const projectWithRepo = getTools();
+    await filterContext!({sessionID:"ses_repo", tools:projectWithRepo});
+    expect(projectWithRepo).not.toHaveProperty("find");
+    expect(projectWithRepo).toHaveProperty("linux");
+    expect(projectWithRepo).toHaveProperty("github");
+    expect(projectWithRepo).toHaveProperty("repo_read");
   });
 });
