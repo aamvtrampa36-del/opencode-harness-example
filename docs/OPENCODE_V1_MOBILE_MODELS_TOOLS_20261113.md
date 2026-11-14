@@ -1,31 +1,31 @@
-# OpenCode Cloud V1 — Actualización móvil / OpenRouter / herramientas (13-11-2026)
+# OpenCode Cloud V1 — Móvil, modelos y herramientas (14-11-2026)
 
-**Estado:** candidata en PR #54 (draft), sin fusión, sin publicación en Producción. G9 continúa cerrado.
+**Estado:** cambios de aceptación en PR #54, rama `feat/mobile-chat-openrouter-tools-20261113`. G9 permanece cerrado. No hay merge ni cambios en Producción.
 
-## Diagnóstico basado en código y sesiones reales
+## Correcciones
 
-1. El cliente ofrecía solo cinco `MODEL_PRESETS`; el protocolo y `sockets.ts` rechazaban cualquier ID fuera de esos presets.
-2. El plugin `workspace.ts` anunciaba herramientas de un Workspace global y luego rechazaba su ejecución para sesiones de proyecto. Esto produjo los errores observados de `ls` y `find` contra `/bundle`. **El rechazo era una medida de seguridad correcta; ofrecer las herramientas era el problema.**
-3. `inspect_linux` exigía que el modelo repitiera exactamente el identificador de proyecto aunque la sesión ya tuviera un scope inmutable. El error `opencode-harness-example` vs `repo-opencode-harness-example` era una selección inválida, no una razón para relajar permisos.
-4. La barra de cabecera existente contenía numerosos botones y selectores con scroll horizontal en Android, y la lista de conversaciones ocupaba toda la pantalla.
+- El chat solo sigue los fragmentos nuevos mientras el lector permanezca al final. Abrir conversaciones pausa el seguimiento; el scroll queda dentro del panel para mantener visibles la cabecera y la entrada.
+- Los perfiles simples siguen intactos. Los modelos OpenRouter concretos, `openrouter/auto` y `openrouter/auto-code` llegan a `handle.setModel` por sesión.
+- El hook de contexto ofrece `read/ls/find` en conversaciones sin proyecto; las sesiones con proyecto reciben Linux aislado y GitHub solo cuando hay un repositorio vinculado. La validación de ámbito también se mantiene en la ejecución.
 
-## Cambios
+## Verificación
 
-- **UI móvil:** cajón lateral de conversaciones con fondo oscurecido, barra superior compacta, configuración secundaria desplegable, modelo visible en la barra superior, mensajes centrados, entrada redondeada y consideración de safe area. Mantiene opciones de temas y modos existentes.
-- **Modelo:** selección simple de cinco perfiles sin cambiar etiquetas ni IDs; selección avanzada de modelos OpenRouter con búsqueda de catálogo remoto y filtro por soporte `tools`; routers oficiales `openrouter/auto` y `openrouter/auto-code`. Muestra precios por millón de tokens si el catálogo los proporciona, **sin atribuir precio fijo a routers**.
-- **Integración:** el modelo avanzado se transmite por WebSocket hasta `handle.setModel({providerID:"openrouter", id})`. El selector se guarda por sesión en el navegador; las plantillas conservan sus presets. El backend comprueba credenciales y, para modelos concretos, pertenencia al catálogo compatible.
-- **Seguridad:** API del catálogo con el mismo control Cloudflare Access que el resto del Worker; no transmite claves. El agente con scope ya no recibe herramientas globales de Workspace; `linux` e `inspect_linux` resuelven la identidad de proyecto a partir del scope confiable, rechazando identificadores incompatibles.
-- **Compatibilidad:** los formularios legados que envían `project` siguen funcionando si coincide con la sesión, y las selecciones de perfil históricas siguen siendo válidas.
+- Suite completa: **285 pruebas aprobadas**; también pasaron `typecheck`, `vite build`, preview HTTP e invariantes.
+- Playwright, 393 × 852: menú lateral y nueva conversación funcionan; no hay scroll horizontal; la cabecera permanece fija; nuevos fragmentos no fuerzan el scroll si se está leyendo arriba. Esta prueba local usa una respuesta WebSocket simulada.
+- Las pruebas del harness verifican el envío del perfil económico, un modelo concreto con herramientas, Auto Router y Auto Code; las pruebas de herramientas cubren sesión sin proyecto, Linux y repositorio GitHub.
 
-## Evidencia y límites
+## Límites
 
-- Pruebas nuevas: validador de IDs y de catálogo OpenRouter, enrutamiento real hacia `setModel` de sesiones del harness para Auto y Auto Code, denegación sin clave, resolución de proyecto en ámbito correcto y rechazo de IDs cruzados.
-- CI en PR #54: `bun test`, vista previa HTTP estática, `tsc --noEmit`, `vite build` e invariantes. **No declarar PASS hasta leer la ejecución correspondiente al HEAD definitivo.**
-- La comprobación automática prueba código y empaquetado, pero **no** prueba interacción táctil en Android, costes reales de OpenRouter ni una inferencia pagada. Faltan una revisión humana móvil y una petición de bajo costo con un modelo y Auto Router en sesión autorizada.
-- Riesgo conocido: en sesiones con guardia de scope, las herramientas genéricas de Workspace dejan de estar disponibles también cuando el usuario no vincula ningún proyecto. Se priorizan GitHub y Linux aislados; revisar si alguien requiere el flujo antiguo antes de publicar.
-- El catálogo usa metadatos públicos de OpenRouter; si su API falla, el selector mostrará error sin exponer secretos. La selección de Auto Router no equivale a un precio fijo; se debe mantener límite de gasto de la clave en el proveedor.
-- **No** desplegar esta rama directamente con el `wrangler.jsonc` de producción en Staging. Antes de un ensayo remoto verificar nombres de Worker, bindings y migraciones. Preferible CI y revisión de diseño sin mutaciones de Staging.
+- El navegador de prueba de Codex no comparte la sesión Access abierta en el navegador del propietario. Staging sigue mostrando el inicio de sesión cuando se abre desde este entorno; por ello no se verificaron conversaciones ni herramientas reales en el Worker desplegado.
+- No se hicieron llamadas pagadas a OpenRouter. Cloudflare no muestra una clave `OPENROUTER_API_KEY` como secreto ligado al Worker; la configuración privada de la aplicación no se pudo consultar desde esta sesión.
+- Lectura real de `package.json` mediante el agente y listado real de un proyecto Linux siguen pendientes de una sesión Staging controlable.
+
+## Cloudflare
+
+- Antes de este despliegue candidato, Staging servía `2200edc9-e94d-4846-86de-ff2e7cafdfa7` en `opencode-g1-staging`.
+- Producción continúa en `ded98d4d-7bd9-45d5-8176-8ace6431ec5b`.
+- El disparador de Cloudflare existente construye desde la rama de esta PR con `wrangler.g1.jsonc` y despliega al Worker exclusivo de Staging.
 
 ## Publicación
 
-No utilizar autorizaciones de G9 como permiso de despliegue. Mantener PR draft hasta concluir las pruebas relevantes, presentar el commit/CI y pedir **autorización explícita para fusionar en main y publicar**. La versión productiva anterior debe permanecer recuperable.
+Mantener la candidata sin merge ni despliegue productivo. Solicitar aprobación explícita del propietario solo cuando concluyan las pruebas de Staging que dependen de su sesión autenticada.
