@@ -54,7 +54,7 @@ export class ExperimentalPinnedReadCache {
     load: () => Promise<PinnedFile>
   ): Promise<PinnedFile> {
     const generation = this.#scope(token);
-    const key = repo.toLowerCase() + "\n" + ref.toLowerCase() + "\n" + path;
+    const key = repo.toLowerCase() + "\n" + ref + "\n" + path;
     const cached = this.#entries.get(key);
     if (cached) {
       if (cached.deadline > Date.now()) {
