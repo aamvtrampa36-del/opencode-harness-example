@@ -20,11 +20,14 @@ const MAX_CACHE_MESSAGES = 2_000;
 export class ExperimentalHistoryTailReader {
   readonly #cache = new Map<string, Cache>();
   readonly #locks = new Map<string, Promise<void>>();
+  /** A reset can happen while an asynchronous tail read is pending. */
+  readonly #generation = new Map<string, number>();
 
   constructor(private readonly harness: Pick<OpenCodeHarness, "use" | "session">) {}
 
   invalidate(session: OpenCodeSessionId): void {
     this.#cache.delete(session);
+    this.#generation.set(session, (this.#generation.get(session) ?? 0) + 1);
   }
 
   async read(session: OpenCodeSessionId, fresh = false): Promise<OpenCodeMessage[]> {
@@ -35,8 +38,9 @@ export class ExperimentalHistoryTailReader {
     this.#locks.set(session, next);
     await previous;
     try {
+      const generation = this.#generation.get(session) ?? 0;
       const old = fresh ? undefined : this.#cache.get(session);
-      if (!old) return this.#full(session);
+      if (!old) return this.#full(session, generation);
       const page = await this.harness.use((opencode) =>
         opencode.message.list({
           sessionID: session,
@@ -53,14 +57,14 @@ export class ExperimentalHistoryTailReader {
           break;
         }
       }
-      if (overlap < 0) return this.#full(session);
+      if (overlap < 0) return this.#full(session, generation);
       const at = old.indices.get(page.data[overlap].id)!;
       const updated = [
         ...old.messages.slice(0, at),
         ...page.data.slice(0, overlap + 1).reverse()
       ];
       // Do not retain unbounded transcripts in the DO's memory.
-      this.#remember(session, updated);
+      this.#remember(session, updated, generation);
       return updated;
     } finally {
       release();
@@ -68,13 +72,15 @@ export class ExperimentalHistoryTailReader {
     }
   }
 
-  async #full(session: OpenCodeSessionId): Promise<OpenCodeMessage[]> {
+  async #full(session: OpenCodeSessionId, generation: number): Promise<OpenCodeMessage[]> {
     const messages = await this.harness.session(session).history();
-    this.#remember(session, messages);
+    this.#remember(session, messages, generation);
     return messages;
   }
 
-  #remember(session: OpenCodeSessionId, messages: readonly OpenCodeMessage[]) {
+  #remember(session: OpenCodeSessionId, messages: readonly OpenCodeMessage[], generation: number) {
+    // An invalidating event during I/O must not revive a stale cache.
+    if ((this.#generation.get(session) ?? 0) !== generation) return;
     if (messages.length > MAX_CACHE_MESSAGES) {
       this.#cache.delete(session);
       return;
