@@ -101,6 +101,7 @@ export class OpenCodeSessionSockets {
   readonly #bindScope: (sessionID: string, value: unknown) => Promise<void>;
   readonly #inheritScope: (source: string, target: string, project: string) => Promise<void>;
   readonly #setSessionModels: (sessionID: string, options: { decisionModel?: string; imageModel?: string }) => Promise<void>;
+  readonly #defaultImageModel: () => Promise<string | undefined>;
   /** One event stream per running session, or its opening. */
   readonly #watches = new Map<
     OpenCodeSessionId,
@@ -133,7 +134,8 @@ export class OpenCodeSessionSockets {
     noteIncident: (event: IncidentObservation) => Promise<void> = async () => undefined,
     bindScope: (sessionID: string, value: unknown) => Promise<void> = async () => undefined,
     inheritScope: (source: string, target: string, project: string) => Promise<void> = async () => undefined,
-    setSessionModels: (sessionID: string, options: { decisionModel?: string; imageModel?: string }) => Promise<void> = async () => undefined
+    setSessionModels: (sessionID: string, options: { decisionModel?: string; imageModel?: string }) => Promise<void> = async () => undefined,
+    getDefaultImageModel: () => Promise<string | undefined> = async () => undefined
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
@@ -143,6 +145,7 @@ export class OpenCodeSessionSockets {
     this.#bindScope = bindScope;
     this.#inheritScope = inheritScope;
     this.#setSessionModels = setSessionModels;
+    this.#defaultImageModel = getDefaultImageModel;
   }
 
   async #record(event: IncidentObservation): Promise<void> {
@@ -304,19 +307,21 @@ export class OpenCodeSessionSockets {
           await handle.setAgent(mode === "build" ? "build" : "plan");
         }
         let specializationPrompt = "";
+        let selectedSpecialization: Specialization | undefined;
         if (message.specialization !== undefined) {
           if (typeof message.specialization !== "string" || !/^[a-z][a-z0-9-]{1,39}$/.test(message.specialization)) {
             throw new Error("Identificador de especialización inválido");
           }
-          const specialization = await this.#specialization(message.specialization);
-          if (!specialization) throw new Error("La especialización seleccionada ya no existe o está desactivada");
-          specializationPrompt = specializationPromptText(specialization);
-          if (!running) await this.#setSessionModels(session, {
-            ...(specialization.decisionModel ? { decisionModel: specialization.decisionModel } : {}),
-            ...(specialization.imageModel ? { imageModel: specialization.imageModel } : {})
+          selectedSpecialization = await this.#specialization(message.specialization);
+          if (!selectedSpecialization) throw new Error("La especialización seleccionada ya no existe o está desactivada");
+          specializationPrompt = specializationPromptText(selectedSpecialization);
+        }
+        if (!running) {
+          const imageModel = selectedSpecialization?.imageModel ?? await this.#defaultImageModel();
+          await this.#setSessionModels(session, {
+            ...(selectedSpecialization?.decisionModel ? { decisionModel: selectedSpecialization.decisionModel } : {}),
+            ...(imageModel ? { imageModel } : {})
           });
-        } else if (!running) {
-          await this.#setSessionModels(session, {});
         }
         const prefixed =
           mode === "review" ? "Revisa críticamente este trabajo. Identifica problemas con evidencia y no modifiques archivos ni producción.\n\n" :

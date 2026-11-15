@@ -43,7 +43,8 @@ describe("G6 live template use without redeployment", () => {
       async () => undefined,
       async () => undefined,
       async () => undefined,
-      async (_session, roles) => { sessionRoles.push(roles); }
+      async (_session, roles) => { sessionRoles.push(roles); },
+      async () => "google/imagen-4"
     );
     const callbacks = service.options().handlers;
     const submit = async (text: string) => {
@@ -58,7 +59,7 @@ describe("G6 live template use without redeployment", () => {
     expect(instructionsUsed[0]).toContain("ALFA-G6");
     expect(agentsUsed).toContain("plan");
     expect(modelsUsed).toHaveLength(1);
-    expect(sessionRoles[0]).toEqual({ decisionModel: "reasoning" });
+    expect(sessionRoles[0]).toEqual({ decisionModel: "reasoning", imageModel: "google/imagen-4" });
 
     // Simulates POST /api/settings/specializations saving a changed record:
     // the same live Agent, socket and code must fetch the new instructions.
@@ -106,7 +107,8 @@ describe("G6 live template use without redeployment", () => {
       async () => undefined,
       async () => undefined,
       async () => undefined,
-      async (_session, roles) => { sessionRoles.push(roles); }
+      async (_session, roles) => { sessionRoles.push(roles); },
+      async () => "openai/gpt-image-1"
     );
     await service.options().handlers.onMessage(socket, JSON.stringify({
       type: "submit", id: "request-image", text: "Haz una ilustración", specialization: profile.id,

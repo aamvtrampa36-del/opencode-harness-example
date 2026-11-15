@@ -101,6 +101,22 @@ export class PersonalSettings extends DurableObject<Env> {
     return this.ctx.storage.get<string>("openrouter-api-key");
   }
 
+  async defaultImageModel(): Promise<string | undefined> {
+    return this.ctx.storage.get<string>("default-image-model-v1");
+  }
+
+  async setDefaultImageModel(model: string | undefined): Promise<void> {
+    if (model === undefined) {
+      await this.ctx.storage.delete("default-image-model-v1");
+      return;
+    }
+    if (typeof model !== "string" || model.length > 160 ||
+        !/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:+-]*$/i.test(model)) {
+      throw new Error("Modelo de imagen inválido");
+    }
+    await this.ctx.storage.put("default-image-model-v1", model);
+  }
+
   async getGitHubKey(): Promise<string | undefined> {
     return this.ctx.storage.get<string>("github-api-key");
   }

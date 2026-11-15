@@ -933,7 +933,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     (incident: IncidentObservation) => this.noteIncident(incident),
     (sessionID: string, input: unknown) => this.bindSessionScope(sessionID, input),
     (source: string, target: string, project: string) => this.inheritSessionScope(source, target, project),
-    (sessionID: string, options: { decisionModel?: string; imageModel?: string }) => this.setSessionModels(sessionID, options)
+    (sessionID: string, options: { decisionModel?: string; imageModel?: string }) => this.setSessionModels(sessionID, options),
+    () => this.personalConfig.defaultImageModel()
   );
   readonly webSockets = new WebSockets(this.sockets.options());
   readonly lifecycle = Lifecycle.install(this)
@@ -1088,6 +1089,36 @@ export default {
           return Response.json({ error: error instanceof Error ? error.message : "Catálogo no disponible." },
             { status: 503, headers: { "Cache-Control": "no-store" } });
         }
+      }
+      if (url.pathname === "/api/settings/image-model") {
+        if (request.method === "GET") {
+          return Response.json({ imageModel: await personal.defaultImageModel() },
+            { headers: { "Cache-Control": "no-store" } });
+        }
+        if (request.method === "POST") {
+          if (!settingsOriginAllowed) return Response.json({ error: "Solicitud de origen no permitido." }, { status: 403 });
+          const raw = await request.text();
+          if (raw.length > 500) return Response.json({ error: "Solicitud demasiado grande." }, { status: 413 });
+          try {
+            const body = JSON.parse(raw) as { imageModel?: unknown };
+            const key = (env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
+              || await personal.getOpenRouterKey();
+            if (!key) return Response.json({ error: "Conecta OpenRouter para guardar un modelo de imagen." }, { status: 409 });
+            if (typeof body.imageModel !== "string") throw new Error("Selecciona un modelo de imagen.");
+            await assertOpenRouterImageModel(body.imageModel, key);
+            await personal.setDefaultImageModel(body.imageModel);
+            return Response.json({ imageModel: body.imageModel }, { headers: { "Cache-Control": "no-store" } });
+          } catch (error) {
+            return Response.json({ error: error instanceof Error ? error.message : "No se pudo guardar el modelo." },
+              { status: 422, headers: { "Cache-Control": "no-store" } });
+          }
+        }
+        if (request.method === "DELETE") {
+          if (!settingsOriginAllowed) return Response.json({ error: "Solicitud de origen no permitido." }, { status: 403 });
+          await personal.setDefaultImageModel(undefined);
+          return Response.json({ imageModel: null }, { headers: { "Cache-Control": "no-store" } });
+        }
+        return new Response("Method not allowed", { status: 405 });
       }
       if (url.pathname === "/api/settings/openrouter/usage" && request.method === "GET") {
         const usage = await personal.openRouterUsage();

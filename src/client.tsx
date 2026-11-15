@@ -425,8 +425,11 @@ function App() {
   const [specializations, setSpecializations] = useState<Specialization[]>([]);
   const [specialization, setSpecialization] = useState(() => readSessionSpecialization(localStorage, object, session));
   const [imageTask, setImageTask] = useState(false);
+  const [defaultImageModel, setDefaultImageModel] = useState("");
+  const [imageModelReady, setImageModelReady] = useState(false);
+  const [imageSetupRequested, setImageSetupRequested] = useState(false);
   const activeSpecialization = specializations.find(item => item.id === specialization);
-  const imageModel = activeSpecialization?.imageModel;
+  const imageModel = activeSpecialization?.imageModel ?? defaultImageModel;
   const [integrations, setIntegrations] = useState<{
     openRouterConfigured: boolean;
     githubConfigured: boolean;
@@ -454,6 +457,11 @@ function App() {
   };
   useEffect(() => {
     void refreshIntegrations(); void refreshSpecializations();
+    void fetch("/api/settings/image-model", { cache: "no-store" })
+      .then(async response => response.ok ? response.json() as Promise<{ imageModel?: string }> : null)
+      .then(result => { if (result) setDefaultImageModel(result.imageModel ?? ""); })
+      .catch(() => undefined)
+      .finally(() => setImageModelReady(true));
     void fetch("/api/settings/repositories", { cache: "no-store" })
       .then(async response => {
         if (!response.ok) throw new Error("GitHub repos unavailable");
@@ -477,6 +485,7 @@ function App() {
       setActionsOpen(false);
       setProjectsOpen(false);
       setSettingsOpen(false);
+      setImageSetupRequested(false);
     };
     window.addEventListener("keydown", closeOverlays);
     return () => window.removeEventListener("keydown", closeOverlays);
@@ -1448,11 +1457,24 @@ function App() {
             ) : null}
             {settingsOpen ? (
               <div className="fixed inset-0 z-[80] flex items-end justify-center bg-black/45 sm:items-center sm:p-4"
-                onMouseDown={event => { if (event.target === event.currentTarget) setSettingsOpen(false); }}>
+                onMouseDown={event => { if (event.target === event.currentTarget) {
+                  setSettingsOpen(false); setImageSetupRequested(false);
+                } }}>
                 <div className="max-h-[92dvh] w-full max-w-3xl overflow-y-auto overscroll-contain rounded-t-[24px] bg-kumo-base shadow-2xl sm:rounded-2xl"
                   onMouseDown={event => event.stopPropagation()}>
-                  <SettingsPanel workspace={object} onClose={() => setSettingsOpen(false)}
-                    onChanged={() => { void refreshIntegrations(); void refreshSpecializations(); }} />
+                  <SettingsPanel workspace={object} onClose={() => {
+                    setSettingsOpen(false); setImageSetupRequested(false);
+                  }}
+                    onChanged={() => { void refreshIntegrations(); void refreshSpecializations(); }}
+                    onImageModelSaved={model => {
+                      setDefaultImageModel(model);
+                      if (imageSetupRequested && model) {
+                        setModeForSession(session, "build");
+                        setImageTask(true);
+                        setImageSetupRequested(false);
+                        setSettingsOpen(false);
+                      }
+                    }} />
                 </div>
               </div>
             ) : null}
@@ -1543,12 +1565,30 @@ function App() {
           <div className="mx-auto flex max-w-3xl items-center gap-2 px-3 pt-1 sm:px-5">
             <button type="button" aria-label="Cambiar proyecto"
               onClick={() => { setProjectsOpen(true); void loadProjects(); }}
-              className="flex min-h-10 min-w-0 max-w-[60%] items-center gap-2 rounded-xl px-3 text-left text-xs font-medium hover:bg-kumo-elevated">
+              className="flex min-h-10 min-w-0 max-w-[42%] flex-1 items-center gap-2 rounded-xl px-2 text-left text-xs font-medium hover:bg-kumo-elevated sm:max-w-[60%] sm:px-3">
               <CodeIcon size={15} className="shrink-0 text-kumo-subtle" />
               <span className="truncate">{project || "Elegir proyecto"}</span>
             </button>
+            <button type="button" aria-pressed={imageTask}
+              title={imageModel ? `Generará imágenes con ${imageModel}` : "Elige un modelo OpenRouter de imagen"}
+              disabled={!connected || busy || !imageModelReady}
+              onClick={() => {
+                setImageError("");
+                if (!imageModel) {
+                  setImageSetupRequested(true);
+                  setSettingsOpen(true);
+                  return;
+                }
+                if (!imageTask) setModeForSession(session, "build");
+                setImageTask(!imageTask);
+              }}
+              className={`flex min-h-10 shrink-0 items-center gap-1.5 rounded-xl px-2 text-xs font-medium hover:bg-kumo-elevated disabled:opacity-50 sm:px-3 ${imageTask ? "bg-kumo-elevated text-kumo-default" : "text-kumo-subtle"}`}>
+              <ImageIcon size={16} />
+              <span className="hidden min-[380px]:inline">{imageTask ? "Cancelar imagen" : "Generar imagen"}</span>
+              <span className="min-[380px]:hidden">Imagen</span>
+            </button>
             <details className="relative ml-auto text-xs" onToggle={event => setActivityOpen(event.currentTarget.open)}>
-              <summary className="min-h-10 cursor-pointer list-none rounded-xl px-3 py-2.5 text-kumo-subtle hover:bg-kumo-elevated">
+              <summary className="min-h-10 cursor-pointer list-none rounded-xl px-2 py-2.5 text-kumo-subtle hover:bg-kumo-elevated sm:px-3">
                 Actividad
               </summary>
               <div className="absolute bottom-full right-0 z-30 mb-2 w-[min(88vw,340px)] space-y-2 rounded-xl border border-kumo-line bg-kumo-base p-3 text-xs shadow-xl">
@@ -1574,26 +1614,6 @@ function App() {
             </div>)}
           </div> : null}
           {imageError ? <p role="alert" className="mx-auto max-w-3xl px-5 pt-1 text-xs text-kumo-danger">{imageError}</p> : null}
-          <div className="mx-auto flex max-w-3xl items-center gap-2 px-3 pt-1 sm:px-5">
-            <button type="button" aria-pressed={imageTask}
-              title={imageModel ? `Generará imágenes con ${imageModel}` : "Configura y selecciona una plantilla con modelo de imagen"}
-              disabled={!connected || busy}
-              onClick={() => {
-                setImageError("");
-                if (!imageModel) {
-                  setSettingsOpen(true);
-                  return;
-                }
-                if (!imageTask) setModeForSession(session, "build");
-                setImageTask(!imageTask);
-              }}
-              className={`flex min-h-9 items-center gap-1.5 rounded-xl px-3 text-xs font-medium hover:bg-kumo-elevated disabled:opacity-50 ${imageTask ? "bg-kumo-elevated text-kumo-default" : "text-kumo-subtle"}`}>
-              <ImageIcon size={16} /> {imageTask ? "Cancelar imagen" : "Generar imagen"}
-            </button>
-            <span className="min-w-0 truncate text-[11px] text-kumo-subtle">
-              {imageModel ? `Modelo: ${imageModel} · puede tener costo` : "Configura un modelo en Configurar → Plantillas"}
-            </span>
-          </div>
           <form
             onSubmit={(event) => {
               event.preventDefault();

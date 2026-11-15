@@ -4,6 +4,7 @@ import { SpecializationsPanel } from "./specializations-panel";
 import { ConnectorPanel } from "./connector-panel";
 import { useEffect, useState } from "react";
 import { MODEL_PRESETS } from "./model-presets";
+import { ImageModelPicker } from "./image-model-picker";
 
 type ConnectionState = {
   openRouterConfigured: boolean;
@@ -23,12 +24,15 @@ type Usage = {
 export function SettingsPanel({
   workspace,
   onClose,
-  onChanged
+  onChanged,
+  onImageModelSaved
 }: {
   workspace: string;
   onClose: () => void;
   onChanged: () => void;
+  onImageModelSaved: (model: string) => void;
 }) {
+  const [tab, setTab] = useState<"models" | "connections" | "tools">("models");
   const [connected, setConnected] = useState<ConnectionState | null>(null);
   const [provider, setProvider] = useState<ProviderName>("openrouter");
   const [key, setKey] = useState("");
@@ -38,6 +42,9 @@ export function SettingsPanel({
   const [reloadNeeded, setReloadNeeded] = useState(false);
   const [repositories, setRepositories] = useState<string[]>([]);
   const [newRepository, setNewRepository] = useState("");
+  const [imageModel, setImageModel] = useState("");
+  const [imageSaving, setImageSaving] = useState(false);
+  const [imageNotice, setImageNotice] = useState("");
 
   async function load() {
     const response = await fetch("/api/settings", { cache: "no-store" });
@@ -54,7 +61,35 @@ export function SettingsPanel({
   useEffect(() => {
     void load().catch((err: unknown) => setNotice(String(err)));
     void loadRepositories();
+    void fetch("/api/settings/image-model", { cache: "no-store" })
+      .then(async response => {
+        if (!response.ok) throw new Error("No se pudo cargar el modelo de imagen.");
+        const result = await response.json() as { imageModel?: string };
+        setImageModel(result.imageModel ?? "");
+      })
+      .catch(error => setImageNotice(error instanceof Error ? error.message : "No se pudo cargar el modelo."));
   }, []);
+  async function saveImageModel(model: string) {
+    if (imageSaving || model === imageModel) return;
+    setImageSaving(true);
+    setImageNotice("");
+    try {
+      const response = await fetch("/api/settings/image-model", {
+        method: model ? "POST" : "DELETE",
+        ...(model ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageModel: model }) } : {})
+      });
+      const result = await response.json() as { imageModel?: string | null; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "No se pudo guardar el modelo.");
+      const saved = result.imageModel ?? "";
+      setImageModel(saved);
+      setImageNotice(saved ? "Guardado y listo para usar en esta conversación." : "Modelo de imagen desactivado.");
+      onImageModelSaved(saved);
+    } catch (error) {
+      setImageNotice(error instanceof Error ? error.message : "No se pudo guardar el modelo.");
+    } finally {
+      setImageSaving(false);
+    }
+  }
   async function changeRepository(action: "POST" | "DELETE", repository: string) {
     setBusy(true);
     setNotice("");
@@ -137,18 +172,47 @@ export function SettingsPanel({
   }
   const ready = connected?.[provider === "openrouter" ? "openRouterConfigured" : "githubConfigured"];
   const fieldStyle = "w-full rounded-md border border-kumo-line bg-kumo-base px-3 py-2 text-sm text-kumo-default";
-  const buttonStyle = "rounded-md border border-kumo-line px-3 py-2 text-sm font-medium hover:bg-kumo-elevated disabled:opacity-50";
+  const buttonStyle = "min-h-10 rounded-xl border border-kumo-line px-3 py-2 text-sm font-medium hover:bg-kumo-elevated disabled:opacity-50";
+  const tabStyle = "min-h-10 flex-1 rounded-xl px-3 text-sm font-medium transition-colors";
   return (
-    <section role="dialog" aria-modal="true" aria-label="Configuración de proveedores"
+    <section role="dialog" aria-modal="true" aria-label="Configuración de OpenCode"
       className="w-full rounded-t-[24px] border border-kumo-line bg-kumo-base p-4 sm:rounded-2xl sm:p-6">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-base font-semibold">Configuración de OpenCode</h2>
+        <div>
+          <h2 className="text-lg font-semibold">Ajustes</h2>
+          <p className="mt-0.5 text-xs text-kumo-subtle">Modelos, conexiones y herramientas</p>
+        </div>
         <button type="button" className={buttonStyle} onClick={onClose}>Cerrar</button>
       </div>
-      <p className="mt-2 text-sm text-kumo-subtle">
-        Conecta los servicios una sola vez para todos tus dispositivos. Las claves se envían directamente al Worker y nunca se muestran de nuevo.
-      </p>
-      <div className="mt-3 flex gap-2">
+      <nav role="tablist" aria-label="Secciones de ajustes" className="mt-4 grid grid-cols-3 gap-1 rounded-2xl bg-kumo-elevated p-1">
+        {([
+          ["models", "Modelos"], ["connections", "Conexiones"], ["tools", "Herramientas"]
+        ] as const).map(([id, label]) => (
+          <button key={id} type="button" role="tab" aria-selected={tab === id}
+            className={tabStyle + (tab === id ? " bg-kumo-base shadow-sm" : " text-kumo-subtle")}
+            onClick={() => setTab(id)}>{label}</button>
+        ))}
+      </nav>
+
+      {tab === "models" ? <div role="tabpanel" className="mt-4 max-h-[68dvh] overflow-y-auto overscroll-contain pr-1">
+        <div className="rounded-2xl border border-kumo-line p-4">
+          <h3 className="text-sm font-semibold">Generación de imágenes</h3>
+          <p className="mt-1 text-xs text-kumo-subtle">Elige un modelo una vez. Se guarda automáticamente y queda disponible con “Generar imagen”.</p>
+          <div className="mt-3">
+            <ImageModelPicker value={imageModel} onChange={value => void saveImageModel(value)}
+              routerReady={Boolean(connected?.openRouterConfigured)} disabled={imageSaving} />
+          </div>
+          {imageSaving ? <p role="status" className="mt-2 text-xs text-kumo-subtle">Guardando…</p> : null}
+          {imageNotice ? <p role={imageNotice.includes("no se pudo") || imageNotice.includes("Conecta") ? "alert" : "status"}
+            className="mt-2 text-xs text-kumo-subtle">{imageNotice}</p> : null}
+          {imageModel ? <p className="mt-2 break-all text-xs text-kumo-subtle">Activo: {imageModel}. Puede tener costo según OpenRouter.</p> : null}
+        </div>
+        <SpecializationsPanel onChanged={onChanged} routerReady={Boolean(connected?.openRouterConfigured)} />
+      </div> : null}
+
+      {tab === "connections" ? <div role="tabpanel" className="mt-4 max-h-[68dvh] space-y-3 overflow-y-auto overscroll-contain pr-1">
+        <p className="text-sm text-kumo-subtle">Conecta una vez para todos tus dispositivos. Las claves se guardan en el Worker y no se vuelven a mostrar.</p>
+        <div className="flex gap-2">
         {(["openrouter", "github"] as const).map((name) => (
           <button key={name} type="button" className={buttonStyle + (provider === name ? " bg-kumo-elevated" : "")}
             onClick={() => { setProvider(name); setKey(""); setNotice(""); }}>
@@ -156,14 +220,14 @@ export function SettingsPanel({
             {connected?.[name === "openrouter" ? "openRouterConfigured" : "githubConfigured"] ? " ✓" : ""}
           </button>
         ))}
-      </div>
-      <p className="mt-3 text-sm">{ready ? "Conectado" : "Sin conectar"}</p>
-      <label htmlFor="provider-key" className="mt-3 block text-sm font-medium">
+        </div>
+        <p className="text-sm">{ready ? "Conectado" : "Sin conectar"}</p>
+        <label htmlFor="provider-key" className="block text-sm font-medium">
         {provider === "openrouter" ? "Clave API de OpenRouter" : "Token personal de GitHub (fine-grained)"}
-      </label>
-      <input id="provider-key" type="password" value={key} onChange={(e) => setKey(e.target.value)}
+        </label>
+        <input id="provider-key" type="password" value={key} onChange={(e) => setKey(e.target.value)}
         autoComplete="off" spellCheck={false} className={fieldStyle} placeholder="Introduce tu clave privada" />
-      <div className="mt-3 flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2">
         <button className={buttonStyle} type="button" disabled={busy || !key.trim()} onClick={() => void save()}>
           {busy ? "Comprobando…" : ready ? "Reemplazar clave" : "Conectar y validar"}
         </button>
@@ -178,10 +242,10 @@ export function SettingsPanel({
           </button>
         ) : null}
         {reloadNeeded ? <button className={buttonStyle} type="button" onClick={() => location.reload()}>Actualizar OpenCode</button> : null}
-      </div>
-      {notice ? <p role="status" className="mt-3 text-sm">{notice}</p> : null}
+        </div>
+        {notice ? <p role="status" className="text-sm">{notice}</p> : null}
       {provider === "openrouter" ? (
-        <div className="mt-4 space-y-2">
+        <div className="space-y-2 rounded-2xl border border-kumo-line p-4">
           {usage ? (
             <p className="text-sm text-kumo-subtle">
               Consumo acumulado: ${(usage.usage ?? 0).toFixed(3)} USD · Este mes: ${(usage.usage_monthly ?? 0).toFixed(3)} USD
@@ -196,7 +260,7 @@ export function SettingsPanel({
           <p className="text-xs text-kumo-subtle">Modelos preparados: {Object.values(MODEL_PRESETS).filter(m => m.providerID === "openrouter").map(m => m.label).join(" · ")}.</p>
         </div>
       ) : (
-        <p className="mt-4 text-xs text-kumo-subtle">
+        <div className="space-y-3 rounded-2xl border border-kumo-line p-4 text-xs text-kumo-subtle">
           Crea un token de acceso limitado a tus repositorios con permisos de lectura/escritura de contenido y Pull requests.
           {" "}<a className="underline" href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">Crear token seguro de GitHub</a>
           {ready ? (
@@ -218,12 +282,15 @@ export function SettingsPanel({
               <span className="block">GitHub debe permitir el acceso a ese repositorio con el token conectado.</span>
             </span>
           ) : null}
-        </p>
+        </div>
       )}
-      <SpecializationsPanel onChanged={onChanged} routerReady={Boolean(connected?.openRouterConfigured)} />
+      </div> : null}
+
+      {tab === "tools" ? <div role="tabpanel" className="mt-4 max-h-[68dvh] space-y-4 overflow-y-auto overscroll-contain pr-1">
       <ConnectorPanel workspace={workspace} />
       <McpPanel workspace={workspace} />
       <AgentCheckPanel workspace={workspace} />
+      </div> : null}
     </section>
   );
 }
