@@ -1,0 +1,98 @@
+{
+  "id": "exp5-plan-tool-catalog-20261115",
+  "mode": "EXPERIMENT",
+  "objective": "Measure redundant tool schema exposure in primary model context for plan vs build and test safe mode-aware context tool catalog gating; no chat-history truncation or prompt rewrite.",
+  "revisions": {
+    "repo": "aamvtrampa36-del/opencode-harness-example",
+    "base": "e2736d1221247b5186879cda3beb9230b4b977f5",
+    "upstream_api": "anomalyco/opencode packages/plugin/src/effect/session.ts commit aa2960fa266e898cf4d0bf0cd1c86beed23e3591 (source inspection, version match not proven)",
+    "packageVersions": {
+      "@opencode/plugin": "2.0.24",
+      "@opencode/sdk": "2.0.24",
+      "agents": "0.33.0",
+      "@cloudflare/computer": "0.10.0"
+    }
+  },
+  "hypotheses": [
+    {
+      "id": "H1",
+      "observation": "For bound repo project sessions, workspacePlugin context hook removes global workspace tools but retains unusable linux and generic github in 'plan' agent; plan can instead use inspect_linux and repo_* aliases.",
+      "intervention": "At session context hook, for agent==='plan' remove linux tool and redundant generic github ONLY if repo_read, repo_info and repo_review are present. Keep builds unchanged; preserve real execution authorization.",
+      "prediction": "At least 15% fewer serialized model-facing tool schema UTF8 bytes in plan+bound-repo fixture, no missing authorized capabilities or changes to other scopes.",
+      "falsification": "<15% schema byte reduction, missing repo_read/info/review or inspect_linux, change to build/unscoped contexts, or change to execution security"
+    }
+  ],
+  "cases": [
+    {
+      "id": "plan-bound-repo",
+      "agent": "plan",
+      "project": "sandbox",
+      "repository": "aamvtrampa36-del/opencode-harness-example"
+    },
+    {
+      "id": "build-bound-repo",
+      "agent": "build",
+      "project": "sandbox",
+      "repository": "aamvtrampa36-del/opencode-harness-example"
+    },
+    {
+      "id": "plan-no-repo",
+      "agent": "plan",
+      "project": "sandbox",
+      "repository": ""
+    },
+    {
+      "id": "build-unscoped",
+      "agent": "build",
+      "project": "",
+      "repository": ""
+    }
+  ],
+  "environment": "GitHub Actions bun@1.4.4 fake plugin context runtime; actual workspacePlugin setup and createPiTools declarations. No LLM, no provider, no paid cloud inference.",
+  "metrics": {
+    "schemaUtf8Bytes": "bytes (UTF8 JSON.stringify actual tool descriptions and input schemas exposed through plugin context hook)",
+    "toolCount": "tool IDs",
+    "availablePermissions": "capability names + existing runtime permission guard checks",
+    "elapsedMs": "ms perf.now around plugin context hook",
+    "realInputTokens": "UNKNOWN; not billed",
+    "cacheHits": "UNKNOWN",
+    "modelCost": "UNKNOWN",
+    "correctTaskRate": "UNKNOWN without real agent"
+  },
+  "thresholds": {
+    "planBoundSchemaBytesReductionPct": 15,
+    "otherCasesSchemaBytesVariationPct": 0,
+    "exactToolsRetained": [
+      "repo_review",
+      "repo_info",
+      "repo_read",
+      "inspect_linux"
+    ],
+    "security": "no permission changes; no newly accessible tools",
+    "maxPerformanceRegressionPct": 50
+  },
+  "repetitions": {
+    "pairsPerCase": 3,
+    "order": "AB/BA",
+    "warmup": 1
+  },
+  "evidence_plan": {
+    "dir": "experiments/context-plan-tools-20261115/",
+    "freezeBeforeBaseline": true,
+    "baselineRows": "GitHub CI log captured and archived",
+    "pairedRows": "GitHub CI log captured and archived; test records begin/end per case",
+    "backups": "PR draft branch only, no deployments"
+  },
+  "excluded": [
+    "main",
+    "PR #54",
+    "PR #55",
+    "PR #56",
+    "PR #57",
+    "PR #59",
+    "Production",
+    "Operational staging",
+    "personal/private sessions or canon"
+  ],
+  "stop_rule": "Partial validation of schema-byte reduction or inconclusive if hook inaccessible; do not claim token cost savings absent provider usage telemetry."
+}
