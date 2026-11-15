@@ -1,0 +1,62 @@
+{
+  "source": {
+    "run": 43679002928,
+    "job": 132705353729,
+    "sha": "ad126d0ad6f4d50dcc7568ac2dbbc7359c78679b",
+    "provenance": "original CI stdout, transcribed after execution"
+  },
+  "baselineRun": {
+    "run": 43678675627,
+    "job": 132704327654,
+    "sha": "2b7e3312c7f9b187a030803ca3372ee0f837f994"
+  },
+  "validation": {
+    "starts": 18,
+    "ends": 18,
+    "failed": 0,
+    "correct": 18
+  },
+  "results": [
+    {
+      "kind": "short",
+      "fullCalls": 7,
+      "tailCalls": 7,
+      "fullBytes": 16786,
+      "tailBytes": 16786,
+      "callsReduction": 0,
+      "bytesReduction": 0,
+      "fullMs": 6.999,
+      "tailMs": 6.761666666666667
+    },
+    {
+      "kind": "long",
+      "fullCalls": 121,
+      "tailCalls": 21,
+      "fullBytes": 3304796,
+      "tailBytes": 599846,
+      "callsReduction": 82.645,
+      "bytesReduction": 81.849,
+      "fullMs": 22.316333333333333,
+      "tailMs": 16.671333333333333
+    },
+    {
+      "kind": "compaction",
+      "fullCalls": 19,
+      "tailCalls": 13,
+      "fullBytes": 286153,
+      "tailBytes": 169867,
+      "callsReduction": 31.579,
+      "bytesReduction": 40.638,
+      "fullMs": 10.133666666666668,
+      "tailMs": 10.029666666666667
+    }
+  ],
+  "unmeasured": [
+    "real DO SQLite latency",
+    "production CPU/memory",
+    "inference tokens",
+    "OpenRouter API cost",
+    "end-to-end user latency"
+  ],
+  "verdict": "OBSERVED synthetic transport/storage query reductions; INCONCLUSIVE real Cloudflare effect"
+}
