@@ -82,11 +82,9 @@ async function exercise(mode: Mode, kind: Kind): Promise<Result> {
     async () => undefined,
     async () => undefined,
     async () => undefined,
-    async () => undefined
+    async () => undefined,
+    mode
   );
-  // Baseline mode is actual current sockets.ts. Tail mode is enabled ONLY
-  // by a test-time constructor option in the experimental candidate.
-  void mode;
   const t0 = performance.now();
   const ctx = { request: new Request("https://example.test/?session=ses_root") } as never;
   await runner.options().handlers.onConnect(a, ctx);
@@ -145,20 +143,40 @@ async function exercise(mode: Mode, kind: Kind): Promise<Result> {
   };
 }
 
-describe("experiment 3: full history baseline using actual WebSocket handler", () => {
-  test("baseline measurements before changing the history reader", async () => {
+describe("experiment 3: baseline/candidate paired WebSocket history", () => {
+  test("compares equal transcripts and paging work across 3 paired runs per scenario", async () => {
     for (const kind of ["short", "long", "compaction"] as const) {
+      const rows: Result[] = [];
       for (let replicate = 1; replicate <= 3; replicate++) {
-        const id = "baseline:" + kind + ":" + replicate;
-        console.log("HISTORY_BEGIN " + JSON.stringify({ id, kind, replicate, mode: "full" }));
-        try {
-          const result = await exercise("full", kind);
-          console.log("HISTORY_END " + JSON.stringify({ id, status: result.correct ? "PASS" : "FAIL", ...result }));
-          expect(result.correct).toBe(true);
-        } catch (err) {
-          console.log("HISTORY_END " + JSON.stringify({ id, status: "FAIL", error: String(err) }));
-          throw err;
+        const order: Mode[] = replicate % 2 ? ["full", "tail"] : ["tail", "full"];
+        for (const mode of order) {
+          const id = mode + ":" + kind + ":" + replicate;
+          console.log("HISTORY_BEGIN " + JSON.stringify({ id, kind, replicate, mode }));
+          try {
+            const result = await exercise(mode, kind);
+            console.log("HISTORY_END " + JSON.stringify({ id, status: result.correct ? "PASS" : "FAIL", ...result }));
+            expect(result.correct).toBe(true);
+            rows.push(result);
+          } catch (err) {
+            console.log("HISTORY_END " + JSON.stringify({ id, status: "FAIL", error: String(err) }));
+            throw err;
+          }
         }
+      }
+      const mean = (mode: Mode, key: "calls" | "readBytes" | "elapsedMs") =>
+        rows.filter(x => x.mode === mode).reduce((sum, x) => sum + x[key], 0) / 3;
+      const callsReduction = 100 * (1 - mean("tail", "calls") / mean("full", "calls"));
+      const bytesReduction = 100 * (1 - mean("tail", "readBytes") / mean("full", "readBytes"));
+      console.log("HISTORY_SUMMARY " + JSON.stringify({ kind,
+        fullCalls: mean("full","calls"), tailCalls: mean("tail","calls"),
+        fullBytes: mean("full","readBytes"), tailBytes: mean("tail","readBytes"),
+        callsReduction: Number(callsReduction.toFixed(3)),
+        bytesReduction: Number(bytesReduction.toFixed(3)),
+        fullMs: mean("full","elapsedMs"), tailMs: mean("tail","elapsedMs")
+      }));
+      if (kind === "long") {
+        expect(callsReduction).toBeGreaterThanOrEqual(60);
+        expect(bytesReduction).toBeGreaterThanOrEqual(60);
       }
     }
   });
