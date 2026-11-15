@@ -1,0 +1,88 @@
+{
+  "id": "exp3-history-tail-20261115",
+  "scope": "EXPERIMENT_ONLY; no merge/deploy",
+  "base": {
+    "branch": "main",
+    "source": "src/sockets.ts history() and cloudflare/agents@0.33.0 OpenCodeSession.history()"
+  },
+  "hypothesis": "Repeated complete message.list() pagination after each websocket transcript change dominates message-read calls and bytes in long sessions. Single newest-desc page with overlap against short-lived cache can reduce storage-side reads while requiring authoritative full reads at run completion, compaction, resync and reconnect.",
+  "prediction": "For 1005 messages and 10 ordinary tool_end events, reduce message.list calls and read payload bytes by >=60%; keep identical full-history snapshots. No claim about model tokens or real Cloudflare latency.",
+  "falsification": "<60% call saving, any mismatch or stale history in tested scenarios, runtime regression >30%, or >2 MiB new retained memory in fixture.",
+  "cases": [
+    {
+      "id": "short",
+      "messages": 8,
+      "events": 6,
+      "action": "tool changes tail message"
+    },
+    {
+      "id": "long",
+      "messages": 1005,
+      "events": 10,
+      "action": "tool changes tail message"
+    },
+    {
+      "id": "compaction",
+      "messages": 230,
+      "events": 8,
+      "action": "tool changes, compaction/transcript_reset, reconnection, multi socket"
+    }
+  ],
+  "invariants": [
+    "Snapshot contents exactly equal server transcript each delivered event, incl edits to last item",
+    "Force authoritative history on reconnect/explicit resync, on run_end and compaction",
+    "No persistent secondary history; per DO instance state only",
+    "No changes to model context or cache",
+    "No live Cloudflare deploy or user data"
+  ],
+  "metrics": [
+    {
+      "key": "listCalls",
+      "unit": "calls",
+      "provenance": "fake OpenCode message.list instrumented"
+    },
+    {
+      "key": "readBytes",
+      "unit": "UTF8 bytes",
+      "provenance": "JSON.stringify(page.data) measured inside list()"
+    },
+    {
+      "key": "elapsedMs",
+      "unit": "ms",
+      "provenance": "perf clock around actual Socket handler with deterministic fake Harness"
+    },
+    {
+      "key": "userLatencyMs",
+      "unit": "ms",
+      "provenance": "UNKNOWN: no production workloads"
+    },
+    {
+      "key": "tokens",
+      "unit": "tokens",
+      "provenance": "UNKNOWN no model called"
+    },
+    {
+      "key": "cost",
+      "unit": "USD",
+      "provenance": "UNKNOWN no models/cloudflare metered"
+    }
+  ],
+  "repetitions": {
+    "perScenarioPerVariant": 3,
+    "order": "AB/BA paired alternating",
+    "warmup": 0
+  },
+  "thresholds": {
+    "longCallReductionPercent": 60,
+    "longByteReductionPercent": 60,
+    "correctness": "exact history JSON equality at every snapshot, always",
+    "maintainability": "localized app helper using existing SDK; no durable cache",
+    "maxElapsedRatio": 1.3
+  },
+  "artifactPlan": {
+    "root": "experiments/history-tail-20261115/",
+    "runLog": "GitHub Actions test output verbatim; later separately persisted as transcribed runs.jsonl with source commit/run/job",
+    "freezeBeforeMeasurement": true
+  },
+  "limits": "Deterministic fake harness integration measures app WebSocket events and exact message.list paging but not sqlite/DO costs"
+}
