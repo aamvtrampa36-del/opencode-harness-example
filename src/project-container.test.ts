@@ -13,9 +13,12 @@ describe("project Container identities", () => {
   test("never shadows a legacy project or rebinds a registered repository", () => {
     expect(() => validateIsolatedRegistration([{name:"old-project"}], undefined,
       {project:"old-project"})).toThrow("anterior");
-    expect(() => validateIsolatedRegistration([], {project:"project-a",repository:"owner/one"},
+    const existing = {project:"project-a",repository:"owner/one"};
+    expect(() => validateIsolatedRegistration([], existing,
       {project:"project-a",repository:"owner/two"})).toThrow("otro");
-    expect(validateIsolatedRegistration([], {project:"project-a",repository:"owner/one"},
+    expect(validateIsolatedRegistration([], existing,
       {project:"project-a",repository:"OWNER/ONE"}).project).toBe("project-a");
+    expect(validateIsolatedRegistration([], existing,
+      {project:"project-a"})).toEqual(existing);
   });
 });
