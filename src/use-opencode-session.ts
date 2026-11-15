@@ -7,7 +7,8 @@ import type {
   OpenCodeSessionInfo
 } from "agents/harness/opencode";
 import { useAgent } from "agents/react";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import { applySnapshotDelta } from "./snapshot-delta";
 import type { ClientMessage, ServerMessage } from "./protocol";
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
@@ -123,10 +124,13 @@ export function useOpenCodeSession(
   onUnknownSession: () => void
 ) {
   const [state, setState] = useState<State>(INITIAL_STATE);
+  const transcriptRef = useRef<readonly OpenCodeMessage[]>([]);
+  const requestResync = useRef<() => void>(() => undefined);
   // Another object or session starts from a clean slate.
   const [stateKey, setStateKey] = useState({ object, session });
   if (stateKey.object !== object || stateKey.session !== session) {
     setStateKey({ object, session });
+    transcriptRef.current = [];
     setState(INITIAL_STATE);
   }
 
@@ -152,6 +156,7 @@ export function useOpenCodeSession(
           return;
         case "snapshot":
           if (message.session !== session) return;
+          transcriptRef.current = message.messages;
           setState((current) => ({
             ...current,
             messages: message.messages,
@@ -162,6 +167,24 @@ export function useOpenCodeSession(
             live: prune(current.live, message.messages)
           }));
           return;
+        case "snapshot_delta": {
+          if (message.session !== session) return;
+          const merged = applySnapshotDelta(transcriptRef.current, message);
+          if (!merged) {
+            // Fail closed on a stale base; ask this socket for one fresh full snapshot.
+            requestResync.current();
+            return;
+          }
+          transcriptRef.current = merged;
+          setState((current) => ({
+            ...current,
+            messages: merged,
+            busy: message.busy || message.pending.length > 0,
+            pending: message.pending,
+            live: prune(current.live, merged)
+          }));
+          return;
+        }
         case "event": {
           const { event: update } = message;
           if (
@@ -203,6 +226,12 @@ export function useOpenCodeSession(
       }
     }
   });
+  requestResync.current = () => {
+    if (!trySendJson(agent, { type: "resync", id: crypto.randomUUID() })) {
+      setState(current => ({ ...current,
+        error: "La conversación necesita sincronizarse; reconecta la sesión." }));
+    }
+  };
 
   // The UI must not silently discard a task when the socket closes between
   // the user's tap and the actual send.
