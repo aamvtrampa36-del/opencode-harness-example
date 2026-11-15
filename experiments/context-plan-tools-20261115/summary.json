@@ -1,0 +1,73 @@
+{
+  "status": "PARTIAL_VALIDATION",
+  "scope": "Real workspacePlugin declaration and session context hook with fake context and no provider inference",
+  "source": {
+    "run": 43767069266,
+    "job": 132974483389,
+    "sha": "a7d527d1b078861de959a18472ca19fb0f4357d0",
+    "provenance": "GitHub Actions stdout transcribed AFTER CI; original log canonical"
+  },
+  "baseline": {
+    "run": 43766699537,
+    "job": 132973346648,
+    "sha": "556d8ed4b3584730a21236fde03c02a278d56980",
+    "cases": 12
+  },
+  "priorFailedAttempt": {
+    "run": 43766639840,
+    "issue": "Fake agent.transform mock invalid; no measurements accepted from this run"
+  },
+  "audit": {
+    "starts": 24,
+    "ends": 24,
+    "uniqueIds": 24,
+    "passed": 24,
+    "failed": 0
+  },
+  "scenarios": [
+    {
+      "scenario": "plan-bound-repo",
+      "originalBytes": 4017,
+      "curatedBytes": 2113,
+      "schemaReductionPct": 47.399,
+      "originalMs": 0.056933333333333336,
+      "curatedMs": 0.0079
+    },
+    {
+      "scenario": "build-bound-repo",
+      "originalBytes": 4017,
+      "curatedBytes": 4017,
+      "schemaReductionPct": 0,
+      "originalMs": 0.009933333333333334,
+      "curatedMs": 0.006966666666666667
+    },
+    {
+      "scenario": "plan-no-repo",
+      "originalBytes": 1461,
+      "curatedBytes": 773,
+      "schemaReductionPct": 47.091,
+      "originalMs": 0.019266666666666668,
+      "curatedMs": 0.0088
+    },
+    {
+      "scenario": "build-unscoped",
+      "originalBytes": 4915,
+      "curatedBytes": 4915,
+      "schemaReductionPct": 0,
+      "originalMs": 0.007766666666666666,
+      "curatedMs": 0.0065
+    }
+  ],
+  "unknowns": [
+    "Real input tokens and cached tokens",
+    "Model billing and end-to-end latency",
+    "Agent task correctness and autonomous tool selection",
+    "Other provider/system tool declarations",
+    "Live Cloudflare Durable Object behavior"
+  ],
+  "notes": [
+    "Only plugin-owned tool description/input schema bytes measured, not entire system prompt or true model request",
+    "No deployed code; optional mode defaults to existing",
+    "All Plan repo read/info/review and inspect_linux aliases execute through existing scoped guard; blocked linux/write still rejected"
+  ]
+}
