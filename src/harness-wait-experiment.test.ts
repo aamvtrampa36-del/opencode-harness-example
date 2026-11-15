@@ -45,4 +45,15 @@ describe("experimental pinned OpenCodeHarness settled fast path", () => {
     expect(baseline).toMatchObject({outcome:"done", wakes:1, pauses:1});
     expect(candidate).toMatchObject({outcome:"done", wakes:1, pauses:1, waits:2});
   });
+  test("inspects the published agents@0.33.0 runtime artifact", () => {
+    const entry = import.meta.resolve("agents/harness/opencode");
+    const filename = new URL(entry);
+    const compiled = readFileSync(filename, "utf8");
+    const pos = compiled.indexOf("heartbeatMs / 30");
+    // Diagnostic evidence only: the package may bundle or minify internals.
+    console.log("HARNESS_DIST_ENTRY", filename.pathname);
+    console.log("HARNESS_DIST_PAUSE_CONTEXT", pos < 0 ? "NOT_FOUND" : compiled.slice(Math.max(pos - 390, 0), pos + 185));
+    expect(compiled.length).toBeGreaterThan(2000);
+  });
+
 });
