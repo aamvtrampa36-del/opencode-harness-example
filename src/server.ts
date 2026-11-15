@@ -192,37 +192,46 @@ export class OpenCodeAgent extends DurableObject<Env> {
   private async runConnector(connectorID: string, event: ConnectorEvent): Promise<ConnectorOutput> {
     if (connectorID !== "token-economizer") throw new Error("Conector no admitido.");
     if (!(await this.personalConfig.connectorSettings()).tokenEconomizerEnabled) return {};
-    const project = event.project || "global";
-    if (!/^[a-z][a-z0-9-]{0,39}$/.test(project)) throw new Error("Proyecto del conector inválido.");
-    const transcriptPath = event.name === "Stop" || event.name === "SessionEnd"
-      ? "/workspace/projects/opencode-connectors/state/opencode-sessions/" + event.sessionID + ".json"
-      : undefined;
-    const payload = {
-      session_id: event.sessionID,
-      cwd: "/workspace/projects/opencode-connectors/workspaces/" + project,
-      hook_event_name: event.name,
-      ...(event.promptID ? { prompt_id: event.promptID } : {}),
-      ...(event.prompt ? { prompt: event.prompt } : {}),
-      ...(event.toolName ? { tool_name: event.toolName } : {}),
-      ...(event.toolUseID ? { tool_use_id: event.toolUseID } : {}),
-      ...(event.toolInput ? { tool_input: event.toolInput } : {}),
-      ...(event.toolResponse ? { tool_response: event.toolResponse } : {}),
-      ...(event.reason ? { reason: event.reason } : {}),
-      ...(transcriptPath ? { transcript_path: transcriptPath, stop_hook_active: false } : {}),
-      ...(event.name === "SessionStart" ? { source: "startup" } : {})
-    };
-    const output = await this.env.DEV.getByName("connector-host-v1").runTokenEconomizerHook(project, {
-      payload, ...(event.transcript && transcriptPath ? { transcript: event.transcript } : {})
-    });
-    if (!output || typeof output !== "object" || Array.isArray(output)) return {};
-    const record = output as Record<string, unknown>;
-    const hookOutput = record.hookSpecificOutput && typeof record.hookSpecificOutput === "object"
-      ? record.hookSpecificOutput as Record<string, unknown> : {};
-    const context = hookOutput.additionalContext ?? record.additionalContext ?? record.additional_context;
-    return {
-      ...(typeof context === "string" ? { additionalContext: context } : {}),
-      ...(typeof record.systemMessage === "string" ? { systemMessage: record.systemMessage } : {})
-    };
+    const recordStatus = (succeeded: boolean) =>
+      this.personalConfig.recordTokenEconomizerHook(event.name, succeeded).catch(() => undefined);
+    try {
+      const project = event.project || "global";
+      if (!/^[a-z][a-z0-9-]{0,39}$/.test(project)) throw new Error("Proyecto del conector inválido.");
+      const transcriptPath = event.name === "Stop" || event.name === "SessionEnd"
+        ? "/workspace/projects/opencode-connectors/state/opencode-sessions/" + event.sessionID + ".json"
+        : undefined;
+      const payload = {
+        session_id: event.sessionID,
+        cwd: "/workspace/projects/opencode-connectors/workspaces/" + project,
+        hook_event_name: event.name,
+        ...(event.promptID ? { prompt_id: event.promptID } : {}),
+        ...(event.prompt ? { prompt: event.prompt } : {}),
+        ...(event.toolName ? { tool_name: event.toolName } : {}),
+        ...(event.toolUseID ? { tool_use_id: event.toolUseID } : {}),
+        ...(event.toolInput ? { tool_input: event.toolInput } : {}),
+        ...(event.toolResponse ? { tool_response: event.toolResponse } : {}),
+        ...(event.reason ? { reason: event.reason } : {}),
+        ...(transcriptPath ? { transcript_path: transcriptPath, stop_hook_active: false } : {}),
+        ...(event.name === "SessionStart" ? { source: "startup" } : {})
+      };
+      const output = await this.env.DEV.getByName("connector-host-v1").runTokenEconomizerHook(project, {
+        payload, ...(event.transcript && transcriptPath ? { transcript: event.transcript } : {})
+      });
+      const normalized: ConnectorOutput = {};
+      if (output && typeof output === "object" && !Array.isArray(output)) {
+        const record = output as Record<string, unknown>;
+        const hookOutput = record.hookSpecificOutput && typeof record.hookSpecificOutput === "object"
+          ? record.hookSpecificOutput as Record<string, unknown> : {};
+        const context = hookOutput.additionalContext ?? record.additionalContext ?? record.additional_context;
+        if (typeof context === "string") normalized.additionalContext = context;
+        if (typeof record.systemMessage === "string") normalized.systemMessage = record.systemMessage;
+      }
+      await recordStatus(true);
+      return normalized;
+    } catch (error) {
+      await recordStatus(false);
+      throw error;
+    }
   }
   /** Persisted server-side transcript for the owner's authenticated download. */
   async exportSessionData(sessionID: string) {
@@ -1029,7 +1038,10 @@ export default {
         }, { headers: { "Cache-Control": "no-store" } });
       }
       if (url.pathname === "/api/settings/connectors" && request.method === "GET") {
-        return Response.json(await personal.connectorSettings(), { headers: { "Cache-Control": "no-store" } });
+        const [settings, tokenEconomizerLastHook] = await Promise.all([
+          personal.connectorSettings(), personal.tokenEconomizerLastHook()
+        ]);
+        return Response.json({ ...settings, tokenEconomizerLastHook }, { headers: { "Cache-Control": "no-store" } });
       }
       if (url.pathname === "/api/settings/connectors/token-economizer" && request.method === "POST") {
         if (!settingsOriginAllowed) return Response.json({ error: "Se requiere una solicitud del mismo origen." }, { status: 403 });

@@ -3,6 +3,7 @@ import { aggregateIncident, type IncidentRecord } from "./incident-diagnostics";
 import { ALLOWED_REPOS, normalizeOwnedRepository } from "./github";
 import { MAX_SPECIALIZATIONS, mergeSpecializations, validateSpecialization, type Specialization } from "./specializations";
 import { publicMcp, validateRemoteMcp, type PublicMcpConfig, type RemoteMcpConfig } from "./mcp-config";
+import type { ConnectorEventName } from "./connector-adapter";
 
 /**
  * One owner-scoped, persisted settings object shared by all browser workspaces.
@@ -12,6 +13,12 @@ import { publicMcp, validateRemoteMcp, type PublicMcpConfig, type RemoteMcpConfi
  */
 const MAX_KEY = 512;
 const NO_STORE = { "Cache-Control": "no-store" };
+
+export type TokenEconomizerHookStatus = {
+  name: ConnectorEventName;
+  at: number;
+  succeeded: boolean;
+};
 
 export interface ProviderStatus {
   openRouterConfigured: boolean;
@@ -111,6 +118,16 @@ export class PersonalSettings extends DurableObject<Env> {
   async setTokenEconomizerEnabled(enabled: boolean): Promise<void> {
     if (typeof enabled !== "boolean") throw new Error("El estado del conector debe ser verdadero o falso.");
     await this.ctx.storage.put("connector-token-economizer-enabled-v1", enabled);
+  }
+
+  async tokenEconomizerLastHook(): Promise<TokenEconomizerHookStatus | undefined> {
+    return this.ctx.storage.get<TokenEconomizerHookStatus>("connector-token-economizer-last-hook-v1");
+  }
+
+  async recordTokenEconomizerHook(name: ConnectorEventName, succeeded: boolean): Promise<void> {
+    await this.ctx.storage.put("connector-token-economizer-last-hook-v1", {
+      name, at: Date.now(), succeeded
+    } satisfies TokenEconomizerHookStatus);
   }
 
   async listPublicMcps(): Promise<PublicMcpConfig[]> {

@@ -6,6 +6,7 @@ export function ImageModelPicker({ value, onChange, routerReady, disabled = fals
   const [models, setModels] = useState<OpenRouterImageModel[]>([]);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const valueInCatalog = models.some(model => model.id === value);
   useEffect(() => {
     if (!routerReady || models.length) return;
     let active = true;
@@ -28,6 +29,7 @@ export function ImageModelPicker({ value, onChange, routerReady, disabled = fals
         value={value} disabled={disabled || !routerReady || loading}
         onChange={event => onChange(event.target.value)}>
         <option value="">Sin modelo de imagen</option>
+        {value && !valueInCatalog ? <option value={value}>{value} · ya configurado</option> : null}
         {models.map(model => <option key={model.id} value={model.id}>{model.name} · {model.id}</option>)}
       </select>
       {!routerReady ? <span className="block text-kumo-subtle">Conecta OpenRouter para usar esta opción.</span> : null}

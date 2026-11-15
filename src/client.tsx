@@ -1,5 +1,6 @@
 import type { AgentMode } from "./protocol";
 import { readSessionMode, saveSessionMode } from "./session-mode";
+import { readSessionSpecialization, saveSessionSpecialization } from "./session-specialization";
 import { isInternalReminder } from "./message-display";
 import { repositoryProjectSlug } from "./project-container";
 import { SettingsPanel } from "./settings-panel";
@@ -55,7 +56,6 @@ function modelForSession(session: string): ModelSelectionID {
   return isModelSelection(stored) ? stored : "economy";
 }
 const PROJECT_PREFIX = "opencode-active-project:";
-const SPECIALIZATION_KEY = "opencode-specialization";
 const REPOSITORY_PREFIX = "opencode-session-repository:";
 const IMAGE_MAX_BYTES = 2_000_000;
 const IMAGE_MAX_COUNT = 2;
@@ -402,6 +402,11 @@ function App() {
   const [linkCopied, setLinkCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [connectorActivity, setConnectorActivity] = useState<{
+    tokenEconomizerEnabled: boolean;
+    tokenEconomizerLastHook?: { name: string; at: number; succeeded: boolean };
+  } | null>(null);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [availableProjects, setAvailableProjects] = useState<{ name: string; lastUsedAt: number }[]>([]);
   const [projectError, setProjectError] = useState("");
@@ -418,7 +423,10 @@ function App() {
     setAgentMode(mode);
   };
   const [specializations, setSpecializations] = useState<Specialization[]>([]);
-  const [specialization, setSpecialization] = useState(() => localStorage.getItem(SPECIALIZATION_KEY) ?? "");
+  const [specialization, setSpecialization] = useState(() => readSessionSpecialization(localStorage, object, session));
+  const [imageTask, setImageTask] = useState(false);
+  const activeSpecialization = specializations.find(item => item.id === specialization);
+  const imageModel = activeSpecialization?.imageModel;
   const [integrations, setIntegrations] = useState<{
     openRouterConfigured: boolean;
     githubConfigured: boolean;
@@ -473,6 +481,21 @@ function App() {
     window.addEventListener("keydown", closeOverlays);
     return () => window.removeEventListener("keydown", closeOverlays);
   }, [actionsOpen, projectsOpen, settingsOpen]);
+  useEffect(() => {
+    if (!activityOpen) return;
+    let active = true;
+    const refresh = async () => {
+      try {
+        const response = await fetch("/api/settings/connectors", { cache: "no-store" });
+        if (!response.ok) return;
+        const result = await response.json() as NonNullable<typeof connectorActivity>;
+        if (active) setConnectorActivity(result);
+      } catch { /* Activity status is optional; chat keeps working. */ }
+    };
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 6_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [activityOpen]);
   const autoFollowConversation = useRef(true);
   const pendingUsage = useRef<{ session: string; project: string; base: number } | null>(null);
   const wasBusy = useRef(false);
@@ -496,6 +519,8 @@ function App() {
     localStorage.setItem(SESSION_KEY, ROOT_SESSION);
     setSession(ROOT_SESSION);
     setAgentMode(readSessionMode(localStorage, object, ROOT_SESSION));
+    setSpecialization(readSessionSpecialization(localStorage, object, ROOT_SESSION));
+    setImageTask(false);
   });
 
   useEffect(() => {
@@ -549,6 +574,8 @@ function App() {
     localStorage.setItem(SESSION_KEY, next);
     setSession(next);
     setAgentMode(readSessionMode(localStorage, object, next));
+    setSpecialization(readSessionSpecialization(localStorage, object, next));
+    setImageTask(false);
     setModelPreset(modelForSession(next));
     setProject(localStorage.getItem(PROJECT_PREFIX + next) ?? "");
     setRepository(localStorage.getItem(REPOSITORY_PREFIX + next) ?? "");
@@ -857,7 +884,7 @@ function App() {
       setModeForSession(next, "review");
       // Start project reviews without carrying another task's saved template.
       setSpecialization("");
-      localStorage.setItem(SPECIALIZATION_KEY, "");
+      saveSessionSpecialization(localStorage, object, next, "");
       const branch = repo.toLowerCase() === "aamvtrampa36-del/cdf-cloud-engine"
         ? "opencode/g8-cdf-isolation-20261110"
         : repo.toLowerCase() === "aamvtrampa36-del/cdf-workbench-"
@@ -919,11 +946,18 @@ function App() {
   const submit = (whenBusy: "followUp" | "steer" = "followUp") => {
     const text = prompt.trim();
     if ((!text && !draftImages.length) || !connected) return;
+    if (imageTask && !imageModel) {
+      setImageError("Selecciona una plantilla con modelo de imagen o configúrala en Configurar → Plantillas.");
+      return;
+    }
     autoFollowConversation.current = true;
     // Clear only after the client socket accepts the message; never lose the
     // task draft on an immediate connection failure.
     // Link the chosen project to the task; server-side isolation is addressed in G8.
-    const requestText = text || "Analiza la imagen adjunta y ayúdame con ella.";
+    const requestText = imageTask
+      ? "Genera una imagen con la herramienta generate_image usando el modelo de imagen de esta plantilla. " +
+        "Descripción visual: " + text
+      : text || "Analiza la imagen adjunta y ayúdame con ella.";
     const task = project && agentMode === "build"
       ? "Proyecto Linux seleccionado: " + project + ". Si usas la herramienta linux, utiliza project=" + project +
         ". No modifiques otros proyectos ni producción sin autorización.\n\nTarea: " + requestText
@@ -941,6 +975,7 @@ function App() {
         setPrompt((current) => current.trim() === text ? "" : current);
         setDraftImages([]);
         setImageError("");
+        setImageTask(false);
       }
     };
     if (!busy && resolveModelSelection(selectedModel).providerID === "openrouter") {
@@ -1180,8 +1215,9 @@ function App() {
               <select aria-label="Plantilla de trabajo" title="Plantilla editable: cambia instrucciones, modo y modelo sugerido"
                 disabled={busy} value={specialization} onChange={(e) => {
                   const id = e.target.value;
-                  localStorage.setItem(SPECIALIZATION_KEY, id);
+                  saveSessionSpecialization(localStorage, object, session, id);
                   setSpecialization(id);
+                  setImageTask(false);
                   const selected = specializations.find(item => item.id === id);
                   if (selected) {
                     setModeForSession(session, selected.mode ?? "build");
@@ -1190,10 +1226,12 @@ function App() {
                       resolveModelSelection(preferred).providerID !== "openrouter";
                     const nextModel = available ? preferred : "cloudflare";
                     selectModel(nextModel);
+                  } else {
+                    setModeForSession(session, "build");
                   }
                 }}
                 className="max-w-[132px] rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 text-xs text-kumo-default">
-                <option value="">Sin plantilla</option>
+                <option value="">General</option>
                 {specializations.map(item => (
                   <option key={item.id} value={item.id}>{item.name}</option>
                 ))}
@@ -1509,13 +1547,20 @@ function App() {
               <CodeIcon size={15} className="shrink-0 text-kumo-subtle" />
               <span className="truncate">{project || "Elegir proyecto"}</span>
             </button>
-            <details className="relative ml-auto text-xs">
+            <details className="relative ml-auto text-xs" onToggle={event => setActivityOpen(event.currentTarget.open)}>
               <summary className="min-h-10 cursor-pointer list-none rounded-xl px-3 py-2.5 text-kumo-subtle hover:bg-kumo-elevated">
                 Actividad
               </summary>
               <div className="absolute bottom-full right-0 z-30 mb-2 w-[min(88vw,340px)] space-y-2 rounded-xl border border-kumo-line bg-kumo-base p-3 text-xs shadow-xl">
                 <p aria-live="polite">{toolsCompleted} herramientas completadas{toolsFailed ? ` · ${toolsFailed} fallidas` : ""} en esta sesión.</p>
                 <p title="El cambio de consumo de OpenRouter es de cuenta, no una factura de la tarea">{lastCost}</p>
+                <p aria-live="polite">
+                  TokenEconomizer: {connectorActivity === null ? "consultando estado…" :
+                    !connectorActivity.tokenEconomizerEnabled ? "desactivado" :
+                    connectorActivity.tokenEconomizerLastHook
+                      ? `${connectorActivity.tokenEconomizerLastHook.name} · ${connectorActivity.tokenEconomizerLastHook.succeeded ? "ejecutado" : "falló; el chat sigue disponible"} · ${new Date(connectorActivity.tokenEconomizerLastHook.at).toLocaleTimeString()}`
+                      : "activado, sin hooks ejecutados todavía"}
+                </p>
               </div>
             </details>
           </div>
@@ -1529,6 +1574,26 @@ function App() {
             </div>)}
           </div> : null}
           {imageError ? <p role="alert" className="mx-auto max-w-3xl px-5 pt-1 text-xs text-kumo-danger">{imageError}</p> : null}
+          <div className="mx-auto flex max-w-3xl items-center gap-2 px-3 pt-1 sm:px-5">
+            <button type="button" aria-pressed={imageTask}
+              title={imageModel ? `Generará imágenes con ${imageModel}` : "Configura y selecciona una plantilla con modelo de imagen"}
+              disabled={!connected || busy}
+              onClick={() => {
+                setImageError("");
+                if (!imageModel) {
+                  setSettingsOpen(true);
+                  return;
+                }
+                if (!imageTask) setModeForSession(session, "build");
+                setImageTask(!imageTask);
+              }}
+              className={`flex min-h-9 items-center gap-1.5 rounded-xl px-3 text-xs font-medium hover:bg-kumo-elevated disabled:opacity-50 ${imageTask ? "bg-kumo-elevated text-kumo-default" : "text-kumo-subtle"}`}>
+              <ImageIcon size={16} /> {imageTask ? "Cancelar imagen" : "Generar imagen"}
+            </button>
+            <span className="min-w-0 truncate text-[11px] text-kumo-subtle">
+              {imageModel ? `Modelo: ${imageModel} · puede tener costo` : "Configura un modelo en Configurar → Plantillas"}
+            </span>
+          </div>
           <form
             onSubmit={(event) => {
               event.preventDefault();
@@ -1555,7 +1620,9 @@ function App() {
                   }
                 }}
                 placeholder={
-                  busy
+                  imageTask
+                    ? "Describe la imagen que quieres crear"
+                    : busy
                     ? "Escribe una instrucción para continuar la tarea"
                     : "Describe qué quieres hacer con OpenCode"
                 }

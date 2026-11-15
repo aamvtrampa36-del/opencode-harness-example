@@ -174,6 +174,9 @@ export function SpecializationsPanel({ onChanged, routerReady }:
           </div> : null}
           <div className="sm:col-span-2">
             <ImageModelPicker value={imageModel} onChange={setImageModel} routerReady={routerReady} disabled={busy} />
+            <p className="mt-1 text-xs text-kumo-subtle">
+              Para conservar el cambio, guarda la plantilla. Luego selecciónala en el chat para ver “Generar imagen”.
+            </p>
           </div>
         </div>
         <p className="text-xs text-kumo-subtle">

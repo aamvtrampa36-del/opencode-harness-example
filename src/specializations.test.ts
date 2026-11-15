@@ -51,6 +51,7 @@ describe("G6 reusable editable templates", () => {
     });
     expect(profile).toMatchObject({ model: "openrouter:google/gemini-4-hydrogen",
       decisionModel: "reasoning", imageModel: "google/imagen-4" });
+    expect(mergeSpecializations([profile]).find(item => item.id === profile.id)?.imageModel).toBe("google/imagen-4");
     expect(specializationPrompt(profile)).toContain("google/imagen-4");
     expect(() => validateSpecialization({ ...profile, imageModel: "../outside" })).toThrow();
     expect(() => validateSpecialization({ ...profile, decisionModel: "unknown-model" })).toThrow();
