@@ -69,7 +69,12 @@ async function run(scenario: Scenario, mode: Mode): Promise<RecordRow> {
   });
   return {
     scenario, mode, gets,wireBytes,latencyMs,calls:operations.length,
-    exactOutputs:JSON.stringify(obtained)===JSON.stringify(expected)
+    exactOutputs:obtained.every((value,i) => {
+      const got=value as Record<string,unknown>;
+      const want=expected[i] as Record<string,unknown>;
+      return Object.keys(got).length === Object.keys(want).length &&
+        Object.entries(want).every(([key,expectedValue]) => got[key]===expectedValue);
+    })
   };
 }
 describe("Exp4: source-pinned GitHub read baseline",()=>{
