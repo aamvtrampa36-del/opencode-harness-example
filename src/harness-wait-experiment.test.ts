@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // A synthetic behavioural check for a copy of the actual pinned harness source.
 // This is NOT a live Durable Object integration test.
@@ -53,6 +54,14 @@ describe("experimental pinned OpenCodeHarness settled fast path", () => {
     // Diagnostic evidence only: the package may bundle or minify internals.
     console.log("HARNESS_DIST_ENTRY", filename.pathname);
     console.log("HARNESS_DIST_PAUSE_CONTEXT", pos < 0 ? "NOT_FOUND" : compiled.slice(Math.max(pos - 390, 0), pos + 185));
+    const directory = dirname(fileURLToPath(filename));
+    for (const name of readdirSync(directory).filter(n => n.endsWith(".js"))) {
+      const src = readFileSync(join(directory,name),"utf8");
+      const match = src.indexOf("heartbeatMs / 30") >= 0 ? src.indexOf("heartbeatMs / 30") :
+        src.indexOf("heartbeatMs/30");
+      if(match>=0) console.log("HARNESS_DIST_IMPLEMENTATION", name, src.slice(Math.max(0,match-400),match+170));
+    }
+    console.log("HARNESS_DIST_JS_FILES", readdirSync(directory).filter(n => n.endsWith(".js")).join(","));
     expect(compiled.length).toBeGreaterThan(2000);
   });
 
