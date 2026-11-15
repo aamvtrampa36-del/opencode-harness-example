@@ -35,9 +35,10 @@ async function exercise(scenario: Scenario, mode: Mode): Promise<Result> {
     async()=>c.project
   );
   const ctx = {
-    agent: {transform: async (editor: {update: (id:string,fn:(agent:{system:string})=>void)=>void})=>{
-      editor.update("build",agent=>{agent.system="";});
-      editor.update("plan",agent=>{agent.system="";});
+    agent: {transform: async (callback: (editor:{
+      update:(id:string, fn:(agent:{system:string})=>void)=>void
+    })=>void)=>{
+      callback({update: (_id,fn)=>{fn({system:""});}});
     }},
     session: {hook: async (name:string, fn: ContextHook)=>{
       if (name === "context") contextHook=fn;
