@@ -37,6 +37,9 @@ try {
 
   const initialSession = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
   assert.ok(initialSession, "La aplicación debe crear una sesión de conversación.");
+  const initialModelPreset = await page.evaluate(
+    session => localStorage.getItem("opencode-model-preset:" + session), initialSession
+  );
 
   const conversationsButton = page.getByRole("button", { name: "Conversaciones", exact: true });
   await conversationsButton.click();
@@ -57,17 +60,14 @@ try {
   assert.ok(newSession && newSession !== initialSession, "Crear conversación debe seleccionar una sesión nueva.");
   await conversations.waitFor({ state: "hidden" });
 
-  await conversationsButton.click();
-  await conversations.waitFor({ state: "visible" });
-  const otherConversation = conversations.locator('button[data-session-id]:not([aria-current="page"])').first();
-  await otherConversation.waitFor({ state: "visible" });
-  await otherConversation.click();
-  await page.waitForFunction(
-    selected => localStorage.getItem("opencode-harness-session") !== selected,
-    newSession,
-    { timeout: 10_000 }
-  );
-  await conversations.waitFor({ state: "hidden" });
+  // A single offline/online cycle checks the app's existing socket recovery
+  // without interrupting a task or changing the owner's active conversation.
+  await context.setOffline(true);
+  await page.getByRole("status").filter({ hasText: "Reconectando" }).waitFor({ timeout: 20_000 });
+  await context.setOffline(false);
+  await page.getByRole("status").filter({ hasText: "En línea" }).waitFor({ timeout: 60_000 });
+  assert.equal(await page.evaluate(() => localStorage.getItem("opencode-harness-session")), newSession,
+    "La sesión de prueba debe seguir seleccionada tras la reconexión.");
 
   const modelButton = page.getByRole("button", { name: /Elegir modelo de IA/ });
   await modelButton.click();
@@ -78,7 +78,7 @@ try {
   assert.equal(await profiles.getByRole("option").count(), 5, "Deben seguir disponibles los cinco perfiles simples.");
   await profiles.getByRole("option", { name: /Cloudflare/ }).click();
 
-  const selectedSession = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
+  const selectedSession = newSession;
   const selectedProfile = await page.evaluate(
     session => localStorage.getItem("opencode-model-preset:" + session), selectedSession
   );
@@ -126,10 +126,10 @@ try {
 
   await conversationsButton.click();
   await conversations.waitFor({ state: "visible" });
-  await conversations.locator(`[data-session-id="${newSession}"]`).click();
+  await conversations.locator(`[data-session-id="${initialSession}"]`).click();
   await page.waitForFunction(
     selected => localStorage.getItem("opencode-harness-session") === selected,
-    newSession,
+    initialSession,
     { timeout: 10_000 }
   );
   await conversationsButton.click();
@@ -143,6 +143,9 @@ try {
   assert.equal(await page.evaluate(
     session => localStorage.getItem("opencode-model-preset:" + session), selectedSession
   ), "cloudflare", "Al volver, debe conservarse el modelo elegido en esa conversación.");
+  assert.equal(await page.evaluate(
+    session => localStorage.getItem("opencode-model-preset:" + session), initialSession
+  ), initialModelPreset, "La prueba no debe cambiar el modelo de la conversación preexistente.");
 
   if (sendLiveMessage) {
     assert.ok(routerReady, "OpenRouter debe estar configurado para ejecutar el mensaje real.");
@@ -183,10 +186,10 @@ try {
     await backgroundTask.waitFor({ state: "visible" });
     assert.match(await backgroundTask.getAttribute("aria-label") ?? "", /tarea en curso/i,
       "La lista debe marcar la conversación que sigue trabajando.");
-    await conversations.locator(`[data-session-id="${newSession}"]`).click();
+    await conversations.locator(`[data-session-id="${initialSession}"]`).click();
     await page.waitForFunction(
       selected => localStorage.getItem("opencode-harness-session") === selected,
-      newSession,
+      initialSession,
       { timeout: 10_000 }
     );
     await page.getByRole("textbox", { name: "Escribir a OpenCode" }).waitFor({ state: "visible" });
@@ -218,15 +221,6 @@ try {
     assert.ok(delta >= 0 && delta <= 0.10, `La variación de cuenta excedió US$0.10: $${delta.toFixed(4)}.`);
     console.log(`Mensaje real de OpenRouter aprobado; variación aproximada de cuenta: $${delta.toFixed(4)}.`);
 
-    await conversationsButton.click();
-    await conversations.waitFor({ state: "visible" });
-    await conversations.locator(`[data-session-id="${newSession}"]`).click();
-    await page.waitForFunction(
-      selected => localStorage.getItem("opencode-harness-session") === selected,
-      newSession,
-      { timeout: 10_000 }
-    );
-    await page.getByRole("textbox", { name: "Escribir a OpenCode" }).waitFor({ state: "visible" });
   }
 
   await page.getByRole("button", { name: "Cambiar proyecto" }).click();
@@ -252,7 +246,20 @@ try {
   assert.ok((dimensions.main ?? 0) <= (dimensions.mainClient ?? 0) + 1, `Desbordamiento horizontal del chat: ${JSON.stringify(dimensions)}`);
   assert.deepEqual(pageErrors, [], `Errores de JavaScript en la página: ${pageErrors.join("; ")}`);
 
-  console.log(`${localHost ? "Local" : "Staging"} mobile smoke aprobado: 393 × 852, navegación, conversaciones, perfiles, OpenRouter, proyectos y ajustes.`);
+  // Restore the conversation the owner had selected before this run.
+  await conversationsButton.click();
+  await conversations.waitFor({ state: "visible" });
+  await conversations.locator(`[data-session-id="${initialSession}"]`).click();
+  await page.waitForFunction(
+    selected => localStorage.getItem("opencode-harness-session") === selected,
+    initialSession,
+    { timeout: 10_000 }
+  );
+  assert.equal(await page.evaluate(
+    session => localStorage.getItem("opencode-model-preset:" + session), initialSession
+  ), initialModelPreset, "La prueba debe conservar el modelo original de la sesión del propietario.");
+
+  console.log(`${localHost ? "Local" : "Staging"} mobile smoke aprobado: 393 × 852, reconexión, sesión aislada, perfiles, OpenRouter, proyectos y ajustes.`);
 } finally {
   await browser.close();
 }
