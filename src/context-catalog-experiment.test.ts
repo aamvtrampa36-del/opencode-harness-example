@@ -32,7 +32,8 @@ async function exercise(scenario: Scenario, mode: Mode): Promise<Result> {
     {execute: async()=>({})},
     async()=>undefined,
     async()=>c.repo,
-    async()=>c.project
+    async()=>c.project,
+    mode==="curated" ? "plan-safe" : "existing"
   );
   const ctx = {
     agent: {transform: async (callback: (editor:{
@@ -65,34 +66,56 @@ async function exercise(scenario: Scenario, mode: Mode): Promise<Result> {
   const bytes=Buffer.byteLength(JSON.stringify(
     Object.fromEntries(Object.entries(available).sort(([a],[b])=>a.localeCompare(b)))
   ));
+  const curatedPlan=mode==="curated" && c.agent==="plan";
   const wanted=c.project
-    ? (c.repo ? ["linux","inspect_linux","github","repo_review","repo_info","repo_read"]
-      : ["linux","inspect_linux"])
+    ? (c.repo
+      ? (curatedPlan ? ["inspect_linux","repo_review","repo_info","repo_read"]
+        : ["linux","inspect_linux","github","repo_review","repo_info","repo_read"])
+      : (curatedPlan ? ["inspect_linux"] : ["linux","inspect_linux"]))
     : [];
-  const valid=c.project ? wanted.every(t=>names.includes(t)) :
+  const visible=c.project ? wanted.every(t=>names.includes(t)) :
     !names.some(x=>["linux","inspect_linux","github","repo_review","repo_info","repo_read"].includes(x));
-  void mode; // Baseline first: mode is a logging label, no candidate yet.
+  const safe=curatedPlan ? !names.includes("linux") && !names.includes("github") : true;
+  const valid=visible && safe;
   return {
     scenario,mode,schemaBytes:bytes,declaredCount:Object.keys(declared).length,
     visibleCount:names.length,names,elapsedMs,valid
   };
 }
 
-describe("Experiment 5: observed plugin context catalog baseline",()=>{
-  test("record real workspacePlugin declared schemas and context hook in 3 baseline repeats",async()=>{
+describe("Experiment 5: actual workspacePlugin context hook paired comparison",()=>{
+  test("baseline and curated catalog, same scope and full capabilities",async()=>{
     for(const scenario of Object.keys(cases) as Scenario[]){
+      const results: Result[]=[];
       for(let replicate=1;replicate<=3;replicate++){
-        const id="baseline:"+scenario+":"+replicate;
-        console.log("EXP5_BEGIN "+JSON.stringify({id,scenario,replicate,mode:"baseline"}));
-        try{
-          const result=await exercise(scenario,"baseline");
+        const order: Mode[] = replicate%2 ? ["baseline","curated"] : ["curated","baseline"];
+        for(const mode of order){
+          const id=mode+":"+scenario+":"+replicate;
+          console.log("EXP5_BEGIN "+JSON.stringify({id,scenario,replicate,mode}));
+          let result: Result;
+          try{
+            result=await exercise(scenario,mode);
+          }catch(error){
+            console.log("EXP5_END "+JSON.stringify({id,status:"FAIL",error:String(error)}));
+            throw error;
+          }
           console.log("EXP5_END "+JSON.stringify({id,status:result.valid?"PASS":"FAIL",...result}));
           expect(result.valid).toBe(true);
-        }catch(error){
-          console.log("EXP5_END "+JSON.stringify({id,status:"FAIL",error:String(error)}));
-          throw error;
+          results.push(result);
         }
       }
+      const avg=(mode:Mode,field:"schemaBytes"|"elapsedMs") =>
+        results.filter(x=>x.mode===mode).reduce((n,x)=>n+x[field],0)/3;
+      const original=avg("baseline","schemaBytes");
+      const after=avg("curated","schemaBytes");
+      const reduction=100*(1-after/original);
+      console.log("EXP5_SUMMARY "+JSON.stringify({scenario,originalBytes:original,curatedBytes:after,
+        schemaReductionPct:Number(reduction.toFixed(3)),
+        originalMs:avg("baseline","elapsedMs"),curatedMs:avg("curated","elapsedMs")
+      }));
+      if(scenario==="plan-bound-repo") expect(reduction).toBeGreaterThanOrEqual(15);
+      else if(scenario.startsWith("build")) expect(reduction).toBe(0);
+      else expect(reduction).toBeGreaterThan(0);
     }
   });
 });
