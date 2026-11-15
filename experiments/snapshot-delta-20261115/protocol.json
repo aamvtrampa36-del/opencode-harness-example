@@ -1,0 +1,93 @@
+{
+  "id": "exp2-snapshot-delta-20261115",
+  "intent": "OPTIMIZE_EXPERIMENT_ONLY",
+  "revisions": {
+    "main": "e2736d1221247b5186879cda3beb9230b4b977f5",
+    "branch": "experiment/session-snapshot-delta-20261115",
+    "prior_experiment": "PR #55 (archived, unmodified)"
+  },
+  "environment": {
+    "target": "Node/Bun GitHub Actions, actual src/sockets.ts and WebSocket protocol via fake authorized harness; no real Cloudflare deploy",
+    "versions": "bun 1.4.4 from package.json",
+    "kind": "INTEGRATION_WITH_SIMULATED_HARNESS"
+  },
+  "hypotheses": [
+    {
+      "id": "H1",
+      "cause": "Every significant tool/session event reads and serializes complete session history, then resends it to each socket",
+      "intervention": "Per-socket prefix-checked incremental snapshot with explicit full fallback, no changes to model/Harness inference",
+      "prediction": "At least 70% fewer outgoing WebSocket bytes for representative 160-message/25-event flow with identical transcript and busy/pending",
+      "falsification": "Measured saving <70%, client desync, degraded rendering or excessive CPU"
+    }
+  ],
+  "cases": [
+    {
+      "id": "short",
+      "initial_messages": 6,
+      "events": 4,
+      "expected": "Exact final messages for baseline/delta; fallback full when not worthwhile"
+    },
+    {
+      "id": "long",
+      "initial_messages": 160,
+      "events": 25,
+      "tool_output_chars": 1200,
+      "expected": "Identical final transcript, 70%+ fewer outgoing bytes"
+    },
+    {
+      "id": "rewrite",
+      "initial_messages": 24,
+      "events": 8,
+      "expected": "Updates to same message IDs, truncation/compaction and reconnect never leave stale messages"
+    }
+  ],
+  "metrics": {
+    "websocketBytes": {
+      "unit": "bytes",
+      "provenance": "OBSERVED websocket.send UTF8 buffers"
+    },
+    "historyReads": {
+      "unit": "calls",
+      "provenance": "OBSERVED fake Harness API count"
+    },
+    "fullSnapshots": {
+      "unit": "count",
+      "provenance": "OBSERVED websocket send packets"
+    },
+    "deltaSnapshots": {
+      "unit": "count",
+      "provenance": "OBSERVED websocket send packets"
+    },
+    "elapsed": {
+      "unit": "ms",
+      "provenance": "OBSERVED wall-clock test runner; indicative only"
+    },
+    "tokens": {
+      "unit": "tokens",
+      "provenance": "UNKNOWN: no model inference"
+    },
+    "cost": {
+      "unit": "USD",
+      "provenance": "UNKNOWN: no model inference"
+    }
+  },
+  "thresholds": {
+    "longByteSavingPercent": 70,
+    "correctness": "byte-for-byte equality of final message JSON and correct busy/pending",
+    "shortNoRegression": "no more bytes than full baseline",
+    "cpuMultiplierMax": 4,
+    "productionChangeAllowed": false
+  },
+  "repetitions": {
+    "paired": 3,
+    "order": "alternate full/delta per pair",
+    "warmup": 1
+  },
+  "evidence_plan": {
+    "source": "experiments/snapshot-delta-20261115",
+    "journal": "runs.jsonl emitted locally; CI logs with individual sample rows",
+    "baseline": "forced full mode of actual OpenCodeSessionSockets",
+    "candidate": "delta mode of exact same class",
+    "unverified": "Real user latency/Cloudflare DO/model tokens"
+  }
+}

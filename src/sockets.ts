@@ -12,6 +12,7 @@ import {
   type OpenCodeSessionId
 } from "agents/harness/opencode";
 import type { ClientMessage, ServerMessage, SessionSnapshot } from "./protocol";
+import { makeSnapshotPacket, type SnapshotCache } from "./snapshot-delta";
 
 const SESSION_TAG_PREFIX = "opencode-session:";
 const SESSION_QUERY = "session";
@@ -56,12 +57,14 @@ function sessionOf(tags: readonly string[]): OpenCodeSessionId | undefined {
   return tag?.slice(SESSION_TAG_PREFIX.length);
 }
 
-function send(socket: WebSocket, message: ServerMessage): void {
-  if (socket.readyState !== OPEN) return;
+function send(socket: WebSocket, message: ServerMessage): boolean {
+  if (socket.readyState !== OPEN) return false;
   try {
     socket.send(JSON.stringify(message));
+    return true;
   } catch {
     // The socket closed between the state check and the send.
+    return false;
   }
 }
 
@@ -107,6 +110,9 @@ export class OpenCodeSessionSockets {
   readonly #snapshots = new Map<OpenCodeSessionId, boolean>();
   readonly #submitLocks = new Map<OpenCodeSessionId, Promise<void>>();
   readonly #activeConfigurations = new Map<OpenCodeSessionId, { mode: string; model: string | undefined; operations: Set<string> }>();
+  /** Opt-in experiment only. The normal application continues sending full snapshots. */
+  readonly #snapshotDelivery: "full" | "delta";
+  readonly #lastSent = new WeakMap<WebSocket, SnapshotCache>();
 
   /** Serialize configuration and submit for one session, including concurrent sockets. */
   async #serializeSubmit<T>(session: OpenCodeSessionId, work: () => Promise<T>): Promise<T> {
@@ -129,7 +135,8 @@ export class OpenCodeSessionSockets {
     getSpecialization: (id: string) => Promise<Specialization | undefined> = async () => undefined,
     noteIncident: (event: IncidentObservation) => Promise<void> = async () => undefined,
     bindScope: (sessionID: string, value: unknown) => Promise<void> = async () => undefined,
-    inheritScope: (source: string, target: string, project: string) => Promise<void> = async () => undefined
+    inheritScope: (source: string, target: string, project: string) => Promise<void> = async () => undefined,
+    snapshotDelivery: "full" | "delta" = "full"
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
@@ -138,6 +145,7 @@ export class OpenCodeSessionSockets {
     this.#noteIncident = noteIncident;
     this.#bindScope = bindScope;
     this.#inheritScope = inheritScope;
+    this.#snapshotDelivery = snapshotDelivery;
   }
 
   async #record(event: IncidentObservation): Promise<void> {
@@ -193,7 +201,7 @@ export class OpenCodeSessionSockets {
     send(connection, { type: "hello", session, openRouterAvailable: await this.#openRouterAvailable() });
     send(connection, { type: "sessions", sessions });
     const snapshot = await this.#snapshot(session);
-    send(connection, { type: "snapshot", ...snapshot });
+    this.#sendSnapshot(connection, snapshot);
     if (snapshot.busy) this.#watch(session);
   }
 
@@ -354,10 +362,7 @@ export class OpenCodeSessionSockets {
         return { session: created.id };
       }
       case "resync":
-        send(connection, {
-          type: "snapshot",
-          ...(await this.#snapshot(session))
-        });
+        this.#sendSnapshot(connection, await this.#snapshot(session), true);
         return null;
       default:
         throw new Error(
@@ -379,6 +384,21 @@ export class OpenCodeSessionSockets {
     return { session, messages, busy: busy || operationPending, pending };
   }
 
+  /** Initial snapshots and explicit resync are always complete and authoritative. */
+  #sendSnapshot(socket: WebSocket, snapshot: SessionSnapshot, forceFull = false): void {
+    if (this.#snapshotDelivery === "full") {
+      send(socket, { type: "snapshot", ...snapshot });
+      return;
+    }
+    const { packet, cache } = makeSnapshotPacket(
+      snapshot, forceFull ? undefined : this.#lastSent.get(socket)
+    );
+    if (send(socket, packet)) {
+      if (cache) this.#lastSent.set(socket, cache);
+      else this.#lastSent.delete(socket);
+    }
+  }
+
   /** Send every socket on the session a snapshot, one at a time. */
   async #broadcastSnapshot(session: OpenCodeSessionId): Promise<void> {
     if (this.#snapshots.has(session)) {
@@ -391,7 +411,7 @@ export class OpenCodeSessionSockets {
         this.#snapshots.set(session, false);
         const snapshot = await this.#snapshot(session);
         for (const socket of this.#getWebSockets(sessionTag(session))) {
-          send(socket, { type: "snapshot", ...snapshot });
+          this.#sendSnapshot(socket, snapshot);
         }
       } while (this.#snapshots.get(session) === true);
     } finally {
