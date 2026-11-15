@@ -151,6 +151,77 @@ async function exercise(delivery: Delivery, scenario: Scenario): Promise<Bench> 
   };
 }
 
+describe("snapshot subscription lifecycle", () => {
+  test("a late socket gets full state, later gets deltas, and resync resets its base", async () => {
+    let history = Array.from({ length: 20 }, (_, i) => textMessage("m" + i, "body ".repeat(110)));
+    const a: ServerMessage[] = [];
+    const b: ServerMessage[] = [];
+    let observer: ((events: readonly OpenCodeSessionEvent[]) => void) | undefined;
+    const createSocket = (received: ServerMessage[]) => ({
+      readyState: 1,
+      tags: ["opencode-session:ses_root"],
+      send: (value: string) => received.push(JSON.parse(value) as ServerMessage)
+    } as unknown as Connection);
+    const one = createSocket(a);
+    const two = createSocket(b);
+    const active = [one];
+    const harness = {
+      session: () => ({
+        history: async () => structuredClone(history),
+        busy: async () => true,
+        events: async () => ({ start: (fn: (events: readonly OpenCodeSessionEvent[]) => void) => {
+          observer = fn;
+        }, stop: async () => undefined })
+      }),
+      sessions: { list: async () => [{ id: "ses_root", busy: true }] },
+      pending: async () => []
+    };
+    const service = new OpenCodeSessionSockets(
+      harness as never, () => active as unknown as WebSocket[],
+      async () => false, async () => undefined,
+      async () => undefined, async () => undefined, async () => undefined, "delta"
+    );
+    const ctx = { request: new Request("https://example.com/?session=ses_root") } as never;
+    await service.options().handlers.onConnect(one, ctx);
+    for (let t=0;t<15 && !observer;t++) await Bun.sleep(1);
+    if (!observer) throw new Error("No watcher");
+
+    const change = async (text: string) => {
+      history = [...history.slice(0,-1), textMessage("m19", text)];
+      const prev = a.length;
+      observer!([{ type: "tool_end" } as OpenCodeSessionEvent]);
+      for (let t=0;t<30 && a.length<prev+2;t++) await Bun.sleep(1);
+    };
+    await change("new " + "body ".repeat(100));
+    expect(a.filter(p => p.type === "snapshot_delta").length).toBe(1);
+
+    active.push(two);
+    await service.options().handlers.onConnect(two, ctx);
+    expect(b.find(p => p.type === "snapshot")?.type).toBe("snapshot");
+
+    await change("updated " + "body ".repeat(100));
+    expect(b.some(p => p.type === "snapshot_delta")).toBe(true);
+    await service.options().handlers.onMessage(one,
+      JSON.stringify({ type: "resync", id: "request-resync" }));
+    expect(a.filter(p => p.type === "snapshot").length).toBe(2);
+
+    const reconstruction = (packets: ServerMessage[]) => {
+      let messages: readonly OpenCodeMessage[] = [];
+      for (const packet of packets) {
+        if (packet.type === "snapshot") messages = packet.messages;
+        if (packet.type === "snapshot_delta") {
+          const next = applySnapshotDelta(messages, packet);
+          if (!next) throw Error("mismatch");
+          messages = next;
+        }
+      }
+      return messages;
+    };
+    expect(reconstruction(a)).toEqual(history);
+    expect(reconstruction(b)).toEqual(history);
+  });
+});
+
 describe("real app WebSocket orchestration, fake deterministic Harness", () => {
   test("compares three paired runs per scenario and retains samples", async () => {
     for (const scenario of ["short", "long", "rewrite"] as const) {
@@ -159,7 +230,16 @@ describe("real app WebSocket orchestration, fake deterministic Harness", () => {
       for (let pair = 0; pair < 3; pair++) {
         const order: Delivery[] = pair % 2 === 0 ? ["full", "delta"] : ["delta", "full"];
         for (const variant of order) {
-          const outcome = await exercise(variant, scenario);
+          const runId = scenario + ":" + pair + ":" + variant;
+          console.log("SNAPSHOT_RUN_BEGIN " + JSON.stringify({ id: runId, scenario, pair, variant }));
+          let outcome: Bench;
+          try { outcome = await exercise(variant, scenario); }
+          catch (error) {
+            console.log("SNAPSHOT_RUN_END " + JSON.stringify({ id: runId, status: "FAIL",
+              error: error instanceof Error ? error.message : String(error) }));
+            throw error;
+          }
+          console.log("SNAPSHOT_RUN_END " + JSON.stringify({ id: runId, status: outcome.valid ? "PASS" : "FAIL", ...outcome }));
           console.log("SNAPSHOT_BENCH_ROW " + JSON.stringify({ pair, ...outcome }));
           expect(outcome.valid).toBe(true);
           (variant === "full" ? baseline : optimized).push(outcome);
