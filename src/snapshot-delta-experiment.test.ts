@@ -14,16 +14,24 @@ function snapshot(messages: readonly OpenCodeMessage[]): SessionSnapshot {
 
 describe("experimental wire snapshot correctness", () => {
   test("appends and updates while preserving every message", () => {
-    const old = [textMessage("m1", "hello"), textMessage("m2", "before")];
-    const newer = [old[0], textMessage("m2", "after"), textMessage("m3", "third")];
+    const old = Array.from({ length: 12 }, (_, i) =>
+      textMessage("m" + i, "unchanged ".repeat(20)));
+    const newer = [...old.slice(0, -1), textMessage("m11", "after"), textMessage("m12", "third")];
     const baseline = makeSnapshotPacket(snapshot(old));
     expect(baseline.packet.type).toBe("snapshot");
     const update = makeSnapshotPacket(snapshot(newer), baseline.cache);
     expect(update.packet.type).toBe("snapshot_delta");
     if (update.packet.type !== "snapshot_delta") throw new Error("No delta");
-    expect(update.packet.from).toBe(1);
+    expect(update.packet.from).toBe(11);
     expect(applySnapshotDelta(old, update.packet)).toEqual(newer);
     expect(applySnapshotDelta([], update.packet)).toBeUndefined();
+  });
+
+  test("tiny updates can fall back to a complete packet when cheaper", () => {
+    const tiny = [textMessage("first", "a"), textMessage("second", "b")];
+    const old = makeSnapshotPacket(snapshot(tiny));
+    const later = makeSnapshotPacket(snapshot([tiny[0], textMessage("second", "new")]), old.cache);
+    expect(later.packet.type).toBe("snapshot");
   });
 
   test("handles compaction and a different base through a full snapshot", () => {
