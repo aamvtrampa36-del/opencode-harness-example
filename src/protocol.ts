@@ -42,6 +42,18 @@ export type SessionSnapshot = {
   readonly pending: readonly OpenCodePendingOperation[];
 };
 
+/** Experimental incremental transcript update for one already-synchronized socket. */
+export type SnapshotDelta = {
+  readonly type: "snapshot_delta";
+  readonly session: OpenCodeSessionId;
+  readonly baseLength: number;
+  readonly baseLastId: string | null;
+  readonly from: number;
+  readonly messages: readonly OpenCodeMessage[];
+  readonly busy: boolean;
+  readonly pending: readonly OpenCodePendingOperation[];
+};
+
 /** Server → client. */
 export type ServerMessage =
   | { readonly type: "hello"; readonly session: OpenCodeSessionId; readonly openRouterAvailable: boolean }
@@ -51,6 +63,7 @@ export type ServerMessage =
     }
   /** Replaces the client's state for the session. */
   | ({ readonly type: "snapshot" } & SessionSnapshot)
+  | SnapshotDelta
   /** The session's events from `session.events()`, live deltas included. */
   | { readonly type: "event"; readonly event: OpenCodeSessionEvent }
   | { readonly type: "result"; readonly id: string; readonly result: unknown }
