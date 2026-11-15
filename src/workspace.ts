@@ -118,7 +118,8 @@ export function workspacePlugin(
   github?: GitHubRunner,
   scopeGuard?: (sessionID: string, action: ScopedToolAction) => Promise<void>,
   getBoundRepository?: (sessionID: string) => Promise<string>,
-  getBoundProject?: (sessionID: string) => Promise<string>
+  getBoundProject?: (sessionID: string) => Promise<string>,
+  contextCatalogMode: "existing" | "plan-safe" = "existing"
 ): Plugin.Plugin {
   const { tools, execute } = createPiTools({
     ...options,
@@ -152,7 +153,7 @@ export function workspacePlugin(
         // Tool definitions are shared by the Worker, but the model context is
         // per session. Expose the shared Workspace only for confirmed
         // unscoped conversations and isolated project tools after binding.
-        await ctx.session.hook("context", async ({ sessionID, tools: available }) => {
+        await ctx.session.hook("context", async ({ sessionID, agent, tools: available }) => {
           let project: string | undefined;
           try {
             if (!getBoundProject) throw new Error("Session scope is unavailable");
@@ -177,6 +178,18 @@ export function workspacePlugin(
           }
           if (!repository) {
             for (const name of githubToolNames) delete available[name];
+          }
+          // Experiment 5: curate model-visible declarations, not execution
+          // permissions. Plan is ALREADY forbidden to run linux commands,
+          // and dedicated repo_* tools expose its entire allowed GitHub
+          // read-only surface without a model-supplied repository ID.
+          // Keep build/unscoped and fallback catalogs fully unchanged.
+          if (contextCatalogMode === "plan-safe" && agent === "plan") {
+            if (available.inspect_linux) delete available.linux;
+            if (repository &&
+                available.repo_read && available.repo_info && available.repo_review) {
+              delete available.github;
+            }
           }
         });
       }
