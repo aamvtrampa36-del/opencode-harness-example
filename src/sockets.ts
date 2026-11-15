@@ -1,7 +1,7 @@
 import { specializationPrompt as specializationPromptText, type Specialization } from "./specializations";
 import { classifyAgentFailure, type IncidentObservation } from "./incident-diagnostics";
 import { MODEL_PRESETS, isModelSelection, isOpenRouterSelection, resolveModelSelection } from "./model-presets";
-import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
+import { assertOpenRouterModelSupportsImageInput, assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import type { Connection, ConnectionContext } from "agents/lifecycle";
 import type { WebSocketMessage, WebSocketsOptions } from "agents/websockets";
 import {
@@ -17,6 +17,8 @@ const SESSION_TAG_PREFIX = "opencode-session:";
 const SESSION_QUERY = "session";
 /** A bound on one prompt; this example has no other quotas. */
 const MAX_PROMPT_LENGTH = 100_000;
+const MAX_INLINE_IMAGE_LENGTH = 2_666_668;
+const MAX_INLINE_IMAGES = 2;
 /** `WebSocket.OPEN`; the constant is not defined on every runtime's global. */
 const OPEN = 1;
 
@@ -98,6 +100,7 @@ export class OpenCodeSessionSockets {
   readonly #noteIncident: (event: IncidentObservation) => Promise<void>;
   readonly #bindScope: (sessionID: string, value: unknown) => Promise<void>;
   readonly #inheritScope: (source: string, target: string, project: string) => Promise<void>;
+  readonly #setSessionModels: (sessionID: string, options: { decisionModel?: string; imageModel?: string }) => Promise<void>;
   /** One event stream per running session, or its opening. */
   readonly #watches = new Map<
     OpenCodeSessionId,
@@ -106,7 +109,7 @@ export class OpenCodeSessionSockets {
   /** Sessions with a snapshot being sent, and whether another is due. */
   readonly #snapshots = new Map<OpenCodeSessionId, boolean>();
   readonly #submitLocks = new Map<OpenCodeSessionId, Promise<void>>();
-  readonly #activeConfigurations = new Map<OpenCodeSessionId, { mode: string; model: string | undefined; operations: Set<string> }>();
+  readonly #activeConfigurations = new Map<OpenCodeSessionId, { mode: string; model: string | undefined; specialization: string | undefined; operations: Set<string> }>();
 
   /** Serialize configuration and submit for one session, including concurrent sockets. */
   async #serializeSubmit<T>(session: OpenCodeSessionId, work: () => Promise<T>): Promise<T> {
@@ -129,7 +132,8 @@ export class OpenCodeSessionSockets {
     getSpecialization: (id: string) => Promise<Specialization | undefined> = async () => undefined,
     noteIncident: (event: IncidentObservation) => Promise<void> = async () => undefined,
     bindScope: (sessionID: string, value: unknown) => Promise<void> = async () => undefined,
-    inheritScope: (source: string, target: string, project: string) => Promise<void> = async () => undefined
+    inheritScope: (source: string, target: string, project: string) => Promise<void> = async () => undefined,
+    setSessionModels: (sessionID: string, options: { decisionModel?: string; imageModel?: string }) => Promise<void> = async () => undefined
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
@@ -138,6 +142,7 @@ export class OpenCodeSessionSockets {
     this.#noteIncident = noteIncident;
     this.#bindScope = bindScope;
     this.#inheritScope = inheritScope;
+    this.#setSessionModels = setSessionModels;
   }
 
   async #record(event: IncidentObservation): Promise<void> {
@@ -238,8 +243,21 @@ export class OpenCodeSessionSockets {
     const handle = this.#harness.session(session);
     switch (message.type) {
       case "submit": {
-        if (typeof message.text !== "string" || message.text.trim() === "") {
+        const files = message.files ?? [];
+        if (!Array.isArray(files) || files.length > MAX_INLINE_IMAGES ||
+            files.some(file => !file || typeof file.data !== "string" ||
+              file.data.length > MAX_INLINE_IMAGE_LENGTH ||
+              !/^image\/(png|jpeg|webp)$/.test(file.mime) ||
+              typeof file.name !== "string" || file.name.length > 160 ||
+              !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.data)) ||
+            files.reduce((total, file) => total + Math.floor(file.data.length * 3 / 4), 0) > 4_000_000) {
+          throw new Error("Adjunta hasta dos imágenes PNG, JPEG o WebP de 2 MB cada una.");
+        }
+        if (typeof message.text !== "string" || (message.text.trim() === "" && files.length === 0)) {
           throw new Error("Nothing to send");
+        }
+        if (files.length && message.model === undefined) {
+          throw new Error("Selecciona primero un modelo OpenRouter compatible con imágenes.");
         }
         if (message.text.length > MAX_PROMPT_LENGTH) {
           throw new Error(
@@ -258,8 +276,9 @@ export class OpenCodeSessionSockets {
         // fails closed until that operation completes.
         const active = this.#activeConfigurations.get(session);
         const running = (active?.operations.size ?? 0) > 0 || await handle.busy();
-        if (running && (!active || active.mode !== mode || active.model !== message.model)) {
-          throw new Error("Espera a que termine la tarea antes de cambiar el modo o modelo.");
+        if (running && (!active || active.mode !== mode || active.model !== message.model ||
+            active.specialization !== message.specialization)) {
+          throw new Error("Espera a que termine la tarea antes de cambiar el modo, modelo o plantilla.");
         }
         // Scope is fixed before inference; validate it for queued work too.
         if (message.project !== undefined || message.repository !== undefined) {
@@ -274,6 +293,12 @@ export class OpenCodeSessionSockets {
             if (isOpenRouterSelection(message.model)) {
               await assertOpenRouterModelSupportsTools(selected.id);
             }
+            if (files.length) {
+              if (selected.providerID !== "openrouter") {
+                throw new Error("Selecciona un modelo OpenRouter compatible con imágenes.");
+              }
+              await assertOpenRouterModelSupportsImageInput(selected.id);
+            }
             await handle.setModel({ providerID: selected.providerID, id: selected.id });
           }
           await handle.setAgent(mode === "build" ? "build" : "plan");
@@ -286,16 +311,30 @@ export class OpenCodeSessionSockets {
           const specialization = await this.#specialization(message.specialization);
           if (!specialization) throw new Error("La especialización seleccionada ya no existe o está desactivada");
           specializationPrompt = specializationPromptText(specialization);
+          if (!running) await this.#setSessionModels(session, {
+            ...(specialization.decisionModel ? { decisionModel: specialization.decisionModel } : {}),
+            ...(specialization.imageModel ? { imageModel: specialization.imageModel } : {})
+          });
+        } else if (!running) {
+          await this.#setSessionModels(session, {});
         }
         const prefixed =
           mode === "review" ? "Revisa críticamente este trabajo. Identifica problemas con evidencia y no modifiques archivos ni producción.\n\n" :
           mode === "creative" ? "Trabaja como redactor: planifica, escribe o revisa borradores. No alteres fuentes oficiales ni publiques sin autorización.\n\n" :
           "";
         this.#watch(session);
-        const receipt = await handle.submit(specializationPrompt + prefixed + message.text, {
+        const text = message.text.trim() || "Analiza la imagen adjunta y responde a partir de su contenido.";
+        const input = files.length ? {
+          text: specializationPrompt + prefixed + text,
+          files: files.map(file => ({
+            uri: `data:${file.mime};base64,${file.data}`, name: file.name
+          }))
+        } : specializationPrompt + prefixed + text;
+        const receipt = await handle.submit(input, {
           whenBusy: message.whenBusy === "steer" ? "steer" : "followUp"
         });
-        const configuration = active && running ? active : { mode, model: message.model, operations: new Set<string>() };
+        const configuration = active && running ? active : { mode, model: message.model,
+          specialization: message.specialization, operations: new Set<string>() };
         configuration.operations.add(receipt.operationId);
         this.#activeConfigurations.set(session, configuration);
         await this.#broadcastSnapshot(session);

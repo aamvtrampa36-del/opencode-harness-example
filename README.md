@@ -93,6 +93,12 @@ about 3.7 MB (gzip) to the Worker, so deploying needs the Workers Paid plan.
 - Open the same page in two tabs: both follow the session live.
 - Create sessions from the sidebar. They run independently and in parallel.
 
+## OpenCode Cloud extensions
+
+The Cloudflare app adds image input and generation, editable per-task model choices,
+decision-only model selection for delegated work, read-only subagents, and optional
+hook connectors. See [the short usage and compatibility guide](docs/OPEN_CODE_EXTENSIONS_20261115.md).
+
 ## What OpenCode can't do here
 
 OpenCode's Workers profile has no filesystem, shell or terminal, so those

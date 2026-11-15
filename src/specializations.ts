@@ -2,7 +2,7 @@
  * G6 templates reuse owner-scoped specializations. Templates are instructions,
  * never permissions, tool grants, secrets, or extra agent runtimes.
  */
-import { isModelPreset, type ModelPresetID } from "./model-presets";
+import { isModelSelection, type ModelSelectionID } from "./model-presets";
 import type { AgentMode } from "./protocol";
 
 export type Specialization = {
@@ -11,7 +11,9 @@ export type Specialization = {
   instructions: string;
   enabled: boolean;
   mode?: AgentMode;       // absent on older saved records: defaults to build
-  model?: ModelPresetID;  // suggestion only: the owner can override it
+  model?: ModelSelectionID; // primary model suggestion; the owner can override it
+  decisionModel?: ModelSelectionID; // used only for explicitly delegated decision work
+  imageModel?: string; // concrete OpenRouter image-generation model, when configured
 };
 
 export const MAX_SPECIALIZATIONS = 16;
@@ -26,7 +28,7 @@ export const DEFAULT_SPECIALIZATIONS: readonly Specialization[] = [
     instructions: "Revisa los cambios con evidencias, riesgos y pruebas faltantes. Señala problemas concretos antes que preferencias de estilo. No modifiques archivos." },
   { id: "planificacion", name: "Planificación", mode: "plan", model: "economy", enabled: true,
     instructions: "Define objetivo, dependencias, siguiente acción y criterio de cierre. Prioriza pasos mínimos comprobables y evita planificación excesiva. No ejecutes cambios." },
-  { id: "decisiones", name: "Decisiones", mode: "plan", model: "economy", enabled: true,
+  { id: "decisiones", name: "Decisiones", mode: "plan", model: "economy", decisionModel: "reasoning", enabled: true,
     instructions: "Compara opciones por beneficio, costo, riesgo, reversibilidad y evidencia. Explicita incertidumbre y recomienda una opción con condición de revisión; no ejecutes cambios." },
   { id: "flujo", name: "Flujo de trabajo", mode: "plan", model: "economy", enabled: true,
     instructions: "Convierte el objetivo en un flujo corto: entrada, acción, validación, resultado y recuperación ante fallos. Reutiliza herramientas existentes y evita pasos innecesarios." },
@@ -49,7 +51,10 @@ export function mergeSpecializations(saved: readonly Specialization[]): Speciali
 export function specializationPrompt(profile: Specialization): string {
   return "ESPECIALIZACIÓN OPCIONAL: " + profile.name +
     "\nInstrucciones del perfil (no sustituyen permisos ni políticas del sistema):\n" +
-    profile.instructions + "\n\n";
+    profile.instructions +
+    (profile.decisionModel ? "\nModelo para subagentes de decisión: " + profile.decisionModel + "." : "") +
+    (profile.imageModel ? "\nModelo disponible para generar imágenes bajo petición: " + profile.imageModel + "." : "") +
+    "\n\n";
 }
 
 export function validateSpecialization(input: unknown): Specialization {
@@ -72,9 +77,19 @@ export function validateSpecialization(input: unknown): Specialization {
   const mode = value.mode === undefined ? "build" : value.mode;
   if (typeof mode !== "string" || !MODES.includes(mode)) throw new Error("Unknown template mode");
   const model = value.model === undefined ? "cloudflare" : value.model;
-  if (!isModelPreset(model)) throw new Error("Unknown suggested model");
+  const decisionModel = value.decisionModel;
+  const imageModel = value.imageModel;
+  if (!isModelSelection(model)) throw new Error("Unknown suggested model");
+  if (decisionModel !== undefined && !isModelSelection(decisionModel)) {
+    throw new Error("Unknown decision model");
+  }
+  if (imageModel !== undefined && (typeof imageModel !== "string" ||
+      imageModel.length > 160 || !/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:+-]*$/i.test(imageModel))) {
+    throw new Error("Unknown image generation model");
+  }
   return {
     id, name: name.trim(), instructions: instructions.trim(),
-    enabled: value.enabled, mode: mode as AgentMode, model
+    enabled: value.enabled, mode: mode as AgentMode, model,
+    ...(decisionModel ? { decisionModel } : {}), ...(imageModel ? { imageModel } : {})
   };
 }

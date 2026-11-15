@@ -10,6 +10,8 @@ type PickerProps = {
   onChange: (value: ModelSelectionID) => void;
   routerReady: boolean;
   disabled?: boolean;
+  capability?: "tools" | "imageInput";
+  label?: string;
 };
 
 const routerName = (id: string) =>
@@ -19,7 +21,8 @@ const routerName = (id: string) =>
 const money = (n: number | null) =>
   n === null ? "Precio variable o no publicado" : "$" + n.toFixed(n < 0.01 ? 4 : 2);
 
-export function ModelPicker({ value, onChange, routerReady, disabled = false }: PickerProps) {
+export function ModelPicker({ value, onChange, routerReady, disabled = false,
+  capability = "tools", label = "Elegir modelo" }: PickerProps) {
   const [open, setOpen] = useState(false);
   const [level, setLevel] = useState<"simple" | "advanced">("simple");
   const [search, setSearch] = useState("");
@@ -56,9 +59,10 @@ export function ModelPicker({ value, onChange, routerReady, disabled = false }: 
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return models.filter(m => !q || m.name.toLowerCase().includes(q) ||
-      m.id.toLowerCase().includes(q)).slice(0, 80);
-  }, [models, search]);
+    return models.filter(m => (capability !== "imageInput" || m.imageInput) &&
+      (!q || m.name.toLowerCase().includes(q) ||
+      m.id.toLowerCase().includes(q))).slice(0, 80);
+  }, [capability, models, search]);
 
   const current = isModelPreset(value) ? MODEL_PRESETS[value].label :
     models.find(m => "openrouter:" + m.id === value)?.name ||
@@ -68,10 +72,13 @@ export function ModelPicker({ value, onChange, routerReady, disabled = false }: 
 
   return (
     <div className="shrink-0">
-      <button type="button" disabled={disabled} aria-label={`Elegir modelo de IA: ${current}`}
+        <button type="button" disabled={disabled} aria-label={`${label}: ${current}`}
         aria-haspopup="dialog" aria-expanded={open}
         className="flex min-h-10 max-w-[42vw] items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-left text-sm font-medium hover:bg-kumo-elevated disabled:opacity-50 sm:max-w-[240px]"
-        onClick={() => { setLevel(isModelPreset(value) ? "simple" : "advanced"); setOpen(true); }}>
+        onClick={() => {
+          setLevel(capability === "imageInput" ? "advanced" : isModelPreset(value) ? "simple" : "advanced");
+          setOpen(true);
+        }}>
         <span className="truncate">{current}</span>
         <span aria-hidden="true" className="text-kumo-subtle">⌄</span>
       </button>
@@ -81,7 +88,7 @@ export function ModelPicker({ value, onChange, routerReady, disabled = false }: 
           <section role="dialog" aria-modal="true" aria-label="Seleccionar modelo"
             className="flex max-h-[86dvh] w-full max-w-[460px] flex-col overflow-hidden rounded-t-[28px] border border-kumo-line bg-kumo-base p-4 pb-[env(safe-area-inset-bottom)] shadow-2xl sm:rounded-[28px] sm:pb-4">
             <div className="mb-4 flex items-center justify-between gap-2">
-              <h2 className="text-lg font-semibold">Elegir modelo</h2>
+              <h2 className="text-lg font-semibold">{label}</h2>
               <button type="button" aria-label="Cerrar selector" className="rounded-xl px-3 py-2 hover:bg-kumo-elevated"
                 onClick={() => setOpen(false)}>Cerrar</button>
             </div>
@@ -115,7 +122,7 @@ export function ModelPicker({ value, onChange, routerReady, disabled = false }: 
                 ) : (
                   <>
                     <div className="grid grid-cols-2 gap-2">
-                      {OPENROUTER_AUTO.map(id => (
+                      {(capability === "imageInput" ? [] : OPENROUTER_AUTO).map(id => (
                         <button key={id} type="button"
                           aria-pressed={value === "openrouter:" + id}
                           className={`min-h-14 rounded-xl border p-2 text-left text-sm hover:bg-kumo-elevated ${value === "openrouter:" + id ? "border-kumo-accent bg-kumo-elevated" : "border-kumo-line"}`}
@@ -126,7 +133,7 @@ export function ModelPicker({ value, onChange, routerReady, disabled = false }: 
                       ))}
                     </div>
                     <label htmlFor="or-model-search" className="text-xs text-kumo-subtle">
-                      Buscar modelos con soporte de herramientas
+                      {capability === "imageInput" ? "Buscar modelos compatibles con imágenes" : "Buscar modelos con soporte de herramientas"}
                     </label>
                     <input id="or-model-search" type="search" autoComplete="off"
                       value={search} onChange={event => setSearch(event.target.value)}
@@ -148,6 +155,7 @@ export function ModelPicker({ value, onChange, routerReady, disabled = false }: 
                               money(model.promptPerMillion) + " entrada / " +
                               money(model.completionPerMillion) + " salida por millón de tokens"}
                           </span>
+                          {model.imageInput ? <span className="mt-1 inline-block text-[10px] text-kumo-subtle">Acepta imágenes</span> : null}
                         </button>
                       ))}
                       {!loading && !catalogError && filtered.length === 0

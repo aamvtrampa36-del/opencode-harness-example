@@ -3,7 +3,9 @@ import {
   isDefaultSpecialization, type Specialization
 } from "./specializations";
 import type { AgentMode } from "./protocol";
-import { MODEL_PRESETS, isModelPreset, type ModelPresetID } from "./model-presets";
+import { MODEL_PRESETS, isModelPreset, type ModelSelectionID } from "./model-presets";
+import { ModelPicker } from "./model-picker";
+import { ImageModelPicker } from "./image-model-picker";
 
 type ApiList = { specializations: Specialization[] };
 
@@ -23,14 +25,21 @@ function uniqueId(name: string, profiles: readonly Specialization[]): string {
   }
   throw new Error("No hay identificador libre para la plantilla");
 }
+function modelLabel(model: ModelSelectionID | undefined): string {
+  const selected = model ?? "cloudflare";
+  return isModelPreset(selected) ? MODEL_PRESETS[selected].label : selected;
+}
 
-export function SpecializationsPanel({ onChanged }: { onChanged: () => void }) {
+export function SpecializationsPanel({ onChanged, routerReady }:
+  { onChanged: () => void; routerReady: boolean }) {
   const [profiles, setProfiles] = useState<Specialization[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [instructions, setInstructions] = useState("");
   const [mode, setMode] = useState<AgentMode>("build");
-  const [model, setModel] = useState<ModelPresetID>("economy");
+  const [model, setModel] = useState<ModelSelectionID>("economy");
+  const [decisionModel, setDecisionModel] = useState<ModelSelectionID | "">("");
+  const [imageModel, setImageModel] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -49,6 +58,8 @@ export function SpecializationsPanel({ onChanged }: { onChanged: () => void }) {
     setInstructions("");
     setMode("build");
     setModel("economy");
+    setDecisionModel("");
+    setImageModel("");
   }
   function edit(profile: Specialization, copy = false) {
     setEditingId(copy ? null : profile.id);
@@ -56,6 +67,8 @@ export function SpecializationsPanel({ onChanged }: { onChanged: () => void }) {
     setInstructions(profile.instructions);
     setMode(profile.mode ?? "build");
     setModel(profile.model ?? "cloudflare");
+    setDecisionModel(profile.decisionModel ?? "");
+    setImageModel(profile.imageModel ?? "");
     setMessage(copy ? "Copia preparada: modifica y guarda para crear otra plantilla." : "Editando plantilla.");
   }
 
@@ -84,7 +97,8 @@ export function SpecializationsPanel({ onChanged }: { onChanged: () => void }) {
   async function save() {
     try {
       const id = editingId ?? uniqueId(name, profiles);
-      const ok = await request("POST", { id, name, instructions, mode, model, enabled: true });
+      const ok = await request("POST", { id, name, instructions, mode, model,
+        ...(decisionModel ? { decisionModel } : {}), ...(imageModel ? { imageModel } : {}), enabled: true });
       if (ok) clear();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "No se pudo crear la plantilla");
@@ -106,7 +120,9 @@ export function SpecializationsPanel({ onChanged }: { onChanged: () => void }) {
             <div className="min-w-0 flex-1">
               <strong>{profile.name}</strong>
               <p className="text-xs text-kumo-subtle">
-                {profile.enabled ? "Disponible" : "Desactivada"} · {profile.mode ?? "build"} · {MODEL_PRESETS[profile.model ?? "cloudflare"].label}
+                {profile.enabled ? "Disponible" : "Desactivada"} · {profile.mode ?? "build"} · {modelLabel(profile.model)}
+                {profile.decisionModel ? " · decisión " + profile.decisionModel : ""}
+                {profile.imageModel ? " · imagen " + profile.imageModel : ""}
                 {isDefaultSpecialization(profile.id) ? " · Predeterminada" : ""}
               </p>
             </div>
@@ -143,19 +159,26 @@ export function SpecializationsPanel({ onChanged }: { onChanged: () => void }) {
               <option value="creative">Escritura</option>
             </select>
           </label>
-          <label className="text-xs">Modelo sugerido
-            <select className={input} value={model} onChange={e => {
-              if (isModelPreset(e.target.value)) setModel(e.target.value);
-            }}>
-              {Object.entries(MODEL_PRESETS).map(([id, preset]) => (
-                <option key={id} value={id}>{preset.label}</option>
-              ))}
-            </select>
+          <div className="space-y-1 text-xs">Modelo principal
+            <ModelPicker value={model} onChange={setModel} routerReady={routerReady} disabled={busy}
+              label="Elegir modelo principal" />
+          </div>
+          <label className="flex items-center gap-2 text-xs sm:col-span-2">
+            <input type="checkbox" checked={Boolean(decisionModel)} disabled={busy}
+              onChange={event => setDecisionModel(event.target.checked ? "reasoning" : "")} />
+            Elegir modelo distinto para subagentes de decisión
           </label>
+          {decisionModel ? <div className="space-y-1 text-xs sm:col-span-2">Modelo de decisión
+            <ModelPicker value={decisionModel} onChange={setDecisionModel} routerReady={routerReady} disabled={busy}
+              label="Elegir modelo de decisión" />
+          </div> : null}
+          <div className="sm:col-span-2">
+            <ImageModelPicker value={imageModel} onChange={setImageModel} routerReady={routerReady} disabled={busy} />
+          </div>
         </div>
         <p className="text-xs text-kumo-subtle">
-          El modelo es una sugerencia; puedes cambiarlo antes de enviar. Las opciones de OpenRouter requieren
-          una conexión activa y pueden consumir saldo.
+          El modelo principal se aplica a la tarea. El modelo de decisión solo se usa al crear un subagente;
+          el de imagen solo al pedir una imagen. OpenRouter puede consumir saldo.
         </p>
         <div className="flex gap-2">
           <button className={button} type="button" disabled={busy || !name.trim() || !instructions.trim()}

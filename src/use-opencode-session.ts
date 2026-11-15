@@ -213,11 +213,11 @@ export function useOpenCodeSession(
 
   /** Idle: starts a run. Busy: queued as a follow-up, or steers the run. */
   const submit = useCallback(
-    (text: string, whenBusy: "followUp" | "steer" = "followUp", model: ModelSelectionID = "cloudflare", mode: AgentMode = "build", specialization?: string, project?: string, repository?: string) => {
+    (text: string, whenBusy: "followUp" | "steer" = "followUp", model: ModelSelectionID = "cloudflare", mode: AgentMode = "build", specialization?: string, project?: string, repository?: string, files?: readonly { data: string; mime: string; name: string }[]) => {
       const accepted = send({ type: "submit", id: crypto.randomUUID(), text, whenBusy, model, mode,
         ...(specialization ? { specialization } : {}),
         ...(project ? { project } : {}),
-        ...(repository ? { repository } : {}) });
+        ...(repository ? { repository } : {}), ...(files?.length ? { files } : {}) });
       setState((current) => ({
         ...current,
         error: accepted ? undefined : "Sin conexión: la tarea no se envió. Reintenta cuando aparezca En línea."

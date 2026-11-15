@@ -25,6 +25,7 @@ import {
   LinkIcon,
   DownloadSimpleIcon,
   EyeIcon,
+  ImageIcon,
   MoonIcon,
   PaperPlaneRightIcon,
   PlusIcon,
@@ -56,6 +57,20 @@ function modelForSession(session: string): ModelSelectionID {
 const PROJECT_PREFIX = "opencode-active-project:";
 const SPECIALIZATION_KEY = "opencode-specialization";
 const REPOSITORY_PREFIX = "opencode-session-repository:";
+const IMAGE_MAX_BYTES = 2_000_000;
+const IMAGE_MAX_COUNT = 2;
+type DraftImage = { id: string; name: string; mime: string; data: string };
+
+async function encodeImage(file: File): Promise<DraftImage> {
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) throw new Error("Usa una imagen PNG, JPEG o WebP.");
+  if (file.size > IMAGE_MAX_BYTES) throw new Error("Cada imagen debe pesar como máximo 2 MB.");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 32_768) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768));
+  }
+  return { id: crypto.randomUUID(), name: file.name.slice(0, 120), mime: file.type, data: btoa(binary) };
+}
 
 const SUGGESTIONS = [
   {
@@ -151,9 +166,11 @@ function toolOutput(part: ToolPart): string {
 function ToolCard({ part }: { part: ToolPart }) {
   const { status } = part.state;
   const output = toolOutput(part);
+  const files = status === "completed" ? (part.state.content ?? []).filter(content => content.type === "file") : [];
   const failed = status === "error";
   const done = status === "completed";
   return (
+    <div className="space-y-2">
     <details className="rounded-xl border border-kumo-line bg-kumo-base">
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5">
         {failed ? (
@@ -193,6 +210,11 @@ function ToolCard({ part }: { part: ToolPart }) {
         ) : null}
       </div>
     </details>
+    {files.map((file, index) => file.mime.startsWith("image/") ? (
+      <img key={index} src={file.uri} alt={file.name ?? "Imagen generada"}
+        className="mt-2 max-h-[65dvh] max-w-full rounded-xl border border-kumo-line object-contain" />
+    ) : null)}
+    </div>
   );
 }
 
@@ -307,13 +329,22 @@ function Message({
 }) {
   switch (message.type) {
     case "user":
+      {
+        const images = (message.files ?? []).filter(file => file.mime.startsWith("image/") &&
+          file.source.type === "inline");
       return (
         <div className="flex justify-end">
           <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-kumo-contrast px-4 py-2.5 text-sm leading-relaxed text-kumo-inverse">
             {message.text}
+            {images.length ? <div className="mt-2 grid grid-cols-2 gap-2">
+              {images.map((file, index) => <img key={index}
+                src={`data:${file.mime};base64,${file.data}`} alt={file.name ?? "Imagen adjunta"}
+                className="max-h-48 max-w-full rounded-lg object-cover" />)}
+            </div> : null}
           </div>
         </div>
       );
+      }
     case "assistant":
       return <AssistantMessage message={message} live={live[message.id]} />;
     case "synthetic": {
@@ -348,6 +379,8 @@ function App() {
     () => localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION
   );
   const [prompt, setPrompt] = useState("");
+  const [draftImages, setDraftImages] = useState<DraftImage[]>([]);
+  const [imageError, setImageError] = useState("");
   const [project, setProject] = useState(() => localStorage.getItem(PROJECT_PREFIX + (localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION)) ?? "");
   const [repository, setRepository] = useState(() =>
     localStorage.getItem(REPOSITORY_PREFIX + (localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION)) ?? "");
@@ -870,22 +903,45 @@ function App() {
 
 
   /** While a run is going, Enter queues a follow-up and Steer joins the run. */
+  const addImages = async (selected: FileList | null) => {
+    if (!selected?.length) return;
+    setImageError("");
+    try {
+      const incoming = Array.from(selected);
+      if (draftImages.length + incoming.length > IMAGE_MAX_COUNT) throw new Error("Puedes adjuntar hasta dos imágenes por mensaje.");
+      const encoded = await Promise.all(incoming.map(encodeImage));
+      setDraftImages(current => [...current, ...encoded].slice(0, IMAGE_MAX_COUNT));
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : "No se pudo cargar la imagen.");
+    }
+  };
+
   const submit = (whenBusy: "followUp" | "steer" = "followUp") => {
     const text = prompt.trim();
-    if (!text || !connected) return;
+    if ((!text && !draftImages.length) || !connected) return;
     autoFollowConversation.current = true;
     // Clear only after the client socket accepts the message; never lose the
     // task draft on an immediate connection failure.
     // Link the chosen project to the task; server-side isolation is addressed in G8.
+    const requestText = text || "Analiza la imagen adjunta y ayúdame con ella.";
     const task = project && agentMode === "build"
       ? "Proyecto Linux seleccionado: " + project + ". Si usas la herramienta linux, utiliza project=" + project +
-        ". No modifiques otros proyectos ni producción sin autorización.\n\nTarea: " + text
-      : text;
+        ". No modifiques otros proyectos ni producción sin autorización.\n\nTarea: " + requestText
+      : requestText;
     const selectedModel = openRouterAvailable ? modelPreset : "cloudflare";
+    if (draftImages.length && resolveModelSelection(selectedModel).providerID !== "openrouter") {
+      setImageError("Selecciona un modelo OpenRouter que acepte imágenes antes de enviar.");
+      return;
+    }
     const deliver = () => {
       const accepted = submitPrompt(task, whenBusy, selectedModel, agentMode,
-        specialization || undefined, project || undefined, repository || undefined);
-      if (accepted) setPrompt((current) => current.trim() === text ? "" : current);
+        specialization || undefined, project || undefined, repository || undefined,
+        draftImages.map(({ data, mime, name }) => ({ data, mime, name })));
+      if (accepted) {
+        setPrompt((current) => current.trim() === text ? "" : current);
+        setDraftImages([]);
+        setImageError("");
+      }
     };
     if (!busy && resolveModelSelection(selectedModel).providerID === "openrouter") {
       setLastCost("Consultando consumo de la clave OpenRouter…");
@@ -1032,7 +1088,8 @@ function App() {
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-1">
                 <ModelPicker value={openRouterAvailable ? modelPreset : "cloudflare"}
-                  onChange={selectModel} routerReady={openRouterAvailable} disabled={busy} />
+                  onChange={selectModel} routerReady={openRouterAvailable} disabled={busy}
+                  capability={draftImages.length ? "imageInput" : "tools"} />
                 <Button type="button" variant="ghost" shape="square"
                   aria-label="Mostrar opciones de OpenCode" aria-expanded={actionsOpen}
                   aria-controls="opencode-options"
@@ -1130,7 +1187,7 @@ function App() {
                     setModeForSession(session, selected.mode ?? "build");
                     const preferred = selected.model ?? "cloudflare";
                     const available = openRouterAvailable ||
-                      MODEL_PRESETS[preferred].providerID !== "openrouter";
+                      resolveModelSelection(preferred).providerID !== "openrouter";
                     const nextModel = available ? preferred : "cloudflare";
                     selectModel(nextModel);
                   }
@@ -1462,6 +1519,16 @@ function App() {
               </div>
             </details>
           </div>
+          {draftImages.length ? <div className="mx-auto flex max-w-3xl gap-2 overflow-x-auto px-4 pt-1 sm:px-6">
+            {draftImages.map(image => <div key={image.id} className="relative shrink-0">
+              <img src={`data:${image.mime};base64,${image.data}`} alt={image.name}
+                className="size-16 rounded-lg border border-kumo-line object-cover" />
+              <button type="button" aria-label={`Quitar ${image.name}`}
+                onClick={() => setDraftImages(current => current.filter(item => item.id !== image.id))}
+                className="absolute -right-1 -top-1 flex size-6 items-center justify-center rounded-full bg-kumo-contrast text-xs text-kumo-inverse">×</button>
+            </div>)}
+          </div> : null}
+          {imageError ? <p role="alert" className="mx-auto max-w-3xl px-5 pt-1 text-xs text-kumo-danger">{imageError}</p> : null}
           <form
             onSubmit={(event) => {
               event.preventDefault();
@@ -1470,6 +1537,14 @@ function App() {
             className="mx-auto max-w-3xl px-3 pt-1 sm:px-5"
           >
             <div className="flex min-h-[52px] items-end gap-2 rounded-[26px] border border-kumo-line bg-kumo-elevated p-2.5 shadow-lg transition-shadow focus-within:ring-2 focus-within:ring-kumo-ring">
+              <label title="Adjuntar imágenes" aria-label="Adjuntar imágenes"
+                className={`mb-0.5 flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-xl hover:bg-kumo-base ${draftImages.length >= IMAGE_MAX_COUNT || !connected ? "pointer-events-none opacity-40" : ""}`}>
+                <ImageIcon size={19} />
+                <input type="file" accept="image/png,image/jpeg,image/webp" multiple
+                  disabled={!connected || draftImages.length >= IMAGE_MAX_COUNT}
+                  onChange={event => { void addImages(event.currentTarget.files); event.currentTarget.value = ""; }}
+                  className="sr-only" />
+              </label>
               <InputArea
                 value={prompt}
                 onValueChange={setPrompt}
@@ -1496,7 +1571,7 @@ function App() {
                     variant="secondary"
                     size="sm"
                     aria-label="Intervenir en tarea"
-                    disabled={prompt.trim() === ""}
+                    disabled={prompt.trim() === "" && draftImages.length === 0}
                     onClick={() => submit("steer")}
                   >
                     Steer
@@ -1516,7 +1591,7 @@ function App() {
                   variant="primary"
                   shape="square"
                   aria-label="Enviar mensaje"
-                  disabled={!connected || prompt.trim() === ""}
+                  disabled={!connected || (prompt.trim() === "" && draftImages.length === 0)}
                   icon={<PaperPlaneRightIcon size={18} />}
                   className="mb-0.5"
                 />

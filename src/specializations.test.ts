@@ -43,6 +43,19 @@ describe("G6 reusable editable templates", () => {
     expect(all.find(item => item.id === copied.id)?.instructions).toBe(original.instructions);
   });
 
+  test("templates keep concrete OpenRouter, decision and image models", () => {
+    const profile = validateSpecialization({
+      id: "multimodal", name: "Multimodal", instructions: "Analiza y crea imágenes.", enabled: true,
+      model: "openrouter:google/gemini-4-hydrogen", decisionModel: "reasoning",
+      imageModel: "google/imagen-4"
+    });
+    expect(profile).toMatchObject({ model: "openrouter:google/gemini-4-hydrogen",
+      decisionModel: "reasoning", imageModel: "google/imagen-4" });
+    expect(specializationPrompt(profile)).toContain("google/imagen-4");
+    expect(() => validateSpecialization({ ...profile, imageModel: "../outside" })).toThrow();
+    expect(() => validateSpecialization({ ...profile, decisionModel: "unknown-model" })).toThrow();
+  });
+
   test("backward compatibility for saved legacy profiles with no mode/model", () => {
     const old = { id: "android", name: "Android", instructions: "Crea apps Java con pruebas", enabled: true };
     expect(validateSpecialization(old)).toMatchObject({ mode: "build", model: "cloudflare" });

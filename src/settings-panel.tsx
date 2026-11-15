@@ -1,6 +1,7 @@
 import { AgentCheckPanel } from "./agent-check-panel";
 import { McpPanel } from "./mcp-panel";
 import { SpecializationsPanel } from "./specializations-panel";
+import { ConnectorPanel } from "./connector-panel";
 import { useEffect, useState } from "react";
 import { MODEL_PRESETS } from "./model-presets";
 
@@ -219,7 +220,8 @@ export function SettingsPanel({
           ) : null}
         </p>
       )}
-      <SpecializationsPanel onChanged={onChanged} />
+      <SpecializationsPanel onChanged={onChanged} routerReady={Boolean(connected?.openRouterConfigured)} />
+      <ConnectorPanel workspace={workspace} />
       <McpPanel workspace={workspace} />
       <AgentCheckPanel workspace={workspace} />
     </section>

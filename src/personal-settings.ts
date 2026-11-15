@@ -102,6 +102,17 @@ export class PersonalSettings extends DurableObject<Env> {
     return (await this.ctx.storage.get<RemoteMcpConfig[]>("remote-mcps-v1")) ?? [];
   }
 
+  /** Optional personal integrations stay off until explicitly installed and enabled. */
+  async connectorSettings(): Promise<{ tokenEconomizerEnabled: boolean }> {
+    return { tokenEconomizerEnabled:
+      (await this.ctx.storage.get<boolean>("connector-token-economizer-enabled-v1")) ?? false };
+  }
+
+  async setTokenEconomizerEnabled(enabled: boolean): Promise<void> {
+    if (typeof enabled !== "boolean") throw new Error("El estado del conector debe ser verdadero o falso.");
+    await this.ctx.storage.put("connector-token-economizer-enabled-v1", enabled);
+  }
+
   async listPublicMcps(): Promise<PublicMcpConfig[]> {
     return (await this.getRemoteMcps()).map(publicMcp);
   }

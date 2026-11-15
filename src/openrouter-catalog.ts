@@ -7,11 +7,13 @@ export type OpenRouterCatalogModel = {
   promptPerMillion: number | null;
   completionPerMillion: number | null;
   tools: true;
+  imageInput: boolean;
 };
 
 /** Public catalogue: no API credential is returned to the browser. */
 const ENDPOINT = "https://openrouter.ai/api/v1/models";
 const TTL_MS = 10 * 60_000;
+const defaultFetch = fetch;
 let cache: { at: number; models: OpenRouterCatalogModel[] } | null = null;
 
 const price = (value: unknown): number | null => {
@@ -40,6 +42,10 @@ export function parseOpenRouterCatalogue(payload: unknown): OpenRouterCatalogMod
     if (!supportsTools) continue;
     const pricing = (data.pricing && typeof data.pricing === "object")
       ? data.pricing as Record<string, unknown> : {};
+    const architecture = data.architecture && typeof data.architecture === "object"
+      ? data.architecture as Record<string, unknown> : {};
+    const inputModalities = Array.isArray(architecture.input_modalities)
+      ? architecture.input_modalities : [];
     byId.set(id, {
       id,
       name: typeof data.name === "string" ? data.name.slice(0, 130) : id,
@@ -49,7 +55,8 @@ export function parseOpenRouterCatalogue(payload: unknown): OpenRouterCatalogMod
         ? null : price(pricing.prompt),
       completionPerMillion: OPENROUTER_AUTO.some(auto => auto === id)
         ? null : price(pricing.completion),
-      tools: true
+      tools: true,
+      imageInput: inputModalities.includes("image")
     });
   }
   // Auto and Auto Code have official stable identifiers; the catalogue
@@ -57,7 +64,8 @@ export function parseOpenRouterCatalogue(payload: unknown): OpenRouterCatalogMod
   for (const id of OPENROUTER_AUTO) {
     if (!byId.has(id)) byId.set(id, {
       id, name: id === "openrouter/auto" ? "Auto Router" : "Auto Code",
-      contextLength: null, promptPerMillion: null, completionPerMillion: null, tools: true
+      contextLength: null, promptPerMillion: null, completionPerMillion: null,
+      tools: true, imageInput: false
     });
   }
   return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
@@ -66,7 +74,7 @@ export function parseOpenRouterCatalogue(payload: unknown): OpenRouterCatalogMod
 export async function getOpenRouterCatalogue(
   request: typeof fetch = fetch
 ): Promise<OpenRouterCatalogModel[]> {
-  if (cache && Date.now() - cache.at < TTL_MS) return cache.models;
+  if (request === defaultFetch && cache && Date.now() - cache.at < TTL_MS) return cache.models;
   const response = await request(ENDPOINT, {
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(10_000)
@@ -74,7 +82,7 @@ export async function getOpenRouterCatalogue(
   if (!response.ok) throw new Error("No se pudo consultar OpenRouter (" + response.status + ")");
   const payload: unknown = await response.json();
   const models = parseOpenRouterCatalogue(payload);
-  cache = { at: Date.now(), models };
+  if (request === defaultFetch) cache = { at: Date.now(), models };
   return models;
 }
 
@@ -83,4 +91,14 @@ export async function assertOpenRouterModelSupportsTools(id: string): Promise<vo
   const models = await getOpenRouterCatalogue();
   if (!models.some(item => item.id === id))
     throw new Error("Modelo OpenRouter no disponible o sin soporte de herramientas. Elige otro modelo.");
+}
+
+export async function assertOpenRouterModelSupportsImageInput(
+  id: string,
+  request: typeof fetch = fetch
+): Promise<void> {
+  const models = await getOpenRouterCatalogue(request);
+  if (!models.some(item => item.id === id && item.imageInput)) {
+    throw new Error("Este modelo no acepta imágenes. Elige uno compatible con imágenes en OpenRouter.");
+  }
 }

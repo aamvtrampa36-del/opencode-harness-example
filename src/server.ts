@@ -16,9 +16,13 @@ import { createAI } from "agents/models/opencode";
 import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
 import { workspacePlugin } from "./workspace";
+import { tokenEconomizerAdapter } from "./token-economizer-adapter";
+import type { ConnectorEvent, ConnectorOutput } from "./connector-adapter";
 import { openRouterCredentialPlugin } from "./openrouter";
-import { MODEL_PRESETS } from "./model-presets";
+import { isModelSelection, MODEL_PRESETS, resolveModelSelection } from "./model-presets";
 import { getOpenRouterCatalogue } from "./openrouter-catalog";
+import { assertOpenRouterImageModel, generateOpenRouterImage, getOpenRouterImageModels } from "./openrouter-images";
+import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import { GitHubBridge } from "./github";
 import { verifyG8Proofs, G8_PROOFS } from "./g8-smoke";
 import { assessG8LiveHistory, g8LivePrompt, G8_LIVE_CHECK_VERSION, type G8LiveCheck } from "./g8-live-agent";
@@ -180,6 +184,46 @@ export class OpenCodeAgent extends DurableObject<Env> {
     await this.mcpLifecycle.reload();
     return { refreshed: true };
   }
+
+  async installTokenEconomizer(): Promise<{ installed: true; commit: string }> {
+    return this.env.DEV.getByName("connector-host-v1").installTokenEconomizer();
+  }
+
+  private async runConnector(connectorID: string, event: ConnectorEvent): Promise<ConnectorOutput> {
+    if (connectorID !== "token-economizer") throw new Error("Conector no admitido.");
+    if (!(await this.personalConfig.connectorSettings()).tokenEconomizerEnabled) return {};
+    const project = event.project || "global";
+    if (!/^[a-z][a-z0-9-]{0,39}$/.test(project)) throw new Error("Proyecto del conector inválido.");
+    const transcriptPath = event.name === "Stop" || event.name === "SessionEnd"
+      ? "/workspace/projects/opencode-connectors/state/opencode-sessions/" + event.sessionID + ".json"
+      : undefined;
+    const payload = {
+      session_id: event.sessionID,
+      cwd: "/workspace/projects/opencode-connectors/workspaces/" + project,
+      hook_event_name: event.name,
+      ...(event.promptID ? { prompt_id: event.promptID } : {}),
+      ...(event.prompt ? { prompt: event.prompt } : {}),
+      ...(event.toolName ? { tool_name: event.toolName } : {}),
+      ...(event.toolUseID ? { tool_use_id: event.toolUseID } : {}),
+      ...(event.toolInput ? { tool_input: event.toolInput } : {}),
+      ...(event.toolResponse ? { tool_response: event.toolResponse } : {}),
+      ...(event.reason ? { reason: event.reason } : {}),
+      ...(transcriptPath ? { transcript_path: transcriptPath, stop_hook_active: false } : {}),
+      ...(event.name === "SessionStart" ? { source: "startup" } : {})
+    };
+    const output = await this.env.DEV.getByName("connector-host-v1").runTokenEconomizerHook(project, {
+      payload, ...(event.transcript && transcriptPath ? { transcript: event.transcript } : {})
+    });
+    if (!output || typeof output !== "object" || Array.isArray(output)) return {};
+    const record = output as Record<string, unknown>;
+    const hookOutput = record.hookSpecificOutput && typeof record.hookSpecificOutput === "object"
+      ? record.hookSpecificOutput as Record<string, unknown> : {};
+    const context = hookOutput.additionalContext ?? record.additionalContext ?? record.additional_context;
+    return {
+      ...(typeof context === "string" ? { additionalContext: context } : {}),
+      ...(typeof record.systemMessage === "string" ? { systemMessage: record.systemMessage } : {})
+    };
+  }
   /** Persisted server-side transcript for the owner's authenticated download. */
   async exportSessionData(sessionID: string) {
     const sessions = await this.harness.sessions.list();
@@ -191,6 +235,97 @@ export class OpenCodeAgent extends DurableObject<Env> {
       this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID))
     ]);
     return JSON.stringify({ messages, project: scope?.project, repository: scope?.repository });
+  }
+
+  private sessionModelsKey(sessionID: string): string {
+    return "session-model-roles-v1:" + sessionID;
+  }
+
+  async setSessionModels(sessionID: string, options: { decisionModel?: unknown; imageModel?: unknown }): Promise<void> {
+    const roles: { decisionModel?: string; imageModel?: string } = {};
+    if (options.decisionModel !== undefined) {
+      if (!isModelSelection(options.decisionModel)) throw new Error("Modelo de decisión inválido");
+      roles.decisionModel = options.decisionModel;
+    }
+    if (options.imageModel !== undefined) {
+      if (typeof options.imageModel !== "string" || options.imageModel.length > 160 ||
+          !/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:+-]*$/i.test(options.imageModel)) {
+        throw new Error("Modelo de imagen inválido");
+      }
+      roles.imageModel = options.imageModel;
+    }
+    await this.ctx.storage.put(this.sessionModelsKey(sessionID), roles);
+  }
+
+  async sessionImageModel(sessionID: string): Promise<string | undefined> {
+    return (await this.ctx.storage.get<{ imageModel?: string }>(this.sessionModelsKey(sessionID)))?.imageModel;
+  }
+
+  private async generateSessionImage(sessionID: string, prompt: string) {
+    const [model, key] = await Promise.all([
+      this.sessionImageModel(sessionID),
+      Promise.resolve((this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY)
+        .then(value => value || this.personalConfig.getOpenRouterKey())
+    ]);
+    if (!model) throw new Error("Selecciona un modelo de imagen en la plantilla activa.");
+    if (!key) throw new Error("Conecta OpenRouter antes de generar imágenes.");
+    return generateOpenRouterImage({ apiKey: key, model, prompt });
+  }
+
+  private async startSubagent(parentSession: string, task: string, kind: "analysis" | "decision"): Promise<{ session: string }> {
+    const sessions = await this.harness.sessions.list();
+    const parent = sessions.find(item => item.id === parentSession);
+    if (!parent) throw new Error("La conversación principal ya no existe.");
+    if (parent.parent) throw new Error("Los subagentes no pueden crear otros subagentes.");
+    const children = sessions.filter(item => item.parent === parentSession);
+    const activeChildren = children.filter(item => item.busy);
+    if (activeChildren.length >= 3) throw new Error("Ya hay tres subagentes trabajando en esta conversación.");
+    if (children.length >= 8) throw new Error("Esta conversación ya alcanzó ocho subagentes. Inicia otra conversación para continuar.");
+    const child = await this.harness.sessions.fork(parentSession);
+    const project = await this.sessionProject(parentSession);
+    if (project) await this.inheritSessionScope(parentSession, child.id, project);
+    else {
+      const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(parentSession));
+      if (scope) await this.bindSessionScope(child.id, scope);
+    }
+    await child.setAgent("plan");
+    const priorHistory = await child.history();
+    const priorMessage = priorHistory.at(-1)?.id;
+    const decisionModel = kind === "decision"
+      ? (await this.ctx.storage.get<{ decisionModel?: string }>(this.sessionModelsKey(parentSession)))?.decisionModel
+      : undefined;
+    if (decisionModel) {
+      if (!isModelSelection(decisionModel)) throw new Error("El modelo de decisión guardado no es válido.");
+      const selected = resolveModelSelection(decisionModel);
+      if (selected.providerID === "openrouter") {
+        if (!await this.isOpenRouterConfigured()) throw new Error("Conecta OpenRouter para usar el modelo de decisión configurado.");
+        if (decisionModel.startsWith("openrouter:")) await assertOpenRouterModelSupportsTools(selected.id);
+      }
+      await child.setModel(selected);
+    }
+    const brief = `Subagente de ${kind === "decision" ? "decisión" : "análisis"} de solo lectura. Resuelve esta tarea acotada: ` + task +
+      "\nNo edites archivos, escribas en GitHub, ejecutes comandos, despliegues ni cambies datos. " +
+      "Usa solo las herramientas visibles en esta sesión y devuelve hallazgos concretos, fuentes consultadas y límites.";
+    await child.submit(brief);
+    await this.ctx.storage.put("subagent-parent-v1:" + child.id, {
+      parent: parentSession, afterID: priorMessage
+    });
+    return { session: child.id };
+  }
+
+  private async subagentResult(parentSession: string, childSession: string): Promise<{ status: "running" | "finished"; text: string }> {
+    const sessions = await this.harness.sessions.list();
+    if (!sessions.some(item => item.id === parentSession)) throw new Error("La conversación principal no existe.");
+    const child = sessions.find(item => item.id === childSession);
+    if (!child || child.parent !== parentSession) throw new Error("El subagente no pertenece a esta conversación.");
+    const record = await this.ctx.storage.get<{ parent: string; afterID?: string }>("subagent-parent-v1:" + childSession);
+    if (record?.parent !== parentSession) throw new Error("No se encontró el registro de este subagente.");
+    const history = await this.harness.session(childSession).history();
+    const start = record.afterID ? history.findIndex(message => message.id === record.afterID) + 1 : 0;
+    const text = history.slice(Math.max(start, 0)).flatMap(message => message.type === "assistant"
+      ? message.content.filter(part => part.type === "text").map(part => part.text)
+      : []).join("\n\n").slice(-8_000);
+    return { status: child.busy ? "running" as const : "finished" as const, text };
   }
 
   /** This selection is fixed per OpenCode conversation, not an LLM instruction. */
@@ -725,7 +860,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
   };
 
-  readonly harness = new OpenCodeHarness({
+  readonly harness: OpenCodeHarness = new OpenCodeHarness({
     opencode: ({ storage }) =>
       OpenCodeWorkerd.create({
         // The object's storage, with OpenCode's tables under `opencode_`.
@@ -746,6 +881,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
         },
         plugins: [
           this.ai.plugin,
+          tokenEconomizerAdapter(
+            async () => (await this.personalConfig.connectorSettings()).tokenEconomizerEnabled,
+            (connectorID, event) => this.runConnector(connectorID, event),
+            sessionID => this.sessionProject(sessionID)
+          ),
           openRouterCredentialPlugin(
             async () => (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
               || await this.personalConfig.getOpenRouterKey(),
@@ -758,7 +898,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
           workspacePlugin(this.workspace, {}, this.linuxRunner, this.githubRunner,
             (sessionID, action) => this.enforceSessionScope(sessionID, action),
             (sessionID) => this.sessionRepository(sessionID),
-            (sessionID) => this.sessionProject(sessionID))
+            (sessionID) => this.sessionProject(sessionID),
+            { getModel: sessionID => this.sessionImageModel(sessionID),
+              generate: (sessionID, prompt) => this.generateSessionImage(sessionID, prompt) },
+            { isChild: async sessionID => (await this.harness.sessions.list())
+                .some(item => item.id === sessionID && Boolean(item.parent)),
+              start: (sessionID, task, kind) => this.startSubagent(sessionID, task, kind),
+              result: (parentSession, childSession) => this.subagentResult(parentSession, childSession) })
         ]
       }),
     // Low effort: with more, the model sometimes writes its whole answer
@@ -777,7 +923,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     (id: string) => this.personalConfig.getSpecialization(id),
     (incident: IncidentObservation) => this.noteIncident(incident),
     (sessionID: string, input: unknown) => this.bindSessionScope(sessionID, input),
-    (source: string, target: string, project: string) => this.inheritSessionScope(source, target, project)
+    (source: string, target: string, project: string) => this.inheritSessionScope(source, target, project),
+    (sessionID: string, options: { decisionModel?: string; imageModel?: string }) => this.setSessionModels(sessionID, options)
   );
   readonly webSockets = new WebSockets(this.sockets.options());
   readonly lifecycle = Lifecycle.install(this)
@@ -881,6 +1028,29 @@ export default {
             Boolean((env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN)
         }, { headers: { "Cache-Control": "no-store" } });
       }
+      if (url.pathname === "/api/settings/connectors" && request.method === "GET") {
+        return Response.json(await personal.connectorSettings(), { headers: { "Cache-Control": "no-store" } });
+      }
+      if (url.pathname === "/api/settings/connectors/token-economizer" && request.method === "POST") {
+        if (!settingsOriginAllowed) return Response.json({ error: "Se requiere una solicitud del mismo origen." }, { status: 403 });
+        const raw = await request.text();
+        if (raw.length > 500) return Response.json({ error: "Solicitud demasiado grande." }, { status: 413 });
+        try {
+          const body = JSON.parse(raw) as { action?: string; workspace?: string };
+          if (body.action === "disable") {
+            await personal.setTokenEconomizerEnabled(false);
+            return Response.json({ tokenEconomizerEnabled: false });
+          }
+          if (body.action !== "install") return Response.json({ error: "Acción no reconocida." }, { status: 400 });
+          validateExportIdentity(body.workspace, "ses_root");
+          const installed = await env.OpenCodeAgent.getByName(body.workspace!).installTokenEconomizer();
+          await personal.setTokenEconomizerEnabled(true);
+          return Response.json({ ...installed, tokenEconomizerEnabled: true }, { headers: { "Cache-Control": "no-store" } });
+        } catch (error) {
+          return Response.json({ error: error instanceof Error ? error.message : "No se pudo instalar TokenEconomizer." },
+            { status: 422, headers: { "Cache-Control": "no-store" } });
+        }
+      }
       if (url.pathname === "/api/settings/openrouter/models" && request.method === "GET") {
         const active = (await personal.status()).openRouterConfigured ||
           Boolean((env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY);
@@ -888,6 +1058,19 @@ export default {
           { status: 409, headers: { "Cache-Control": "no-store" } });
         try {
           return Response.json({ models: await getOpenRouterCatalogue() },
+            { headers: { "Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff" } });
+        } catch (error) {
+          return Response.json({ error: error instanceof Error ? error.message : "Catálogo no disponible." },
+            { status: 503, headers: { "Cache-Control": "no-store" } });
+        }
+      }
+      if (url.pathname === "/api/settings/openrouter/image-models" && request.method === "GET") {
+        const key = (env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
+          || await personal.getOpenRouterKey();
+        if (!key) return Response.json({ error: "Conecta OpenRouter para seleccionar modelos de imagen." },
+          { status: 409, headers: { "Cache-Control": "no-store" } });
+        try {
+          return Response.json({ models: await getOpenRouterImageModels(key) },
             { headers: { "Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff" } });
         } catch (error) {
           return Response.json({ error: error instanceof Error ? error.message : "Catálogo no disponible." },

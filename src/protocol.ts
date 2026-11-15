@@ -27,6 +27,7 @@ export type ClientMessage =
       readonly specialization?: string;
       readonly project?: string;
       readonly repository?: string;
+      readonly files?: readonly { readonly data: string; readonly mime: string; readonly name: string }[];
     }
   | { readonly type: "abort"; readonly id?: string }
   | { readonly type: "create"; readonly id?: string }

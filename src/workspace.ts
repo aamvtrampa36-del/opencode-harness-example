@@ -10,6 +10,7 @@ import type { GitHubAction } from "./github";
 import type { ScopedToolAction } from "./project-scope";
 import { executeBoundRepositoryAction } from "./scoped-github";
 import { resolveScopedLinuxProject } from "./scoped-linux-tools";
+import type { GeneratedImage } from "./openrouter-images";
 
 /**
  * OpenCode's tools that need a local filesystem or process. The Workers
@@ -27,6 +28,17 @@ export type LinuxRunner = {
     truncated: boolean;
     persistence: string;
   }>;
+};
+
+export type ImageGenerationRunner = {
+  getModel(sessionID: string): Promise<string | undefined>;
+  generate(sessionID: string, prompt: string): Promise<GeneratedImage>;
+};
+
+export type SubagentRunner = {
+  isChild(sessionID: string): Promise<boolean>;
+  start(sessionID: string, task: string, kind: "analysis" | "decision"): Promise<{ session: string }>;
+  result(parentSession: string, childSession: string): Promise<{ status: "running" | "finished"; text: string }>;
 };
 
 const LOCAL_TOOLS = ["read", "write", "edit", "patch", "glob", "grep", "shell"];
@@ -118,7 +130,9 @@ export function workspacePlugin(
   github?: GitHubRunner,
   scopeGuard?: (sessionID: string, action: ScopedToolAction) => Promise<void>,
   getBoundRepository?: (sessionID: string) => Promise<string>,
-  getBoundProject?: (sessionID: string) => Promise<string>
+  getBoundProject?: (sessionID: string) => Promise<string>,
+  imageGeneration?: ImageGenerationRunner,
+  subagents?: SubagentRunner
 ): Plugin.Plugin {
   const { tools, execute } = createPiTools({
     ...options,
@@ -153,6 +167,12 @@ export function workspacePlugin(
         // per session. Expose the shared Workspace only for confirmed
         // unscoped conversations and isolated project tools after binding.
         await ctx.session.hook("context", async ({ sessionID, tools: available }) => {
+          const isSubagent = await subagents?.isChild(sessionID) ?? false;
+          if (!await imageGeneration?.getModel(sessionID)) delete available.generate_image;
+          if (isSubagent) {
+            delete available.start_subagent;
+            delete available.subagent_result;
+          }
           let project: string | undefined;
           try {
             if (!getBoundProject) throw new Error("Session scope is unavailable");
@@ -166,6 +186,10 @@ export function workspacePlugin(
           }
           if (!project) {
             for (const name of projectToolNames) delete available[name];
+            if (isSubagent) {
+              const allowed = new Set(["read", "glob", "grep", "ls", "find", "stat"]);
+              for (const name of Object.keys(available)) if (!allowed.has(name)) delete available[name];
+            }
             return;
           }
 
@@ -178,10 +202,69 @@ export function workspacePlugin(
           if (!repository) {
             for (const name of githubToolNames) delete available[name];
           }
+          if (isSubagent) {
+            const allowed = new Set(["inspect_linux", ...(repository
+              ? ["repo_review", "repo_info", "repo_read"] : [])]);
+            for (const name of Object.keys(available)) if (!allowed.has(name)) delete available[name];
+          }
         });
       }
       await ctx.tool.transform((editor) => {
         for (const id of LOCAL_TOOLS) editor.remove(id);
+        if (imageGeneration) editor.add({
+          name: "generate_image",
+          description: "Genera una imagen mediante el modelo de OpenRouter elegido en la plantilla activa. Úsala solo cuando la persona pida una imagen; devuelve el archivo visual en la conversación.",
+          input: { type: "object", properties: {
+            prompt: { type: "string", description: "Descripción visual de la imagen, hasta 8000 caracteres" }
+          }, required: ["prompt"], additionalProperties: false },
+          options: { codemode: false },
+          async execute(input, context) {
+            const { prompt } = input as { prompt?: unknown };
+            if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 8_000)
+              throw new Error("Describe la imagen en un máximo de 8000 caracteres.");
+            const generated = await imageGeneration!.generate(context.sessionID, prompt);
+            return { content: [
+              { type: "file", uri: `data:${generated.mime};base64,${generated.data}`,
+                mime: generated.mime, name: "imagen-generada" },
+              { type: "text", text: generated.cost === null ? "Imagen generada." :
+                `Imagen generada. Coste informado por OpenRouter: $${generated.cost.toFixed(4)}.` }
+            ] };
+          }
+        });
+        if (subagents) {
+          editor.add({
+            name: "start_subagent",
+            description: "Inicia un subagente de solo lectura en una sesión derivada, con el mismo proyecto y repositorio autorizados. Usa tareas acotadas y no repitas la misma delegación. Indica kind=decision solo para comparar opciones y recomendar una decisión; los demás encargos usan kind=analysis y el modelo heredado.",
+            input: { type: "object", properties: {
+              task: { type: "string", description: "Una tarea independiente y concreta, hasta 4000 caracteres" },
+              kind: { type: "string", enum: ["analysis", "decision"], description: "analysis por defecto; decision solo para comparar y recomendar" }
+            }, required: ["task"], additionalProperties: false },
+            options: { codemode: false },
+            async execute(input, context) {
+              const { task, kind } = input as { task?: unknown; kind?: unknown };
+              if (typeof task !== "string" || !task.trim() || task.length > 4_000)
+                throw new Error("La tarea del subagente debe tener entre 1 y 4000 caracteres.");
+              if (kind !== undefined && kind !== "analysis" && kind !== "decision")
+                throw new Error("El tipo del subagente debe ser analysis o decision.");
+              const result = await subagents!.start(context.sessionID, task, kind === "decision" ? "decision" : "analysis");
+              return { content: JSON.stringify({ ...result, status: "started",
+                next: "Consulta subagent_result con este session id cuando necesites su resultado." }) };
+            }
+          });
+          editor.add({
+            name: "subagent_result",
+            description: "Consulta el estado y el resumen de un subagente iniciado por esta conversación.",
+            input: { type: "object", properties: {
+              session: { type: "string", description: "Identificador de la sesión devuelto por start_subagent" }
+            }, required: ["session"], additionalProperties: false },
+            options: { codemode: false },
+            async execute(input, context) {
+              const { session } = input as { session?: unknown };
+              if (typeof session !== "string") throw new Error("Identificador de subagente inválido.");
+              return { content: JSON.stringify(await subagents!.result(context.sessionID, session)) };
+            }
+          });
+        }
         if (linux) {
           editor.add({
             name: "linux",

@@ -10,6 +10,38 @@ import { assertScopedTool } from "./project-scope";
  * No model calls, no network and no writes are needed for this regression test.
  */
 describe("G8 Review tool registration through the actual OpenCode plugin", () => {
+  test("subagents default to the inherited model and identify explicit decision delegation", async () => {
+    const toolSpecs = new Map<string, any>();
+    const kinds: string[] = [];
+    const plugin = workspacePlugin({} as Workspace, {}, undefined, undefined,
+      undefined, undefined, undefined, undefined, {
+        isChild: async () => false,
+        start: async (_session, task, kind) => {
+          expect(task).toBeTruthy();
+          kinds.push(kind);
+          return { session: "ses_child" };
+        },
+        result: async () => ({ status: "finished", text: "hallazgos" })
+      });
+    await plugin.setup({
+      agent: { transform: async () => undefined },
+      tool: { transform: async (cb: (editor: any) => unknown) => cb({
+        remove: () => undefined,
+        add: (spec: any) => toolSpecs.set(spec.name, spec)
+      }) }
+    } as any);
+
+    await toolSpecs.get("start_subagent").execute({ task: "Leer documentación" },
+      { sessionID: "ses_parent", agent: "build" });
+    await toolSpecs.get("start_subagent").execute({ task: "Comparar dos opciones", kind: "decision" },
+      { sessionID: "ses_parent", agent: "build" });
+    const result = await toolSpecs.get("subagent_result").execute({ session: "ses_child" },
+      { sessionID: "ses_parent", agent: "build" });
+
+    expect(kinds).toEqual(["analysis", "decision"]);
+    expect(JSON.parse(result.content)).toEqual({ status: "finished", text: "hallazgos" });
+  });
+
   test("repo_review is exposed as a named read-only tool and executes against the bound repo", async () => {
     const repo = "aamvtrampa36-del/cdf-cloud-engine";
     const toolSpecs = new Map<string, any>();
@@ -174,5 +206,51 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
     expect(projectWithRepo).toHaveProperty("linux");
     expect(projectWithRepo).toHaveProperty("github");
     expect(projectWithRepo).toHaveProperty("repo_read");
+  });
+
+  test("subagents only receive read tools for their bound scope", async () => {
+    const repo = "aamvtrampa36-del/cdf-cloud-engine";
+    let filterContext: ((event: {sessionID: string; tools: Record<string, unknown>}) => void | Promise<void>) | undefined;
+    const plugin = workspacePlugin(
+      {} as Workspace,
+      {},
+      { inspect: async () => ({}), run: async () => ({}) } as any,
+      { execute: async () => ({}) },
+      async () => undefined,
+      async (session) => session === "ses_child_repo" ? repo : "",
+      async (session) => session === "ses_child_project" || session === "ses_child_repo" ? "cdf-cloud-engine" : "",
+      undefined,
+      { isChild: async (session) => session.startsWith("ses_child_"),
+        start: async () => ({ session: "ses_unused" }),
+        result: async () => ({ status: "finished", text: "" }) }
+    );
+    await plugin.setup({
+      agent: { transform: async () => undefined },
+      tool: { transform: async (cb: (ed: any) => unknown) => cb({
+        remove: () => undefined, add: () => undefined
+      }) },
+      session: { hook: async (_name: string, callback: typeof filterContext) => { filterContext = callback; } }
+    } as any);
+
+    const global = Object.fromEntries([
+      "read", "glob", "grep", "ls", "find", "stat", "write", "shell", "mcp_write",
+      "linux", "inspect_linux", "github", "repo_read", "start_subagent"
+    ].map(name => [name, {}]));
+    await filterContext!({ sessionID: "ses_child_global", tools: global });
+    expect(Object.keys(global).sort()).toEqual(["find", "glob", "grep", "ls", "read", "stat"]);
+
+    const project = Object.fromEntries([
+      "read", "write", "shell", "mcp_write", "linux", "inspect_linux", "github",
+      "repo_info", "repo_read", "repo_review", "start_subagent", "generate_image"
+    ].map(name => [name, {}]));
+    await filterContext!({ sessionID: "ses_child_project", tools: project });
+    expect(Object.keys(project).sort()).toEqual(["inspect_linux"]);
+
+    const projectRepo = Object.fromEntries([
+      "read", "write", "shell", "mcp_write", "linux", "inspect_linux", "github",
+      "repo_info", "repo_read", "repo_review", "start_subagent", "generate_image"
+    ].map(name => [name, {}]));
+    await filterContext!({ sessionID: "ses_child_repo", tools: projectRepo });
+    expect(Object.keys(projectRepo).sort()).toEqual(["inspect_linux", "repo_info", "repo_read", "repo_review"]);
   });
 });
