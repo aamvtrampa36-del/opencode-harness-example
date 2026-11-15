@@ -2,6 +2,7 @@ import { specializationPrompt as specializationPromptText, type Specialization }
 import { classifyAgentFailure, type IncidentObservation } from "./incident-diagnostics";
 import { MODEL_PRESETS, isModelSelection, isOpenRouterSelection, resolveModelSelection } from "./model-presets";
 import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
+import { ExperimentalHistoryTailReader } from "./experimental-history-tail";
 import type { Connection, ConnectionContext } from "agents/lifecycle";
 import type { WebSocketMessage, WebSocketsOptions } from "agents/websockets";
 import {
@@ -107,6 +108,7 @@ export class OpenCodeSessionSockets {
   readonly #snapshots = new Map<OpenCodeSessionId, boolean>();
   readonly #submitLocks = new Map<OpenCodeSessionId, Promise<void>>();
   readonly #activeConfigurations = new Map<OpenCodeSessionId, { mode: string; model: string | undefined; operations: Set<string> }>();
+  readonly #experimentalHistory?: ExperimentalHistoryTailReader;
 
   /** Serialize configuration and submit for one session, including concurrent sockets. */
   async #serializeSubmit<T>(session: OpenCodeSessionId, work: () => Promise<T>): Promise<T> {
@@ -129,7 +131,8 @@ export class OpenCodeSessionSockets {
     getSpecialization: (id: string) => Promise<Specialization | undefined> = async () => undefined,
     noteIncident: (event: IncidentObservation) => Promise<void> = async () => undefined,
     bindScope: (sessionID: string, value: unknown) => Promise<void> = async () => undefined,
-    inheritScope: (source: string, target: string, project: string) => Promise<void> = async () => undefined
+    inheritScope: (source: string, target: string, project: string) => Promise<void> = async () => undefined,
+    historyMode: "full" | "tail" = "full"
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
@@ -138,6 +141,9 @@ export class OpenCodeSessionSockets {
     this.#noteIncident = noteIncident;
     this.#bindScope = bindScope;
     this.#inheritScope = inheritScope;
+    // Opt-in only in isolated test harnesses; operating app remains full mode.
+    this.#experimentalHistory = historyMode === "tail"
+      ? new ExperimentalHistoryTailReader(harness) : undefined;
   }
 
   async #record(event: IncidentObservation): Promise<void> {
@@ -192,7 +198,7 @@ export class OpenCodeSessionSockets {
     }
     send(connection, { type: "hello", session, openRouterAvailable: await this.#openRouterAvailable() });
     send(connection, { type: "sessions", sessions });
-    const snapshot = await this.#snapshot(session);
+    const snapshot = await this.#snapshot(session, true);
     send(connection, { type: "snapshot", ...snapshot });
     if (snapshot.busy) this.#watch(session);
   }
@@ -356,7 +362,7 @@ export class OpenCodeSessionSockets {
       case "resync":
         send(connection, {
           type: "snapshot",
-          ...(await this.#snapshot(session))
+          ...(await this.#snapshot(session, true))
         });
         return null;
       default:
@@ -366,10 +372,10 @@ export class OpenCodeSessionSockets {
     }
   }
 
-  async #snapshot(session: OpenCodeSessionId): Promise<SessionSnapshot> {
+  async #snapshot(session: OpenCodeSessionId, fresh = false): Promise<SessionSnapshot> {
     const handle = this.#harness.session(session);
     const [messages, busy, pending] = await Promise.all([
-      handle.history(),
+      this.#experimentalHistory ? this.#experimentalHistory.read(session, fresh) : handle.history(),
       handle.busy(),
       this.#harness.pending({ session })
     ]);
@@ -438,6 +444,7 @@ export class OpenCodeSessionSockets {
     const opening = this.#watches.get(session);
     if (opening === undefined) return;
     this.#watches.delete(session);
+    this.#experimentalHistory?.invalidate(session);
     await (await opening)?.stop();
   }
 
@@ -451,6 +458,11 @@ export class OpenCodeSessionSockets {
       }
     }
     try {
+      // Any reset/end can change older messages; use authoritative full history.
+      if (events.some(event =>
+        ["run_end", "transcript_reset", "compaction_start"].includes(event.type))) {
+        this.#experimentalHistory?.invalidate(session);
+      }
       // A fault is a machine event, not a model explanation.
       if (events.some(event => event.type === "fault")) {
         await this.#record({ code: "AGENT_FAILURE", source: "session" });
