@@ -147,6 +147,51 @@ describe("Exp4: paired scoped-tool GitHub read baseline vs candidate",()=>{
     expect(gets).toBe(3);
   });
 
+  test("exact SHA spelling is preserved and never misreported",async()=>{
+    const cache=new ExperimentalPinnedReadCache();let count=0;
+    const fake:typeof fetch=async()=>{count++;
+      return new Response(JSON.stringify({
+        type:"file",encoding:"base64",size:4,sha:"b".repeat(40),content:btoa("data")
+      }),{status:200});
+    };
+    const lower=new GitHubBridge("token-a",fake,[REPO],cache);
+    const upper=new GitHubBridge("token-a",fake,[REPO],cache);
+    const one=await lower.execute({action:"read",repo:REPO,path:"file.txt",ref:PIN}) as {ref:string};
+    const two=await upper.execute({action:"read",repo:REPO,path:"file.txt",ref:PIN.toUpperCase()}) as {ref:string};
+    expect(one.ref).toBe(PIN);
+    expect(two.ref).toBe(PIN.toUpperCase());
+    expect(count).toBe(2); // separate cache entries preserve exact tool output
+  });
+
+  test("token rotation while a request is pending cannot repopulate the new identity's cache",async()=>{
+    const cache=new ExperimentalPinnedReadCache();
+    let release!:()=>void;let waiting!:()=>void;let req=0;
+    const ready=new Promise<void>(resolve=>{waiting=resolve;});
+    const pending=new Promise<void>(resolve=>{release=resolve;});
+    const fake:typeof fetch=async(_url,init)=>{
+      req++;
+      const token=String(new Headers(init?.headers).get("Authorization"));
+      if(token.includes("token-a")) {waiting();await pending;}
+      const body=token.includes("token-a")?"old":"new";
+      return new Response(JSON.stringify({
+        type:"file",encoding:"base64",size:3,sha:"b".repeat(40),content:btoa(body)
+      }),{status:200});
+    };
+    const a=new GitHubBridge("token-a",fake,[REPO],cache);
+    const b=new GitHubBridge("token-b",fake,[REPO],cache);
+    const action:GitHubAction={action:"read",repo:REPO,path:"same.txt",ref:PIN};
+    const oldResult=a.execute(action);
+    await ready;
+    const newResult=await b.execute(action) as {content:string};
+    release();
+    const fromA=await oldResult as {content:string};
+    const again=await b.execute(action) as {content:string};
+    expect(fromA.content).toBe("old");
+    expect(newResult.content).toBe("new");
+    expect(again.content).toBe("new");
+    expect(req).toBe(2);
+  });
+
   test("concurrent same-content reads share one HTTP request",async()=>{
     const cache=new ExperimentalPinnedReadCache();let gets=0;
     const fake:typeof fetch=async() => {
