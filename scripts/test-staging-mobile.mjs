@@ -262,7 +262,9 @@ try {
   assert.equal(await settingsDialog.getByLabel("Acceso de etapa").nth(1).inputValue(), "build");
   await settingsDialog.getByRole("tab", { name: "Herramientas" }).click();
   if (verifyCdfWorkbench) {
-    const mcpSettings = await settingsDialog.locator('section[aria-label="Servidores MCP"]').innerText();
+    const mcpSection = settingsDialog.locator('section[aria-label="Servidores MCP"]');
+    await mcpSection.getByText(/cdf-workbench-staging/).waitFor({ state: "visible", timeout: 20_000 });
+    const mcpSettings = await mcpSection.innerText();
     assert.match(mcpSettings.replace(/\s+/g, " "), /cdf-workbench-staging.*OAuth conectado.*solo lectura.*habilitado/i,
       "OpenCode debe mostrar CDF WorkBench Staging conectado y limitado a herramientas de lectura.");
   }
