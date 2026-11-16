@@ -1647,12 +1647,12 @@ function App() {
                 }}
                 placeholder={
                   workflow?.status === "running"
-                    ? "Flujo en curso. Puedes abrir otra conversación."
+                    ? "Flujo activo"
                     : imageTask
-                    ? "Describe la imagen que quieres crear"
+                    ? "Describe tu imagen"
                     : busy
-                    ? "Escribe una instrucción para continuar la tarea"
-                    : "Describe qué quieres hacer con OpenCode"
+                    ? "Continúa la tarea…"
+                    : "Escribe un mensaje"
                 }
                 aria-label="Escribir a OpenCode"
                 disabled={!connected || workflow?.status === "running"}
