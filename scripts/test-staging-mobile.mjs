@@ -191,7 +191,8 @@ try {
       return Boolean(panel && panel.scrollHeight > panel.clientHeight + 24);
     }, undefined, { timeout: 90_000 });
     await conversationPanel.evaluate(element => { element.scrollTop = 0; });
-    const headerBox = await page.getByRole("banner").boundingBox();
+    const headerBox = await page.getByRole("heading", { name: "OpenCode Cloud" })
+      .locator("xpath=ancestor::header").boundingBox();
     const composerBox = await page.getByRole("textbox", { name: "Escribir a OpenCode" }).boundingBox();
     assert.ok(headerBox && headerBox.y >= 0 && headerBox.y + headerBox.height <= 852,
       "La barra superior debe seguir visible al leer arriba durante una tarea.");
