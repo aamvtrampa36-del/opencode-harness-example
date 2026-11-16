@@ -55,7 +55,10 @@ try {
   await conversations.waitFor({ state: "visible" });
   await page.getByRole("button", { name: "Nueva conversación" }).click();
   await page.waitForFunction(
-    previous => localStorage.getItem("opencode-harness-session") !== previous,
+    previous => {
+      const selected = localStorage.getItem("opencode-harness-session");
+      return Boolean(selected && selected !== previous);
+    },
     initialSession,
     { timeout: 20_000 }
   );
