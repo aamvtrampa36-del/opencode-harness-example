@@ -260,14 +260,8 @@ try {
       .fill(`Usa una única llamada a la herramienta Linux para el proyecto ${backgroundProject}. Ejecuta exactamente: sleep 20; printf 'OPEN-CODE-BACKGROUND-OK\\n'. No edites archivos ni uses otras herramientas. Después informa brevemente el resultado.`);
     await page.getByRole("button", { name: "Enviar mensaje" }).click();
     await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
-    await page.waitForFunction(count => document.querySelectorAll("main details.bg-kumo-base").length > count,
-      previousToolCount, { timeout: 30_000 });
 
     const conversationPanel = page.locator("main");
-    await page.waitForFunction(() => {
-      const panel = document.querySelector("main");
-      return Boolean(panel && panel.scrollHeight > panel.clientHeight + 24);
-    }, undefined, { timeout: 90_000 });
     await conversationPanel.evaluate(element => { element.scrollTop = 0; });
     const headerBox = await page.getByRole("heading", { name: "OpenCode Cloud" })
       .locator("xpath=ancestor::header").boundingBox();
@@ -306,6 +300,8 @@ try {
       { timeout: 10_000 }
     );
     await page.getByRole("status").filter({ hasText: "En línea" }).waitFor({ timeout: 90_000 });
+    await page.waitForFunction(count => document.querySelectorAll("main details.bg-kumo-base").length > count,
+      previousToolCount, { timeout: 30_000 });
     const backgroundToolCard = conversationPanel.locator("details.bg-kumo-base").last();
     await backgroundToolCard.getByText("Terminado", { exact: true }).waitFor({ timeout: 30_000 });
     await backgroundToolCard.locator("summary").click();
