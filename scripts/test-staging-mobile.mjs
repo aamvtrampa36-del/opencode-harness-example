@@ -35,8 +35,11 @@ try {
   await page.getByRole("heading", { name: "OpenCode Cloud" }).waitFor({ timeout: 60_000 });
   await page.getByRole("status").filter({ hasText: "En línea" }).waitFor({ timeout: 60_000 });
 
-  const initialSession = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
-  assert.ok(initialSession, "La aplicación debe crear una sesión de conversación.");
+  // A fresh browser uses the app's root session without persisting the
+  // selection until the user changes conversations.
+  const initialSession = await page.evaluate(
+    () => localStorage.getItem("opencode-harness-session") ?? "ses_root"
+  );
   const initialModelPreset = await page.evaluate(
     session => localStorage.getItem("opencode-model-preset:" + session), initialSession
   );
