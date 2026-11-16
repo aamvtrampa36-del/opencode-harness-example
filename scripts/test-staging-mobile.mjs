@@ -229,7 +229,18 @@ try {
     await page.getByRole("button", { name: "Enviar mensaje" }).click();
     await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
     await page.getByRole("status").filter({ hasText: "En línea" }).waitFor({ timeout: 120_000 });
-    assert.match(await page.locator("main .sd-theme").last().innerText(), /PING-PRUEBA/i,
+    const pingMessage = page.locator("main .sd-theme").last();
+    try {
+      await pingMessage.waitFor({ state: "visible", timeout: 60_000 });
+    } catch (error) {
+      const evidence = await page.evaluate(() => ({
+        mainText: document.querySelector("main")?.innerText.slice(-2000),
+        messageNodes: document.querySelectorAll("main .sd-theme").length
+      }));
+      console.log(`El modelo terminó la tarea sin una burbuja visible: ${JSON.stringify({ evidence, pageErrors, usage: await readUsage() })}`);
+      throw error;
+    }
+    assert.match(await pingMessage.innerText(), /PING-PRUEBA/i,
       "El modelo gratuito concreto debe producir una respuesta real.");
     const usageAfterSmallModel = await readUsage();
     assert.equal(typeof usageAfterSmallModel, "number", "No se pudo consultar el consumo tras el modelo gratuito concreto.");
