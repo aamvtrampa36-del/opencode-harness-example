@@ -240,11 +240,28 @@ try {
 
     const usageBeforeLongModel = await readUsage();
     assert.equal(typeof usageBeforeLongModel, "number", "No se consultó el consumo antes de la prueba de segundo plano.");
+    const previousBackgroundSession = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
+    await optionsButton.click();
+    await page.getByRole("button", { name: "Crear nueva aplicación" }).click();
+    await page.waitForFunction(
+      previous => {
+        const selected = localStorage.getItem("opencode-harness-session");
+        return Boolean(selected && selected !== previous && localStorage.getItem("opencode-active-project:" + selected));
+      }, previousBackgroundSession, { timeout: 20_000 }
+    );
+    const backgroundSession = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
+    const backgroundProject = await page.evaluate(
+      selected => localStorage.getItem("opencode-active-project:" + selected), backgroundSession
+    );
+    assert.match(backgroundProject ?? "", /^app-[a-z0-9]+$/, "La tarea de segundo plano necesita un proyecto temporal aislado.");
     await selectOpenRouterModel(SMALL_FREE_MODEL);
+    const previousToolCount = await page.locator("main details.bg-kumo-base").count();
     await page.getByRole("textbox", { name: "Escribir a OpenCode" })
-      .fill("Escribe 300 líneas numeradas consecutivamente, una por línea, cada una con una palabra en español. No resumas, no introduzcas ni uses herramientas.");
+      .fill(`Usa una única llamada a la herramienta Linux para el proyecto ${backgroundProject}. Ejecuta exactamente: sleep 20; printf 'OPEN-CODE-BACKGROUND-OK\\n'. No edites archivos ni uses otras herramientas. Después informa brevemente el resultado.`);
     await page.getByRole("button", { name: "Enviar mensaje" }).click();
     await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
+    await page.waitForFunction(count => document.querySelectorAll("main details.bg-kumo-base").length > count,
+      previousToolCount, { timeout: 30_000 });
 
     const conversationPanel = page.locator("main");
     await page.waitForFunction(() => {
@@ -264,7 +281,7 @@ try {
 
     await conversationsButton.click();
     await conversations.waitFor({ state: "visible" });
-    const backgroundTask = conversations.locator(`[data-session-id="${selectedSession}"]`);
+    const backgroundTask = conversations.locator(`[data-session-id="${backgroundSession}"]`);
     await backgroundTask.waitFor({ state: "visible" });
     assert.match(await backgroundTask.getAttribute("aria-label") ?? "", /tarea en curso/i,
       "La lista debe marcar la conversación que sigue trabajando.");
@@ -281,14 +298,19 @@ try {
     await page.waitForFunction(selected => {
       const row = document.querySelector(`[data-session-id="${selected}"]`);
       return Boolean(row && !row.getAttribute("aria-label")?.includes("tarea en curso"));
-    }, selectedSession, { timeout: 90_000 });
-    await conversations.locator(`[data-session-id="${selectedSession}"]`).click();
+    }, backgroundSession, { timeout: 90_000 });
+    await conversations.locator(`[data-session-id="${backgroundSession}"]`).click();
     await page.waitForFunction(
       selected => localStorage.getItem("opencode-harness-session") === selected,
-      selectedSession,
+      backgroundSession,
       { timeout: 10_000 }
     );
     await page.getByRole("status").filter({ hasText: "En línea" }).waitFor({ timeout: 90_000 });
+    const backgroundToolCard = conversationPanel.locator("details.bg-kumo-base").last();
+    await backgroundToolCard.getByText("Terminado", { exact: true }).waitFor({ timeout: 30_000 });
+    await backgroundToolCard.locator("summary").click();
+    assert.match(await backgroundToolCard.locator("pre").last().innerText(), /OPEN-CODE-BACKGROUND-OK/,
+      "La tarea en segundo plano debe conservar el resultado real del comando Linux.");
     const reply = await conversationPanel.locator(".sd-theme").last().innerText();
     assert.ok(reply.trim().length > 0, "El agente debe mostrar una respuesta real.");
 
