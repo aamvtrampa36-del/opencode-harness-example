@@ -471,26 +471,30 @@ try {
         `TokenEconomizer prueba ${index + 1}: la salida no confirma el proyecto Linux autorizado.`);
       await waitForFoldHook(previousHookAt);
       tokenEconomizerSessionsVerified++;
+      console.log(`TokenEconomizer SessionEnd ${tokenEconomizerSessionsVerified}/4 pasó en ${tokenEconomizerProject}.`);
     }
 
     // Envfacts promotes after three confirmations and injects after four exercised sessions.
     // Leave time for the upstream fold worker to persist the fourth result before the next turn.
     await page.waitForTimeout(5_000);
     const beforeLearnedPrompt = await readConnectorStateAfter();
+    assert.ok(beforeLearnedPrompt, "No se pudo leer la evidencia de TokenEconomizer antes de comprobar su reutilización.");
     const previousContextAt = beforeLearnedPrompt?.tokenEconomizerLastContext?.at ?? 0;
     await page.getByRole("textbox", { name: "Escribir a OpenCode" })
       .fill(`Sin usar herramientas, explica brevemente el comando de pruebas apropiado para el proyecto ${tokenEconomizerProject}.`);
     await page.getByRole("button", { name: "Enviar mensaje" }).click();
     await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
-    await page.waitForFunction(async previousAt => {
+    const learnedContextHandle = await page.waitForFunction(async previousAt => {
       const response = await fetch("/api/settings/connectors", { cache: "no-store" });
       if (!response.ok) return false;
       const state = await response.json();
-      return Number(state.tokenEconomizerLastContext?.characters) > 0 &&
-        state.tokenEconomizerLastContext?.at > previousAt;
+      const context = state.tokenEconomizerLastContext;
+      return Number(context?.characters) > 0 && context?.at > previousAt ? context : false;
     }, previousContextAt, { timeout: 30_000, polling: 500 });
-    const learnedState = await readConnectorStateAfter();
-    learnedContextCharacters = learnedState.tokenEconomizerLastContext.characters;
+    const learnedContext = await learnedContextHandle.jsonValue();
+    assert.ok(learnedContext && learnedContext.characters > 0,
+      "TokenEconomizer debe devolver contexto reutilizable tras aprender del proyecto Linux.");
+    learnedContextCharacters = learnedContext.characters;
     await page.getByRole("status").filter({ hasText: "En línea" }).waitFor({ timeout: 180_000 });
     const usageAfterTokenEconomizer = await page.evaluate(async () => {
       const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
