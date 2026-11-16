@@ -87,6 +87,15 @@ try {
   await modelButton.click();
   const modelDialog = page.getByRole("dialog", { name: "Seleccionar modelo" });
   await modelDialog.waitFor({ state: "visible" });
+  const selectOpenRouterModel = async modelId => {
+    await modelButton.click();
+    await modelDialog.getByRole("button", { name: "OpenRouter", exact: true }).click();
+    await modelDialog.getByRole("checkbox", { name: "Solo modelos gratuitos" }).check();
+    const search = modelDialog.getByRole("searchbox", { name: "Buscar modelos con soporte de herramientas" });
+    await search.fill(modelId);
+    await modelDialog.getByRole("listbox", { name: "Modelos OpenRouter" })
+      .getByRole("option").filter({ hasText: modelId }).click();
+  };
   await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
   const profiles = modelDialog.getByRole("listbox", { name: "Perfiles sencillos" });
   assert.equal(await profiles.getByRole("option").count(), 5, "Deben seguir disponibles los cinco perfiles simples.");
@@ -360,9 +369,9 @@ try {
       return session ? localStorage.getItem("opencode-active-project:" + session) : null;
     });
     assert.match(tokenEconomizerProject ?? "", /^app-[a-z0-9]+$/, "TokenEconomizer necesita su propio proyecto de prueba.");
-    await modelButton.click();
-    await modelDialog.getByRole("button", { name: "OpenRouter", exact: true }).click();
-    await modelDialog.getByRole("button", { name: /OpenRouter Free/ }).click();
+    // Tool tasks use the specific lightweight free model to avoid routing
+    // variability; the OpenRouter Free route is tested with a text task above.
+    await selectOpenRouterModel(SMALL_FREE_MODEL);
 
     const readConnectorStateAfter = async () => page.evaluate(async () => {
       const response = await fetch("/api/settings/connectors", { cache: "no-store" });
@@ -405,8 +414,19 @@ try {
         await page.getByRole("button", { name: "Detener" }).click().catch(() => undefined);
         throw error;
       }
-      await page.waitForFunction(count => document.querySelectorAll("main details.bg-kumo-base").length > count,
-        previousToolCount, { timeout: 30_000 });
+      try {
+        await page.waitForFunction(count => document.querySelectorAll("main details.bg-kumo-base").length > count,
+          previousToolCount, { timeout: 30_000 });
+      } catch (error) {
+        const evidence = await page.evaluate(() => ({
+          recentMessages: [...document.querySelectorAll("main .sd-theme")].slice(-3)
+            .map(element => element.innerText.slice(0, 1000)),
+          toolCards: document.querySelectorAll("main details.bg-kumo-base").length
+        }));
+        const connectorState = await readConnectorStateAfter();
+        console.log(`TokenEconomizer task ${index + 1} produced no Linux tool card: ${JSON.stringify({ evidence, hook: connectorState?.tokenEconomizerLastHook })}`);
+        throw error;
+      }
       const cards = page.locator("main details.bg-kumo-base");
       const outputs = [];
       for (let cardIndex = previousToolCount; cardIndex < await cards.count(); cardIndex++) {
@@ -584,9 +604,7 @@ try {
       });
       assert.match(project ?? "", /^app-[a-z0-9]+$/, "Crear app debe asignar un proyecto Linux nuevo.");
 
-      await modelButton.click();
-      await modelDialog.getByRole("button", { name: "OpenRouter", exact: true }).click();
-      await modelDialog.getByRole("button", { name: /OpenRouter Free/ }).click();
+      await selectOpenRouterModel(SMALL_FREE_MODEL);
       const selectedProjectModel = await page.evaluate(
         session => localStorage.getItem("opencode-model-preset:" + session),
         await page.evaluate(() => localStorage.getItem("opencode-harness-session"))
