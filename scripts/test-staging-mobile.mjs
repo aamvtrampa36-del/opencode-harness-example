@@ -407,14 +407,21 @@ try {
       const outputs = [];
       for (let cardIndex = previousToolCount; cardIndex < await cards.count(); cardIndex++) {
         const card = cards.nth(cardIndex);
-        await card.getByText("Terminado", { exact: true }).waitFor({ timeout: 30_000 });
+        // The training task deliberately includes a failing `pytest` command so
+        // TokenEconomizer can learn from a real failure. The UI correctly labels
+        // that tool call as Error; both terminal states must be inspected.
+        await card.getByText(/^(Terminado|Error)$/, { exact: true }).waitFor({ timeout: 30_000 });
         await card.locator("summary").click();
         const output = card.locator("pre").last();
-        if (await output.count()) outputs.push(await output.innerText());
+        if (await output.count()) {
+          const status = await card.getByText(/^(Terminado|Error)$/, { exact: true }).innerText();
+          outputs.push(`${status}\n${await output.innerText()}`);
+        }
       }
       const observedOutput = outputs.join("\n");
-      assert.match(observedOutput, /pytest|unittest/i,
-        `TokenEconomizer prueba ${index + 1}: el agente debe ejecutar comandos de prueba reales.`);
+      assert.ok(/pytest|unittest/i.test(observedOutput),
+        `TokenEconomizer prueba ${index + 1}: el agente debe ejecutar comandos de prueba reales; ` +
+        `estados de herramientas: ${outputs.map(value => value.split("\n", 1)[0]).join(", ") || "ninguno"}.`);
       if (index === 0) {
         assert.match(observedOutput, /Ran 1 test|test_environment/i,
           "El fixture unittest debe ejecutarse con éxito en el proyecto aislado.");
