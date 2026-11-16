@@ -389,11 +389,13 @@ try {
       const connectorBefore = await readConnectorStateAfter();
       const previousHookAt = connectorBefore?.tokenEconomizerLastHook?.at ?? 0;
       const previousToolCount = await page.locator("main details.bg-kumo-base").count();
+      const command = index === 0
+        ? "cat > test_envfacts.test.mjs <<'JS'\nimport test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('Node runtime works', () => assert.equal(1 + 1, 2));\nJS\npytest -q; node --test test_envfacts.test.mjs"
+        : "pytest -q; node --test test_envfacts.test.mjs";
       const task = `Usa solo la herramienta Linux autorizada para el proyecto ${tokenEconomizerProject}. ` +
-        "Sin cambiar archivos ni instalar paquetes, haz dos llamadas Linux separadas: " +
-        "primero ejecuta exactamente `pytest -q` y conserva su salida aunque falle; " +
-        "después ejecuta `pwd && ls -la` para confirmar el directorio autorizado. " +
-        "No uses otros lenguajes ni herramientas. Resume ambos resultados reales.";
+        `Ejecuta exactamente este comando en una llamada Linux: ${command}. ` +
+        "En la primera tarea crea solo el fixture Node integrado; después no cambies archivos. " +
+        "No instales paquetes. Resume la ausencia real de pytest y el resultado de node --test.";
       await page.getByRole("textbox", { name: "Escribir a OpenCode" }).fill(task);
       await page.getByRole("button", { name: "Enviar mensaje" }).click();
       await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
@@ -421,12 +423,14 @@ try {
         }
       }
       const observedOutput = outputs.join("\n");
-      assert.ok(outputs.length >= 2,
-        `TokenEconomizer prueba ${index + 1}: deben verse la ejecución Linux y el listado del proyecto; ` +
+      assert.ok(outputs.length >= 1,
+        `TokenEconomizer prueba ${index + 1}: debe verse la ejecución Linux; ` +
         `estados de herramientas: ${outputs.map(value => value.split("\n", 1)[0]).join(", ") || "ninguno"}.`);
       assert.match(observedOutput, /pytest/i, `TokenEconomizer prueba ${index + 1}: faltó la prueba real de pytest.`);
       assert.match(observedOutput, /command not found/i,
         `TokenEconomizer prueba ${index + 1}: pytest debería reportar su ausencia real en esta imagen.`);
+      assert.match(observedOutput, /# pass 1|pass 1/i,
+        `TokenEconomizer prueba ${index + 1}: el runner Node integrado debe pasar.`);
       assert.match(observedOutput, new RegExp(tokenEconomizerProject),
         `TokenEconomizer prueba ${index + 1}: la salida no confirma el proyecto Linux autorizado.`);
       await waitForFoldHook(previousHookAt);
