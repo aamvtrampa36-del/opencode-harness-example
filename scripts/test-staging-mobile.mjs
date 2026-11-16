@@ -8,6 +8,7 @@ const accessId = process.env.CF_ACCESS_CLIENT_ID;
 const accessSecret = process.env.CF_ACCESS_CLIENT_SECRET;
 const sendLiveMessage = process.env.OPENCODE_STAGING_SEND_MESSAGE === "true";
 const developThreeProjects = process.env.OPENCODE_STAGING_DEVELOP_THREE_PROJECTS === "true";
+const verifyCdfWorkbench = process.env.OPENCODE_STAGING_VERIFY_CDF_WORKBENCH === "true";
 
 if (targetUrl.origin !== STAGING_URL && !localHost) {
   throw new Error("La prueba solo permite Staging o un servidor local; Producción queda excluida.");
@@ -260,6 +261,11 @@ try {
   assert.equal(await settingsDialog.getByLabel("Acceso de etapa").nth(0).inputValue(), "plan");
   assert.equal(await settingsDialog.getByLabel("Acceso de etapa").nth(1).inputValue(), "build");
   await settingsDialog.getByRole("tab", { name: "Herramientas" }).click();
+  if (verifyCdfWorkbench) {
+    const mcpSettings = await settingsDialog.locator('section[aria-label="Servidores MCP"]').innerText();
+    assert.match(mcpSettings.replace(/\s+/g, " "), /cdf-workbench-staging.*OAuth conectado.*solo lectura.*habilitado/i,
+      "OpenCode debe mostrar CDF WorkBench Staging conectado y limitado a herramientas de lectura.");
+  }
   await settingsDialog.getByRole("button", { name: "Preparar CDF WorkBench Staging" }).click();
   assert.equal(await settingsDialog.locator("#mcp-name").inputValue(), "cdf-workbench-staging");
   assert.equal(await settingsDialog.locator("#mcp-scope").inputValue(), "workbench:read offline_access");
@@ -268,6 +274,84 @@ try {
   assert.equal(await settingsDialog.locator("#mcp-scope").inputValue(), "cdf:access");
   await settingsDialog.getByRole("button", { name: "Cerrar", exact: true }).click();
   await settingsDialog.waitFor({ state: "hidden" });
+
+  let cdfWorkbenchToolsVerified = 0;
+  if (verifyCdfWorkbench) {
+    await conversationsButton.click();
+    await conversations.waitFor({ state: "visible" });
+    const beforeCdfSession = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
+    await page.getByRole("button", { name: "Nueva conversación" }).click();
+    await page.waitForFunction(
+      old => {
+        const selected = localStorage.getItem("opencode-harness-session");
+        return Boolean(selected && selected !== old);
+      }, beforeCdfSession, { timeout: 20_000 }
+    );
+    const cdfSession = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
+    await conversationsButton.click();
+    await conversations.waitFor({ state: "hidden" });
+
+    await modelButton.click();
+    await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
+    await modelDialog.getByRole("option", { name: routerReady ? /Económico/ : /Cloudflare/ }).click();
+    const cdfModel = routerReady ? "economy" : "cloudflare";
+    assert.equal(await page.evaluate(
+      session => localStorage.getItem("opencode-model-preset:" + session), cdfSession
+    ), cdfModel);
+
+    const cdfTask = "Solo lectura en CDF WorkBench Staging. Usa exactamente las herramientas " +
+      "personal-cdf-workbench-staging_workbench_status y personal-cdf-workbench-staging_workbench_catalog. " +
+      "Consulta el estado y el catálogo; después elige del catálogo un único archivo de documentación o Skill " +
+      "(no un script ejecutable) y léelo con personal-cdf-workbench-staging_workbench_read usando su ruta exacta. " +
+      "No llames otras herramientas ni servicios, no escribas ni ejecutes scripts. Resume el estado, el nombre de " +
+      "la herramienta del catálogo y la ruta leída, basándote en los resultados reales.";
+    const cdfUsageBefore = routerReady ? await page.evaluate(async () => {
+      const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
+      if (!response.ok) return null;
+      const body = await response.json();
+      return typeof body.usage?.usage === "number" ? body.usage.usage : null;
+    }) : null;
+    if (routerReady) assert.equal(typeof cdfUsageBefore, "number", "No se pudo consultar el consumo antes de probar CDF.");
+    await page.getByRole("textbox", { name: "Escribir a OpenCode" }).fill(cdfTask);
+    await page.getByRole("button", { name: "Enviar mensaje" }).click();
+    await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
+    try {
+      await page.getByRole("status").filter({ hasText: "En línea" }).waitFor({ timeout: 180_000 });
+    } catch (error) {
+      await page.getByRole("button", { name: "Detener" }).click().catch(() => undefined);
+      throw error;
+    }
+
+    for (const toolName of [
+      "personal-cdf-workbench-staging_workbench_status",
+      "personal-cdf-workbench-staging_workbench_catalog",
+      "personal-cdf-workbench-staging_workbench_read"
+    ]) {
+      const card = page.locator("main details").filter({ hasText: toolName });
+      await card.waitFor({ state: "visible", timeout: 10_000 });
+      await card.getByText("Terminado", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+      await card.locator("summary").click();
+      assert.ok((await card.locator("pre").last().innerText()).trim().length > 0,
+        `${toolName} debe devolver contenido real.`);
+      cdfWorkbenchToolsVerified++;
+    }
+
+    if (routerReady) {
+      const usageAfterCdf = await page.evaluate(async () => {
+        const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
+        if (!response.ok) return null;
+        const body = await response.json();
+        return typeof body.usage?.usage === "number" ? body.usage.usage : null;
+      });
+      assert.equal(typeof usageAfterCdf, "number", "No se pudo consultar el consumo después de probar CDF.");
+      const cdfSpend = usageAfterCdf - cdfUsageBefore;
+      assert.ok(cdfSpend >= 0 && cdfSpend <= 0.10,
+        `La prueba de CDF debe quedar bajo US$0,10; consumo observado: $${cdfSpend.toFixed(4)}.`);
+      console.log(`OpenCode MCP CDF WorkBench: estado, catálogo y lectura completados. Consumo reportado: $${cdfSpend.toFixed(4)}.`);
+    } else {
+      console.log("OpenCode MCP CDF WorkBench: estado, catálogo y lectura completados con Cloudflare.");
+    }
+  }
 
   let completedProjectTrials = 0;
   if (developThreeProjects) {
@@ -364,7 +448,7 @@ try {
     session => localStorage.getItem("opencode-model-preset:" + session), initialSession
   ), initialModelPreset, "La prueba debe conservar el modelo original de la sesión del propietario.");
 
-  console.log(`${localHost ? "Local" : "Staging"} mobile smoke aprobado: 393 × 852, reconexión, sesión aislada, perfiles, OpenRouter, proyectos (${completedProjectTrials}/3 creados), y ajustes.`);
+  console.log(`${localHost ? "Local" : "Staging"} mobile smoke aprobado: 393 × 852, reconexión, sesión aislada, perfiles, OpenRouter, proyectos (${completedProjectTrials}/3 creados), CDF WorkBench (${cdfWorkbenchToolsVerified}/3 herramientas), y ajustes.`);
 } finally {
   await browser.close();
 }

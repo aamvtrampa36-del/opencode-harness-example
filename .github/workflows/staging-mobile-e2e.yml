@@ -13,6 +13,11 @@ on:
         type: boolean
         required: false
         default: false
+      verify_cdf_workbench:
+        description: "Probar por OpenCode el estado, catálogo y lectura de CDF WorkBench Staging"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -56,3 +61,4 @@ jobs:
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           OPENCODE_STAGING_SEND_MESSAGE: ${{ inputs.send_live_message }}
           OPENCODE_STAGING_DEVELOP_THREE_PROJECTS: ${{ inputs.develop_three_projects }}
+          OPENCODE_STAGING_VERIFY_CDF_WORKBENCH: ${{ inputs.verify_cdf_workbench }}
