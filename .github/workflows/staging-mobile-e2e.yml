@@ -28,8 +28,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: opencode-staging-mobile
-  cancel-in-progress: true
+  group: opencode-staging-mobile-acceptance-v2
+  cancel-in-progress: false
 
 jobs:
   mobile:
