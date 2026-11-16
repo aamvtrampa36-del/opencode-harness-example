@@ -236,9 +236,9 @@ try {
 
   await page.getByRole("button", { name: "Mostrar opciones de OpenCode" }).click();
   await page.getByRole("button", { name: "Configurar conexiones y modelos" }).click();
-  await page.getByRole("dialog", { name: "Configuración de proveedores" }).waitFor({ state: "visible" });
+  await page.getByRole("dialog", { name: "Configuración de OpenCode" }).waitFor({ state: "visible" });
   await page.keyboard.press("Escape");
-  await page.getByRole("dialog", { name: "Configuración de proveedores" }).waitFor({ state: "hidden" });
+  await page.getByRole("dialog", { name: "Configuración de OpenCode" }).waitFor({ state: "hidden" });
 
   const dimensions = await page.evaluate(() => ({
     viewport: window.innerWidth,
