@@ -384,7 +384,7 @@ try {
     for (let index = 0; index < 4; index++) {
       const connectorBefore = await readConnectorStateAfter();
       const previousHookAt = connectorBefore?.tokenEconomizerLastHook?.at ?? 0;
-      const previousToolCount = await page.locator("main details").count();
+      const previousToolCount = await page.locator("main details.bg-kumo-base").count();
       const command = index === 0
         ? "cat > test_envfacts.py <<'PY'\nimport unittest\nclass TestEnvFacts(unittest.TestCase):\n    def test_environment(self):\n        self.assertTrue(True)\nPY\npytest -q; python3 -m unittest discover -v"
         : "pytest -q; python3 -m unittest discover -v";
@@ -401,9 +401,9 @@ try {
         await page.getByRole("button", { name: "Detener" }).click().catch(() => undefined);
         throw error;
       }
-      await page.waitForFunction(count => document.querySelectorAll("main details").length > count,
+      await page.waitForFunction(count => document.querySelectorAll("main details.bg-kumo-base").length > count,
         previousToolCount, { timeout: 30_000 });
-      const cards = page.locator("main details");
+      const cards = page.locator("main details.bg-kumo-base");
       const outputs = [];
       for (let cardIndex = previousToolCount; cardIndex < await cards.count(); cardIndex++) {
         const card = cards.nth(cardIndex);
@@ -518,7 +518,7 @@ try {
       "personal-cdf-workbench-staging_workbench_catalog",
       "personal-cdf-workbench-staging_workbench_read"
     ]) {
-      const card = page.locator("main details").filter({ hasText: toolName });
+      const card = page.locator("main details.bg-kumo-base").filter({ hasText: toolName });
       await card.waitFor({ state: "visible", timeout: 10_000 });
       await card.getByText("Terminado", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
       await card.locator("summary").click();
