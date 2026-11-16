@@ -8,6 +8,11 @@ on:
         type: boolean
         required: false
         default: false
+      develop_three_projects:
+        description: "Crear tres proyectos Linux pequeños en Staging y verificar sus vistas previas (usa inferencia)"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -50,3 +55,4 @@ jobs:
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           OPENCODE_STAGING_SEND_MESSAGE: ${{ inputs.send_live_message }}
+          OPENCODE_STAGING_DEVELOP_THREE_PROJECTS: ${{ inputs.develop_three_projects }}

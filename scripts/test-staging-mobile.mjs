@@ -7,6 +7,7 @@ const localHost = ["localhost", "127.0.0.1"].includes(targetUrl.hostname);
 const accessId = process.env.CF_ACCESS_CLIENT_ID;
 const accessSecret = process.env.CF_ACCESS_CLIENT_SECRET;
 const sendLiveMessage = process.env.OPENCODE_STAGING_SEND_MESSAGE === "true";
+const developThreeProjects = process.env.OPENCODE_STAGING_DEVELOP_THREE_PROJECTS === "true";
 
 if (targetUrl.origin !== STAGING_URL && !localHost) {
   throw new Error("La prueba solo permite Staging o un servidor local; Producción queda excluida.");
@@ -268,6 +269,76 @@ try {
   await settingsDialog.getByRole("button", { name: "Cerrar", exact: true }).click();
   await settingsDialog.waitFor({ state: "hidden" });
 
+  let completedProjectTrials = 0;
+  if (developThreeProjects) {
+    assert.ok(routerReady, "OpenRouter debe estar configurado para probar tres proyectos con el perfil económico.");
+    const readUsage = async () => page.evaluate(async () => {
+      const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
+      if (!response.ok) return null;
+      const body = await response.json();
+      return typeof body.usage?.usage === "number" ? body.usage.usage : null;
+    });
+    const usageBeforeProjects = await readUsage();
+    assert.equal(typeof usageBeforeProjects, "number", "No se pudo consultar el consumo antes de crear proyectos.");
+    const trials = [
+      { name: "Lista de compras", marker: "Proyecto QA: Lista de compras" },
+      { name: "Calculadora de propina", marker: "Proyecto QA: Calculadora de propina" },
+      { name: "Planificador de estudio", marker: "Proyecto QA: Planificador de estudio" }
+    ];
+
+    for (const trial of trials) {
+      const previous = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
+      await page.getByRole("button", { name: "Mostrar opciones de OpenCode" }).click();
+      await page.getByRole("button", { name: "Crear nueva aplicación" }).click();
+      await page.waitForFunction(
+        old => {
+          const session = localStorage.getItem("opencode-harness-session");
+          return Boolean(session && session !== old && localStorage.getItem("opencode-active-project:" + session));
+        }, previous, { timeout: 20_000 }
+      );
+      const project = await page.evaluate(() => {
+        const session = localStorage.getItem("opencode-harness-session");
+        return session ? localStorage.getItem("opencode-active-project:" + session) : null;
+      });
+      assert.match(project ?? "", /^app-[a-z0-9]+$/, "Crear app debe asignar un proyecto Linux nuevo.");
+
+      await modelButton.click();
+      await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
+      await modelDialog.getByRole("option", { name: /Económico/ }).click();
+      const selectedProjectModel = await page.evaluate(
+        session => localStorage.getItem("opencode-model-preset:" + session),
+        await page.evaluate(() => localStorage.getItem("opencode-harness-session"))
+      );
+      assert.equal(selectedProjectModel, "economy");
+
+      const task = `Crea una aplicación web estática mínima llamada "${trial.name}" para el proyecto Linux ${project}. Usa la herramienta linux con project=${project} para crear dist/index.html con HTML, CSS y JavaScript incrustados. La página debe mostrar exactamente el título "${trial.marker}" y una interacción pequeña útil para la aplicación. No instales dependencias, no uses internet ni edites otros proyectos. Verifica con una llamada Linux que dist/index.html existe y contiene ese título. Responde brevemente solo después de recibir resultados reales de la herramienta.`;
+      await page.getByRole("textbox", { name: "Escribir a OpenCode" }).fill(task);
+      await page.getByRole("button", { name: "Enviar mensaje" }).click();
+      await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
+      try {
+        await page.getByRole("status").filter({ hasText: "En línea" }).waitFor({ timeout: 150_000 });
+      } catch (error) {
+        await page.getByRole("button", { name: "Detener" }).click().catch(() => undefined);
+        throw error;
+      }
+
+      const preview = await page.evaluate(async path => {
+        const response = await fetch(path, { cache: "no-store" });
+        return { status: response.status, html: await response.text() };
+      }, `/api/dev/preview/${project}/dist/index.html`);
+      assert.equal(preview.status, 200, `${trial.name}: la vista previa debe responder HTTP 200.`);
+      assert.ok(preview.html.includes(trial.marker), `${trial.name}: falta el título comprobable en dist/index.html.`);
+
+      const usageAfterProject = await readUsage();
+      assert.equal(typeof usageAfterProject, "number", "No se pudo consultar el consumo después de crear el proyecto.");
+      const projectSpend = usageAfterProject - usageBeforeProjects;
+      assert.ok(projectSpend >= 0 && projectSpend <= 0.10,
+        `Las tres pruebas deben quedar bajo US$0,10; consumo observado: $${projectSpend.toFixed(4)}.`);
+      completedProjectTrials++;
+      console.log(`Proyecto Staging aprobado: ${project} (${trial.name}); vista previa HTTP 200; consumo acumulado $${projectSpend.toFixed(4)}.`);
+    }
+  }
+
   const dimensions = await page.evaluate(() => ({
     viewport: window.innerWidth,
     document: document.documentElement.scrollWidth,
@@ -293,7 +364,7 @@ try {
     session => localStorage.getItem("opencode-model-preset:" + session), initialSession
   ), initialModelPreset, "La prueba debe conservar el modelo original de la sesión del propietario.");
 
-  console.log(`${localHost ? "Local" : "Staging"} mobile smoke aprobado: 393 × 852, reconexión, sesión aislada, perfiles, OpenRouter, proyectos y ajustes.`);
+  console.log(`${localHost ? "Local" : "Staging"} mobile smoke aprobado: 393 × 852, reconexión, sesión aislada, perfiles, OpenRouter, proyectos (${completedProjectTrials}/3 creados), y ajustes.`);
 } finally {
   await browser.close();
 }
