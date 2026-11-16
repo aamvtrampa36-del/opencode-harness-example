@@ -238,13 +238,11 @@ try {
       `El modelo gratuito concreto excedió el límite de US$0,10: $${smallModelSpend.toFixed(4)}.`);
     console.log(`Modelo concreto gratuito aprobado (${SMALL_FREE_MODEL}); variación de cuenta: $${smallModelSpend.toFixed(4)}.`);
 
-    const usageBeforeRouter = await readUsage();
-    assert.equal(typeof usageBeforeRouter, "number", "No se consultó el consumo antes de OpenRouter Free.");
-    await modelButton.click();
-    await modelDialog.getByRole("button", { name: "OpenRouter", exact: true }).click();
-    await modelDialog.getByRole("button", { name: /OpenRouter Free/ }).click();
+    const usageBeforeLongModel = await readUsage();
+    assert.equal(typeof usageBeforeLongModel, "number", "No se consultó el consumo antes de la prueba de segundo plano.");
+    await selectOpenRouterModel(SMALL_FREE_MODEL);
     await page.getByRole("textbox", { name: "Escribir a OpenCode" })
-      .fill("Escribe 60 líneas numeradas con una palabra por línea. Sin introducción y sin usar herramientas.");
+      .fill("Escribe 300 líneas numeradas consecutivamente, una por línea, cada una con una palabra en español. No resumas, no introduzcas ni uses herramientas.");
     await page.getByRole("button", { name: "Enviar mensaje" }).click();
     await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
 
@@ -295,10 +293,10 @@ try {
     assert.ok(reply.trim().length > 0, "El agente debe mostrar una respuesta real.");
 
     const usageAfter = await readUsage();
-    assert.equal(typeof usageAfter, "number", "No se pudo comprobar el consumo después de OpenRouter Free.");
-    const delta = usageAfter - usageBeforeRouter;
+    assert.equal(typeof usageAfter, "number", "No se pudo comprobar el consumo después de la prueba de segundo plano.");
+    const delta = usageAfter - usageBeforeLongModel;
     assert.ok(delta >= 0 && delta <= 0.10, `La variación de cuenta excedió US$0.10: $${delta.toFixed(4)}.`);
-    console.log(`OpenRouter Free respondió una tarea extensa; variación aproximada de cuenta: $${delta.toFixed(4)}.`);
+    console.log(`Modelo gratis concreto respondió una tarea extensa; variación aproximada de cuenta: $${delta.toFixed(4)}.`);
 
   }
 
