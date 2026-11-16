@@ -75,7 +75,7 @@ try {
   assert.equal(await page.evaluate(() => localStorage.getItem("opencode-harness-session")), newSession,
     "La sesión de prueba debe seguir seleccionada tras la reconexión.");
 
-  const modelButton = page.getByRole("button", { name: /Elegir modelo de IA/ });
+  const modelButton = page.getByRole("button", { name: /Elegir modelo:/ });
   await modelButton.click();
   const modelDialog = page.getByRole("dialog", { name: "Seleccionar modelo" });
   await modelDialog.waitFor({ state: "visible" });
