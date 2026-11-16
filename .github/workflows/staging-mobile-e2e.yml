@@ -68,3 +68,12 @@ jobs:
           OPENCODE_STAGING_DEVELOP_THREE_PROJECTS: ${{ inputs.develop_three_projects }}
           OPENCODE_STAGING_VERIFY_CDF_WORKBENCH: ${{ inputs.verify_cdf_workbench }}
           OPENCODE_STAGING_VERIFY_TOKEN_ECONOMIZER: ${{ inputs.verify_token_economizer }}
+
+      - name: Save the tested mobile screen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-staging-mobile-393x852
+          path: ${{ runner.temp }}/opencode-staging-mobile-393x852.png
+          if-no-files-found: ignore
+          retention-days: 3

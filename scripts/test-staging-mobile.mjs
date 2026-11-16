@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { chromium } from "playwright";
 
 const STAGING_URL = "https://opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev";
@@ -96,6 +97,9 @@ try {
     session => localStorage.getItem("opencode-model-preset:" + session), selectedSession
   );
   assert.equal(selectedProfile, "cloudflare", "El perfil elegido debe guardarse en la conversación actual.");
+  await page.screenshot({
+    path: join(process.env.RUNNER_TEMP ?? "/tmp", "opencode-staging-mobile-393x852.png")
+  });
 
   // The general chat is the default; templates remain optional and selectable.
   const optionsButton = page.getByRole("button", { name: "Mostrar opciones de OpenCode" });
