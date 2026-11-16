@@ -290,7 +290,6 @@ try {
       }, beforeCdfSession, { timeout: 20_000 }
     );
     const cdfSession = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
-    await conversationsButton.click();
     await conversations.waitFor({ state: "hidden" });
 
     await modelButton.click();
