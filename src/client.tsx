@@ -406,6 +406,7 @@ function App() {
   const [connectorActivity, setConnectorActivity] = useState<{
     tokenEconomizerEnabled: boolean;
     tokenEconomizerLastHook?: { name: string; at: number; succeeded: boolean };
+    tokenEconomizerLastContext?: { at: number; characters: number };
   } | null>(null);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [availableProjects, setAvailableProjects] = useState<{ name: string; lastUsedAt: number }[]>([]);
@@ -1603,7 +1604,7 @@ function App() {
                   TokenEconomizer: {connectorActivity === null ? "consultando estado…" :
                     !connectorActivity.tokenEconomizerEnabled ? "desactivado" :
                     connectorActivity.tokenEconomizerLastHook
-                      ? `${connectorActivity.tokenEconomizerLastHook.name} · ${connectorActivity.tokenEconomizerLastHook.succeeded ? "ejecutado" : "falló; el chat sigue disponible"} · ${new Date(connectorActivity.tokenEconomizerLastHook.at).toLocaleTimeString()}`
+                      ? `${connectorActivity.tokenEconomizerLastHook.name} · ${connectorActivity.tokenEconomizerLastHook.succeeded ? "ejecutado" : "falló; el chat sigue disponible"} · ${new Date(connectorActivity.tokenEconomizerLastHook.at).toLocaleTimeString()} · ${connectorActivity.tokenEconomizerLastContext ? `contexto devuelto: ${connectorActivity.tokenEconomizerLastContext.characters} caracteres (${new Date(connectorActivity.tokenEconomizerLastContext.at).toLocaleTimeString()})` : "sin contexto reutilizable devuelto todavía"}`
                       : "activado, sin hooks ejecutados todavía"}
                 </p>
               </div>

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 type State = {
   tokenEconomizerEnabled: boolean;
   tokenEconomizerLastHook?: { name: string; at: number; succeeded: boolean };
+  tokenEconomizerLastContext?: { at: number; characters: number };
 };
 
 export function ConnectorPanel({ workspace }: { workspace: string }) {
@@ -32,7 +33,8 @@ export function ConnectorPanel({ workspace }: { workspace: string }) {
       if (!response.ok) throw new Error(result.error || "No se pudo actualizar TokenEconomizer.");
       setState(current => ({
         tokenEconomizerEnabled: result.tokenEconomizerEnabled,
-        ...(current?.tokenEconomizerLastHook ? { tokenEconomizerLastHook: current.tokenEconomizerLastHook } : {})
+        ...(current?.tokenEconomizerLastHook ? { tokenEconomizerLastHook: current.tokenEconomizerLastHook } : {}),
+        ...(current?.tokenEconomizerLastContext ? { tokenEconomizerLastContext: current.tokenEconomizerLastContext } : {})
       }));
       setMessage(action === "install"
         ? `TokenEconomizer instalado (${result.commit?.slice(0, 12)}). Usa solo los hechos de entorno sin llamadas adicionales de modelo.`
@@ -59,7 +61,7 @@ export function ConnectorPanel({ workspace }: { workspace: string }) {
       {state?.tokenEconomizerEnabled ? (
         <p role="status" aria-live="polite" className="text-xs text-kumo-subtle">
           {state.tokenEconomizerLastHook
-            ? `Último hook: ${state.tokenEconomizerLastHook.name} · ${state.tokenEconomizerLastHook.succeeded ? "ejecutado" : "falló; el chat sigue disponible"} · ${new Date(state.tokenEconomizerLastHook.at).toLocaleTimeString()}`
+            ? `Último hook: ${state.tokenEconomizerLastHook.name} · ${state.tokenEconomizerLastHook.succeeded ? "ejecutado" : "falló; el chat sigue disponible"} · ${new Date(state.tokenEconomizerLastHook.at).toLocaleTimeString()}. ${state.tokenEconomizerLastContext ? `Último contexto devuelto: ${state.tokenEconomizerLastContext.characters} caracteres · ${new Date(state.tokenEconomizerLastContext.at).toLocaleTimeString()}.` : "Todavía no se devolvió contexto reutilizable; la evidencia se acumula entre tareas."}`
             : "Activado, pero todavía no se registran hooks. Envía una tarea para comprobarlo."}
         </p>
       ) : null}

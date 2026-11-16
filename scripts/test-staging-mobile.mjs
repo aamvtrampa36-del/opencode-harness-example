@@ -9,6 +9,8 @@ const accessSecret = process.env.CF_ACCESS_CLIENT_SECRET;
 const sendLiveMessage = process.env.OPENCODE_STAGING_SEND_MESSAGE === "true";
 const developThreeProjects = process.env.OPENCODE_STAGING_DEVELOP_THREE_PROJECTS === "true";
 const verifyCdfWorkbench = process.env.OPENCODE_STAGING_VERIFY_CDF_WORKBENCH === "true";
+const verifyTokenEconomizer = process.env.OPENCODE_STAGING_VERIFY_TOKEN_ECONOMIZER === "true";
+const SMALL_FREE_MODEL = "liquid/lfm-3-1.7b:free";
 
 if (targetUrl.origin !== STAGING_URL && !localHost) {
   throw new Error("La prueba solo permite Staging o un servidor local; Producción queda excluida.");
@@ -30,6 +32,9 @@ const context = await browser.newContext({
 });
 const page = await context.newPage();
 const pageErrors = [];
+let disableTokenEconomizerAfterTest = false;
+let tokenEconomizerSessionsVerified = 0;
+let learnedContextCharacters = 0;
 page.on("pageerror", error => pageErrors.push(error.message));
 
 try {
@@ -123,7 +128,27 @@ try {
     ), "openrouter:openrouter/auto-code");
 
     await modelButton.click();
+    await modelDialog.getByRole("button", { name: /OpenRouter Free/ }).click();
+    assert.equal(await page.evaluate(
+      session => localStorage.getItem("opencode-model-preset:" + session), selectedSession
+    ), "openrouter:openrouter/free", "La opción OpenRouter Free debe guardar la ruta gratuita por conversación.");
+
+    await modelButton.click();
+    const freeOnly = modelDialog.getByRole("checkbox", { name: "Solo modelos gratuitos" });
+    await freeOnly.check();
     const modelOptions = modelDialog.getByRole("listbox", { name: "Modelos OpenRouter" }).getByRole("option");
+    await modelDialog.getByRole("searchbox", { name: "Buscar modelos con soporte de herramientas" }).fill(SMALL_FREE_MODEL);
+    const smallFreeOption = modelOptions.filter({ hasText: SMALL_FREE_MODEL });
+    await smallFreeOption.waitFor({ state: "visible", timeout: 30_000 });
+    const smallFreeDetails = await smallFreeOption.innerText();
+    assert.match(smallFreeDetails, /Gratis/);
+    assert.match(smallFreeDetails, /\$0\.0000/);
+    await smallFreeOption.click();
+    assert.equal(await page.evaluate(
+      session => localStorage.getItem("opencode-model-preset:" + session), selectedSession
+    ), "openrouter:" + SMALL_FREE_MODEL, "El filtro debe permitir elegir un modelo específico con coste cero.");
+
+    await modelButton.click();
     await modelOptions.first().waitFor({ timeout: 30_000 });
     const firstModelId = await modelOptions.first().locator("span").nth(1).innerText();
     await modelDialog.getByRole("searchbox", { name: "Buscar modelos con soporte de herramientas" }).fill(firstModelId);
@@ -171,17 +196,40 @@ try {
 
   if (sendLiveMessage) {
     assert.ok(routerReady, "OpenRouter debe estar configurado para ejecutar el mensaje real.");
-    const usageBefore = await page.evaluate(async () => {
+    const readUsage = async () => page.evaluate(async () => {
       const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
       if (!response.ok) return null;
       const body = await response.json();
       return typeof body.usage?.usage === "number" ? body.usage.usage : null;
     });
-    assert.equal(typeof usageBefore, "number", "No se consultó el consumo base; se omite la llamada pagada.");
+    const usageBeforeSmallModel = await readUsage();
+    assert.equal(typeof usageBeforeSmallModel, "number", "No se consultó el consumo base; se omite la llamada al modelo.");
 
     await modelButton.click();
-    await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
-    await modelDialog.getByRole("option", { name: /Económico/ }).click();
+    await modelDialog.getByRole("button", { name: "OpenRouter", exact: true }).click();
+    await modelDialog.getByRole("checkbox", { name: "Solo modelos gratuitos" }).check();
+    await modelDialog.getByRole("searchbox", { name: "Buscar modelos con soporte de herramientas" }).fill(SMALL_FREE_MODEL);
+    const smallModelOptions = modelDialog.getByRole("listbox", { name: "Modelos OpenRouter" }).getByRole("option");
+    await smallModelOptions.filter({ hasText: SMALL_FREE_MODEL }).click();
+    await page.getByRole("textbox", { name: "Escribir a OpenCode" })
+      .fill("Responde exactamente con el texto PING-PRUEBA y nada más. No uses herramientas.");
+    await page.getByRole("button", { name: "Enviar mensaje" }).click();
+    await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
+    await page.getByRole("status").filter({ hasText: "En línea" }).waitFor({ timeout: 120_000 });
+    assert.match(await page.locator("main .sd-theme").last().innerText(), /PING-PRUEBA/i,
+      "El modelo gratuito concreto debe producir una respuesta real.");
+    const usageAfterSmallModel = await readUsage();
+    assert.equal(typeof usageAfterSmallModel, "number", "No se pudo consultar el consumo tras el modelo gratuito concreto.");
+    const smallModelSpend = usageAfterSmallModel - usageBeforeSmallModel;
+    assert.ok(smallModelSpend >= 0 && smallModelSpend <= 0.10,
+      `El modelo gratuito concreto excedió el límite de US$0,10: $${smallModelSpend.toFixed(4)}.`);
+    console.log(`Modelo concreto gratuito aprobado (${SMALL_FREE_MODEL}); variación de cuenta: $${smallModelSpend.toFixed(4)}.`);
+
+    const usageBeforeRouter = await readUsage();
+    assert.equal(typeof usageBeforeRouter, "number", "No se consultó el consumo antes de OpenRouter Free.");
+    await modelButton.click();
+    await modelDialog.getByRole("button", { name: "OpenRouter", exact: true }).click();
+    await modelDialog.getByRole("button", { name: /OpenRouter Free/ }).click();
     await page.getByRole("textbox", { name: "Escribir a OpenCode" })
       .fill("Escribe 60 líneas numeradas con una palabra por línea. Sin introducción y sin usar herramientas.");
     await page.getByRole("button", { name: "Enviar mensaje" }).click();
@@ -233,16 +281,11 @@ try {
     const reply = await conversationPanel.locator(".sd-theme").last().innerText();
     assert.ok(reply.trim().length > 0, "El agente debe mostrar una respuesta real.");
 
-    const usageAfter = await page.evaluate(async () => {
-      const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
-      if (!response.ok) return null;
-      const body = await response.json();
-      return typeof body.usage?.usage === "number" ? body.usage.usage : null;
-    });
-    assert.equal(typeof usageAfter, "number", "No se pudo comprobar el consumo después de la llamada.");
-    const delta = usageAfter - usageBefore;
+    const usageAfter = await readUsage();
+    assert.equal(typeof usageAfter, "number", "No se pudo comprobar el consumo después de OpenRouter Free.");
+    const delta = usageAfter - usageBeforeRouter;
     assert.ok(delta >= 0 && delta <= 0.10, `La variación de cuenta excedió US$0.10: $${delta.toFixed(4)}.`);
-    console.log(`Mensaje real de OpenRouter aprobado; variación aproximada de cuenta: $${delta.toFixed(4)}.`);
+    console.log(`OpenRouter Free respondió una tarea extensa; variación aproximada de cuenta: $${delta.toFixed(4)}.`);
 
   }
 
@@ -277,6 +320,141 @@ try {
   await settingsDialog.getByRole("button", { name: "Cerrar", exact: true }).click();
   await settingsDialog.waitFor({ state: "hidden" });
 
+  if (verifyTokenEconomizer) {
+    assert.ok(routerReady, "OpenRouter debe estar disponible para probar TokenEconomizer con inferencia gratuita.");
+    const readConnectorState = async () => page.evaluate(async () => {
+      const response = await fetch("/api/settings/connectors", { cache: "no-store" });
+      if (!response.ok) return null;
+      return await response.json();
+    });
+    const initialConnectorState = await readConnectorState();
+    assert.ok(initialConnectorState, "No se pudo leer el estado real del conector.");
+    if (!initialConnectorState.tokenEconomizerEnabled) {
+      const workspace = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
+      const installed = await page.evaluate(async workspaceID => {
+        const response = await fetch("/api/settings/connectors/token-economizer", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "install", workspace: workspaceID })
+        });
+        return { status: response.status, body: await response.json() };
+      }, workspace);
+      assert.equal(installed.status, 200, `No se pudo instalar TokenEconomizer en Staging: ${installed.body.error ?? installed.status}`);
+      disableTokenEconomizerAfterTest = true;
+    }
+
+    const previous = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
+    await page.getByRole("button", { name: "Mostrar opciones de OpenCode" }).click();
+    await page.getByRole("button", { name: "Crear nueva aplicación" }).click();
+    await page.waitForFunction(
+      old => {
+        const session = localStorage.getItem("opencode-harness-session");
+        return Boolean(session && session !== old && localStorage.getItem("opencode-active-project:" + session));
+      }, previous, { timeout: 20_000 }
+    );
+    const tokenEconomizerProject = await page.evaluate(() => {
+      const session = localStorage.getItem("opencode-harness-session");
+      return session ? localStorage.getItem("opencode-active-project:" + session) : null;
+    });
+    assert.match(tokenEconomizerProject ?? "", /^app-[a-z0-9]+$/, "TokenEconomizer necesita su propio proyecto de prueba.");
+    await modelButton.click();
+    await modelDialog.getByRole("button", { name: "OpenRouter", exact: true }).click();
+    await modelDialog.getByRole("button", { name: /OpenRouter Free/ }).click();
+
+    const readConnectorStateAfter = async () => page.evaluate(async () => {
+      const response = await fetch("/api/settings/connectors", { cache: "no-store" });
+      if (!response.ok) return null;
+      return await response.json();
+    });
+    const waitForFoldHook = async beforeAt => page.waitForFunction(async previousAt => {
+      const response = await fetch("/api/settings/connectors", { cache: "no-store" });
+      if (!response.ok) return false;
+      const state = await response.json();
+      return state.tokenEconomizerLastHook?.name === "SessionEnd" &&
+        state.tokenEconomizerLastHook?.succeeded === true &&
+        state.tokenEconomizerLastHook?.at > previousAt;
+    }, beforeAt, { timeout: 60_000, polling: 500 });
+    const usageBeforeTokenEconomizer = await page.evaluate(async () => {
+      const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
+      if (!response.ok) return null;
+      const body = await response.json();
+      return typeof body.usage?.usage === "number" ? body.usage.usage : null;
+    });
+    assert.equal(typeof usageBeforeTokenEconomizer, "number", "No se pudo consultar el consumo antes de TokenEconomizer.");
+
+    for (let index = 0; index < 4; index++) {
+      const connectorBefore = await readConnectorStateAfter();
+      const previousHookAt = connectorBefore?.tokenEconomizerLastHook?.at ?? 0;
+      const previousToolCount = await page.locator("main details").count();
+      const command = index === 0
+        ? "cat > test_envfacts.py <<'PY'\nimport unittest\nclass TestEnvFacts(unittest.TestCase):\n    def test_environment(self):\n        self.assertTrue(True)\nPY\npytest -q; python3 -m unittest discover -v"
+        : "pytest -q; python3 -m unittest discover -v";
+      const task = `Usa solo la herramienta Linux autorizada para el proyecto ${tokenEconomizerProject}. ` +
+        `Ejecuta exactamente este comando en este proyecto: ${command}. ` +
+        "La primera vez solo crea ese test pequeño; después no cambies archivos. " +
+        "Deja que termine el comando completo y resume los resultados reales, incluido cualquier error y el resultado de unittest.";
+      await page.getByRole("textbox", { name: "Escribir a OpenCode" }).fill(task);
+      await page.getByRole("button", { name: "Enviar mensaje" }).click();
+      await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
+      try {
+        await page.getByRole("status").filter({ hasText: "En línea" }).waitFor({ timeout: 180_000 });
+      } catch (error) {
+        await page.getByRole("button", { name: "Detener" }).click().catch(() => undefined);
+        throw error;
+      }
+      await page.waitForFunction(count => document.querySelectorAll("main details").length > count,
+        previousToolCount, { timeout: 30_000 });
+      const cards = page.locator("main details");
+      const outputs = [];
+      for (let cardIndex = previousToolCount; cardIndex < await cards.count(); cardIndex++) {
+        const card = cards.nth(cardIndex);
+        await card.getByText("Terminado", { exact: true }).waitFor({ timeout: 30_000 });
+        await card.locator("summary").click();
+        const output = card.locator("pre").last();
+        if (await output.count()) outputs.push(await output.innerText());
+      }
+      const observedOutput = outputs.join("\n");
+      assert.match(observedOutput, /pytest|unittest/i,
+        `TokenEconomizer prueba ${index + 1}: el agente debe ejecutar comandos de prueba reales.`);
+      if (index === 0) {
+        assert.match(observedOutput, /Ran 1 test|test_environment/i,
+          "El fixture unittest debe ejecutarse con éxito en el proyecto aislado.");
+      }
+      await waitForFoldHook(previousHookAt);
+      tokenEconomizerSessionsVerified++;
+    }
+
+    // Envfacts promotes after three confirmations and injects after four exercised sessions.
+    // Leave time for the upstream fold worker to persist the fourth result before the next turn.
+    await page.waitForTimeout(5_000);
+    const beforeLearnedPrompt = await readConnectorStateAfter();
+    const previousContextAt = beforeLearnedPrompt?.tokenEconomizerLastContext?.at ?? 0;
+    await page.getByRole("textbox", { name: "Escribir a OpenCode" })
+      .fill(`Sin usar herramientas, explica brevemente el comando de pruebas apropiado para el proyecto ${tokenEconomizerProject}.`);
+    await page.getByRole("button", { name: "Enviar mensaje" }).click();
+    await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
+    await page.waitForFunction(async previousAt => {
+      const response = await fetch("/api/settings/connectors", { cache: "no-store" });
+      if (!response.ok) return false;
+      const state = await response.json();
+      return Number(state.tokenEconomizerLastContext?.characters) > 0 &&
+        state.tokenEconomizerLastContext?.at > previousAt;
+    }, previousContextAt, { timeout: 30_000, polling: 500 });
+    const learnedState = await readConnectorStateAfter();
+    learnedContextCharacters = learnedState.tokenEconomizerLastContext.characters;
+    await page.getByRole("status").filter({ hasText: "En línea" }).waitFor({ timeout: 180_000 });
+    const usageAfterTokenEconomizer = await page.evaluate(async () => {
+      const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
+      if (!response.ok) return null;
+      const body = await response.json();
+      return typeof body.usage?.usage === "number" ? body.usage.usage : null;
+    });
+    assert.equal(typeof usageAfterTokenEconomizer, "number", "No se pudo consultar el consumo después de TokenEconomizer.");
+    const tokenEconomizerSpend = usageAfterTokenEconomizer - usageBeforeTokenEconomizer;
+    assert.ok(tokenEconomizerSpend >= 0 && tokenEconomizerSpend <= 0.10,
+      `La prueba gratuita de TokenEconomizer excedió US$0,10: $${tokenEconomizerSpend.toFixed(4)}.`);
+    console.log(`TokenEconomizer: 4 sesiones reales cerradas; siguiente turno recibió ${learnedContextCharacters} caracteres aprendidos; coste reportado $${tokenEconomizerSpend.toFixed(4)}.`);
+  }
+
   let cdfWorkbenchToolsVerified = 0;
   if (verifyCdfWorkbench) {
     await conversationsButton.click();
@@ -293,9 +471,14 @@ try {
     await conversations.waitFor({ state: "hidden" });
 
     await modelButton.click();
-    await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
-    await modelDialog.getByRole("option", { name: routerReady ? /Económico/ : /Cloudflare/ }).click();
-    const cdfModel = routerReady ? "economy" : "cloudflare";
+    if (routerReady) {
+      await modelDialog.getByRole("button", { name: "OpenRouter", exact: true }).click();
+      await modelDialog.getByRole("button", { name: /OpenRouter Free/ }).click();
+    } else {
+      await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
+      await modelDialog.getByRole("option", { name: /Cloudflare/ }).click();
+    }
+    const cdfModel = routerReady ? "openrouter:openrouter/free" : "cloudflare";
     assert.equal(await page.evaluate(
       session => localStorage.getItem("opencode-model-preset:" + session), cdfSession
     ), cdfModel);
@@ -356,7 +539,7 @@ try {
 
   let completedProjectTrials = 0;
   if (developThreeProjects) {
-    assert.ok(routerReady, "OpenRouter debe estar configurado para probar tres proyectos con el perfil económico.");
+    assert.ok(routerReady, "OpenRouter debe estar configurado para probar tres proyectos con el enrutador gratuito.");
     const readUsage = async () => page.evaluate(async () => {
       const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
       if (!response.ok) return null;
@@ -388,13 +571,13 @@ try {
       assert.match(project ?? "", /^app-[a-z0-9]+$/, "Crear app debe asignar un proyecto Linux nuevo.");
 
       await modelButton.click();
-      await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
-      await modelDialog.getByRole("option", { name: /Económico/ }).click();
+      await modelDialog.getByRole("button", { name: "OpenRouter", exact: true }).click();
+      await modelDialog.getByRole("button", { name: /OpenRouter Free/ }).click();
       const selectedProjectModel = await page.evaluate(
         session => localStorage.getItem("opencode-model-preset:" + session),
         await page.evaluate(() => localStorage.getItem("opencode-harness-session"))
       );
-      assert.equal(selectedProjectModel, "economy");
+      assert.equal(selectedProjectModel, "openrouter:openrouter/free");
 
       const task = `Crea una aplicación web estática mínima llamada "${trial.name}" para el proyecto Linux ${project}. Usa la herramienta linux con project=${project} para crear dist/index.html con HTML, CSS y JavaScript incrustados. La página debe mostrar exactamente el título "${trial.marker}" y una interacción pequeña útil para la aplicación. No instales dependencias, no uses internet ni edites otros proyectos. Verifica con una llamada Linux que dist/index.html existe y contiene ese título. Responde brevemente solo después de recibir resultados reales de la herramienta.`;
       await page.getByRole("textbox", { name: "Escribir a OpenCode" }).fill(task);
@@ -449,7 +632,12 @@ try {
     session => localStorage.getItem("opencode-model-preset:" + session), initialSession
   ), initialModelPreset, "La prueba debe conservar el modelo original de la sesión del propietario.");
 
-  console.log(`${localHost ? "Local" : "Staging"} mobile smoke aprobado: 393 × 852, reconexión, sesión aislada, perfiles, OpenRouter, proyectos (${completedProjectTrials}/3 creados), CDF WorkBench (${cdfWorkbenchToolsVerified}/3 herramientas), y ajustes.`);
+  console.log(`${localHost ? "Local" : "Staging"} mobile smoke aprobado: 393 × 852, reconexión, sesión aislada, perfiles, OpenRouter, proyectos (${completedProjectTrials}/3 creados), CDF WorkBench (${cdfWorkbenchToolsVerified}/3 herramientas), TokenEconomizer (${tokenEconomizerSessionsVerified}/4 sesiones; ${learnedContextCharacters} caracteres reutilizables), y ajustes.`);
 } finally {
+  if (disableTokenEconomizerAfterTest) {
+    await page.evaluate(async () => fetch("/api/settings/connectors/token-economizer", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "disable" })
+    })).catch(() => undefined);
+  }
   await browser.close();
 }

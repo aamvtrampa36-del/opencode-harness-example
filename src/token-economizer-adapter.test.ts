@@ -36,14 +36,19 @@ describe("TokenEconomizer OpenCode adapter", () => {
     const hooks = new Map<string, Hook>();
     const events: ConnectorEvent[] = [];
     const stream = eventQueue();
-    let stop!: () => void;
-    const stopped = new Promise<void>(resolve => { stop = resolve; });
+    const completionWaiters: Array<() => void> = [];
+    const waitForEnd = () => new Promise<void>(resolve => completionWaiters.push(resolve));
+    let starts = 0;
+    const endEvent = waitForEnd();
     const plugin = tokenEconomizerAdapter(async () => true, async (_id, event) => {
       events.push(event);
-      if (event.name === "SessionStart") return { additionalContext: "manual inicial" };
+      if (event.name === "SessionStart") {
+        starts++;
+        return { additionalContext: starts === 1 ? "manual inicial" : "hecho reutilizable" };
+      }
       if (event.name === "UserPromptSubmit") return { additionalContext: "contexto de prompt" };
       if (event.name === "PostToolUse") return { additionalContext: "continúa desde el resultado" };
-      if (event.name === "Stop") stop();
+      if (event.name === "SessionEnd") completionWaiters.shift()?.();
       return {};
     }, async () => "proyecto-prueba");
     const setup = plugin.setup as unknown as (ctx: unknown) => Promise<() => void>;
@@ -73,10 +78,32 @@ describe("TokenEconomizer OpenCode adapter", () => {
     stream.emit({ type: "session.tool.success", properties: { sessionID: "ses_test",
       assistantMessageID: "assistant-1", id: "tool-1", content: [{ type: "text", text: "Python 3 disponible" }], metadata: { exit: 0 } } });
     stream.emit({ type: "session.execution.succeeded", properties: { sessionID: "ses_test" } });
-    await stopped;
-    const end = events.find(event => event.name === "Stop");
+    await endEvent;
+    const stop = events.find(event => event.name === "Stop");
+    const end = events.find(event => event.name === "SessionEnd");
+    expect(stop?.sessionID).toMatch(/^ses[a-f0-9]{32}$/);
+    expect(end?.sessionID).toBe(stop?.sessionID);
     expect(end?.transcript).toContain("Comprueba el entorno");
     expect(end?.transcript).toContain("Python 3 disponible");
+    expect(end?.project).toBe("proyecto-prueba");
+    const exported = JSON.parse(end?.transcript ?? "{}") as {
+      messages?: Array<{ info?: { path?: { cwd?: string } }; parts?: Array<{ tool?: string }> }>
+    };
+    expect(exported.messages?.flatMap(message => message.parts ?? []).map(part => part.tool))
+      .toContain("bash");
+    expect(exported.messages?.find(message => message.parts?.some(part => part.tool === "bash"))?.info?.path?.cwd)
+      .toBe("/workspace/projects/opencode-connectors/workspaces/proyecto-prueba");
+
+    const secondEnd = waitForEnd();
+    await hooks.get("session:prompt")!({ sessionID: "ses_test", messageID: "user-2", prompt: { text: "Repite la tarea" } });
+    const nextSystem: unknown[] = [];
+    await hooks.get("session:context")!({ sessionID: "ses_test", system: nextSystem });
+    expect(nextSystem).toEqual([{ type: "text", text: "hecho reutilizable\n\ncontexto de prompt" }]);
+    stream.emit({ type: "session.execution.succeeded", properties: { sessionID: "ses_test" } });
+    await secondEnd;
+    expect(events.filter(event => event.name === "SessionStart")).toHaveLength(2);
+    expect(events.filter(event => event.name === "SessionEnd")).toHaveLength(2);
+    expect(new Set(events.filter(event => event.name === "SessionEnd").map(event => event.sessionID)).size).toBe(2);
     cleanup();
   });
 

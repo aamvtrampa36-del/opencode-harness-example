@@ -23,6 +23,8 @@ export type TokenEconomizerHookStatus = {
   succeeded: boolean;
 };
 
+export type TokenEconomizerContextStatus = { at: number; characters: number };
+
 export type TemplateProposal = { id: string; createdAt: number; template: Specialization };
 
 export interface ProviderStatus {
@@ -230,10 +232,20 @@ export class PersonalSettings extends DurableObject<Env> {
     return this.ctx.storage.get<TokenEconomizerHookStatus>("connector-token-economizer-last-hook-v1");
   }
 
-  async recordTokenEconomizerHook(name: ConnectorEventName, succeeded: boolean): Promise<void> {
+  async tokenEconomizerLastContext(): Promise<TokenEconomizerContextStatus | undefined> {
+    return this.ctx.storage.get<TokenEconomizerContextStatus>("connector-token-economizer-last-context-v1");
+  }
+
+  async recordTokenEconomizerHook(name: ConnectorEventName, succeeded: boolean,
+    contextCharacters = 0): Promise<void> {
     await this.ctx.storage.put("connector-token-economizer-last-hook-v1", {
       name, at: Date.now(), succeeded
     } satisfies TokenEconomizerHookStatus);
+    if (succeeded && Number.isSafeInteger(contextCharacters) && contextCharacters > 0) {
+      await this.ctx.storage.put("connector-token-economizer-last-context-v1", {
+        at: Date.now(), characters: contextCharacters
+      } satisfies TokenEconomizerContextStatus);
+    }
   }
 
   async listPublicMcps(): Promise<PublicMcpConfig[]> {

@@ -4,17 +4,22 @@ on:
   workflow_dispatch:
     inputs:
       send_live_message:
-        description: "Enviar una tarea corta con el perfil económico (usa saldo OpenRouter)"
+        description: "Probar un modelo OpenRouter gratuito concreto y OpenRouter Free (sin gasto planificado)"
         type: boolean
         required: false
         default: false
       develop_three_projects:
-        description: "Crear tres proyectos Linux pequeños en Staging y verificar sus vistas previas (usa inferencia)"
+        description: "Crear tres proyectos Linux pequeños en Staging con OpenRouter Free y verificar sus vistas previas"
         type: boolean
         required: false
         default: false
       verify_cdf_workbench:
         description: "Probar por OpenCode el estado, catálogo y lectura de CDF WorkBench Staging"
+        type: boolean
+        required: false
+        default: false
+      verify_token_economizer:
+        description: "Probar hooks y aprendizaje gratuito de TokenEconomizer en un proyecto aislado"
         type: boolean
         required: false
         default: false
@@ -62,3 +67,4 @@ jobs:
           OPENCODE_STAGING_SEND_MESSAGE: ${{ inputs.send_live_message }}
           OPENCODE_STAGING_DEVELOP_THREE_PROJECTS: ${{ inputs.develop_three_projects }}
           OPENCODE_STAGING_VERIFY_CDF_WORKBENCH: ${{ inputs.verify_cdf_workbench }}
+          OPENCODE_STAGING_VERIFY_TOKEN_ECONOMIZER: ${{ inputs.verify_token_economizer }}

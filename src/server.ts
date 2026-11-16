@@ -192,8 +192,6 @@ export class OpenCodeAgent extends DurableObject<Env> {
   private async runConnector(connectorID: string, event: ConnectorEvent): Promise<ConnectorOutput> {
     if (connectorID !== "token-economizer") throw new Error("Conector no admitido.");
     if (!(await this.personalConfig.connectorSettings()).tokenEconomizerEnabled) return {};
-    const recordStatus = (succeeded: boolean) =>
-      this.personalConfig.recordTokenEconomizerHook(event.name, succeeded).catch(() => undefined);
     try {
       const project = event.project || "global";
       if (!/^[a-z][a-z0-9-]{0,39}$/.test(project)) throw new Error("Proyecto del conector inválido.");
@@ -226,10 +224,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
         if (typeof context === "string") normalized.additionalContext = context;
         if (typeof record.systemMessage === "string") normalized.systemMessage = record.systemMessage;
       }
-      await recordStatus(true);
+      await this.personalConfig.recordTokenEconomizerHook(
+        event.name, true, normalized.additionalContext?.length ?? 0
+      ).catch(() => undefined);
       return normalized;
     } catch (error) {
-      await recordStatus(false);
+      await this.personalConfig.recordTokenEconomizerHook(event.name, false).catch(() => undefined);
       throw error;
     }
   }
@@ -1041,10 +1041,11 @@ export default {
         }, { headers: { "Cache-Control": "no-store" } });
       }
       if (url.pathname === "/api/settings/connectors" && request.method === "GET") {
-        const [settings, tokenEconomizerLastHook] = await Promise.all([
-          personal.connectorSettings(), personal.tokenEconomizerLastHook()
+        const [settings, tokenEconomizerLastHook, tokenEconomizerLastContext] = await Promise.all([
+          personal.connectorSettings(), personal.tokenEconomizerLastHook(), personal.tokenEconomizerLastContext()
         ]);
-        return Response.json({ ...settings, tokenEconomizerLastHook }, { headers: { "Cache-Control": "no-store" } });
+        return Response.json({ ...settings, tokenEconomizerLastHook, tokenEconomizerLastContext },
+          { headers: { "Cache-Control": "no-store" } });
       }
       if (url.pathname === "/api/settings/connectors/token-economizer" && request.method === "POST") {
         if (!settingsOriginAllowed) return Response.json({ error: "Se requiere una solicitud del mismo origen." }, { status: 403 });
