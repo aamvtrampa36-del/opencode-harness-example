@@ -389,13 +389,11 @@ try {
       const connectorBefore = await readConnectorStateAfter();
       const previousHookAt = connectorBefore?.tokenEconomizerLastHook?.at ?? 0;
       const previousToolCount = await page.locator("main details.bg-kumo-base").count();
-      const command = index === 0
-        ? "cat > test_envfacts.py <<'PY'\nimport unittest\nclass TestEnvFacts(unittest.TestCase):\n    def test_environment(self):\n        self.assertTrue(True)\nPY\npytest -q; python3 -m unittest discover -v"
-        : "pytest -q; python3 -m unittest discover -v";
       const task = `Usa solo la herramienta Linux autorizada para el proyecto ${tokenEconomizerProject}. ` +
-        `Ejecuta exactamente este comando en este proyecto: ${command}. ` +
-        "La primera vez solo crea ese test pequeño; después no cambies archivos. " +
-        "Deja que termine el comando completo y resume los resultados reales, incluido cualquier error y el resultado de unittest.";
+        "Sin cambiar archivos ni instalar paquetes, haz dos llamadas Linux separadas: " +
+        "primero ejecuta exactamente `pytest -q` y conserva su salida aunque falle; " +
+        "después ejecuta `pwd && ls -la` para confirmar el directorio autorizado. " +
+        "No uses otros lenguajes ni herramientas. Resume ambos resultados reales.";
       await page.getByRole("textbox", { name: "Escribir a OpenCode" }).fill(task);
       await page.getByRole("button", { name: "Enviar mensaje" }).click();
       await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
@@ -423,13 +421,14 @@ try {
         }
       }
       const observedOutput = outputs.join("\n");
-      assert.ok(/pytest|unittest/i.test(observedOutput),
-        `TokenEconomizer prueba ${index + 1}: el agente debe ejecutar comandos de prueba reales; ` +
+      assert.ok(outputs.length >= 2,
+        `TokenEconomizer prueba ${index + 1}: deben verse la ejecución Linux y el listado del proyecto; ` +
         `estados de herramientas: ${outputs.map(value => value.split("\n", 1)[0]).join(", ") || "ninguno"}.`);
-      if (index === 0) {
-        assert.match(observedOutput, /Ran 1 test|test_environment/i,
-          "El fixture unittest debe ejecutarse con éxito en el proyecto aislado.");
-      }
+      assert.match(observedOutput, /pytest/i, `TokenEconomizer prueba ${index + 1}: faltó la prueba real de pytest.`);
+      assert.match(observedOutput, /command not found/i,
+        `TokenEconomizer prueba ${index + 1}: pytest debería reportar su ausencia real en esta imagen.`);
+      assert.match(observedOutput, new RegExp(tokenEconomizerProject),
+        `TokenEconomizer prueba ${index + 1}: la salida no confirma el proyecto Linux autorizado.`);
       await waitForFoldHook(previousHookAt);
       tokenEconomizerSessionsVerified++;
     }
