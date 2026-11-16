@@ -94,7 +94,9 @@ try {
   const optionsButton = page.getByRole("button", { name: "Mostrar opciones de OpenCode" });
   await optionsButton.click();
   const templatePicker = page.getByRole("combobox", { name: "Plantilla de trabajo" });
-  await templatePicker.locator('option[value="cdf-workflow"]').waitFor({ timeout: 30_000 });
+  await templatePicker.waitFor({ state: "visible" });
+  assert.ok((await templatePicker.locator("option").allTextContents()).includes("Flujo CDF"),
+    "La plantilla CDF opcional debe estar disponible.");
   assert.equal(await templatePicker.inputValue(), "", "Una conversación nueva debe empezar en General.");
   await templatePicker.selectOption("cdf-workflow");
   assert.equal(await templatePicker.inputValue(), "cdf-workflow", "La plantilla opcional debe poder seleccionarse.");
