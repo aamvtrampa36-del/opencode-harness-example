@@ -5,7 +5,7 @@ describe("remote MCP validation", () => {
   const base = { id: "my-tools", url: "https://example.com/mcp", enabled: true };
   test("preserve a public HTTPS endpoint", () => {
     const config = validateRemoteMcp(base);
-    expect(config).toEqual({ ...base });
+    expect(config).toEqual({ ...base, auth: "none" });
   });
   test("do not return bearer secrets to browser", () => {
     const cfg = validateRemoteMcp({ ...base, token: "private-token-example" });
@@ -43,5 +43,13 @@ describe("remote MCP validation", () => {
     expect(() => validateRemoteMcp({ ...base, id: "../secret" })).toThrow();
     expect(() => validateRemoteMcp({ ...base, enabled: "yes" })).toThrow();
     expect(() => validateRemoteMcp({ ...base, token: "secret\nheader" })).toThrow();
+  });
+  test("validates OAuth mode and returns only non-secret connection status", () => {
+    const config = validateRemoteMcp({ ...base, auth: "oauth", scope: "workbench:read offline_access", connected: true });
+    const returned = publicMcp({ ...config, connected: true, token: "short-lived-access-token" });
+    expect(returned).toMatchObject({ auth: "oauth", connected: true, hasToken: true });
+    expect(JSON.stringify(returned)).not.toContain("short-lived-access-token");
+    expect(() => validateRemoteMcp({ ...base, auth: "oauth", scope: "bad\nvalue" })).toThrow();
+    expect(() => validateRemoteMcp({ ...base, auth: "password" })).toThrow();
   });
 });

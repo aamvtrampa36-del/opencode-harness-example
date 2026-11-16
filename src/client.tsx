@@ -439,7 +439,9 @@ function App() {
       const response = await fetch("/api/settings/specializations", { cache: "no-store" });
       if (!response.ok) return;
       const result = await response.json() as { specializations?: Specialization[] };
-      setSpecializations((result.specializations ?? []).filter(item => item.enabled));
+      const available = (result.specializations ?? []).filter(item => item.enabled);
+      setSpecializations(available);
+      setSpecialization(current => available.some(item => item.id === current) ? current : "");
     } catch { /* Optional profiles do not prevent normal development. */ }
   };
   const refreshIntegrations = async () => {
@@ -517,6 +519,7 @@ function App() {
     pending,
     sessions,
     live,
+    workflow,
     error,
     submit: submitPrompt,
     abort,
@@ -583,7 +586,11 @@ function App() {
     localStorage.setItem(SESSION_KEY, next);
     setSession(next);
     setAgentMode(readSessionMode(localStorage, object, next));
-    setSpecialization(readSessionSpecialization(localStorage, object, next));
+    const savedSpecialization = readSessionSpecialization(localStorage, object, next);
+    const availableSpecialization = specializations.some(item => item.id === savedSpecialization)
+      ? savedSpecialization : "";
+    setSpecialization(availableSpecialization);
+    if (availableSpecialization !== savedSpecialization) saveSessionSpecialization(localStorage, object, next, "");
     setImageTask(false);
     setModelPreset(modelForSession(next));
     setProject(localStorage.getItem(PROJECT_PREFIX + next) ?? "");
@@ -981,6 +988,8 @@ function App() {
         specialization || undefined, project || undefined, repository || undefined,
         draftImages.map(({ data, mime, name }) => ({ data, mime, name })));
       if (accepted) {
+        // Repository review is a one-shot read-only action, not a persistent mode.
+        if (agentMode === "review") setModeForSession(session, "build");
         setPrompt((current) => current.trim() === text ? "" : current);
         setDraftImages([]);
         setImageError("");
@@ -1141,6 +1150,12 @@ function App() {
                   icon={<GearIcon size={18} />} />
               </div>
             </div>
+            {workflow ? <p role="status" aria-live="polite" className="mt-1 truncate text-[11px] text-kumo-subtle">
+              {workflow.status === "running"
+                ? `Flujo: etapa ${workflow.stage}/${workflow.total} · ${workflow.name}`
+                : workflow.status === "completed" ? "Flujo completado" : workflow.status === "cancelled"
+                  ? "Flujo detenido" : `Flujo detenido por un error: ${workflow.error ?? "error"}`}
+            </p> : null}
             <div id="opencode-options" aria-label="Opciones de OpenCode"
               className={`absolute inset-x-2 top-full z-30 ${actionsOpen ? "flex sm:grid" : "hidden"} max-h-[70dvh] flex-col gap-2 overflow-y-auto overscroll-contain rounded-2xl border border-kumo-line bg-kumo-base p-3 shadow-xl sm:left-auto sm:right-5 sm:w-[min(94vw,520px)] sm:grid-cols-2 sm:gap-2`}>
               <Button type="button" variant="ghost" size="sm"
@@ -1221,7 +1236,7 @@ function App() {
                 <LinkIcon size={16} />
                 <span>{linkCopied ? "Copiado" : "Vincular"}</span>
               </Button>
-              <select aria-label="Plantilla de trabajo" title="Plantilla editable: cambia instrucciones, modo y modelo sugerido"
+              <select aria-label="Plantilla de trabajo" title="Plantillas editables: instrucciones, etapas y modelos"
                 disabled={busy} value={specialization} onChange={(e) => {
                   const id = e.target.value;
                   saveSessionSpecialization(localStorage, object, session, id);
@@ -1229,7 +1244,6 @@ function App() {
                   setImageTask(false);
                   const selected = specializations.find(item => item.id === id);
                   if (selected) {
-                    setModeForSession(session, selected.mode ?? "build");
                     const preferred = selected.model ?? "cloudflare";
                     const available = openRouterAvailable ||
                       resolveModelSelection(preferred).providerID !== "openrouter";
@@ -1245,15 +1259,6 @@ function App() {
                   <option key={item.id} value={item.id}>{item.name}</option>
                 ))}
               </select>
-              <select aria-label="Modo de agente" title="Los roles de revisión y narrativa no modifican archivos"
-                disabled={busy} value={agentMode} onChange={(event) => setModeForSession(session, event.target.value as AgentMode)}
-                className="max-w-[128px] rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 text-xs text-kumo-default">
-                <option value="build">Desarrollar</option>
-                <option value="plan">Planificar</option>
-                <option value="review">Revisar</option>
-                <option value="creative">Escritura</option>
-              </select>
-              
               <Button type="button" variant="ghost" size="sm"
                 aria-label="Configurar conexiones y modelos"
                 title="OpenRouter, GitHub y presupuesto"
@@ -1640,20 +1645,22 @@ function App() {
                   }
                 }}
                 placeholder={
-                  imageTask
+                  workflow?.status === "running"
+                    ? "Flujo en curso. Puedes abrir otra conversación."
+                    : imageTask
                     ? "Describe la imagen que quieres crear"
                     : busy
                     ? "Escribe una instrucción para continuar la tarea"
                     : "Describe qué quieres hacer con OpenCode"
                 }
                 aria-label="Escribir a OpenCode"
-                disabled={!connected}
+                disabled={!connected || workflow?.status === "running"}
                 rows={1}
                 className="flex-1 !bg-transparent !shadow-none !ring-0 !outline-none focus:!ring-0"
               />
               {busy ? (
                 <div className="mb-0.5 flex gap-1.5">
-                  <Button
+                  {workflow?.status === "running" ? null : <Button
                     type="button"
                     variant="secondary"
                     size="sm"
@@ -1662,7 +1669,7 @@ function App() {
                     onClick={() => submit("steer")}
                   >
                     Steer
-                  </Button>
+                  </Button>}
                   <Button
                     type="button"
                     variant="secondary"

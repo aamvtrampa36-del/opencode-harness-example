@@ -14,6 +14,18 @@ export function remoteMcpPlugin(
     async setup(ctx) {
       let current = await loadConfigs();
       let previous = new Set<string>();
+      if (ctx.session) {
+        await ctx.session.hook("context", async ({ tools }) => {
+          for (const endpoint of current) {
+            if (!endpoint.toolAllowlist) continue;
+            const prefix = "personal-" + endpoint.id + "_";
+            const allowed = new Set(endpoint.toolAllowlist);
+            for (const name of Object.keys(tools)) {
+              if (name.startsWith(prefix) && !allowed.has(name.slice(prefix.length))) delete tools[name];
+            }
+          }
+        });
+      }
       await ctx.mcp.transform((editor) => {
         const next = new Set<string>();
         for (const old of previous) editor.remove(old);
@@ -23,12 +35,10 @@ export function remoteMcpPlugin(
           editor.set(id, {
             type: "remote",
             url: endpoint.url,
-            disabled: !endpoint.enabled,
+            disabled: !endpoint.enabled || (endpoint.auth === "oauth" && !endpoint.token),
             codemode: false,
-            ...(endpoint.token ? {
-              oauth: false,
-              headers: { Authorization: "Bearer " + endpoint.token }
-            } : {})
+            ...(endpoint.auth === "oauth" || endpoint.token ? { oauth: false } : {}),
+            ...(endpoint.token ? { headers: { Authorization: "Bearer " + endpoint.token } } : {})
           });
         }
         previous = next;

@@ -90,6 +90,18 @@ try {
   );
   assert.equal(selectedProfile, "cloudflare", "El perfil elegido debe guardarse en la conversación actual.");
 
+  // The general chat is the default; templates remain optional and selectable.
+  const optionsButton = page.getByRole("button", { name: "Mostrar opciones de OpenCode" });
+  await optionsButton.click();
+  const templatePicker = page.getByRole("combobox", { name: "Plantilla de trabajo" });
+  await templatePicker.locator('option[value="cdf-workflow"]').waitFor({ timeout: 30_000 });
+  assert.equal(await templatePicker.inputValue(), "", "Una conversación nueva debe empezar en General.");
+  await templatePicker.selectOption("cdf-workflow");
+  assert.equal(await templatePicker.inputValue(), "cdf-workflow", "La plantilla opcional debe poder seleccionarse.");
+  await templatePicker.selectOption("");
+  assert.equal(await templatePicker.inputValue(), "", "Se debe poder volver al chat General.");
+  await optionsButton.click();
+
   await modelButton.click();
   await modelDialog.getByRole("button", { name: "OpenRouter", exact: true }).click();
   const providerNotConfigured = await modelDialog.getByText(/Conecta tu clave de OpenRouter/).count();
@@ -236,9 +248,22 @@ try {
 
   await page.getByRole("button", { name: "Mostrar opciones de OpenCode" }).click();
   await page.getByRole("button", { name: "Configurar conexiones y modelos" }).click();
-  await page.getByRole("dialog", { name: "Configuración de OpenCode" }).waitFor({ state: "visible" });
-  await page.keyboard.press("Escape");
-  await page.getByRole("dialog", { name: "Configuración de OpenCode" }).waitFor({ state: "hidden" });
+  const settingsDialog = page.getByRole("dialog", { name: "Configuración de OpenCode" });
+  await settingsDialog.waitFor({ state: "visible" });
+  const flowRow = settingsDialog.getByText("Flujo CDF", { exact: true }).locator("xpath=../..");
+  await flowRow.getByRole("button", { name: "Editar", exact: true }).click();
+  await settingsDialog.getByRole("textbox", { name: "Nombre de etapa 1" }).waitFor({ state: "visible" });
+  assert.equal(await settingsDialog.getByLabel("Acceso de etapa").nth(0).inputValue(), "plan");
+  assert.equal(await settingsDialog.getByLabel("Acceso de etapa").nth(1).inputValue(), "build");
+  await settingsDialog.getByRole("tab", { name: "Herramientas" }).click();
+  await settingsDialog.getByRole("button", { name: "Preparar CDF WorkBench Staging" }).click();
+  assert.equal(await settingsDialog.locator("#mcp-name").inputValue(), "cdf-workbench-staging");
+  assert.equal(await settingsDialog.locator("#mcp-scope").inputValue(), "workbench:read offline_access");
+  await settingsDialog.getByRole("button", { name: /Preparar CDF CLOUD Producción/ }).click();
+  assert.equal(await settingsDialog.locator("#mcp-name").inputValue(), "cdf-cloud-production");
+  assert.equal(await settingsDialog.locator("#mcp-scope").inputValue(), "cdf:access");
+  await settingsDialog.getByRole("button", { name: "Cerrar", exact: true }).click();
+  await settingsDialog.waitFor({ state: "hidden" });
 
   const dimensions = await page.evaluate(() => ({
     viewport: window.innerWidth,

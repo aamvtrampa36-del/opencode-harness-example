@@ -3,12 +3,12 @@
   "name": "opencode-g1-staging",
   "preview_urls": false,
   // Staging entrypoint: the production Worker (src/server.ts) re-exported
-  // unchanged plus the disposable B2 drill class. wrangler.jsonc (production)
-  // keeps main: "src/server.ts" and is untouched.
+  // plus the disposable B2 drill class. Production keeps main: "src/server.ts".
   "main": "src/entrypoint.ts",
   "compatibility_date": "2026-06-11",
   "compatibility_flags": [
-    "nodejs_compat"
+    "nodejs_compat",
+    "durable_object_io_tasks_prevent_eviction"
   ],
   "ai": {
     "binding": "AI",

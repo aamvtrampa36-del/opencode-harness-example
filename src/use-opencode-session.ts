@@ -72,6 +72,7 @@ type State = {
   /** Live deltas by assistant message id, until a snapshot catches up. */
   readonly live: Readonly<Record<string, LiveText>>;
   readonly error: string | undefined;
+  readonly workflow: Extract<ServerMessage, { type: "workflow" }> | undefined;
 };
 
 const INITIAL_STATE: State = {
@@ -82,7 +83,8 @@ const INITIAL_STATE: State = {
   pending: [],
   sessions: [],
   live: {},
-  error: undefined
+  error: undefined,
+  workflow: undefined
 };
 
 /** Drop live text a snapshot has caught up with. */
@@ -149,6 +151,9 @@ export function useOpenCodeSession(
           return;
         case "sessions":
           setState((current) => ({ ...current, sessions: message.sessions }));
+          return;
+        case "workflow":
+          setState((current) => ({ ...current, workflow: message }));
           return;
         case "snapshot":
           if (message.session !== session) return;
@@ -220,6 +225,7 @@ export function useOpenCodeSession(
         ...(repository ? { repository } : {}), ...(files?.length ? { files } : {}) });
       setState((current) => ({
         ...current,
+        ...(accepted && current.workflow?.status !== "running" ? { workflow: undefined } : {}),
         error: accepted ? undefined : "Sin conexión: la tarea no se envió. Reintenta cuando aparezca En línea."
       }));
       return accepted;

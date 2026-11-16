@@ -41,6 +41,8 @@ export type SubagentRunner = {
   result(parentSession: string, childSession: string): Promise<{ status: "running" | "finished"; text: string }>;
 };
 
+export type TemplateProposalRunner = { propose(value: unknown): Promise<{ id: string }> };
+
 const LOCAL_TOOLS = ["read", "write", "edit", "patch", "glob", "grep", "shell"];
 
 const SYSTEM = `You are OpenCode running in a Cloudflare Durable Object, not the user's computer. Each project uses a separate Linux Container. The linux tool runs commands in the selected project; inspect_linux reads its files without executing commands. A selected GitHub repository is imported into its Container from a pinned commit without sending credentials to Linux. This is a source archive, not a Git checkout: .git and Git history are absent. Use the scoped github tool to create an opencode/* branch, write the tested text files to that branch, review the diff, and open a draft PR. Do not claim a local git push or checkout exists. Previous shared projects remain available as backups and must be restored to a new name before development. Containers checkpoint files before idle suspension. To give the user a live browser preview, create a static production build at /workspace/projects/{project-slug}/dist/index.html with relative asset URLs. For Vite use base './'; for HTML-only projects copy HTML, CSS and JS into dist/. The web UI provides a Ver app button. Do not claim the preview is working until tested. Never claim a command passed until its returned exitCode is zero. Never claim to have run tools or tests you could not actually run.\n\nDEVELOPMENT: Understand requirements, use small reversible changes, inspect diffs, report tests actually performed and unresolved issues. Create proposals or drafts first. Do not delete important data, write to production, merge to main, change credentials or deploy services without explicit approval. Never make up tool results or source contents.\n\nOFFICIAL SOURCES: You may plan, draft, edit and review, but the owner approves final integration and publication. NEVER overwrite official sources, canonize editorial content, merge production changes or publish without explicit authorization for the exact operation. Keep drafts distinguishable from approved materials.\n\nGITHUB: When the github tool is available, use it to read the owner's repositories approved in Settings, create opencode/* review branches, save changed text files and open draft pull requests. It never merges or pushes to main. For remote GitHub review use repo_review, repo_read and repo_info: these tools automatically resolve the repository from the authenticated session. DO NOT inspect /bundle/.git/HEAD or use /bundle as a checkout of the selected GitHub repository. Generic workspace tools are blocked in project sessions because the Durable Object workspace is shared. Use the scoped inspect_linux or GitHub tools for reads. In Plan/Review use repo_review with the opencode/* branch directly. If the bridge is unavailable, ask the user to connect GitHub privately in Settings; never ask for a token in chat.\n\nCOST/SECURITY: Prefer inexpensive models for ordinary tasks. Never print API secrets. Do not disable authentication or launch billable infrastructure without informed authorization.\n\nOPERATIONS: State the actual available tools and constraints. A separate Linux Container is available through the scoped linux tool. Explain only genuine missing capabilities, and never fake command results, tools, or tests. Do not use the shared workspace tools in project sessions. Concise Spanish unless the user requests otherwise.`;
@@ -132,7 +134,8 @@ export function workspacePlugin(
   getBoundRepository?: (sessionID: string) => Promise<string>,
   getBoundProject?: (sessionID: string) => Promise<string>,
   imageGeneration?: ImageGenerationRunner,
-  subagents?: SubagentRunner
+  subagents?: SubagentRunner,
+  templateProposals?: TemplateProposalRunner
 ): Plugin.Plugin {
   const { tools, execute } = createPiTools({
     ...options,
@@ -159,7 +162,7 @@ export function workspacePlugin(
         });
         editor.update("plan", (agent) => {
           agent.system = SYSTEM +
-            "\n\nPLAN/REVIEW MODE: Only analyze and inspect. Do not modify files, change Git branches, perform deployments, publish narrative or install packages. Provide grounded observations and a concise plan. The user must switch to Develop before implementing changes.";
+            "\n\nREAD-ONLY STAGE: Only analyze and inspect. Do not modify files, change Git branches, perform deployments, publish narrative or install packages. Provide grounded observations and a concise result. The next workflow stage may act if it is explicitly configured to use tools.";
         });
       });
       if (scopeGuard && ctx.session) {
@@ -172,6 +175,7 @@ export function workspacePlugin(
           if (isSubagent) {
             delete available.start_subagent;
             delete available.subagent_result;
+            delete available.propose_template;
           }
           let project: string | undefined;
           try {
@@ -211,6 +215,25 @@ export function workspacePlugin(
       }
       await ctx.tool.transform((editor) => {
         for (const id of LOCAL_TOOLS) editor.remove(id);
+        if (templateProposals) editor.add({
+          name: "propose_template",
+          description: "Prepara una plantilla de trabajo como borrador pendiente. Nunca la guarda como plantilla activa: la persona propietaria debe revisarla y aprobarla en Configurar → Plantillas.",
+          input: { type: "object", properties: {
+            templateJson: { type: "string", description: "Objeto JSON Specialization con id, name, instructions, enabled:true, model opcional y stages opcionales (name, instructions, model, mode). Máximo 20000 caracteres." }
+          }, required: ["templateJson"], additionalProperties: false },
+          options: { codemode: false },
+          async execute(input) {
+            const value = input as { templateJson?: unknown };
+            if (typeof value.templateJson !== "string" || value.templateJson.length > 20_000)
+              throw new Error("La plantilla debe ser JSON y no superar 20000 caracteres.");
+            let parsed: unknown;
+            try { parsed = JSON.parse(value.templateJson); }
+            catch { throw new Error("El borrador no contiene JSON válido."); }
+            const proposal = await templateProposals!.propose(parsed);
+            return { content: JSON.stringify({ status: "pending-owner-approval", proposal: proposal.id,
+              next: "La plantilla solo se activa cuando la persona propietaria la aprueba en Configurar → Plantillas." }) };
+          }
+        });
         if (imageGeneration) editor.add({
           name: "generate_image",
           description: "Genera una imagen mediante el modelo de OpenRouter elegido en la plantilla activa. Úsala solo cuando la persona pida una imagen; devuelve el archivo visual en la conversación.",

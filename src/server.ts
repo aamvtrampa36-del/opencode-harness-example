@@ -913,7 +913,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
             { isChild: async sessionID => (await this.harness.sessions.list())
                 .some(item => item.id === sessionID && Boolean(item.parent)),
               start: (sessionID, task, kind) => this.startSubagent(sessionID, task, kind),
-              result: (parentSession, childSession) => this.subagentResult(parentSession, childSession) })
+              result: (parentSession, childSession) => this.subagentResult(parentSession, childSession) },
+            { propose: value => this.personalConfig.proposeSpecialization(value) })
         ]
       }),
     // Low effort: with more, the model sometimes writes its whole answer
@@ -934,7 +935,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     (sessionID: string, input: unknown) => this.bindSessionScope(sessionID, input),
     (source: string, target: string, project: string) => this.inheritSessionScope(source, target, project),
     (sessionID: string, options: { decisionModel?: string; imageModel?: string }) => this.setSessionModels(sessionID, options),
-    () => this.personalConfig.defaultImageModel()
+    () => this.personalConfig.defaultImageModel(),
+    promise => this.ctx.waitUntil(promise)
   );
   readonly webSockets = new WebSockets(this.sockets.options());
   readonly lifecycle = Lifecycle.install(this)
@@ -1167,6 +1169,39 @@ export default {
         return Response.json({ configured: false, revokeAtProvider: true },
           { headers: { "Cache-Control": "no-store" } });
       }
+      if (url.pathname === "/api/settings/mcp/oauth/start" && request.method === "POST") {
+        if (!settingsOriginAllowed) return Response.json({ error: "Origin and JSON required" }, { status: 403 });
+        const raw = await request.text();
+        if (raw.length > 1_000) return Response.json({ error: "Request too large" }, { status: 413 });
+        try {
+          const body = JSON.parse(raw) as { id?: string; scope?: string; workspace?: string };
+          const result = await personal.startRemoteMcpOAuth({
+            id: body.id ?? "", scope: body.scope, workspace: body.workspace,
+            callbackUrl: new URL("/api/settings/mcp/oauth/callback", url.origin).toString()
+          });
+          return Response.json(result, { headers: { "Cache-Control": "no-store" } });
+        } catch (error) {
+          return Response.json({ error: error instanceof Error ? error.message : "OAuth could not start" },
+            { status: 422, headers: { "Cache-Control": "no-store" } });
+        }
+      }
+      if (url.pathname === "/api/settings/mcp/oauth/callback" && request.method === "GET") {
+        const code = url.searchParams.get("code") ?? "";
+        const state = url.searchParams.get("state") ?? "";
+        const issuer = url.searchParams.get("iss") ?? undefined;
+        try {
+          const result = await personal.completeRemoteMcpOAuth(state, code, issuer);
+          if (result.workspace) {
+            try { await env.OpenCodeAgent.getByName(result.workspace).refreshMcps(); }
+            catch { /* The saved token is applied when this workspace reconnects. */ }
+          }
+          return Response.redirect(new URL("/?mcp=connected", url.origin), 303);
+        } catch {
+          // Do not echo attacker-controlled OAuth callback errors or codes.
+          return new Response("MCP authorization did not complete. Return to OpenCode and try Connect again.",
+            { status: 400, headers: { "Cache-Control": "no-store", "Content-Type": "text/plain; charset=utf-8" } });
+        }
+      }
       if (url.pathname === "/api/settings/mcp") {
         if (request.method === "GET") {
           return Response.json({ servers: await personal.listPublicMcps() },
@@ -1204,7 +1239,7 @@ export default {
         if (request.method === "POST" || request.method === "DELETE") {
           if (!settingsOriginAllowed) return Response.json({ error: "Origin and JSON required" }, { status: 403 });
           const raw = await request.text();
-          if (raw.length > 5_000) return Response.json({ error: "Request too large" }, { status: 413 });
+          if (raw.length > 20_000) return Response.json({ error: "Request too large" }, { status: 413 });
           try {
             const body = JSON.parse(raw) as { id?: string };
             if (request.method === "POST") {
@@ -1215,6 +1250,33 @@ export default {
             return Response.json({ removed: true }, { headers: { "Cache-Control": "no-store" } });
           } catch (error) {
             return Response.json({ error: error instanceof Error ? error.message : "Invalid specialization" },
+              { status: 422, headers: { "Cache-Control": "no-store" } });
+          }
+        }
+        return new Response("Method not allowed", { status: 405 });
+      }
+      if (url.pathname === "/api/settings/template-proposals") {
+        if (request.method === "GET") {
+          return Response.json({ proposals: await personal.listTemplateProposals() },
+            { headers: { "Cache-Control": "no-store" } });
+        }
+        if (request.method === "POST") {
+          if (!settingsOriginAllowed) return Response.json({ error: "Origin and JSON required" }, { status: 403 });
+          const raw = await request.text();
+          if (raw.length > 300) return Response.json({ error: "Request too large" }, { status: 413 });
+          try {
+            const body = JSON.parse(raw) as { action?: string; id?: string };
+            if (body.action === "approve") {
+              const template = await personal.approveTemplateProposal(body.id ?? "");
+              return Response.json({ template }, { headers: { "Cache-Control": "no-store" } });
+            }
+            if (body.action === "reject") {
+              await personal.rejectTemplateProposal(body.id ?? "");
+              return Response.json({ removed: true }, { headers: { "Cache-Control": "no-store" } });
+            }
+            throw new Error("Unknown template suggestion action");
+          } catch (error) {
+            return Response.json({ error: error instanceof Error ? error.message : "Invalid template suggestion" },
               { status: 422, headers: { "Cache-Control": "no-store" } });
           }
         }

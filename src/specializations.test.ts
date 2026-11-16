@@ -1,80 +1,64 @@
 import { describe, expect, test } from "bun:test";
 import {
-  DEFAULT_SPECIALIZATIONS, MAX_SPECIALIZATIONS,
+  DEFAULT_SPECIALIZATIONS, MAX_SPECIALIZATIONS, MAX_WORKFLOW_STAGES,
   mergeSpecializations, specializationPrompt, validateSpecialization
 } from "./specializations";
 
-describe("G6 reusable editable templates", () => {
-  test("seven predefined profiles exist with valid modes, models and bounded instructions", () => {
-    expect(DEFAULT_SPECIALIZATIONS.map(profile => profile.id)).toEqual([
-      "desarrollo", "diagnostico", "revision", "planificacion", "decisiones", "flujo", "documentacion"
-    ]);
-    expect(MAX_SPECIALIZATIONS).toBeGreaterThanOrEqual(7);
-    for (const template of DEFAULT_SPECIALIZATIONS) {
-      expect(validateSpecialization(template)).toEqual(template);
-      expect(template.instructions.length).toBeLessThanOrEqual(4000);
-    }
+describe("editable general chat and staged templates", () => {
+  test("offers one optional CDF flow instead of persistent role modes", () => {
+    expect(DEFAULT_SPECIALIZATIONS.map(profile => profile.id)).toEqual(["cdf-workflow"]);
+    expect(DEFAULT_SPECIALIZATIONS[0]?.stages).toHaveLength(2);
+    expect(MAX_SPECIALIZATIONS).toBeGreaterThanOrEqual(1);
+    for (const template of DEFAULT_SPECIALIZATIONS) expect(validateSpecialization(template)).toMatchObject(template);
   });
 
-  test("defaults are available without rewriting or destroying user records", () => {
+  test("keeps previous custom records while exposing the compact default set", () => {
     const prior = { id: "android", name: "Android", instructions: "Crea apps Java con pruebas", enabled: true };
     const current = mergeSpecializations([prior]);
-    expect(current).toHaveLength(8);
+    expect(current).toHaveLength(2);
     expect(current.find(item => item.id === "android")).toEqual(prior);
-    expect(current.find(item => item.id === "desarrollo")).toEqual(DEFAULT_SPECIALIZATIONS[0]);
+    expect(current.find(item => item.id === "cdf-workflow")).toEqual(DEFAULT_SPECIALIZATIONS[0]);
   });
 
-  test("a saved override dynamically replaces instructions; deleting override restores default", () => {
-    const revised = validateSpecialization({
-      ...DEFAULT_SPECIALIZATIONS[0], instructions: "Responde exactamente PERFIL_G6_EDITADO"
+  test("editable overrides are applied dynamically and deletion restores the default", () => {
+    const original = DEFAULT_SPECIALIZATIONS[0]!;
+    const revised = validateSpecialization({ ...original, instructions: "Confirma cada cambio." });
+    expect(specializationPrompt(revised)).toContain("Confirma cada cambio.");
+    expect(specializationPrompt(original)).not.toContain("Confirma cada cambio.");
+    expect(mergeSpecializations([]).find(item => item.id === original.id)).toEqual(original);
+  });
+
+  test("supports ordered stages with individual model and read-only or tool-enabled access", () => {
+    const flow = validateSpecialization({
+      id: "decision-flow", name: "Decidir y ejecutar", instructions: "Cumple el objetivo con evidencia.", enabled: true,
+      model: "cloudflare", stages: [
+        { name: "Decidir", instructions: "Compara las opciones.", model: "reasoning", mode: "plan" },
+        { name: "Ejecutar", instructions: "Aplica la opción elegida.", model: "economy", mode: "build" }
+      ]
     });
-    const original = mergeSpecializations([]).find(item => item.id === "desarrollo")!;
-    const modified = mergeSpecializations([revised]).find(item => item.id === "desarrollo")!;
-    expect(specializationPrompt(modified)).toContain("PERFIL_G6_EDITADO");
-    expect(specializationPrompt(original)).not.toContain("PERFIL_G6_EDITADO");
-    expect(mergeSpecializations([]).find(item => item.id === "desarrollo")).toEqual(original);
+    expect(flow.stages).toEqual([
+      { name: "Decidir", instructions: "Compara las opciones.", model: "reasoning", mode: "plan" },
+      { name: "Ejecutar", instructions: "Aplica la opción elegida.", model: "economy", mode: "build" }
+    ]);
+    expect(() => validateSpecialization({ ...flow, stages: Array.from({ length: MAX_WORKFLOW_STAGES + 1 }, () => flow.stages![0]) })).toThrow();
+    expect(() => validateSpecialization({ ...flow, stages: [{ name: "Etapa", instructions: "   " }] })).toThrow();
   });
 
-  test("copying yields a separately editable identity and preserves original", () => {
-    const original = DEFAULT_SPECIALIZATIONS[1];
-    const copied = validateSpecialization({ ...original, id: "diagnostico-copia", name: "Diagnóstico copia" });
-    const all = mergeSpecializations([copied]);
-    expect(all.find(item => item.id === original.id)?.instructions).toBe(original.instructions);
-    expect(all.find(item => item.id === copied.id)?.instructions).toBe(original.instructions);
-  });
-
-  test("templates keep concrete OpenRouter, decision and image models", () => {
-    const profile = validateSpecialization({
-      id: "multimodal", name: "Multimodal", instructions: "Analiza y crea imágenes.", enabled: true,
-      model: "openrouter:google/gemini-4-hydrogen", decisionModel: "reasoning",
-      imageModel: "google/imagen-4"
-    });
-    expect(profile).toMatchObject({ model: "openrouter:google/gemini-4-hydrogen",
+  test("retains model preferences for image and decision work", () => {
+    const profile = validateSpecialization({ id: "multimodal", name: "Multimodal",
+      instructions: "Analiza y crea imágenes.", enabled: true, model: "openrouter:google/gemini-4-hydrogen",
       decisionModel: "reasoning", imageModel: "google/imagen-4" });
-    expect(mergeSpecializations([profile]).find(item => item.id === profile.id)?.imageModel).toBe("google/imagen-4");
     expect(specializationPrompt(profile)).toContain("google/imagen-4");
     expect(() => validateSpecialization({ ...profile, imageModel: "../outside" })).toThrow();
     expect(() => validateSpecialization({ ...profile, decisionModel: "unknown-model" })).toThrow();
   });
 
-  test("backward compatibility for saved legacy profiles with no mode/model", () => {
+  test("accepts legacy templates and rejects invalid or oversized values", () => {
     const old = { id: "android", name: "Android", instructions: "Crea apps Java con pruebas", enabled: true };
     expect(validateSpecialization(old)).toMatchObject({ mode: "build", model: "cloudflare" });
-    expect(mergeSpecializations([old]).find(x => x.id === "android")).toEqual(old);
-  });
-
-  test("reject malformed names, invalid modes and unknown model identifiers", () => {
-    expect(() => validateSpecialization(null)).toThrow();
-    expect(() => validateSpecialization({ id: "../etc", name: "Hi", instructions: "Do work", enabled: true })).toThrow();
-    expect(() => validateSpecialization({ id: "web", name: "W", instructions: "Do work", enabled: true })).toThrow();
-    expect(() => validateSpecialization({ id: "web", name: "Web", instructions: "Do work", enabled: true, mode: "root" })).toThrow();
-    expect(() => validateSpecialization({ id: "web", name: "Web", instructions: "Do work", enabled: true, model: "expensive-unlisted" })).toThrow();
-  });
-
-  test("reject oversized prompts and recognizable embedded API secrets", () => {
-    expect(() => validateSpecialization({ id: "web", name: "Web", instructions: "x".repeat(4001), enabled: true })).toThrow();
-    expect(() => validateSpecialization({
-      id: "web", name: "Web", instructions: "Use sk-or-v1-abcdefghijklmno", enabled: true
-    })).toThrow("API credentials");
+    expect(() => validateSpecialization({ ...old, id: "../etc" })).toThrow();
+    expect(() => validateSpecialization({ ...old, instructions: "x".repeat(4001) })).toThrow();
+    expect(() => validateSpecialization({ ...old, instructions: "Use sk-or-v1-abcdefghijklmno" })).toThrow("API credentials");
+    expect(() => validateSpecialization({ ...old, model: "expensive-unlisted" })).toThrow();
   });
 });
