@@ -414,10 +414,14 @@ try {
       const connectorBefore = await readConnectorStateAfter();
       const previousHookAt = connectorBefore?.tokenEconomizerLastHook?.at ?? 0;
       const previousToolCount = await page.locator("main details.bg-kumo-base").count();
-      const command = index === 0
+      const taskMarker = "TOKEN_ECONOMIZER_TRIAL_" + (index + 1);
+      const markerOutput = "printf '\\n" + taskMarker + "\\n'";
+      const command = (index === 0
         ? "cat > test_envfacts.test.mjs <<'JS'\nimport test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('Node runtime works', () => assert.equal(1 + 1, 2));\nJS\npytest -q; node --test test_envfacts.test.mjs"
-        : "pytest -q; node --test test_envfacts.test.mjs";
+        : "pytest -q; node --test test_envfacts.test.mjs") + "; " + markerOutput;
       const task = `Usa solo la herramienta Linux autorizada para el proyecto ${tokenEconomizerProject}. ` +
+        `Este turno exige una ejecución nueva y una salida con la marca ${taskMarker}; ` +
+        "ignora los resultados de turnos anteriores y no afirmes haber ejecutado nada sin usar Linux. " +
         `Ejecuta exactamente este comando en una llamada Linux: ${command}. ` +
         "En la primera tarea crea solo el fixture Node integrado; después no cambies archivos. " +
         "No instales paquetes. Resume la ausencia real de pytest y el resultado de node --test.";
@@ -469,6 +473,8 @@ try {
         `TokenEconomizer prueba ${index + 1}: el runner Node integrado debe pasar.`);
       assert.match(observedOutput, new RegExp(tokenEconomizerProject),
         `TokenEconomizer prueba ${index + 1}: la salida no confirma el proyecto Linux autorizado.`);
+      assert.match(observedOutput, new RegExp(taskMarker),
+        `TokenEconomizer prueba ${index + 1}: faltó la marca única de esta ejecución Linux.`);
       await waitForFoldHook(previousHookAt);
       tokenEconomizerSessionsVerified++;
       console.log(`TokenEconomizer SessionEnd ${tokenEconomizerSessionsVerified}/4 pasó en ${tokenEconomizerProject}.`);
