@@ -601,14 +601,15 @@ try {
     await conversations.waitFor({ state: "hidden" });
 
     await modelButton.click();
-    if (routerReady) {
+    const useOpenRouterForCdf = routerReady && projectModel === "openrouter-free";
+    if (useOpenRouterForCdf) {
       await modelDialog.getByRole("button", { name: "OpenRouter", exact: true }).click();
       await modelDialog.getByRole("button", { name: /OpenRouter Free/ }).click();
     } else {
       await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
       await modelDialog.getByRole("option", { name: /Cloudflare/ }).click();
     }
-    const cdfModel = routerReady ? "openrouter:openrouter/free" : "cloudflare";
+    const cdfModel = useOpenRouterForCdf ? "openrouter:openrouter/free" : "cloudflare";
     const cdfSelection = await page.evaluate(session => ({
       active: localStorage.getItem("opencode-harness-session"),
       saved: localStorage.getItem("opencode-model-preset:" + session),
@@ -624,13 +625,13 @@ try {
       "(no un script ejecutable) y léelo con personal-cdf-workbench-staging_workbench_read usando su ruta exacta. " +
       "No llames otras herramientas ni servicios, no escribas ni ejecutes scripts. Resume el estado, el nombre de " +
       "la herramienta del catálogo y la ruta leída, basándote en los resultados reales.";
-    const cdfUsageBefore = routerReady ? await page.evaluate(async () => {
+    const cdfUsageBefore = useOpenRouterForCdf ? await page.evaluate(async () => {
       const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
       if (!response.ok) return null;
       const body = await response.json();
       return typeof body.usage?.usage === "number" ? body.usage.usage : null;
     }) : null;
-    if (routerReady) assert.equal(typeof cdfUsageBefore, "number", "No se pudo consultar el consumo antes de probar CDF.");
+    if (useOpenRouterForCdf) assert.equal(typeof cdfUsageBefore, "number", "No se pudo consultar el consumo antes de probar CDF.");
     await page.getByRole("textbox", { name: "Escribir a OpenCode" }).fill(cdfTask);
     await page.getByRole("button", { name: "Enviar mensaje" }).click();
     await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
@@ -666,7 +667,7 @@ try {
       cdfWorkbenchToolsVerified++;
     }
 
-    if (routerReady) {
+    if (useOpenRouterForCdf) {
       const usageAfterCdf = await page.evaluate(async () => {
         const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
         if (!response.ok) return null;
