@@ -116,4 +116,52 @@ describe("TokenEconomizer OpenCode adapter", () => {
     const event: ConnectorEvent = { name: "SessionStart", sessionID: "ses_test", project: "global" };
     expect(await invokeConnector(async () => { throw new Error("connector offline"); }, "token-economizer", event)).toEqual({});
   });
+
+  test("reads nonzero Linux exit codes from the real JSON result for hooks and transcripts", async () => {
+    const hooks = new Map<string, Hook>();
+    const events: ConnectorEvent[] = [];
+    const stream = eventQueue();
+    let resolveEnd!: () => void;
+    const ended = new Promise<void>(resolve => { resolveEnd = resolve; });
+    const plugin = tokenEconomizerAdapter(async () => true, async (_id, event) => {
+      events.push(event);
+      if (event.name === "SessionEnd") resolveEnd();
+      return {};
+    }, async () => "app-test");
+    const setup = plugin.setup as unknown as (ctx: unknown) => Promise<() => void>;
+    const cleanup = await setup({
+      location: { directory: "/workspace/project" },
+      session: { hook: async (name: string, handler: Hook) => { hooks.set("session:" + name, handler); } },
+      tool: { hook: async (name: string, handler: Hook) => { hooks.set("tool:" + name, handler); } },
+      event: { subscribe: () => stream.iterable }
+    });
+
+    await hooks.get("session:prompt")!({ sessionID: "ses_linux_failure", messageID: "user-1", prompt: { text: "Ejecuta pytest" } });
+    const commandOutput = JSON.stringify({
+      project: "app-test", exitCode: 127, stdout: "", stderr: "bash: pytest: command not found"
+    });
+    await hooks.get("tool:execute.after")!({ sessionID: "ses_linux_failure", id: "tool-1", tool: "linux",
+      input: { command: "pytest" }, status: "completed", result: { content: commandOutput } });
+    expect(events.at(-1)).toMatchObject({ name: "PostToolUse", project: "app-test", toolName: "linux",
+      toolResponse: { content: commandOutput, isError: true, exit_code: 127 } });
+
+    stream.emit({ type: "session.tool.input.started", properties: { sessionID: "ses_linux_failure",
+      assistantMessageID: "assistant-1", id: "tool-1", name: "linux" } });
+    stream.emit({ type: "session.tool.called", properties: { sessionID: "ses_linux_failure",
+      assistantMessageID: "assistant-1", id: "tool-1", input: { command: "pytest" } } });
+    stream.emit({ type: "session.tool.success", properties: { sessionID: "ses_linux_failure",
+      assistantMessageID: "assistant-1", id: "tool-1", content: commandOutput } });
+    stream.emit({ type: "session.execution.succeeded", properties: { sessionID: "ses_linux_failure" } });
+    await ended;
+
+    const end = events.find(event => event.name === "SessionEnd");
+    const transcript = JSON.parse(end?.transcript ?? "{}") as {
+      messages?: Array<{ parts?: Array<{ tool?: string; state?: { status?: string; error?: string } }> }>
+    };
+    const bashCall = transcript.messages?.flatMap(message => message.parts ?? []).find(part => part.tool === "bash");
+    expect(bashCall?.state?.status).toBe("error");
+    expect(bashCall?.state?.error).toContain("pytest: command not found");
+    expect(end?.project).toBe("app-test");
+    cleanup();
+  });
 });

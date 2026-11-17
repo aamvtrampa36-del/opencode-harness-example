@@ -506,9 +506,8 @@ try {
       const outputs = [];
       for (let cardIndex = previousToolCount; cardIndex < await cards.count(); cardIndex++) {
         const card = cards.nth(cardIndex);
-        // The training task deliberately includes a failing `pytest` command so
-        // TokenEconomizer can learn from a real failure. The UI correctly labels
-        // that tool call as Error; both terminal states must be inspected.
+        // The shell deliberately returns pytest's real 127 exit code after the
+        // built-in Node test passes; inspect the command result, not tool-call status.
         await card.getByText(/^(Terminado|Error)$/, { exact: true }).waitFor({ timeout: 30_000 });
         await card.locator("summary").click();
         const output = card.locator("pre").last();
@@ -526,8 +525,6 @@ try {
         `TokenEconomizer prueba ${index + 1}: pytest debería reportar su ausencia real en esta imagen.`);
       assert.match(observedOutput, /# pass 1|pass 1/i,
         `TokenEconomizer prueba ${index + 1}: el runner Node integrado debe pasar.`);
-      assert.ok(outputs.some(value => value.startsWith("Error\n")),
-        `TokenEconomizer prueba ${index + 1}: el fallo real de pytest debe llegar como error de herramienta.`);
       assert.match(observedOutput, /exitCode":127/,
         `TokenEconomizer prueba ${index + 1}: el comando debe conservar el código 127 de pytest ausente.`);
       assert.match(observedOutput, new RegExp(tokenEconomizerProject),

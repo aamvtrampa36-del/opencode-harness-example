@@ -8,6 +8,21 @@ const textOf = (value: unknown): string => typeof value === "string" ? value :
   Array.isArray(value) ? value.map(item => typeof item === "string" ? item :
     item && typeof item === "object" && "text" in item ? String(item.text ?? "") : "").filter(Boolean).join("\n") : "";
 
+const integerExitCode = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isInteger(value) ? value : undefined;
+
+function toolExitCode(toolName: string, content: unknown, metadataExit: unknown): number | undefined {
+  const metadataCode = integerExitCode(metadataExit);
+  if (metadataCode !== undefined) return metadataCode;
+  if (toolName !== "linux") return undefined;
+  try {
+    const result = JSON.parse(textOf(content)) as { exitCode?: unknown };
+    return integerExitCode(result?.exitCode);
+  } catch {
+    return undefined;
+  }
+}
+
 /** TokenEconomizer's upstream hook protocol, adapted to OpenCode's current plugin hooks. */
 export function tokenEconomizerAdapter(
   enabled: () => Promise<boolean>,
@@ -121,10 +136,12 @@ export function tokenEconomizerAdapter(
         const text = ok ? textOf(response?.content) || String(response?.output ?? "")
           : String(input.error?.message ?? "");
         const metadata = ok ? response?.metadata : undefined;
+        const exitCode = toolExitCode(input.tool, response?.content, metadata?.exit);
+        const failed = !ok || (input.tool === "linux" && exitCode !== undefined && exitCode !== 0);
         const output = await event("PostToolUse", tokenSessionID, {
           promptID: turns.get(tokenSessionID) ?? "",
           toolName: input.tool, toolUseID: input.id, toolInput: input.input,
-          toolResponse: { content: text, isError: !ok, exit_code: metadata?.exit }
+          toolResponse: { content: text, isError: failed, ...(exitCode !== undefined ? { exit_code: exitCode } : {}) }
         }, input.sessionID);
         const context = output.additionalContext;
         // OpenCode exposes the tool result by reference; append the hook nudge to the model result.
@@ -178,9 +195,16 @@ export function tokenEconomizerAdapter(
               if (call) {
                 const runningState = call.state as { input?: unknown } | undefined;
                 const toolInput = runningState?.input ?? {};
-                call.state = name === "session.tool.success"
-                  ? { status: "completed", input: toolInput, output: textOf(value.content), metadata: value.metadata ?? {} }
-                  : { status: "error", input: toolInput, error: String(toolError?.message ?? textOf(value.content)) };
+                const toolName = toolNames.get(tokenSessionID + ":" + String(value.id)) ?? "";
+                const content = textOf(value.content);
+                const metadata = value.metadata as { exit?: unknown } | undefined;
+                const exitCode = toolExitCode(toolName, content, metadata?.exit);
+                const failed = name === "session.tool.failed" ||
+                  (toolName === "linux" && exitCode !== undefined && exitCode !== 0);
+                call.state = failed
+                  ? { status: "error", input: toolInput, error: String(toolError?.message ?? content) }
+                  : { status: "completed", input: toolInput, output: content,
+                    metadata: { ...(metadata ?? {}), ...(exitCode !== undefined ? { exit: exitCode } : {}) } };
               }
             } else if (/^session\.execution\.(succeeded|failed|interrupted)$/.test(name) || name === "session.idle") {
               await closeTurn(sessionID, name.endsWith("interrupted") ? "interrupted" : "end_turn");
