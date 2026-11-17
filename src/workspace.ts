@@ -47,11 +47,23 @@ const LOCAL_TOOLS = ["read", "write", "edit", "patch", "glob", "grep", "shell"];
 
 const SYSTEM = `You are OpenCode running in a Cloudflare Durable Object, not the user's computer. Each project uses a separate Linux Container. The linux tool runs commands in the selected project; inspect_linux reads its files without executing commands. The linux command starts in the selected project's root: use relative paths such as dist/index.html, never /bundle or other absolute workspace paths. A selected GitHub repository is imported into its Container from a pinned commit without sending credentials to Linux. This is a source archive, not a Git checkout: .git and Git history are absent. Use the scoped github tool to create an opencode/* branch, write the tested text files to that branch, review the diff, and open a draft PR. Do not claim a local git push or checkout exists. Previous shared projects remain available as backups and must be restored to a new name before development. Containers checkpoint files before idle suspension. To give the user a live browser preview, create the build in the selected project directory's relative dist/ folder; for HTML-only projects create dist/index.html, and for Vite use base './'. The web UI provides a Ver app button. Do not claim the preview is working until tested. Never claim a command passed until its returned exitCode is zero. Never claim to have run tools or tests you could not actually run.\n\nDEVELOPMENT: Understand requirements, use small reversible changes, inspect diffs, report tests actually performed and unresolved issues. Create proposals or drafts first. Do not delete important data, write to production, merge to main, change credentials or deploy services without explicit approval. Never make up tool results or source contents.\n\nOFFICIAL SOURCES: You may plan, draft, edit and review, but the owner approves final integration and publication. NEVER overwrite official sources, canonize editorial content, merge production changes or publish without explicit authorization for the exact operation. Keep drafts distinguishable from approved materials.\n\nGITHUB: When the github tool is available, use it to read the owner's repositories approved in Settings, create opencode/* review branches, save changed text files and open draft pull requests. It never merges or pushes to main. For remote GitHub review use repo_review, repo_read and repo_info: these tools automatically resolve the repository from the authenticated session. DO NOT inspect /bundle/.git/HEAD or use /bundle as a checkout of the selected GitHub repository. Generic workspace tools are blocked in project sessions because the Durable Object workspace is shared. Use the scoped inspect_linux or GitHub tools for reads. In Plan/Review use repo_review with the opencode/* branch directly. If the bridge is unavailable, ask the user to connect GitHub privately in Settings; never ask for a token in chat.\n\nCOST/SECURITY: Prefer inexpensive models for ordinary tasks. Never print API secrets. Do not disable authentication or launch billable infrastructure without informed authorization.\n\nOPERATIONS: State the actual available tools and constraints. A separate Linux Container is available through the scoped linux tool. Explain only genuine missing capabilities, and never fake command results, tools, or tests. Do not use the shared workspace tools in project sessions. Concise Spanish unless the user requests otherwise.`;
 
+const DYNAMIC_WORKERS_GUIDANCE = `DYNAMIC WORKERS: Project sessions keep only the exec tool from the shared workspace tools, and the server forces it onto the dynamic-mcp backend. Use it for short JavaScript runs and sequences of existing remote MCP tools. Import servers, tools and call from codemode:mcp to find connected servers and their current input schemas. The host keeps OAuth and bearer credentials private and enforces the configured tool allowlist. This backend has no project file access. The codemode backend can access the shared workspace and is available only in unscoped sessions. Use direct MCP calls for a single simple operation when that is clearer.`;
+
 /**
- * The shared `exec` description is written for a choice of shell backends.
- * This Workspace has one JavaScript backend, so say what that is instead.
+ * The shared `exec` description makes the two JavaScript backend choices clear.
  */
-const EXEC_DESCRIPTION = `Run JavaScript in the workspace. \`command\` is the source of an ES module, run in a fresh sandboxed isolate with no network access. If the module default-exports a function, it is called with \`input\` and its return value comes back as \`result\`. console.log and console.error go to stdout and stderr. There is no shell, npm or package install: the only imports are these two, plus relative imports of .js files in the workspace.
+const EXEC_DESCRIPTION = `Run JavaScript in a fresh Dynamic Worker isolate. \`command\` is the source of an ES module. If the module default-exports a function, it is called with \`input\` and its return value comes back as \`result\`. console.log and console.error go to stdout and stderr. There is no shell, npm or package install.
+
+Choose backend \`dynamic-mcp\` to run isolated code without workspace writes and to combine existing remote MCP tools. It can import \`codemode:mcp\`; configured OAuth and bearer credentials stay in the host. Example:
+
+\`import { servers, tools, call } from "codemode:mcp";\`
+\`const available = await servers();\`
+\`const definitions = await tools({ server: "cdf-workbench" });\`
+\`const result = await call({ server: "cdf-workbench", name: "workbench_read", arguments: { path: "..." } });\`
+
+Use \`tools({server})\` first to discover real names and input schemas. The configured toolAllowlist is enforced. One dynamic run can make at most 32 MCP tool calls.
+
+Choose backend \`codemode\` for the shared workspace, including its \`node:fs/promises\` and \`codemode:git\` modules. That backend is unavailable in project-bound conversations; use the scoped Linux and GitHub tools for project files.
 
 - \`node:fs/promises\`: the workspace files, async only (readFile, writeFile, mkdir, rm, readdir, stat, lstat, access). readFile takes "utf8" for text.
 - \`codemode:git\`: git on the workspace, cloning over HTTPS through the host. Each \`dir\` is resolved against the module's working directory, defaults to it, and must stay inside /workspace, so pass the repository's directory. Its exports:
@@ -144,7 +156,10 @@ export function workspacePlugin(
       backends: {
         // The id `CodemodeBackend` registers under by default.
         codemode: {
-          description: "Runs ES module source in a sandboxed isolate."
+          description: "Runs ES module source with read/write access to the shared workspace and codemode:git. Unscoped sessions only."
+        },
+        "dynamic-mcp": {
+          description: "Runs ES module source in a read-only, network-isolated Dynamic Worker. It can call existing configured MCP tools through codemode:mcp and is available in project sessions."
         }
       }
     }
@@ -163,10 +178,10 @@ export function workspacePlugin(
     async setup(ctx) {
       await ctx.agent.transform((editor) => {
         editor.update("build", (agent) => {
-          agent.system = SYSTEM;
+          agent.system = SYSTEM + "\n\n" + DYNAMIC_WORKERS_GUIDANCE;
         });
         editor.update("plan", (agent) => {
-          agent.system = SYSTEM +
+          agent.system = SYSTEM + "\n\n" + DYNAMIC_WORKERS_GUIDANCE +
             "\n\nREAD-ONLY STAGE: Only analyze and inspect. Do not modify files, change Git branches, perform deployments, publish narrative or install packages. Provide grounded observations and a concise result. The next workflow stage may act if it is explicitly configured to use tools.";
         });
       });
@@ -191,7 +206,9 @@ export function workspacePlugin(
           }
 
           if (project !== "") {
-            for (const name of sharedWorkspaceToolNames) delete available[name];
+            for (const name of sharedWorkspaceToolNames) {
+              if (name !== "exec") delete available[name];
+            }
           }
           if (!project) {
             for (const name of projectToolNames) delete available[name];
@@ -446,13 +463,20 @@ export function workspacePlugin(
             options: { codemode: false },
             async execute(input, context) {
               assertAgentToolPermission(context.agent, "workspace", { tool: tool.name });
-              // All generic tools target one shared workspace, including reads.
-              // Project sessions must use their scoped Linux or GitHub tools.
-              if (scopeGuard) {
+              let boundProject = "";
+              try { boundProject = await getBoundProject?.(context.sessionID) ?? ""; }
+              catch { boundProject = ""; }
+              const projectMcpRun = tool.name === "exec" && Boolean(boundProject);
+              // Project sessions get the isolated read-only backend only;
+              // the shared workspace backend stays behind the scope guard.
+              if (scopeGuard && !projectMcpRun) {
                 await scopeGuard(context.sessionID, { kind: "workspace-write" });
               }
+              const runInput = projectMcpRun && typeof input === "object" && input !== null
+                ? { ...(input as Record<string, unknown>), backend: "dynamic-mcp", cwd: undefined, env: undefined }
+                : input;
               const { content, isError } = await execute(
-                { id: context.id, name: tool.name, arguments: input },
+                { id: context.id, name: tool.name, arguments: runInput },
                 { abortSignal: context.signal }
               );
               const text = content

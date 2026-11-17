@@ -53,6 +53,14 @@ This example is the only documentation for them for now.
   OpenCode plugin, over the `AI` binding: Workers AI ids, AI Gateway catalog
   ids (`anthropic/claude-opus-4.8`) and dynamic routes, with no account id or
   API token.
+- **Dynamic Workers for code and MCP.** `exec` runs JavaScript in a Cloudflare
+  Worker Loader isolate. Its `dynamic-mcp` backend can discover and call the
+  remote MCP servers already configured in Settings, then return processed
+  results. OAuth and bearer tokens stay in the Durable Object; each MCP server
+  still checks its normal scopes, and its configured tool allowlist is enforced
+  before the request. Project sessions get this read-only, no-egress backend
+  without access to shared workspace files. This reuses OpenCode's existing MCP
+  settings and adds no second server registry.
 - **App glue that isn't part of the harness.**
   - `sockets.ts` puts sessions on `WebSockets`. Each socket gets a snapshot
     of the transcript. While a session runs, one stream from
@@ -87,6 +95,8 @@ about 3.7 MB (gzip) to the Worker, so deploying needs the Workers Paid plan.
 - `Write a haiku about Durable Objects to /workspace/haiku.txt, then read it back.`
 - `Clone https://github.com/octocat/Hello-World into /workspace/hello, then show its git log.`
 - `Fetch https://example.com and tell me the page's title.`
+- `Ejecuta JavaScript con el backend dynamic-mcp para ordenar estos datos y devolver solo los tres primeros.`
+- `Usa exec con backend dynamic-mcp, descubre los servidores MCP conectados, consulta las herramientas necesarias y devuelve un resumen corto de sus resultados.`
 - While a turn runs, press Enter to queue a follow-up, Steer to join the
   running turn, or Stop to interrupt it.
 - Reload mid-turn: you get the transcript so far, and the rest streams in.
