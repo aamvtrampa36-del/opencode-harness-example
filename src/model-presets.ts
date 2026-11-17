@@ -67,3 +67,9 @@ export function resolveModelSelection(selection: ModelSelectionID): {
   throw new Error("Selección de modelo inválida");
 }
 
+/** Never silently replace a native Workers AI preset when OpenRouter is disconnected. */
+export function usableModelSelection(selection: ModelSelectionID, openRouterAvailable: boolean): ModelSelectionID {
+  return !openRouterAvailable && resolveModelSelection(selection).providerID === "openrouter"
+    ? "cloudflare" : selection;
+}
+
