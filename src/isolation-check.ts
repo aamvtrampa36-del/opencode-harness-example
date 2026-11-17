@@ -15,8 +15,12 @@ export async function checkIsolation(open: (name: string) => ProbeContainer, non
       throw Error("Isolation probe failed at " + receipt);
     }
   };
-  await run(first, a, "set -eu; printf 'original-a' > secret; printf A_READY", "A_READY");
-  await run(second, b, "set -eu; printf 'original-b' > secret; printf B_READY", "B_READY");
+  // Separate Durable Objects can run concurrently; keep dependencies between
+  // the initialize, cross-write attempt, and verification phases.
+  await Promise.all([
+    run(first, a, "set -eu; printf 'original-a' > secret; printf A_READY", "A_READY"),
+    run(second, b, "set -eu; printf 'original-b' > secret; printf B_READY", "B_READY")
+  ]);
   const attack = (other: string, otherPath: string, receipt: string) =>
     "set -eu; test ! -e '" + otherPath + "/secret'; " +
     "test ! -e '../" + other + "/secret'; ln -s '" + otherPath + "' other-link; " +
@@ -24,9 +28,13 @@ export async function checkIsolation(open: (name: string) => ProbeContainer, non
     "printf altered > '" + otherPath + "/secret'; printf intruder > '../" + other + "/intrusion'; " +
     "printf link-intruder > other-link/linkintrusion; " +
     "printf " + receipt;
-  await run(first, a, attack(b, bPath, "A_ATTACKED"), "A_ATTACKED");
-  await run(second, b, attack(a, aPath, "B_ATTACKED"), "B_ATTACKED");
-  await run(first, a, "set -eu; test \"$(cat secret)\" = original-a; test ! -e intrusion; test ! -e linkintrusion; printf A_UNCHANGED", "A_UNCHANGED");
-  await run(second, b, "set -eu; test \"$(cat secret)\" = original-b; test ! -e intrusion; test ! -e linkintrusion; printf B_UNCHANGED", "B_UNCHANGED");
+  await Promise.all([
+    run(first, a, attack(b, bPath, "A_ATTACKED"), "A_ATTACKED"),
+    run(second, b, attack(a, aPath, "B_ATTACKED"), "B_ATTACKED")
+  ]);
+  await Promise.all([
+    run(first, a, "set -eu; test \"$(cat secret)\" = original-a; test ! -e intrusion; test ! -e linkintrusion; printf A_UNCHANGED", "A_UNCHANGED"),
+    run(second, b, "set -eu; test \"$(cat secret)\" = original-b; test ! -e intrusion; test ! -e linkintrusion; printf B_UNCHANGED", "B_UNCHANGED")
+  ]);
   return { passed: true, projectA: a, projectB: b, evidence: "bidirectional-distinct-files-and-no-cross-write" };
 }
