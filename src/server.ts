@@ -696,13 +696,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
         JSON.stringify("const fs=require('node:fs');if(fs.readFileSync('proof.txt','utf8')!==" +
           JSON.stringify(token) + ")process.exit(2);console.log('AGENT_PROOF_OK:" + token + "')");
       const prompt = "Esta es una autoprueba REAL de herramientas, no una tarea de conversación. " +
-        "Usa la herramienta linux con project=" + project + " y command=" +
+        "Usa la herramienta linux SOLO con command=" +
         JSON.stringify(command) + ". Debes CREAR el archivo proof.txt en el Container y VERIFICARLO con Node. " +
         "No generes código solamente en tu respuesta. Espera el resultado real de linux " +
         "y describe su exitCode. No alteres ningún otro proyecto.";
       const repairPrompt = "Prueba REAL de reparación autónoma de código. Proyecto Linux aislado: " +
         project + ". Emplea ÚNICAMENTE la herramienta cuyo nombre exacto es linux " +
-        "(con parámetros project y command). NO uses inspect_linux, exec, herramientas de archivos ni otros nombres. " +
+        "(con el parámetro command; el proyecto se determina automáticamente por la sesión, NO envíes project). NO uses inspect_linux, exec, herramientas de archivos ni otros nombres. " +
         "Ya existen calc.mjs con un defecto y calc.test.mjs con el test original. " +
         "Paso 1: llama a linux para ejecutar node --test --test-reporter=tap calc.test.mjs; observa el fallo. " +
         "Paso 2: llama a linux con cat calc.mjs && cat calc.test.mjs para inspeccionar ambos archivos. " +
