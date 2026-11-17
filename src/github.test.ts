@@ -18,6 +18,9 @@ const fake = (async (url: any, init: any = {}) => {
     status=201;
     const create = JSON.parse(String(init.body));
     body={ref:create.ref,object:{sha:create.sha}};
+  } else if (route.includes("/contents/src/model-presets.ts")) {
+    const source = "export const ECONOMY = 'deepseek';\n";
+    body = { type: "file", encoding: "base64", content: btoa(source), size: source.length, sha: "b".repeat(40) };
   } else if (route.includes("/contents/docs/test.md?ref=opencode%2Fnew-feature")) {
     status=404;body={message:"Not Found"};
   } else if (route.endsWith("/contents/docs/test.md")) {
@@ -93,6 +96,23 @@ describe("GitHub scoped permissions",()=>{
     calls.length=0;
     await expect(api.execute({action:"branch",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:staged})).rejects.toThrow("OpenCode-only");
     expect(calls.every(x=>x.method==="GET")).toBe(true);
+  });
+  test("reads UTF-8 repository files from the default branch without a required ref",async()=>{
+    calls.length=0;
+    const result:any=await api.execute({action:"read",repo:"aamvtrampa36-del/opencode-harness-example",path:"src/model-presets.ts"});
+    expect(result.content).toBe("export const ECONOMY = 'deepseek';\n");
+    expect(result.ref).toBe("default");
+    expect(result.path).toBe("src/model-presets.ts");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url.endsWith("/contents/src/model-presets.ts")).toBe(true);
+    expect(calls[0]?.method).toBe("GET");
+  });
+  test("reads an explicit branch only when a ref was supplied",async()=>{
+    calls.length=0;
+    const result:any=await api.execute({action:"read",repo:"aamvtrampa36-del/opencode-harness-example",
+      path:"src/model-presets.ts",ref:"opencode/isolated-test"});
+    expect(result.ref).toBe("opencode/isolated-test");
+    expect(calls[0]?.url).toContain("ref=opencode%2Fisolated-test");
   });
   test("reads a bounded diff only for the chosen review branch",async()=>{
     calls.length=0;

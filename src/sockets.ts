@@ -11,7 +11,7 @@ import {
   type OpenCodeSessionEvent,
   type OpenCodeSessionId
 } from "agents/harness/opencode";
-import type { ClientMessage, ServerMessage, SessionSnapshot } from "./protocol";
+import type { ClientMessage, ServerMessage, SessionSnapshot, ModelRun } from "./protocol";
 
 const SESSION_TAG_PREFIX = "opencode-session:";
 const SESSION_QUERY = "session";
@@ -103,6 +103,10 @@ export class OpenCodeSessionSockets {
   readonly #setSessionModels: (sessionID: string, options: { decisionModel?: string; imageModel?: string }) => Promise<void>;
   readonly #defaultImageModel: () => Promise<string | undefined>;
   readonly #waitUntil: (promise: Promise<unknown>) => void;
+  readonly #getSelectedModel: (session: string) => Promise<ModelSelectionID | undefined>;
+  readonly #saveSelectedModel: (session: string, model: ModelSelectionID) => Promise<void>;
+  readonly #getModelRuns: (session: string) => Promise<ModelRun[]>;
+  readonly #appendModelRun: (session: string, run: ModelRun) => Promise<void>;
   /** One event stream per running session, or its opening. */
   readonly #watches = new Map<
     OpenCodeSessionId,
@@ -212,7 +216,11 @@ export class OpenCodeSessionSockets {
     inheritScope: (source: string, target: string, project: string) => Promise<void> = async () => undefined,
     setSessionModels: (sessionID: string, options: { decisionModel?: string; imageModel?: string }) => Promise<void> = async () => undefined,
     getDefaultImageModel: () => Promise<string | undefined> = async () => undefined,
-    waitUntil: (promise: Promise<unknown>) => void = promise => { void promise; }
+    waitUntil: (promise: Promise<unknown>) => void = promise => { void promise; },
+    getSelectedModel: (session: string) => Promise<ModelSelectionID | undefined> = async () => undefined,
+    saveSelectedModel: (session: string, model: ModelSelectionID) => Promise<void> = async () => undefined,
+    getModelRuns: (session: string) => Promise<ModelRun[]> = async () => [],
+    appendModelRun: (session: string, run: ModelRun) => Promise<void> = async () => undefined
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
@@ -224,6 +232,10 @@ export class OpenCodeSessionSockets {
     this.#setSessionModels = setSessionModels;
     this.#defaultImageModel = getDefaultImageModel;
     this.#waitUntil = waitUntil;
+    this.#getSelectedModel = getSelectedModel;
+    this.#saveSelectedModel = saveSelectedModel;
+    this.#getModelRuns = getModelRuns;
+    this.#appendModelRun = appendModelRun;
   }
 
   async #record(event: IncidentObservation): Promise<void> {
@@ -280,6 +292,10 @@ export class OpenCodeSessionSockets {
     send(connection, { type: "sessions", sessions });
     const snapshot = await this.#snapshot(session);
     send(connection, { type: "snapshot", ...snapshot });
+    const savedModel = await this.#getSelectedModel(session);
+    if (savedModel && isModelSelection(savedModel)) {
+      send(connection, { type: "model_selection", session, model: savedModel, pending: snapshot.busy });
+    }
     if (snapshot.busy) this.#watch(session);
   }
 
@@ -299,7 +315,7 @@ export class OpenCodeSessionSockets {
       return;
     }
     try {
-      const result = message.type === "submit"
+      const result = message.type === "submit" || message.type === "select_model"
         ? await this.#serializeSubmit(session, () => this.#dispatch(connection, session, message))
         : await this.#dispatch(connection, session, message);
       if (message.id !== undefined) {
@@ -323,6 +339,23 @@ export class OpenCodeSessionSockets {
   ): Promise<unknown> {
     const handle = this.#harness.session(session);
     switch (message.type) {
+      case "select_model": {
+        if (!isModelSelection(message.model)) throw new Error("Modelo no reconocido.");
+        const selected = resolveModelSelection(message.model);
+        if (selected.providerID === "openrouter") {
+          if (!(await this.#openRouterAvailable())) throw new Error("Conecta OpenRouter antes de elegir ese modelo.");
+          if (isOpenRouterSelection(message.model)) await assertOpenRouterModelSupportsTools(selected.id);
+        }
+        const running = (this.#activeConfigurations.get(session)?.operations.size ?? 0) > 0 || await handle.busy();
+        // Do not mutate an active inference. Its model stays fixed; selection
+        // is persisted for the next turn and confirmed to every open client.
+        if (!running) await handle.setModel({ providerID: selected.providerID, id: selected.id });
+        await this.#saveSelectedModel(session, message.model);
+        for (const socket of this.#getWebSockets(sessionTag(session))) {
+          send(socket, { type: "model_selection", session, model: message.model, pending: running });
+        }
+        return { model: message.model, pending: running };
+      }
       case "submit": {
         const files = message.files ?? [];
         if (!Array.isArray(files) || files.length > MAX_INLINE_IMAGES ||
@@ -337,9 +370,7 @@ export class OpenCodeSessionSockets {
         if (typeof message.text !== "string" || (message.text.trim() === "" && files.length === 0)) {
           throw new Error("Nothing to send");
         }
-        if (files.length && message.model === undefined) {
-          throw new Error("Selecciona primero un modelo OpenRouter compatible con imágenes.");
-        }
+        // The durable server selection is authoritative when the client omits it.
         if (message.text.length > MAX_PROMPT_LENGTH) {
           throw new Error(
             `Prompts are limited to ${MAX_PROMPT_LENGTH.toLocaleString()} characters`
@@ -349,16 +380,15 @@ export class OpenCodeSessionSockets {
         if (!["build", "plan", "review", "creative"].includes(mode)) {
           throw new Error("Modo de agente no reconocido");
         }
-        if (message.model !== undefined && !isModelSelection(message.model)) {
-          throw new Error("Unknown model preset");
-        }
+        const selection = message.model ?? await this.#getSelectedModel(session) ?? "economy";
+        if (!isModelSelection(selection)) throw new Error("Unknown model preset");
         // A queued or steering message must never change the permissions or
         // model of a running operation. After a restart an unknown configuration
         // fails closed until that operation completes.
         const active = this.#activeConfigurations.get(session);
         const running = (active?.operations.size ?? 0) > 0 || await handle.busy();
         if (running && active?.workflow) throw new Error("Esta plantilla está ejecutando sus etapas. Puedes continuar en otra conversación y volver al flujo después.");
-        if (running && (!active || active.mode !== mode || active.model !== message.model ||
+        if (running && (!active || active.mode !== mode || active.model !== selection ||
             active.specialization !== message.specialization)) {
           throw new Error("Espera a que termine la tarea antes de cambiar el modo, modelo o plantilla.");
         }
@@ -367,12 +397,12 @@ export class OpenCodeSessionSockets {
           await this.#bindScope(session, { project: message.project, repository: message.repository });
         }
         if (!running) {
-          if (message.model !== undefined) {
-            const selected = resolveModelSelection(message.model);
+          {
+            const selected = resolveModelSelection(selection);
             if (selected.providerID === "openrouter" && !(await this.#openRouterAvailable())) {
               throw new Error("Conecta OpenRouter desde Configuración antes de seleccionar ese modelo.");
             }
-            if (isOpenRouterSelection(message.model)) {
+            if (isOpenRouterSelection(selection)) {
               await assertOpenRouterModelSupportsTools(selected.id);
             }
             if (files.length) {
@@ -382,6 +412,13 @@ export class OpenCodeSessionSockets {
               await assertOpenRouterModelSupportsImageInput(selected.id);
             }
             await handle.setModel({ providerID: selected.providerID, id: selected.id });
+            const stored = await this.#getSelectedModel(session);
+            if (stored !== selection) {
+              await this.#saveSelectedModel(session, selection);
+              for (const socket of this.#getWebSockets(sessionTag(session))) {
+                send(socket, { type: "model_selection", session, model: selection, pending: false });
+              }
+            }
           }
           await handle.setAgent(mode === "build" ? "build" : "plan");
         }
@@ -396,7 +433,7 @@ export class OpenCodeSessionSockets {
           specializationPrompt = specializationPromptText(selectedSpecialization);
         }
         const stages = selectedSpecialization?.stages?.filter(stage => stage.instructions.trim()) ?? [];
-        const selections: ModelSelectionID[] = stages.map(stage => stage.model ?? selectedSpecialization?.model ?? message.model ?? "cloudflare");
+        const selections: ModelSelectionID[] = stages.map(stage => stage.model ?? selectedSpecialization?.model ?? selection);
         if (!running && stages.length) {
           for (const selection of selections) {
             const selected = resolveModelSelection(selection);
@@ -440,7 +477,15 @@ export class OpenCodeSessionSockets {
         const receipt = await handle.submit(input, {
           whenBusy: message.whenBusy === "steer" ? "steer" : "followUp"
         });
-        const configuration = active && running ? active : { mode, model: message.model,
+        if (!running) {
+          const actual = resolveModelSelection(workflow ? selections[0]! : selection);
+          try {
+            await this.#appendModelRun(session, { operationId: receipt.operationId,
+              model: workflow ? selections[0]! : selection,
+              providerID: actual.providerID, id: actual.id, at: Date.now() });
+          } catch { console.warn("Model execution provenance could not be saved"); }
+        }
+        const configuration = active && running ? active : { mode, model: selection,
           specialization: message.specialization, ...(workflow ? { workflow: true } : {}), operations: new Set<string>() };
         configuration.operations.add(receipt.operationId);
         this.#activeConfigurations.set(session, configuration);
@@ -464,15 +509,25 @@ export class OpenCodeSessionSockets {
           this.#waitUntil(this.#continueWorkflow(session, configuration, selectedSpecialization, stages,
             selections, receipt.operationId, text));
         } else {
-          void handle
-            .wait(receipt.operationId)
-            .then(() => {
+          void handle.wait(receipt.operationId).then(
+            () => {
               configuration.operations.delete(receipt.operationId);
               return this.#settle(session);
-            })
-            .catch((error: unknown) => {
-              console.warn("OpenCode wait failed", error);
-            });
+            },
+            async (error: unknown) => {
+              // An accepted operation can fail before emitting run_end. Leaving
+              // its id in this in-memory set would show "Tarea en curso" forever.
+              configuration.operations.delete(receipt.operationId);
+              const message = error instanceof Error ? error.message.slice(0, 240) : "Error al ejecutar la tarea";
+              await this.#record({ source: "agent", code: classifyAgentFailure(message) });
+              for (const socket of this.#getWebSockets(sessionTag(session))) {
+                send(socket, { type: "error", message: "La tarea terminó con un error: " + message });
+              }
+              await this.#settle(session);
+            }
+          ).catch((error: unknown) => {
+            console.warn("OpenCode settlement failed", error);
+          });
         }
         return receipt;
       }
@@ -523,15 +578,16 @@ export class OpenCodeSessionSockets {
 
   async #snapshot(session: OpenCodeSessionId): Promise<SessionSnapshot> {
     const handle = this.#harness.session(session);
-    const [messages, busy, pending] = await Promise.all([
+    const [messages, busy, pending, modelRuns] = await Promise.all([
       handle.history(),
       handle.busy(),
-      this.#harness.pending({ session })
+      this.#harness.pending({ session }),
+      this.#getModelRuns(session)
     ]);
     // The underlying flag can transiently report idle while an accepted operation
     // is still unsettled. Do not advertise availability in that gap.
     const operationPending = (this.#activeConfigurations.get(session)?.operations.size ?? 0) > 0;
-    return { session, messages, busy: busy || operationPending, pending };
+    return { session, messages, busy: busy || operationPending, pending, modelRuns };
   }
 
   /** Send every socket on the session a snapshot, one at a time. */

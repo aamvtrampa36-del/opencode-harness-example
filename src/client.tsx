@@ -474,10 +474,8 @@ function App() {
       .catch(() => setAuthorizedRepos([]));
   }, []);
   const [modelPreset, setModelPreset] = useState<ModelSelectionID>(() => modelForSession(session));
-  const selectModel = (next: ModelSelectionID) => {
-    setModelPreset(next);
-    localStorage.setItem(MODEL_KEY + ":" + session, next);
-  };
+  // The server confirms the model before local state or storage is changed.
+  const selectModel = (next: ModelSelectionID) => { void requestModelChange(next); };
   const [sessionsOpen, setSessionsOpen] = useState(
     () => window.matchMedia("(min-width: 1100px)").matches
   );
@@ -515,6 +513,11 @@ function App() {
   const {
     status,
     openRouterAvailable,
+    confirmedModel,
+    modelChanging,
+    modelPending,
+    modelRuns,
+    selectModel: requestModelChange,
     messages,
     busy,
     pending,
@@ -535,6 +538,12 @@ function App() {
     setSpecialization(readSessionSpecialization(localStorage, object, ROOT_SESSION));
     setImageTask(false);
   });
+
+  useEffect(() => {
+    if (!confirmedModel) return;
+    setModelPreset(confirmedModel);
+    localStorage.setItem(MODEL_KEY + ":" + session, confirmedModel);
+  }, [confirmedModel, session]);
 
   useEffect(() => {
     const main = mainRef.current;
@@ -741,13 +750,18 @@ function App() {
     setIsolationResult("");
     try {
       const response = await fetch("/api/dev/isolation-probe", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+        // An unresponsive staging probe must not leave Android showing a spinner forever.
+        signal: AbortSignal.timeout(240_000)
       });
       const result = await response.json() as { passed?: boolean; error?: string };
       if (!response.ok || !result.passed) throw new Error(result.error ?? "Prueba incompleta");
       setIsolationResult("Prueba superada: dos Containers sintéticos no compartieron archivos. Este ensayo no verifica todas las rutas ni la recuperación de sesiones.");
     } catch (error) {
-      setIsolationResult("No se comprobó el aislamiento: " + (error instanceof Error ? error.message : "Error"));
+      const timeout = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+      setIsolationResult(timeout
+        ? "La prueba no respondió en cuatro minutos. Estado desconocido: consulta los registros antes de repetirla."
+        : "No se comprobó el aislamiento: " + (error instanceof Error ? error.message : "Error"));
     } finally {
       setIsolationBusy(false);
     }
@@ -961,6 +975,14 @@ function App() {
   };
 
   const submit = (whenBusy: "followUp" | "steer" = "followUp") => {
+    if (modelChanging) {
+      fail(new Error("Espera la confirmación del cambio de modelo antes de enviar."));
+      return;
+    }
+    if (modelPending && busy) {
+      fail(new Error("El modelo se aplicará después de terminar la tarea actual."));
+      return;
+    }
     const text = prompt.trim();
     if ((!text && !draftImages.length) || !connected) return;
     if (imageTask && !imageModel) {
@@ -979,7 +1001,8 @@ function App() {
       ? "Proyecto Linux seleccionado: " + project + ". Las herramientas linux e inspect_linux usan automáticamente este proyecto; no incluyas un parámetro project. " +
         "No modifiques otros proyectos ni producción sin autorización.\n\nTarea: " + requestText
       : requestText;
-    const selectedModel = openRouterAvailable ? modelPreset : "cloudflare";
+    // Never silently downgrade a provider chosen by the user.
+    const selectedModel = confirmedModel ?? modelPreset;
     if (draftImages.length && resolveModelSelection(selectedModel).providerID !== "openrouter") {
       setImageError("Selecciona un modelo OpenRouter que acepte imágenes antes de enviar.");
       return;
@@ -1141,8 +1164,8 @@ function App() {
                 </p>
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-1">
-                <ModelPicker value={openRouterAvailable ? modelPreset : "cloudflare"}
-                  onChange={selectModel} routerReady={openRouterAvailable} disabled={busy}
+                <ModelPicker value={confirmedModel ?? modelPreset}
+                  onChange={selectModel} routerReady={openRouterAvailable} disabled={!connected || modelChanging}
                   capability={draftImages.length ? "imageInput" : "tools"} />
                 <Button type="button" variant="ghost" shape="square"
                   aria-label="Mostrar opciones de OpenCode" aria-expanded={actionsOpen}
@@ -1151,6 +1174,10 @@ function App() {
                   icon={<GearIcon size={18} />} />
               </div>
             </div>
+            {modelChanging || modelPending ? <p role="status" aria-live="polite"
+              className="mt-1 truncate text-[11px] text-kumo-subtle">
+              {modelChanging ? "Confirmando cambio de modelo…" : "Modelo guardado para el siguiente turno"}
+            </p> : null}
             {workflow ? <p role="status" aria-live="polite" className="mt-1 truncate text-[11px] text-kumo-subtle">
               {workflow.status === "running"
                 ? `Flujo: etapa ${workflow.stage}/${workflow.total} · ${workflow.name}`
@@ -1600,6 +1627,12 @@ function App() {
               <div className="absolute bottom-full right-0 z-30 mb-2 w-[min(88vw,340px)] space-y-2 rounded-xl border border-kumo-line bg-kumo-base p-3 text-xs shadow-xl">
                 <p aria-live="polite">{toolsCompleted} herramientas completadas{toolsFailed ? ` · ${toolsFailed} fallidas` : ""} en esta sesión.</p>
                 <p title="El cambio de consumo de OpenRouter es de cuenta, no una factura de la tarea">{lastCost}</p>
+                {modelRuns.length ? <div className="space-y-1 border-t border-kumo-line pt-2" aria-label="Modelos utilizados por operación">
+                  <p className="font-semibold">Modelo confirmado por operación</p>
+                  {modelRuns.slice(-5).reverse().map(run => <p key={run.operationId} className="break-all text-kumo-subtle">
+                    {run.providerID} · {run.id} · {new Date(run.at).toLocaleTimeString()}
+                  </p>)}
+                </div> : null}
                 <p aria-live="polite">
                   TokenEconomizer: {connectorActivity === null ? "consultando estado…" :
                     !connectorActivity.tokenEconomizerEnabled ? "desactivado" :

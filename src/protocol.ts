@@ -29,10 +29,20 @@ export type ClientMessage =
       readonly repository?: string;
       readonly files?: readonly { readonly data: string; readonly mime: string; readonly name: string }[];
     }
+  | { readonly type: "select_model"; readonly id?: string; readonly model: ModelSelectionID }
   | { readonly type: "abort"; readonly id?: string }
   | { readonly type: "create"; readonly id?: string }
   | { readonly type: "delegate"; readonly id?: string; readonly project: string }
   | { readonly type: "resync"; readonly id?: string };
+
+/** Backend-confirmed model set when an actual operation was submitted. */
+export type ModelRun = {
+  readonly operationId: string;
+  readonly model: ModelSelectionID;
+  readonly providerID: "cloudflare" | "openrouter";
+  readonly id: string;
+  readonly at: number;
+};
 
 /** One session's state: what a client renders. */
 export type SessionSnapshot = {
@@ -41,11 +51,14 @@ export type SessionSnapshot = {
   readonly messages: readonly OpenCodeMessage[];
   readonly busy: boolean;
   readonly pending: readonly OpenCodePendingOperation[];
+  readonly modelRuns: readonly ModelRun[];
 };
 
 /** Server → client. */
 export type ServerMessage =
   | { readonly type: "hello"; readonly session: OpenCodeSessionId; readonly openRouterAvailable: boolean }
+  /** Server-authoritative selection for this session, persisted in the existing DO. */
+  | { readonly type: "model_selection"; readonly session: OpenCodeSessionId; readonly model: ModelSelectionID; readonly pending: boolean }
   | {
       readonly type: "sessions";
       readonly sessions: readonly OpenCodeSessionInfo[];

@@ -39,6 +39,23 @@ describe("G9 genuine agent developer flow acceptance",()=>{
     });
     expect(v.prUrl).toContain("/pull/900");
   });
+  test("accepts actual Node 24 Unicode spec red-green evidence, but rejects fabricated/incomplete outcomes",()=>{
+    const specRed=wrap("linux","completed",{project:G9_PROJECT,exitCode:1,
+      stdout:"✖ G9: add(2,3) is five (1.66ms)\\nAssertionError [ERR_ASSERTION]\\n-1 !== 5\\nℹ pass 0\\nℹ fail 1\\n"});
+    const specGreen=wrap("linux","completed",{project:G9_PROJECT,exitCode:0,
+      stdout:"✔ G9: add(2,3) is five (0.83ms)\\nℹ pass 1\\nℹ fail 0\\n"});
+    expect(assessG9History([specRed,write,specGreen,review,pr])).toMatchObject({
+      passed:true,observedRed:true,actualAgentWrite:true,
+      observedGreenAfterRed:true,actualAgentReview:true,actualAgentDraftPR:true
+    });
+    const fakeRed=wrap("linux","completed",{project:G9_PROJECT,exitCode:0,
+      stdout:"✖ G9: add(2,3) is five\\nERR_ASSERTION\\nℹ fail 1"});
+    const fakeGreen=wrap("linux","completed",{project:G9_PROJECT,exitCode:0,
+      stdout:"✔ G9: add(2,3) is five\\nℹ pass 1\\nℹ fail 1"});
+    expect(assessG9History([fakeRed,write,specGreen,review,pr]).passed).toBe(false);
+    expect(assessG9History([specRed,write,fakeGreen,review,pr]).passed).toBe(false);
+    expect(assessG9History([specRed,write,review,pr]).passed).toBe(false);
+  });
   test("rejects agent prose, green-only, wrong order, and failed tool calls",()=>{
     const prose=[{type:"assistant",content:[{
       type:"text",text:"I changed code and all tests passed."
@@ -95,5 +112,10 @@ describe("G9 genuine agent developer flow acceptance",()=>{
     expect(prompt).toContain("linux");
     expect(prompt).toContain("github");
     expect(prompt).toContain("no finjas éxito");
+    expect(prompt).toContain("DeepSeek Workers AI");
+    expect(prompt).not.toContain("a - b");
+    expect(prompt).not.toContain("a + b");
+    expect(prompt).not.toContain("bug: usa resta");
+    expect(prompt).not.toContain("linux con project=");
   });
 });
