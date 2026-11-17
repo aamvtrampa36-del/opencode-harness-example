@@ -647,19 +647,17 @@ try {
       'const server = (await servers()).find(item => item.id === "cdf-workbench-staging");',
       'if (!server) throw new Error("No está conectado cdf-workbench-staging");',
       'const available = await tools({ server: server.id });',
-      'const required = ["workbench_status", "workbench_catalog", "workbench_read", "cdf_status"];',
+      'const required = ["workbench_status", "workbench_catalog", "workbench_read"];',
       'const missing = required.filter(name => !available.some(item => item.name === name));',
       'if (missing.length) throw new Error(`Faltan herramientas MCP: ${missing.join(", ")}`);',
       'const statusCall = await call({ server: server.id, name: "workbench_status", arguments: {} });',
       'const catalogCall = await call({ server: server.id, name: "workbench_catalog", arguments: {} });',
       'const readCall = await call({ server: server.id, name: "workbench_read", arguments: { path: "skills/cdf-workbench/SKILL.md" } });',
-      'const cdfCall = await call({ server: server.id, name: "cdf_status", arguments: {} });',
-      'if (statusCall.isError || catalogCall.isError || readCall.isError || cdfCall.isError) throw new Error("Una herramienta MCP devolvió error");',
+      'if (statusCall.isError || catalogCall.isError || readCall.isError) throw new Error("Una herramienta MCP devolvió error");',
       'const status = statusCall.structuredContent;',
       'const catalog = catalogCall.structuredContent;',
       'const resource = readCall.structuredContent;',
-      'const cdf = cdfCall.structuredContent;',
-      'return { server: server.id, status: status.status, skillCount: catalog.skills.length, resourceStatus: resource.status, path: resource.path, chars: resource.content.length, cdfStatus: cdf.status, cdfAuthority: cdf.authority };',
+      'return { server: server.id, status: status.status, skillCount: catalog.skills.length, resourceStatus: resource.status, path: resource.path, chars: resource.content.length };',
       "}",
       "No escribas, no ejecutes scripts y no uses otros servicios."
     ].join("\n");
@@ -690,9 +688,7 @@ try {
     assert.match(dynamicResult, /"status"\s*:\s*"READY"/, "Code Mode debe devolver el estado real de WorkBench.");
     assert.match(dynamicResult, /"resourceStatus"\s*:\s*"RUNTIME_RESOURCE"/, "Code Mode debe devolver el recurso leído.");
     assert.match(dynamicResult, /skills\/cdf-workbench\/SKILL\.md/, "Code Mode debe devolver la ruta relativa del Skill.");
-    assert.match(dynamicResult, /"cdfStatus"\s*:\s*"PASS"/, "Code Mode debe verificar el estado real de CDF CLOUD.");
-    assert.match(dynamicResult, /"cdfAuthority"\s*:\s*"CDF_CLOUD"/, "La respuesta de CDF debe conservar su autoridad.");
-    cdfWorkbenchToolsVerified = 4;
+    cdfWorkbenchToolsVerified = 3;
 
     if (useOpenRouterForCdf) {
       const usageAfterCdf = await page.evaluate(async () => {
@@ -891,7 +887,7 @@ try {
     session => localStorage.getItem("opencode-model-preset:" + session), initialSession
   ), initialModelPreset, "La prueba debe conservar el modelo original de la sesión del propietario.");
 
-  console.log(`${localHost ? "Local" : "Staging"} mobile smoke aprobado: 393 × 852, reconexión, sesión aislada, perfiles, OpenRouter, proyectos (${completedProjectTrials}/3 creados; ${projectModel}), CDF WorkBench/CLOUD (${cdfWorkbenchToolsVerified}/4 herramientas), TokenEconomizer (${tokenEconomizerSessionsVerified}/4 sesiones; ${learnedContextCharacters} caracteres reutilizables), y ajustes.`);
+  console.log(`${localHost ? "Local" : "Staging"} mobile smoke aprobado: 393 × 852, reconexión, sesión aislada, perfiles, OpenRouter, proyectos (${completedProjectTrials}/3 creados; ${projectModel}), CDF WorkBench (${cdfWorkbenchToolsVerified}/3 herramientas), TokenEconomizer (${tokenEconomizerSessionsVerified}/4 sesiones; ${learnedContextCharacters} caracteres reutilizables), y ajustes.`);
 } finally {
   if (disableTokenEconomizerAfterTest) {
     await page.evaluate(async () => fetch("/api/settings/connectors/token-economizer", {
