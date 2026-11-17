@@ -682,6 +682,7 @@ try {
       assert.equal(selectedProjectModel, "openrouter:" + SMALL_FREE_MODEL);
 
       const task = `Crea una aplicación web estática mínima llamada "${trial.name}" para el proyecto Linux ${project}. Usa la herramienta linux con project=${project} para crear dist/index.html con HTML, CSS y JavaScript incrustados. La página debe mostrar exactamente el título "${trial.marker}" y una interacción pequeña útil para la aplicación. No instales dependencias, no uses internet ni edites otros proyectos. Verifica con una llamada Linux que dist/index.html existe y contiene ese título. Responde brevemente solo después de recibir resultados reales de la herramienta.`;
+      const previousProjectToolCount = await page.locator("main details.bg-kumo-base").count();
       await page.getByRole("textbox", { name: "Escribir a OpenCode" }).fill(task);
       await page.getByRole("button", { name: "Enviar mensaje" }).click();
       await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
@@ -696,6 +697,19 @@ try {
         const response = await fetch(path, { cache: "no-store" });
         return { status: response.status, html: await response.text() };
       }, `/api/dev/preview/${project}/dist/index.html`);
+      if (preview.status !== 200) {
+        const evidence = await page.evaluate(previousCount => ({
+          messages: [...document.querySelectorAll("main .sd-theme")].slice(-5)
+            .map(element => element.innerText.slice(0, 900)),
+          tools: [...document.querySelectorAll("main details.bg-kumo-base")].slice(previousCount)
+            .map(card => ({
+              summary: (card.querySelector("summary")?.innerText ?? "").slice(0, 500),
+              outputs: [...card.querySelectorAll("pre")].map(output => output.innerText.slice(0, 1200))
+            }))
+        }), previousProjectToolCount);
+        console.log(`Project preview failure evidence: ${JSON.stringify({ project, status: preview.status,
+          body: preview.html.slice(0, 800), ...evidence })}`);
+      }
       assert.equal(preview.status, 200, `${trial.name}: la vista previa debe responder HTTP 200.`);
       assert.ok(preview.html.includes(trial.marker), `${trial.name}: falta el título comprobable en dist/index.html.`);
 
