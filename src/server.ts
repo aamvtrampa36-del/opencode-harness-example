@@ -975,7 +975,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
     (source: string, target: string, project: string) => this.inheritSessionScope(source, target, project),
     (sessionID: string, options: { decisionModel?: string; imageModel?: string }) => this.setSessionModels(sessionID, options),
     () => this.personalConfig.defaultImageModel(),
-    promise => this.ctx.waitUntil(promise)
+    promise => this.ctx.waitUntil(promise),
+    async sessionID => this.ctx.storage.get<import("./model-presets").ModelSelectionID>("session-model-v1:" + sessionID),
+    async (sessionID, selection) => { await this.ctx.storage.put("session-model-v1:" + sessionID, selection); }
   );
   readonly webSockets = new WebSockets(this.sockets.options());
   readonly lifecycle = Lifecycle.install(this)
