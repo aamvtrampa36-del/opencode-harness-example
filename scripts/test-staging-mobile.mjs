@@ -106,7 +106,7 @@ try {
   await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
   const profiles = modelDialog.getByRole("listbox", { name: "Perfiles sencillos" });
   assert.equal(await profiles.getByRole("option").count(), 5, "Deben seguir disponibles los cinco perfiles simples.");
-  await profiles.getByRole("option", { name: /Cloudflare/ }).click();
+  await profiles.getByRole("option", { name: "Cloudflare · GLM-4.7 Flash", exact: true }).click();
 
   const selectedSession = newSession;
   const selectedProfile = await page.evaluate(
@@ -205,14 +205,14 @@ try {
 
     await modelButton.click();
     await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
-    await modelDialog.getByRole("option", { name: /Cloudflare/ }).click();
+    await modelDialog.getByRole("option", { name: "Cloudflare · GLM-4.7 Flash", exact: true }).click();
     assert.equal(await page.evaluate(
       session => localStorage.getItem("opencode-model-preset:" + session), selectedSession
     ), "cloudflare", "Debe poder volver a un perfil sencillo.");
   } else {
     console.log("OpenRouter no está configurado en Staging; se verificó la selección simple y se omitió el catálogo.");
     await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
-    await modelDialog.getByRole("option", { name: /Cloudflare/ }).click();
+    await modelDialog.getByRole("option", { name: "Cloudflare · GLM-4.7 Flash", exact: true }).click();
   }
 
   await conversationsButton.click();
@@ -260,7 +260,7 @@ try {
         await modelButton.click();
         await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
         await modelDialog.getByRole("listbox", { name: "Perfiles sencillos" })
-          .getByRole("option", { name: /Cloudflare/ }).click();
+          .getByRole("option", { name: "Cloudflare · GLM-4.7 Flash", exact: true }).click();
       }
     };
 
@@ -456,7 +456,7 @@ try {
       await modelButton.click();
       await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
       await modelDialog.getByRole("listbox", { name: "Perfiles sencillos" })
-        .getByRole("option", { name: /Cloudflare/ }).click();
+        .getByRole("option", { name: "Cloudflare · GLM-4.7 Flash", exact: true }).click();
     } else {
       await selectOpenRouterModel(SMALL_FREE_MODEL);
     }
@@ -627,7 +627,7 @@ try {
       await modelDialog.getByRole("button", { name: /OpenRouter Free/ }).click();
     } else {
       await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
-      await modelDialog.getByRole("option", { name: /Cloudflare/ }).click();
+      await modelDialog.getByRole("option", { name: "Cloudflare · GLM-4.7 Flash", exact: true }).click();
     }
     const cdfModel = useOpenRouterForCdf ? "openrouter:openrouter/free" : "cloudflare";
     const cdfSelection = await page.evaluate(session => ({
@@ -748,7 +748,7 @@ try {
         await modelButton.click();
         await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
         await modelDialog.getByRole("listbox", { name: "Perfiles sencillos" })
-          .getByRole("option", { name: /Cloudflare/ }).click();
+          .getByRole("option", { name: "Cloudflare · GLM-4.7 Flash", exact: true }).click();
       }
       const selectedProjectModel = await page.evaluate(
         session => localStorage.getItem("opencode-model-preset:" + session),
