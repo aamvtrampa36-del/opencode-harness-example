@@ -14,7 +14,7 @@ Para reproducibilidad, el repositorio debe mantener `bun.lock` y ejecutar `bun i
 
 1. Entra por Cloudflare Access con tu cuenta autorizada.
 2. Pulsa **Crear app** y sustituye **[describe aquí tu app]** por tu idea.
-3. Escoge el modelo: sin OpenRouter configurado, utiliza Cloudflare GPT-OSS 20B; con OpenRouter, **Económico · DeepSeek Flash** como valor predeterminado.
+3. Escoge el modelo: sin OpenRouter configurado, utiliza **Cloudflare GLM-4.7 Flash**, con soporte de llamadas múltiples a herramientas; con OpenRouter, **Económico · DeepSeek Flash** como valor predeterminado.
 4. Envía el mensaje. El agente puede usar **linux** para crear archivos, instalar dependencias, compilar y ejecutar pruebas.
 5. Cuando complete la compilación dentro de \`/workspace/projects/<slug>/dist/\`, pulsa **Ver app**. La vista previa solo sirve el directorio de compilación y está protegida dentro de la web autenticada.
 6. Pulsa **Descargar** para obtener un \`.tar.gz\` de los archivos. Se excluyen .git, node_modules, .env, llaves y certificados comunes. **Revisa el paquete** si tus archivos contienen otros secretos.

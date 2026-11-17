@@ -5,9 +5,9 @@
  */
 export const MODEL_PRESETS = {
   cloudflare: {
-    label: "Cloudflare · GPT-OSS 20B",
+    label: "Cloudflare · GLM-4.7 Flash",
     providerID: "cloudflare",
-    id: "@cf/openai/gpt-oss-20b",
+    id: "@cf/zai-org/glm-4.7-flash",
     tier: "baseline"
   },
   economy: {

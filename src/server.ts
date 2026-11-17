@@ -47,7 +47,7 @@ import {
   validateSupervisorStart, type SupervisorTask
 } from "./supervisor-control";
 
-export const MODEL_ID = "@cf/openai/gpt-oss-20b";
+export const MODEL_ID = MODEL_PRESETS.cloudflare.id;
 
 /** A playable OpenCode instance backed by one Durable Object. */
 export class OpenCodeAgent extends DurableObject<Env> {
