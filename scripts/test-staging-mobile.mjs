@@ -591,7 +591,11 @@ try {
       "personal-cdf-workbench-staging_workbench_catalog",
       "personal-cdf-workbench-staging_workbench_read"
     ]) {
-      const card = page.locator("main details.bg-kumo-base").filter({ hasText: toolName });
+      const matchingCards = page.locator("main details.bg-kumo-base").filter({ hasText: toolName });
+      const callCount = await matchingCards.count();
+      assert.ok(callCount > 0, `${toolName} debe aparecer como una llamada real.`);
+      if (callCount > 1) console.log(`CDF WorkBench ${toolName}: ${callCount} llamadas; se comprueba la última.`);
+      const card = matchingCards.last();
       await card.waitFor({ state: "visible", timeout: 10_000 });
       await card.getByText("Terminado", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
       await card.locator("summary").click();
