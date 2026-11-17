@@ -74,11 +74,21 @@ export function assessG9History(messages: readonly unknown[]): G9Evidence {
         .map(x=>x.text??"").join("\n");
       let data: any;
       try {data=JSON.parse(output);} catch {continue;}
-      if(part.name === "linux" && data.project === G9_PROJECT){
-        if(data.exitCode !== 0 && typeof data.stdout === "string" &&
-           data.stdout.includes("not ok") && redAt < 0)redAt=pos;
-        if(data.exitCode === 0 && typeof data.stdout === "string" &&
-           data.stdout.includes("ok 1 - G9: add(2,3) is five") && greenAt < 0)greenAt=pos;
+      if(part.name === "linux" && data.project === G9_PROJECT &&
+         typeof data.stdout === "string"){
+        const out: string = data.stdout;
+        const title = "G9: add(2,3) is five";
+        // Node 24 emits Unicode spec output ("✖"/"✔") by default, while
+        // --test-reporter=tap emits "not ok"/"ok". Count either only with
+        // the actual command exit code AND a matching test/result summary.
+        const redTap = out.includes("not ok 1 - " + title);
+        const redSpec = out.includes("✖ " + title) &&
+          out.includes("ERR_ASSERTION") && /\\bfail\\s+1\\b/.test(out);
+        const greenTap = out.includes("ok 1 - " + title) && !out.includes("not ok 1 - " + title);
+        const greenSpec = (out.includes("✔ " + title) || out.includes("✓ " + title)) &&
+          /\\bpass\\s+1\\b/.test(out) && /\\bfail\\s+0\\b/.test(out);
+        if(data.exitCode !== 0 && (redTap || redSpec) && redAt < 0) redAt = pos;
+        if(data.exitCode === 0 && (greenTap || greenSpec) && greenAt < 0) greenAt = pos;
       }
       if(part.name === "github" && data.repo?.toLowerCase()===G9_REPO.toLowerCase()){
         if(data.branch===G9_BRANCH && data.path===G9_SOURCE && typeof data.commitSha==="string")writeAt=pos;
