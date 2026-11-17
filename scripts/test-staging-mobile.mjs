@@ -9,6 +9,7 @@ const accessId = process.env.CF_ACCESS_CLIENT_ID;
 const accessSecret = process.env.CF_ACCESS_CLIENT_SECRET;
 const sendLiveMessage = process.env.OPENCODE_STAGING_SEND_MESSAGE === "true";
 const developThreeProjects = process.env.OPENCODE_STAGING_DEVELOP_THREE_PROJECTS === "true";
+const projectModel = process.env.OPENCODE_STAGING_PROJECT_MODEL === "cloudflare" ? "cloudflare" : "openrouter-free";
 const verifyCdfWorkbench = process.env.OPENCODE_STAGING_VERIFY_CDF_WORKBENCH === "true";
 const verifyTokenEconomizer = process.env.OPENCODE_STAGING_VERIFY_TOKEN_ECONOMIZER === "true";
 const SMALL_FREE_MODEL = "liquid/lfm-3-1.7b:free";
@@ -642,15 +643,19 @@ try {
 
   let completedProjectTrials = 0;
   if (developThreeProjects) {
-    assert.ok(routerReady, "OpenRouter debe estar configurado para probar tres proyectos con el enrutador gratuito.");
+    if (projectModel === "openrouter-free") {
+      assert.ok(routerReady, "OpenRouter debe estar configurado para probar tres proyectos con el enrutador gratuito.");
+    }
     const readUsage = async () => page.evaluate(async () => {
       const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
       if (!response.ok) return null;
       const body = await response.json();
       return typeof body.usage?.usage === "number" ? body.usage.usage : null;
     });
-    const usageBeforeProjects = await readUsage();
-    assert.equal(typeof usageBeforeProjects, "number", "No se pudo consultar el consumo antes de crear proyectos.");
+    const usageBeforeProjects = projectModel === "openrouter-free" ? await readUsage() : null;
+    if (projectModel === "openrouter-free") {
+      assert.equal(typeof usageBeforeProjects, "number", "No se pudo consultar el consumo antes de crear proyectos.");
+    }
     const trials = [
       { name: "Lista de compras", marker: "Proyecto QA: Lista de compras" },
       { name: "Calculadora de propina", marker: "Proyecto QA: Calculadora de propina" },
@@ -674,12 +679,19 @@ try {
       });
       assert.match(project ?? "", /^app-[a-z0-9]+$/, "Crear app debe asignar un proyecto Linux nuevo.");
 
-      await selectOpenRouterModel(SMALL_FREE_MODEL);
+      if (projectModel === "openrouter-free") {
+        await selectOpenRouterModel(SMALL_FREE_MODEL);
+      } else {
+        await modelButton.click();
+        await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
+        await modelDialog.getByRole("listbox", { name: "Perfiles sencillos" })
+          .getByRole("option", { name: /Cloudflare/ }).click();
+      }
       const selectedProjectModel = await page.evaluate(
         session => localStorage.getItem("opencode-model-preset:" + session),
         await page.evaluate(() => localStorage.getItem("opencode-harness-session"))
       );
-      assert.equal(selectedProjectModel, "openrouter:" + SMALL_FREE_MODEL);
+      assert.equal(selectedProjectModel, projectModel === "cloudflare" ? "cloudflare" : "openrouter:" + SMALL_FREE_MODEL);
 
       const task = `Crea una aplicación web estática mínima llamada "${trial.name}" para el proyecto Linux ${project}. Usa la herramienta linux con project=${project} para crear dist/index.html con HTML, CSS y JavaScript incrustados. La página debe mostrar exactamente el título "${trial.marker}" y una interacción pequeña útil para la aplicación. No instales dependencias, no uses internet ni edites otros proyectos. Verifica con una llamada Linux que dist/index.html existe y contiene ese título. Responde brevemente solo después de recibir resultados reales de la herramienta.`;
       const previousProjectToolCount = await page.locator("main details.bg-kumo-base").count();
@@ -722,13 +734,18 @@ try {
       assert.equal(preview.status, 200, `${trial.name}: la vista previa debe responder HTTP 200.`);
       assert.ok(preview.html.includes(trial.marker), `${trial.name}: falta el título comprobable en dist/index.html.`);
 
-      const usageAfterProject = await readUsage();
-      assert.equal(typeof usageAfterProject, "number", "No se pudo consultar el consumo después de crear el proyecto.");
-      const projectSpend = usageAfterProject - usageBeforeProjects;
-      assert.ok(projectSpend >= 0 && projectSpend <= 0.10,
-        `Las tres pruebas deben quedar bajo US$0,10; consumo observado: $${projectSpend.toFixed(4)}.`);
+      let projectSpend = null;
+      if (projectModel === "openrouter-free") {
+        const usageAfterProject = await readUsage();
+        assert.equal(typeof usageAfterProject, "number", "No se pudo consultar el consumo después de crear el proyecto.");
+        projectSpend = usageAfterProject - usageBeforeProjects;
+        assert.ok(projectSpend >= 0 && projectSpend <= 0.10,
+          `Las tres pruebas deben quedar bajo US$0,10; consumo observado: $${projectSpend.toFixed(4)}.`);
+      }
       completedProjectTrials++;
-      console.log(`Proyecto Staging aprobado: ${project} (${trial.name}); vista previa HTTP 200; consumo acumulado $${projectSpend.toFixed(4)}.`);
+      console.log(projectSpend === null
+        ? `Proyecto Staging aprobado: ${project} (${trial.name}); modelo Cloudflare; vista previa HTTP 200.`
+        : `Proyecto Staging aprobado: ${project} (${trial.name}); vista previa HTTP 200; consumo OpenRouter acumulado $${projectSpend.toFixed(4)}.`);
     }
   }
 
@@ -757,7 +774,7 @@ try {
     session => localStorage.getItem("opencode-model-preset:" + session), initialSession
   ), initialModelPreset, "La prueba debe conservar el modelo original de la sesión del propietario.");
 
-  console.log(`${localHost ? "Local" : "Staging"} mobile smoke aprobado: 393 × 852, reconexión, sesión aislada, perfiles, OpenRouter, proyectos (${completedProjectTrials}/3 creados), CDF WorkBench (${cdfWorkbenchToolsVerified}/3 herramientas), TokenEconomizer (${tokenEconomizerSessionsVerified}/4 sesiones; ${learnedContextCharacters} caracteres reutilizables), y ajustes.`);
+  console.log(`${localHost ? "Local" : "Staging"} mobile smoke aprobado: 393 × 852, reconexión, sesión aislada, perfiles, OpenRouter, proyectos (${completedProjectTrials}/3 creados; ${projectModel}), CDF WorkBench (${cdfWorkbenchToolsVerified}/3 herramientas), TokenEconomizer (${tokenEconomizerSessionsVerified}/4 sesiones; ${learnedContextCharacters} caracteres reutilizables), y ajustes.`);
 } finally {
   if (disableTokenEconomizerAfterTest) {
     await page.evaluate(async () => fetch("/api/settings/connectors/token-economizer", {

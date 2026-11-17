@@ -9,10 +9,18 @@ on:
         required: false
         default: false
       develop_three_projects:
-        description: "Crear tres proyectos Linux pequeños en Staging con OpenRouter Free y verificar sus vistas previas"
+        description: "Crear tres proyectos Linux pequeños en Staging y verificar sus vistas previas"
         type: boolean
         required: false
         default: false
+      project_model:
+        description: "Modelo para las tareas de creación de proyectos"
+        type: choice
+        required: false
+        default: openrouter-free
+        options:
+          - openrouter-free
+          - cloudflare
       verify_cdf_workbench:
         description: "Probar por OpenCode el estado, catálogo y lectura de CDF WorkBench Staging"
         type: boolean
@@ -66,6 +74,7 @@ jobs:
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           OPENCODE_STAGING_SEND_MESSAGE: ${{ inputs.send_live_message }}
           OPENCODE_STAGING_DEVELOP_THREE_PROJECTS: ${{ inputs.develop_three_projects }}
+          OPENCODE_STAGING_PROJECT_MODEL: ${{ inputs.project_model }}
           OPENCODE_STAGING_VERIFY_CDF_WORKBENCH: ${{ inputs.verify_cdf_workbench }}
           OPENCODE_STAGING_VERIFY_TOKEN_ECONOMIZER: ${{ inputs.verify_token_economizer }}
 
