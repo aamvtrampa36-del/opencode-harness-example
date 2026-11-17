@@ -1,7 +1,7 @@
-import { specializationPrompt as specializationPromptText, type Specialization } from "./specializations";
+import { specializationPrompt as specializationPromptText, type Specialization, type WorkflowStage } from "./specializations";
 import { classifyAgentFailure, type IncidentObservation } from "./incident-diagnostics";
-import { MODEL_PRESETS, isModelSelection, isOpenRouterSelection, resolveModelSelection } from "./model-presets";
-import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
+import { MODEL_PRESETS, isModelSelection, isOpenRouterSelection, resolveModelSelection, type ModelSelectionID } from "./model-presets";
+import { assertOpenRouterModelSupportsImageInput, assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import type { Connection, ConnectionContext } from "agents/lifecycle";
 import type { WebSocketMessage, WebSocketsOptions } from "agents/websockets";
 import {
@@ -17,6 +17,8 @@ const SESSION_TAG_PREFIX = "opencode-session:";
 const SESSION_QUERY = "session";
 /** A bound on one prompt; this example has no other quotas. */
 const MAX_PROMPT_LENGTH = 100_000;
+const MAX_INLINE_IMAGE_LENGTH = 2_666_668;
+const MAX_INLINE_IMAGES = 2;
 /** `WebSocket.OPEN`; the constant is not defined on every runtime's global. */
 const OPEN = 1;
 
@@ -98,6 +100,9 @@ export class OpenCodeSessionSockets {
   readonly #noteIncident: (event: IncidentObservation) => Promise<void>;
   readonly #bindScope: (sessionID: string, value: unknown) => Promise<void>;
   readonly #inheritScope: (source: string, target: string, project: string) => Promise<void>;
+  readonly #setSessionModels: (sessionID: string, options: { decisionModel?: string; imageModel?: string }) => Promise<void>;
+  readonly #defaultImageModel: () => Promise<string | undefined>;
+  readonly #waitUntil: (promise: Promise<unknown>) => void;
   /** One event stream per running session, or its opening. */
   readonly #watches = new Map<
     OpenCodeSessionId,
@@ -106,7 +111,82 @@ export class OpenCodeSessionSockets {
   /** Sessions with a snapshot being sent, and whether another is due. */
   readonly #snapshots = new Map<OpenCodeSessionId, boolean>();
   readonly #submitLocks = new Map<OpenCodeSessionId, Promise<void>>();
-  readonly #activeConfigurations = new Map<OpenCodeSessionId, { mode: string; model: string | undefined; operations: Set<string> }>();
+  readonly #cancelledWorkflows = new Set<OpenCodeSessionId>();
+  readonly #activeConfigurations = new Map<OpenCodeSessionId, { mode: string; model: string | undefined; specialization: string | undefined; workflow?: boolean; operations: Set<string> }>();
+
+  #workflowStatus(session: OpenCodeSessionId, value: {
+    status: "running" | "completed" | "failed" | "cancelled"; stage: number; total: number; name: string; error?: string
+  }): void {
+    for (const socket of this.#getWebSockets(sessionTag(session))) send(socket, { type: "workflow", ...value });
+  }
+
+  async #configureStage(session: OpenCodeSessionId, stage: WorkflowStage, selection: ModelSelectionID): Promise<void> {
+    const selected = resolveModelSelection(selection);
+    if (selected.providerID === "openrouter") {
+      if (!(await this.#openRouterAvailable())) throw new Error("Conecta OpenRouter antes de ejecutar esta etapa.");
+      await assertOpenRouterModelSupportsTools(selected.id);
+    }
+    const handle = this.#harness.session(session);
+    await handle.setModel({ providerID: selected.providerID, id: selected.id });
+    await handle.setAgent(stage.mode === "plan" ? "plan" : "build");
+  }
+
+  async #continueWorkflow(
+    session: OpenCodeSessionId,
+    configuration: { mode: string; model: string | undefined; specialization: string | undefined; workflow?: boolean; operations: Set<string> },
+    profile: Specialization,
+    stages: readonly WorkflowStage[],
+    selections: readonly ModelSelectionID[],
+    firstOperation: string,
+    firstText: string
+  ): Promise<void> {
+    const handle = this.#harness.session(session);
+    const marker = "workflow:" + crypto.randomUUID();
+    configuration.operations.add(marker);
+    try {
+      await handle.wait(firstOperation);
+      configuration.operations.delete(firstOperation);
+      if (this.#cancelledWorkflows.has(session)) {
+        this.#workflowStatus(session, { status: "cancelled", stage: 1, total: stages.length, name: stages[0]!.name });
+        return;
+      }
+      for (let index = 1; index < stages.length; index++) {
+        const stage = stages[index]!;
+        await this.#configureStage(session, stage, selections[index]!);
+        if (this.#cancelledWorkflows.has(session)) {
+          this.#workflowStatus(session, { status: "cancelled", stage: index, total: stages.length, name: stages[index - 1]!.name });
+          return;
+        }
+        const text = specializationPromptText(profile) +
+          `FLUJO ${index + 1}/${stages.length} · ${stage.name}\n` + stage.instructions +
+          "\nContinúa usando el contexto y los resultados de las etapas anteriores. " +
+          "No repitas acciones ya completadas.\n\nSolicitud original: " + firstText;
+        const receipt = await handle.submit(text, { whenBusy: "followUp" });
+        configuration.operations.add(receipt.operationId);
+        this.#workflowStatus(session, { status: "running", stage: index + 1, total: stages.length, name: stage.name });
+        await this.#broadcastSnapshot(session);
+        await handle.wait(receipt.operationId);
+        configuration.operations.delete(receipt.operationId);
+        if (this.#cancelledWorkflows.has(session)) {
+          this.#workflowStatus(session, { status: "cancelled", stage: index + 1, total: stages.length, name: stage.name });
+          return;
+        }
+      }
+      this.#workflowStatus(session, { status: "completed", stage: stages.length, total: stages.length, name: stages[stages.length - 1]!.name });
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 240) : "No se pudo completar el flujo";
+      this.#workflowStatus(session, { status: this.#cancelledWorkflows.has(session) ? "cancelled" : "failed",
+        stage: 0, total: stages.length, name: profile.name,
+        ...(this.#cancelledWorkflows.has(session) ? {} : { error: message }) });
+      try { await handle.abort(); } catch { /* Preserve the original failure. */ }
+      console.warn("OpenCode workflow failed", message);
+    } finally {
+      this.#cancelledWorkflows.delete(session);
+      for (const operation of [...configuration.operations]) if (operation.startsWith("workflow:")) configuration.operations.delete(operation);
+      this.#activeConfigurations.set(session, configuration);
+      await this.#settle(session);
+    }
+  }
 
   /** Serialize configuration and submit for one session, including concurrent sockets. */
   async #serializeSubmit<T>(session: OpenCodeSessionId, work: () => Promise<T>): Promise<T> {
@@ -129,7 +209,10 @@ export class OpenCodeSessionSockets {
     getSpecialization: (id: string) => Promise<Specialization | undefined> = async () => undefined,
     noteIncident: (event: IncidentObservation) => Promise<void> = async () => undefined,
     bindScope: (sessionID: string, value: unknown) => Promise<void> = async () => undefined,
-    inheritScope: (source: string, target: string, project: string) => Promise<void> = async () => undefined
+    inheritScope: (source: string, target: string, project: string) => Promise<void> = async () => undefined,
+    setSessionModels: (sessionID: string, options: { decisionModel?: string; imageModel?: string }) => Promise<void> = async () => undefined,
+    getDefaultImageModel: () => Promise<string | undefined> = async () => undefined,
+    waitUntil: (promise: Promise<unknown>) => void = promise => { void promise; }
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
@@ -138,6 +221,9 @@ export class OpenCodeSessionSockets {
     this.#noteIncident = noteIncident;
     this.#bindScope = bindScope;
     this.#inheritScope = inheritScope;
+    this.#setSessionModels = setSessionModels;
+    this.#defaultImageModel = getDefaultImageModel;
+    this.#waitUntil = waitUntil;
   }
 
   async #record(event: IncidentObservation): Promise<void> {
@@ -238,8 +324,21 @@ export class OpenCodeSessionSockets {
     const handle = this.#harness.session(session);
     switch (message.type) {
       case "submit": {
-        if (typeof message.text !== "string" || message.text.trim() === "") {
+        const files = message.files ?? [];
+        if (!Array.isArray(files) || files.length > MAX_INLINE_IMAGES ||
+            files.some(file => !file || typeof file.data !== "string" ||
+              file.data.length > MAX_INLINE_IMAGE_LENGTH ||
+              !/^image\/(png|jpeg|webp)$/.test(file.mime) ||
+              typeof file.name !== "string" || file.name.length > 160 ||
+              !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.data)) ||
+            files.reduce((total, file) => total + Math.floor(file.data.length * 3 / 4), 0) > 4_000_000) {
+          throw new Error("Adjunta hasta dos imágenes PNG, JPEG o WebP de 2 MB cada una.");
+        }
+        if (typeof message.text !== "string" || (message.text.trim() === "" && files.length === 0)) {
           throw new Error("Nothing to send");
+        }
+        if (files.length && message.model === undefined) {
+          throw new Error("Selecciona primero un modelo OpenRouter compatible con imágenes.");
         }
         if (message.text.length > MAX_PROMPT_LENGTH) {
           throw new Error(
@@ -258,8 +357,10 @@ export class OpenCodeSessionSockets {
         // fails closed until that operation completes.
         const active = this.#activeConfigurations.get(session);
         const running = (active?.operations.size ?? 0) > 0 || await handle.busy();
-        if (running && (!active || active.mode !== mode || active.model !== message.model)) {
-          throw new Error("Espera a que termine la tarea antes de cambiar el modo o modelo.");
+        if (running && active?.workflow) throw new Error("Esta plantilla está ejecutando sus etapas. Puedes continuar en otra conversación y volver al flujo después.");
+        if (running && (!active || active.mode !== mode || active.model !== message.model ||
+            active.specialization !== message.specialization)) {
+          throw new Error("Espera a que termine la tarea antes de cambiar el modo, modelo o plantilla.");
         }
         // Scope is fixed before inference; validate it for queued work too.
         if (message.project !== undefined || message.repository !== undefined) {
@@ -274,30 +375,78 @@ export class OpenCodeSessionSockets {
             if (isOpenRouterSelection(message.model)) {
               await assertOpenRouterModelSupportsTools(selected.id);
             }
+            if (files.length) {
+              if (selected.providerID !== "openrouter") {
+                throw new Error("Selecciona un modelo OpenRouter compatible con imágenes.");
+              }
+              await assertOpenRouterModelSupportsImageInput(selected.id);
+            }
             await handle.setModel({ providerID: selected.providerID, id: selected.id });
           }
           await handle.setAgent(mode === "build" ? "build" : "plan");
         }
         let specializationPrompt = "";
+        let selectedSpecialization: Specialization | undefined;
         if (message.specialization !== undefined) {
           if (typeof message.specialization !== "string" || !/^[a-z][a-z0-9-]{1,39}$/.test(message.specialization)) {
             throw new Error("Identificador de especialización inválido");
           }
-          const specialization = await this.#specialization(message.specialization);
-          if (!specialization) throw new Error("La especialización seleccionada ya no existe o está desactivada");
-          specializationPrompt = specializationPromptText(specialization);
+          selectedSpecialization = await this.#specialization(message.specialization);
+          if (!selectedSpecialization) throw new Error("La especialización seleccionada ya no existe o está desactivada");
+          specializationPrompt = specializationPromptText(selectedSpecialization);
+        }
+        const stages = selectedSpecialization?.stages?.filter(stage => stage.instructions.trim()) ?? [];
+        const selections: ModelSelectionID[] = stages.map(stage => stage.model ?? selectedSpecialization?.model ?? message.model ?? "cloudflare");
+        if (!running && stages.length) {
+          for (const selection of selections) {
+            const selected = resolveModelSelection(selection);
+            if (selected.providerID === "openrouter") {
+              if (!(await this.#openRouterAvailable())) throw new Error("Conecta OpenRouter antes de ejecutar este flujo.");
+              await assertOpenRouterModelSupportsTools(selected.id);
+            }
+          }
+          if (files.length) {
+            const firstModel = resolveModelSelection(selections[0]!);
+            if (firstModel.providerID !== "openrouter") throw new Error("La primera etapa necesita un modelo OpenRouter compatible con imágenes.");
+            await assertOpenRouterModelSupportsImageInput(firstModel.id);
+          }
+        }
+        if (!running) {
+          const imageModel = selectedSpecialization?.imageModel ?? await this.#defaultImageModel();
+          await this.#setSessionModels(session, {
+            ...(selectedSpecialization?.decisionModel ? { decisionModel: selectedSpecialization.decisionModel } : {}),
+            ...(imageModel ? { imageModel } : {})
+          });
         }
         const prefixed =
           mode === "review" ? "Revisa críticamente este trabajo. Identifica problemas con evidencia y no modifiques archivos ni producción.\n\n" :
           mode === "creative" ? "Trabaja como redactor: planifica, escribe o revisa borradores. No alteres fuentes oficiales ni publiques sin autorización.\n\n" :
           "";
         this.#watch(session);
-        const receipt = await handle.submit(specializationPrompt + prefixed + message.text, {
+        const text = message.text.trim() || "Analiza la imagen adjunta y responde a partir de su contenido.";
+        const workflow = !running && stages.length > 0;
+        const stagePrefix = workflow
+          ? `FLUJO 1/${stages.length} · ${stages[0]!.name}\n${stages[0]!.instructions}\n\nSolicitud original: `
+          : "";
+        const input = files.length ? {
+          text: specializationPrompt + prefixed + stagePrefix + text,
+          files: files.map(file => ({
+            uri: `data:${file.mime};base64,${file.data}`, name: file.name
+          }))
+        } : specializationPrompt + prefixed + stagePrefix + text;
+        if (workflow) {
+          await this.#configureStage(session, stages[0]!, selections[0]!);
+        }
+        const receipt = await handle.submit(input, {
           whenBusy: message.whenBusy === "steer" ? "steer" : "followUp"
         });
-        const configuration = active && running ? active : { mode, model: message.model, operations: new Set<string>() };
+        const configuration = active && running ? active : { mode, model: message.model,
+          specialization: message.specialization, ...(workflow ? { workflow: true } : {}), operations: new Set<string>() };
         configuration.operations.add(receipt.operationId);
         this.#activeConfigurations.set(session, configuration);
+        if (workflow) {
+          this.#workflowStatus(session, { status: "running", stage: 1, total: stages.length, name: stages[0]!.name });
+        }
         await this.#broadcastSnapshot(session);
         const activeSessions = await this.#harness.sessions.list();
         for (const socket of this.#getWebSockets()) {
@@ -311,18 +460,24 @@ export class OpenCodeSessionSockets {
         // Once the operation settles, send the final transcript and stop
         // watching if nothing else is running. This holds even if the watch
         // attached after the run's last event.
-        void handle
-          .wait(receipt.operationId)
-          .then(() => {
-            configuration.operations.delete(receipt.operationId);
-            return this.#settle(session);
-          })
-          .catch((error: unknown) => {
-            console.warn("OpenCode wait failed", error);
-          });
+        if (workflow && selectedSpecialization) {
+          this.#waitUntil(this.#continueWorkflow(session, configuration, selectedSpecialization, stages,
+            selections, receipt.operationId, text));
+        } else {
+          void handle
+            .wait(receipt.operationId)
+            .then(() => {
+              configuration.operations.delete(receipt.operationId);
+              return this.#settle(session);
+            })
+            .catch((error: unknown) => {
+              console.warn("OpenCode wait failed", error);
+            });
+        }
         return receipt;
       }
       case "abort":
+        if (this.#activeConfigurations.get(session)?.workflow) this.#cancelledWorkflows.add(session);
         await handle.abort();
         await this.#settle(session);
         return true;

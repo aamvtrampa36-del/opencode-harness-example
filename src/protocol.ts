@@ -27,6 +27,7 @@ export type ClientMessage =
       readonly specialization?: string;
       readonly project?: string;
       readonly repository?: string;
+      readonly files?: readonly { readonly data: string; readonly mime: string; readonly name: string }[];
     }
   | { readonly type: "abort"; readonly id?: string }
   | { readonly type: "create"; readonly id?: string }
@@ -53,6 +54,7 @@ export type ServerMessage =
   | ({ readonly type: "snapshot" } & SessionSnapshot)
   /** The session's events from `session.events()`, live deltas included. */
   | { readonly type: "event"; readonly event: OpenCodeSessionEvent }
+  | { readonly type: "workflow"; readonly status: "running" | "completed" | "failed" | "cancelled"; readonly stage: number; readonly total: number; readonly name: string; readonly error?: string }
   | { readonly type: "result"; readonly id: string; readonly result: unknown }
   | {
       readonly type: "error";

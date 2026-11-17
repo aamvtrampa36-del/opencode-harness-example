@@ -4,7 +4,35 @@ on:
   workflow_dispatch:
     inputs:
       send_live_message:
-        description: "Enviar una tarea corta con el perfil económico (usa saldo OpenRouter)"
+        description: "Probar un modelo OpenRouter gratuito concreto y OpenRouter Free (sin gasto planificado)"
+        type: boolean
+        required: false
+        default: false
+      develop_three_projects:
+        description: "Crear tres proyectos Linux pequeños en Staging y verificar sus vistas previas"
+        type: boolean
+        required: false
+        default: false
+      project_model:
+        description: "Modelo para las tareas de creación de proyectos"
+        type: choice
+        required: false
+        default: openrouter-free
+        options:
+          - openrouter-free
+          - cloudflare
+      diagnose_project:
+        description: "Inspeccionar sin modelos las rutas Linux y la vista previa de un proyecto Staging existente"
+        type: string
+        required: false
+        default: ""
+      verify_cdf_workbench:
+        description: "Probar por OpenCode el estado, catálogo y lectura de CDF WorkBench Staging"
+        type: boolean
+        required: false
+        default: false
+      verify_token_economizer:
+        description: "Probar hooks y aprendizaje gratuito de TokenEconomizer en un proyecto aislado"
         type: boolean
         required: false
         default: false
@@ -13,8 +41,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: opencode-staging-mobile
-  cancel-in-progress: true
+  group: opencode-staging-mobile-acceptance-v2
+  cancel-in-progress: false
 
 jobs:
   mobile:
@@ -50,3 +78,17 @@ jobs:
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           OPENCODE_STAGING_SEND_MESSAGE: ${{ inputs.send_live_message }}
+          OPENCODE_STAGING_DEVELOP_THREE_PROJECTS: ${{ inputs.develop_three_projects }}
+          OPENCODE_STAGING_PROJECT_MODEL: ${{ inputs.project_model }}
+          OPENCODE_STAGING_DIAGNOSE_PROJECT: ${{ inputs.diagnose_project }}
+          OPENCODE_STAGING_VERIFY_CDF_WORKBENCH: ${{ inputs.verify_cdf_workbench }}
+          OPENCODE_STAGING_VERIFY_TOKEN_ECONOMIZER: ${{ inputs.verify_token_economizer }}
+
+      - name: Save the tested mobile screen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-staging-mobile-393x852
+          path: ${{ runner.temp }}/opencode-staging-mobile-393x852.png
+          if-no-files-found: ignore
+          retention-days: 3

@@ -38,6 +38,27 @@ const INACTIVITY_MS = 15 * 60_000;
 const IDLE_MS = 5 * 60_000;
 const CHECK_MS = 60_000;
 const CHECKPOINT_MS = 2 * 60_000;
+const TOKEN_ECONOMIZER_COMMIT = "7042ea89dd5e5ecbc67ad865ad6e256e61be8bf0";
+const TOKEN_ECONOMIZER_ROOT = "/workspace/projects/opencode-connectors/token-economizer";
+const TOKEN_ECONOMIZER_STATE = "/workspace/projects/opencode-connectors/state";
+const TOKEN_ECONOMIZER_RUNNER = `import contextlib, json, os, sys
+body = json.load(sys.stdin)
+payload = body.get("payload") or {}
+transcript = body.get("transcript")
+path = payload.get("transcript_path")
+if path and isinstance(transcript, str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as stream:
+        stream.write(transcript)
+try:
+    from tokeneconomizer.plugin.hook import run
+    with contextlib.redirect_stdout(sys.stderr):
+        result = run(payload, os.environ, host_hint="opencode") or {}
+    from tokeneconomizer.plugin.paths import secure_root
+    secure_root(os.environ)
+except Exception:
+    result = {}
+print(json.dumps(result, ensure_ascii=False))`;
 // Shared PREVIEW_PORT selects the new server without destroying persistent Container data.
 
 export type LinuxResult = {
@@ -54,6 +75,15 @@ export class DevContainer extends DurableObject<Env> {
   private previewStarting?: Promise<void>;
   private starting?: Promise<NonNullable<DurableObjectState["container"]>>;
   private commandQueue: Promise<void> = Promise.resolve();
+  private connectorQueue: Promise<void> = Promise.resolve();
+
+  private async acquireConnectorLock(): Promise<() => void> {
+    const previous = this.connectorQueue;
+    let release!: () => void;
+    this.connectorQueue = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    return release;
+  }
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -112,6 +142,115 @@ export class DevContainer extends DurableObject<Env> {
       git: "install-on-demand",
       persistMode: "Cloudflare container snapshots (beta, 30-day TTL)"
     };
+  }
+
+  /** Install the pinned, upstream TokenEconomizer Python hook in its own Container. */
+  async installTokenEconomizer(): Promise<{ installed: true; commit: string }> {
+    const release = await this.acquireConnectorLock();
+    try {
+      const container = await this.ensureRunning();
+      this.busy++;
+      try {
+        await this.ctx.storage.put("lastActivity", Date.now());
+        const script = [
+          "set -e",
+          "command -v python3 >/dev/null 2>&1 || (apt-get update -qq -o Acquire::Retries=2 && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends python3 ca-certificates)",
+          "command -v git >/dev/null 2>&1 || (apt-get update -qq -o Acquire::Retries=2 && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git ca-certificates)",
+          "mkdir -p /workspace/projects/opencode-connectors",
+          `if [ ! -d ${TOKEN_ECONOMIZER_ROOT}/.git ]; then git clone --filter=blob:none --no-checkout https://github.com/microsoft/TokenEconomizer.git ${TOKEN_ECONOMIZER_ROOT}; fi`,
+          `git -C ${TOKEN_ECONOMIZER_ROOT} fetch --depth=1 origin ${TOKEN_ECONOMIZER_COMMIT}`,
+          `git -C ${TOKEN_ECONOMIZER_ROOT} checkout --detach ${TOKEN_ECONOMIZER_COMMIT}`,
+          `test "$(git -C ${TOKEN_ECONOMIZER_ROOT} rev-parse HEAD)" = ${TOKEN_ECONOMIZER_COMMIT}`,
+          `mkdir -p ${TOKEN_ECONOMIZER_STATE} /workspace/projects/opencode-connectors/workspaces`
+        ].join(" && ");
+        const process = await container.exec(["bash", "-lc", script], {
+          signal: AbortSignal.timeout(180_000)
+        });
+        const output = await process.output();
+        if (output.exitCode !== 0) {
+          throw new Error("No se pudo instalar TokenEconomizer: " +
+            new TextDecoder().decode(output.stderr).slice(-500));
+        }
+        await this.ctx.storage.put("connector:token-economizer:commit", TOKEN_ECONOMIZER_COMMIT);
+        return { installed: true, commit: TOKEN_ECONOMIZER_COMMIT };
+      } finally {
+        this.busy--;
+        await this.ctx.storage.put("lastActivity", Date.now());
+        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      }
+    } finally {
+      release();
+    }
+  }
+
+  /** Run one bounded upstream hook; no arbitrary shell or package command is exposed. */
+  async runTokenEconomizerHook(project: string, raw: unknown): Promise<unknown> {
+    const id = validateProject(project);
+    const installed = await this.ctx.storage.get<string>("connector:token-economizer:commit");
+    if (installed !== TOKEN_ECONOMIZER_COMMIT) throw new Error("TokenEconomizer aún no está instalado.");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Evento del conector inválido.");
+    const input = raw as { payload?: unknown; transcript?: unknown };
+    if (!input.payload || typeof input.payload !== "object" || Array.isArray(input.payload)) {
+      throw new Error("Carga del conector inválida.");
+    }
+    const payload = input.payload as Record<string, unknown>;
+    const allowedEvents = new Set(["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd"]);
+    if (!allowedEvents.has(String(payload.hook_event_name)) ||
+        typeof payload.session_id !== "string" || !/^ses[A-Za-z0-9_]{1,64}$/.test(payload.session_id)) {
+      throw new Error("Evento TokenEconomizer no admitido.");
+    }
+    if (typeof payload.transcript_path === "string" &&
+        (input.transcript !== undefined && (typeof input.transcript !== "string" || input.transcript.length > 2_000_000))) {
+      throw new Error("La transcripción excede el límite del conector.");
+    }
+    const release = await this.acquireConnectorLock();
+    try {
+      const container = await this.ensureRunning();
+      this.busy++;
+      try {
+        await this.ctx.storage.put("lastActivity", Date.now());
+        const workspace = `/workspace/projects/opencode-connectors/workspaces/${id}`;
+        const path = typeof payload.transcript_path === "string" ? payload.transcript_path : "";
+        if (path && !new RegExp(`^/workspace/projects/opencode-connectors/state/opencode-sessions/${payload.session_id}\\.json$`).test(path)) {
+          throw new Error("La ruta de transcripción del conector no está permitida.");
+        }
+        const directory = await container.exec(["mkdir", "-p", workspace]);
+        const directoryOutput = await directory.output();
+        if (directoryOutput.exitCode !== 0) throw new Error("No se pudo preparar el área del conector.");
+        const process = await container.exec(["python3", "-c", TOKEN_ECONOMIZER_RUNNER], {
+          cwd: workspace,
+          env: {
+            PYTHONPATH: TOKEN_ECONOMIZER_ROOT,
+            TE_CORE_PATH: TOKEN_ECONOMIZER_ROOT,
+            TOKENECONOMIZER_HOME: TOKEN_ECONOMIZER_STATE,
+            PYTHONUTF8: "1",
+            TE_OPENCODE_MODE: "run",
+            TE_MICROSKILLS: "envfacts",
+            TE_LOOPGUARD: "off",
+            TE_TOOLPRUNE: "off",
+            TE_REPOMAP: "off"
+          },
+          stdin: "pipe",
+          signal: AbortSignal.timeout(20_000)
+        });
+        const writer = process.stdin?.getWriter();
+        if (!writer) throw new Error("No se pudo abrir la entrada del hook.");
+        await writer.write(new TextEncoder().encode(JSON.stringify({
+          payload, transcript: typeof input.transcript === "string" ? input.transcript : undefined
+        })));
+        await writer.close();
+        const output = await process.output();
+        if (output.exitCode !== 0) throw new Error(new TextDecoder().decode(output.stderr).slice(-350));
+        try { return JSON.parse(new TextDecoder().decode(output.stdout)); }
+        catch { return {}; }
+      } finally {
+        this.busy--;
+        await this.ctx.storage.put("lastActivity", Date.now());
+        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      }
+    } finally {
+      release();
+    }
   }
 
   /** Durable project inventory; listing never starts the billable Linux VM. */

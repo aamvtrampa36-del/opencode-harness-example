@@ -1,5 +1,6 @@
 import type { AgentMode } from "./protocol";
 import { readSessionMode, saveSessionMode } from "./session-mode";
+import { readSessionSpecialization, saveSessionSpecialization } from "./session-specialization";
 import { isInternalReminder } from "./message-display";
 import { repositoryProjectSlug } from "./project-container";
 import { SettingsPanel } from "./settings-panel";
@@ -25,6 +26,7 @@ import {
   LinkIcon,
   DownloadSimpleIcon,
   EyeIcon,
+  ImageIcon,
   MoonIcon,
   PaperPlaneRightIcon,
   PlusIcon,
@@ -54,8 +56,21 @@ function modelForSession(session: string): ModelSelectionID {
   return isModelSelection(stored) ? stored : "economy";
 }
 const PROJECT_PREFIX = "opencode-active-project:";
-const SPECIALIZATION_KEY = "opencode-specialization";
 const REPOSITORY_PREFIX = "opencode-session-repository:";
+const IMAGE_MAX_BYTES = 2_000_000;
+const IMAGE_MAX_COUNT = 2;
+type DraftImage = { id: string; name: string; mime: string; data: string };
+
+async function encodeImage(file: File): Promise<DraftImage> {
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) throw new Error("Usa una imagen PNG, JPEG o WebP.");
+  if (file.size > IMAGE_MAX_BYTES) throw new Error("Cada imagen debe pesar como máximo 2 MB.");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 32_768) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768));
+  }
+  return { id: crypto.randomUUID(), name: file.name.slice(0, 120), mime: file.type, data: btoa(binary) };
+}
 
 const SUGGESTIONS = [
   {
@@ -151,9 +166,11 @@ function toolOutput(part: ToolPart): string {
 function ToolCard({ part }: { part: ToolPart }) {
   const { status } = part.state;
   const output = toolOutput(part);
+  const files = status === "completed" ? (part.state.content ?? []).filter(content => content.type === "file") : [];
   const failed = status === "error";
   const done = status === "completed";
   return (
+    <div className="space-y-2">
     <details className="rounded-xl border border-kumo-line bg-kumo-base">
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5">
         {failed ? (
@@ -193,6 +210,11 @@ function ToolCard({ part }: { part: ToolPart }) {
         ) : null}
       </div>
     </details>
+    {files.map((file, index) => file.mime.startsWith("image/") ? (
+      <img key={index} src={file.uri} alt={file.name ?? "Imagen generada"}
+        className="mt-2 max-h-[65dvh] max-w-full rounded-xl border border-kumo-line object-contain" />
+    ) : null)}
+    </div>
   );
 }
 
@@ -307,13 +329,22 @@ function Message({
 }) {
   switch (message.type) {
     case "user":
+      {
+        const images = (message.files ?? []).filter(file => file.mime.startsWith("image/") &&
+          file.source.type === "inline");
       return (
         <div className="flex justify-end">
           <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-kumo-contrast px-4 py-2.5 text-sm leading-relaxed text-kumo-inverse">
             {message.text}
+            {images.length ? <div className="mt-2 grid grid-cols-2 gap-2">
+              {images.map((file, index) => <img key={index}
+                src={`data:${file.mime};base64,${file.data}`} alt={file.name ?? "Imagen adjunta"}
+                className="max-h-48 max-w-full rounded-lg object-cover" />)}
+            </div> : null}
           </div>
         </div>
       );
+      }
     case "assistant":
       return <AssistantMessage message={message} live={live[message.id]} />;
     case "synthetic": {
@@ -348,6 +379,8 @@ function App() {
     () => localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION
   );
   const [prompt, setPrompt] = useState("");
+  const [draftImages, setDraftImages] = useState<DraftImage[]>([]);
+  const [imageError, setImageError] = useState("");
   const [project, setProject] = useState(() => localStorage.getItem(PROJECT_PREFIX + (localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION)) ?? "");
   const [repository, setRepository] = useState(() =>
     localStorage.getItem(REPOSITORY_PREFIX + (localStorage.getItem(SESSION_KEY) ?? ROOT_SESSION)) ?? "");
@@ -369,6 +402,12 @@ function App() {
   const [linkCopied, setLinkCopied] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [connectorActivity, setConnectorActivity] = useState<{
+    tokenEconomizerEnabled: boolean;
+    tokenEconomizerLastHook?: { name: string; at: number; succeeded: boolean };
+    tokenEconomizerLastContext?: { at: number; characters: number };
+  } | null>(null);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [availableProjects, setAvailableProjects] = useState<{ name: string; lastUsedAt: number }[]>([]);
   const [projectError, setProjectError] = useState("");
@@ -385,7 +424,13 @@ function App() {
     setAgentMode(mode);
   };
   const [specializations, setSpecializations] = useState<Specialization[]>([]);
-  const [specialization, setSpecialization] = useState(() => localStorage.getItem(SPECIALIZATION_KEY) ?? "");
+  const [specialization, setSpecialization] = useState(() => readSessionSpecialization(localStorage, object, session));
+  const [imageTask, setImageTask] = useState(false);
+  const [defaultImageModel, setDefaultImageModel] = useState("");
+  const [imageModelReady, setImageModelReady] = useState(false);
+  const [imageSetupRequested, setImageSetupRequested] = useState(false);
+  const activeSpecialization = specializations.find(item => item.id === specialization);
+  const imageModel = activeSpecialization?.imageModel ?? defaultImageModel;
   const [integrations, setIntegrations] = useState<{
     openRouterConfigured: boolean;
     githubConfigured: boolean;
@@ -395,7 +440,9 @@ function App() {
       const response = await fetch("/api/settings/specializations", { cache: "no-store" });
       if (!response.ok) return;
       const result = await response.json() as { specializations?: Specialization[] };
-      setSpecializations((result.specializations ?? []).filter(item => item.enabled));
+      const available = (result.specializations ?? []).filter(item => item.enabled);
+      setSpecializations(available);
+      setSpecialization(current => available.some(item => item.id === current) ? current : "");
     } catch { /* Optional profiles do not prevent normal development. */ }
   };
   const refreshIntegrations = async () => {
@@ -413,6 +460,11 @@ function App() {
   };
   useEffect(() => {
     void refreshIntegrations(); void refreshSpecializations();
+    void fetch("/api/settings/image-model", { cache: "no-store" })
+      .then(async response => response.ok ? response.json() as Promise<{ imageModel?: string }> : null)
+      .then(result => { if (result) setDefaultImageModel(result.imageModel ?? ""); })
+      .catch(() => undefined)
+      .finally(() => setImageModelReady(true));
     void fetch("/api/settings/repositories", { cache: "no-store" })
       .then(async response => {
         if (!response.ok) throw new Error("GitHub repos unavailable");
@@ -436,10 +488,26 @@ function App() {
       setActionsOpen(false);
       setProjectsOpen(false);
       setSettingsOpen(false);
+      setImageSetupRequested(false);
     };
     window.addEventListener("keydown", closeOverlays);
     return () => window.removeEventListener("keydown", closeOverlays);
   }, [actionsOpen, projectsOpen, settingsOpen]);
+  useEffect(() => {
+    if (!activityOpen) return;
+    let active = true;
+    const refresh = async () => {
+      try {
+        const response = await fetch("/api/settings/connectors", { cache: "no-store" });
+        if (!response.ok) return;
+        const result = await response.json() as NonNullable<typeof connectorActivity>;
+        if (active) setConnectorActivity(result);
+      } catch { /* Activity status is optional; chat keeps working. */ }
+    };
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 6_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [activityOpen]);
   const autoFollowConversation = useRef(true);
   const pendingUsage = useRef<{ session: string; project: string; base: number } | null>(null);
   const wasBusy = useRef(false);
@@ -452,6 +520,7 @@ function App() {
     pending,
     sessions,
     live,
+    workflow,
     error,
     submit: submitPrompt,
     abort,
@@ -463,6 +532,8 @@ function App() {
     localStorage.setItem(SESSION_KEY, ROOT_SESSION);
     setSession(ROOT_SESSION);
     setAgentMode(readSessionMode(localStorage, object, ROOT_SESSION));
+    setSpecialization(readSessionSpecialization(localStorage, object, ROOT_SESSION));
+    setImageTask(false);
   });
 
   useEffect(() => {
@@ -516,6 +587,12 @@ function App() {
     localStorage.setItem(SESSION_KEY, next);
     setSession(next);
     setAgentMode(readSessionMode(localStorage, object, next));
+    const savedSpecialization = readSessionSpecialization(localStorage, object, next);
+    const availableSpecialization = specializations.some(item => item.id === savedSpecialization)
+      ? savedSpecialization : "";
+    setSpecialization(availableSpecialization);
+    if (availableSpecialization !== savedSpecialization) saveSessionSpecialization(localStorage, object, next, "");
+    setImageTask(false);
     setModelPreset(modelForSession(next));
     setProject(localStorage.getItem(PROJECT_PREFIX + next) ?? "");
     setRepository(localStorage.getItem(REPOSITORY_PREFIX + next) ?? "");
@@ -824,7 +901,7 @@ function App() {
       setModeForSession(next, "review");
       // Start project reviews without carrying another task's saved template.
       setSpecialization("");
-      localStorage.setItem(SPECIALIZATION_KEY, "");
+      saveSessionSpecialization(localStorage, object, next, "");
       const branch = repo.toLowerCase() === "aamvtrampa36-del/cdf-cloud-engine"
         ? "opencode/g8-cdf-isolation-20261110"
         : repo.toLowerCase() === "aamvtrampa36-del/cdf-workbench-"
@@ -850,7 +927,7 @@ function App() {
       setProject(slug);
       setPrompt(kind === "android" ?
         "Crea una app Android nativa para esta idea: [describe aquí tu app]. " +
-        "Usa la herramienta linux con project=" + slug + ". " +
+        "La conversación ya está vinculada a su proyecto Linux; usa la herramienta linux sin enviar un campo project. " +
         "Genera los archivos Android completos en Java y Gradle, incluidas pruebas. " +
         "Prefiere funcionamiento offline y almacenamiento local. " +
         "No presupongas que Android SDK o Gradle están instalados en el Container. " +
@@ -859,7 +936,7 @@ function App() {
         "No modifiques servicios de producción."
         :
         "Crea una aplicación web a partir de esta idea: [describe aquí tu app]. " +
-        "Usa la herramienta linux con project=" + slug + " para crear archivos, instalar dependencias, " +
+        "La conversación ya está vinculada a su proyecto Linux; usa la herramienta linux sin enviar un campo project para crear archivos, instalar dependencias, " +
         "probar el código, corregir errores y compilar una versión de producción. " +
         "Usa rutas relativas para recursos (por ejemplo Vite base='./'). " +
         "La vista previa debe quedar en una carpeta dist/ con index.html. " +
@@ -870,22 +947,55 @@ function App() {
 
 
   /** While a run is going, Enter queues a follow-up and Steer joins the run. */
+  const addImages = async (selected: FileList | null) => {
+    if (!selected?.length) return;
+    setImageError("");
+    try {
+      const incoming = Array.from(selected);
+      if (draftImages.length + incoming.length > IMAGE_MAX_COUNT) throw new Error("Puedes adjuntar hasta dos imágenes por mensaje.");
+      const encoded = await Promise.all(incoming.map(encodeImage));
+      setDraftImages(current => [...current, ...encoded].slice(0, IMAGE_MAX_COUNT));
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : "No se pudo cargar la imagen.");
+    }
+  };
+
   const submit = (whenBusy: "followUp" | "steer" = "followUp") => {
     const text = prompt.trim();
-    if (!text || !connected) return;
+    if ((!text && !draftImages.length) || !connected) return;
+    if (imageTask && !imageModel) {
+      setImageError("Selecciona una plantilla con modelo de imagen o configúrala en Configurar → Plantillas.");
+      return;
+    }
     autoFollowConversation.current = true;
     // Clear only after the client socket accepts the message; never lose the
     // task draft on an immediate connection failure.
     // Link the chosen project to the task; server-side isolation is addressed in G8.
+    const requestText = imageTask
+      ? "Genera una imagen con la herramienta generate_image usando el modelo de imagen de esta plantilla. " +
+        "Descripción visual: " + text
+      : text || "Analiza la imagen adjunta y ayúdame con ella.";
     const task = project && agentMode === "build"
-      ? "Proyecto Linux seleccionado: " + project + ". Si usas la herramienta linux, utiliza project=" + project +
-        ". No modifiques otros proyectos ni producción sin autorización.\n\nTarea: " + text
-      : text;
+      ? "Proyecto Linux seleccionado: " + project + ". Las herramientas linux e inspect_linux usan automáticamente este proyecto; no incluyas un parámetro project. " +
+        "No modifiques otros proyectos ni producción sin autorización.\n\nTarea: " + requestText
+      : requestText;
     const selectedModel = openRouterAvailable ? modelPreset : "cloudflare";
+    if (draftImages.length && resolveModelSelection(selectedModel).providerID !== "openrouter") {
+      setImageError("Selecciona un modelo OpenRouter que acepte imágenes antes de enviar.");
+      return;
+    }
     const deliver = () => {
       const accepted = submitPrompt(task, whenBusy, selectedModel, agentMode,
-        specialization || undefined, project || undefined, repository || undefined);
-      if (accepted) setPrompt((current) => current.trim() === text ? "" : current);
+        specialization || undefined, project || undefined, repository || undefined,
+        draftImages.map(({ data, mime, name }) => ({ data, mime, name })));
+      if (accepted) {
+        // Repository review is a one-shot read-only action, not a persistent mode.
+        if (agentMode === "review") setModeForSession(session, "build");
+        setPrompt((current) => current.trim() === text ? "" : current);
+        setDraftImages([]);
+        setImageError("");
+        setImageTask(false);
+      }
     };
     if (!busy && resolveModelSelection(selectedModel).providerID === "openrouter") {
       setLastCost("Consultando consumo de la clave OpenRouter…");
@@ -1032,7 +1142,8 @@ function App() {
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-1">
                 <ModelPicker value={openRouterAvailable ? modelPreset : "cloudflare"}
-                  onChange={selectModel} routerReady={openRouterAvailable} disabled={busy} />
+                  onChange={selectModel} routerReady={openRouterAvailable} disabled={busy}
+                  capability={draftImages.length ? "imageInput" : "tools"} />
                 <Button type="button" variant="ghost" shape="square"
                   aria-label="Mostrar opciones de OpenCode" aria-expanded={actionsOpen}
                   aria-controls="opencode-options"
@@ -1040,6 +1151,12 @@ function App() {
                   icon={<GearIcon size={18} />} />
               </div>
             </div>
+            {workflow ? <p role="status" aria-live="polite" className="mt-1 truncate text-[11px] text-kumo-subtle">
+              {workflow.status === "running"
+                ? `Flujo: etapa ${workflow.stage}/${workflow.total} · ${workflow.name}`
+                : workflow.status === "completed" ? "Flujo completado" : workflow.status === "cancelled"
+                  ? "Flujo detenido" : `Flujo detenido por un error: ${workflow.error ?? "error"}`}
+            </p> : null}
             <div id="opencode-options" aria-label="Opciones de OpenCode"
               className={`absolute inset-x-2 top-full z-30 ${actionsOpen ? "flex sm:grid" : "hidden"} max-h-[70dvh] flex-col gap-2 overflow-y-auto overscroll-contain rounded-2xl border border-kumo-line bg-kumo-base p-3 shadow-xl sm:left-auto sm:right-5 sm:w-[min(94vw,520px)] sm:grid-cols-2 sm:gap-2`}>
               <Button type="button" variant="ghost" size="sm"
@@ -1120,36 +1237,29 @@ function App() {
                 <LinkIcon size={16} />
                 <span>{linkCopied ? "Copiado" : "Vincular"}</span>
               </Button>
-              <select aria-label="Plantilla de trabajo" title="Plantilla editable: cambia instrucciones, modo y modelo sugerido"
+              <select aria-label="Plantilla de trabajo" title="Plantillas editables: instrucciones, etapas y modelos"
                 disabled={busy} value={specialization} onChange={(e) => {
                   const id = e.target.value;
-                  localStorage.setItem(SPECIALIZATION_KEY, id);
+                  saveSessionSpecialization(localStorage, object, session, id);
                   setSpecialization(id);
+                  setImageTask(false);
                   const selected = specializations.find(item => item.id === id);
                   if (selected) {
-                    setModeForSession(session, selected.mode ?? "build");
                     const preferred = selected.model ?? "cloudflare";
                     const available = openRouterAvailable ||
-                      MODEL_PRESETS[preferred].providerID !== "openrouter";
+                      resolveModelSelection(preferred).providerID !== "openrouter";
                     const nextModel = available ? preferred : "cloudflare";
                     selectModel(nextModel);
+                  } else {
+                    setModeForSession(session, "build");
                   }
                 }}
                 className="max-w-[132px] rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 text-xs text-kumo-default">
-                <option value="">Sin plantilla</option>
+                <option value="">General</option>
                 {specializations.map(item => (
                   <option key={item.id} value={item.id}>{item.name}</option>
                 ))}
               </select>
-              <select aria-label="Modo de agente" title="Los roles de revisión y narrativa no modifican archivos"
-                disabled={busy} value={agentMode} onChange={(event) => setModeForSession(session, event.target.value as AgentMode)}
-                className="max-w-[128px] rounded-md border border-kumo-line bg-kumo-base px-2 py-1.5 text-xs text-kumo-default">
-                <option value="build">Desarrollar</option>
-                <option value="plan">Planificar</option>
-                <option value="review">Revisar</option>
-                <option value="creative">Escritura</option>
-              </select>
-              
               <Button type="button" variant="ghost" size="sm"
                 aria-label="Configurar conexiones y modelos"
                 title="OpenRouter, GitHub y presupuesto"
@@ -1353,11 +1463,24 @@ function App() {
             ) : null}
             {settingsOpen ? (
               <div className="fixed inset-0 z-[80] flex items-end justify-center bg-black/45 sm:items-center sm:p-4"
-                onMouseDown={event => { if (event.target === event.currentTarget) setSettingsOpen(false); }}>
+                onMouseDown={event => { if (event.target === event.currentTarget) {
+                  setSettingsOpen(false); setImageSetupRequested(false);
+                } }}>
                 <div className="max-h-[92dvh] w-full max-w-3xl overflow-y-auto overscroll-contain rounded-t-[24px] bg-kumo-base shadow-2xl sm:rounded-2xl"
                   onMouseDown={event => event.stopPropagation()}>
-                  <SettingsPanel workspace={object} onClose={() => setSettingsOpen(false)}
-                    onChanged={() => { void refreshIntegrations(); void refreshSpecializations(); }} />
+                  <SettingsPanel workspace={object} onClose={() => {
+                    setSettingsOpen(false); setImageSetupRequested(false);
+                  }}
+                    onChanged={() => { void refreshIntegrations(); void refreshSpecializations(); }}
+                    onImageModelSaved={model => {
+                      setDefaultImageModel(model);
+                      if (imageSetupRequested && model) {
+                        setModeForSession(session, "build");
+                        setImageTask(true);
+                        setImageSetupRequested(false);
+                        setSettingsOpen(false);
+                      }
+                    }} />
                 </div>
               </div>
             ) : null}
@@ -1448,20 +1571,55 @@ function App() {
           <div className="mx-auto flex max-w-3xl items-center gap-2 px-3 pt-1 sm:px-5">
             <button type="button" aria-label="Cambiar proyecto"
               onClick={() => { setProjectsOpen(true); void loadProjects(); }}
-              className="flex min-h-10 min-w-0 max-w-[60%] items-center gap-2 rounded-xl px-3 text-left text-xs font-medium hover:bg-kumo-elevated">
+              className="flex min-h-10 min-w-0 max-w-[42%] flex-1 items-center gap-2 rounded-xl px-2 text-left text-xs font-medium hover:bg-kumo-elevated sm:max-w-[60%] sm:px-3">
               <CodeIcon size={15} className="shrink-0 text-kumo-subtle" />
               <span className="truncate">{project || "Elegir proyecto"}</span>
             </button>
-            <details className="relative ml-auto text-xs">
-              <summary className="min-h-10 cursor-pointer list-none rounded-xl px-3 py-2.5 text-kumo-subtle hover:bg-kumo-elevated">
+            <button type="button" aria-pressed={imageTask}
+              title={imageModel ? `Generará imágenes con ${imageModel}` : "Elige un modelo OpenRouter de imagen"}
+              disabled={!connected || busy || !imageModelReady}
+              onClick={() => {
+                setImageError("");
+                if (!imageModel) {
+                  setImageSetupRequested(true);
+                  setSettingsOpen(true);
+                  return;
+                }
+                if (!imageTask) setModeForSession(session, "build");
+                setImageTask(!imageTask);
+              }}
+              className={`flex min-h-10 shrink-0 items-center gap-1.5 rounded-xl px-2 text-xs font-medium hover:bg-kumo-elevated disabled:opacity-50 sm:px-3 ${imageTask ? "bg-kumo-elevated text-kumo-default" : "text-kumo-subtle"}`}>
+              <ImageIcon size={16} />
+              <span className="hidden min-[380px]:inline">{imageTask ? "Cancelar imagen" : "Generar imagen"}</span>
+              <span className="min-[380px]:hidden">Imagen</span>
+            </button>
+            <details className="relative ml-auto text-xs" onToggle={event => setActivityOpen(event.currentTarget.open)}>
+              <summary className="min-h-10 cursor-pointer list-none rounded-xl px-2 py-2.5 text-kumo-subtle hover:bg-kumo-elevated sm:px-3">
                 Actividad
               </summary>
               <div className="absolute bottom-full right-0 z-30 mb-2 w-[min(88vw,340px)] space-y-2 rounded-xl border border-kumo-line bg-kumo-base p-3 text-xs shadow-xl">
                 <p aria-live="polite">{toolsCompleted} herramientas completadas{toolsFailed ? ` · ${toolsFailed} fallidas` : ""} en esta sesión.</p>
                 <p title="El cambio de consumo de OpenRouter es de cuenta, no una factura de la tarea">{lastCost}</p>
+                <p aria-live="polite">
+                  TokenEconomizer: {connectorActivity === null ? "consultando estado…" :
+                    !connectorActivity.tokenEconomizerEnabled ? "desactivado" :
+                    connectorActivity.tokenEconomizerLastHook
+                      ? `${connectorActivity.tokenEconomizerLastHook.name} · ${connectorActivity.tokenEconomizerLastHook.succeeded ? "ejecutado" : "falló; el chat sigue disponible"} · ${new Date(connectorActivity.tokenEconomizerLastHook.at).toLocaleTimeString()} · ${connectorActivity.tokenEconomizerLastContext ? `contexto devuelto: ${connectorActivity.tokenEconomizerLastContext.characters} caracteres (${new Date(connectorActivity.tokenEconomizerLastContext.at).toLocaleTimeString()})` : "sin contexto reutilizable devuelto todavía"}`
+                      : "activado, sin hooks ejecutados todavía"}
+                </p>
               </div>
             </details>
           </div>
+          {draftImages.length ? <div className="mx-auto flex max-w-3xl gap-2 overflow-x-auto px-4 pt-1 sm:px-6">
+            {draftImages.map(image => <div key={image.id} className="relative shrink-0">
+              <img src={`data:${image.mime};base64,${image.data}`} alt={image.name}
+                className="size-16 rounded-lg border border-kumo-line object-cover" />
+              <button type="button" aria-label={`Quitar ${image.name}`}
+                onClick={() => setDraftImages(current => current.filter(item => item.id !== image.id))}
+                className="absolute -right-1 -top-1 flex size-6 items-center justify-center rounded-full bg-kumo-contrast text-xs text-kumo-inverse">×</button>
+            </div>)}
+          </div> : null}
+          {imageError ? <p role="alert" className="mx-auto max-w-3xl px-5 pt-1 text-xs text-kumo-danger">{imageError}</p> : null}
           <form
             onSubmit={(event) => {
               event.preventDefault();
@@ -1470,6 +1628,14 @@ function App() {
             className="mx-auto max-w-3xl px-3 pt-1 sm:px-5"
           >
             <div className="flex min-h-[52px] items-end gap-2 rounded-[26px] border border-kumo-line bg-kumo-elevated p-2.5 shadow-lg transition-shadow focus-within:ring-2 focus-within:ring-kumo-ring">
+              <label title="Adjuntar imágenes" aria-label="Adjuntar imágenes"
+                className={`mb-0.5 flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-xl hover:bg-kumo-base ${draftImages.length >= IMAGE_MAX_COUNT || !connected ? "pointer-events-none opacity-40" : ""}`}>
+                <ImageIcon size={19} />
+                <input type="file" accept="image/png,image/jpeg,image/webp" multiple
+                  disabled={!connected || draftImages.length >= IMAGE_MAX_COUNT}
+                  onChange={event => { void addImages(event.currentTarget.files); event.currentTarget.value = ""; }}
+                  className="sr-only" />
+              </label>
               <InputArea
                 value={prompt}
                 onValueChange={setPrompt}
@@ -1480,27 +1646,31 @@ function App() {
                   }
                 }}
                 placeholder={
-                  busy
-                    ? "Escribe una instrucción para continuar la tarea"
-                    : "Describe qué quieres hacer con OpenCode"
+                  workflow?.status === "running"
+                    ? "Flujo activo"
+                    : imageTask
+                    ? "Describe tu imagen"
+                    : busy
+                    ? "Continúa la tarea…"
+                    : "Escribe un mensaje"
                 }
                 aria-label="Escribir a OpenCode"
-                disabled={!connected}
+                disabled={!connected || workflow?.status === "running"}
                 rows={1}
                 className="flex-1 !bg-transparent !shadow-none !ring-0 !outline-none focus:!ring-0"
               />
               {busy ? (
                 <div className="mb-0.5 flex gap-1.5">
-                  <Button
+                  {workflow?.status === "running" ? null : <Button
                     type="button"
                     variant="secondary"
                     size="sm"
                     aria-label="Intervenir en tarea"
-                    disabled={prompt.trim() === ""}
+                    disabled={prompt.trim() === "" && draftImages.length === 0}
                     onClick={() => submit("steer")}
                   >
                     Steer
-                  </Button>
+                  </Button>}
                   <Button
                     type="button"
                     variant="secondary"
@@ -1516,7 +1686,7 @@ function App() {
                   variant="primary"
                   shape="square"
                   aria-label="Enviar mensaje"
-                  disabled={!connected || prompt.trim() === ""}
+                  disabled={!connected || (prompt.trim() === "" && draftImages.length === 0)}
                   icon={<PaperPlaneRightIcon size={18} />}
                   className="mb-0.5"
                 />

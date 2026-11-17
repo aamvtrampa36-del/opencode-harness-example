@@ -16,11 +16,30 @@ async function runPreviewCase(tarBin?: string): Promise<{
   await writeFile(join(project, "dist", "app.js"), "console.log('download');");
   await writeFile(join(project, ".env"), "PRIVATE=never_export");
   await writeFile(join(project, "node_modules", "heavy.txt"), "skip-me");
-  const port = 33000 + Math.floor(Math.random() * 20000);
   const child: ChildProcess = spawn("node", ["--input-type=module", "-e", PREVIEW_SOURCE], {
-    env: { ...process.env, PREVIEW_ROOT: root, PREVIEW_PORT: String(port),
+    env: { ...process.env, PREVIEW_ROOT: root, PREVIEW_PORT: "0", PREVIEW_REPORT_PORT: "true",
       ...(tarBin ? { PREVIEW_TAR_BIN: tarBin } : {}) },
-    stdio: "ignore"
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+  const port = await new Promise<number>((resolve, reject) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (!settled) { settled = true; reject(new Error("Preview did not report its assigned port")); }
+    }, 5_000);
+    child.stdout?.once("data", (chunk: Buffer) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      const assigned = Number(chunk.toString().trim());
+      if (!Number.isInteger(assigned) || assigned < 1 || assigned > 65_535) reject(new Error("Preview reported an invalid port"));
+      else resolve(assigned);
+    });
+    child.once("error", error => {
+      if (!settled) { settled = true; clearTimeout(timeout); reject(error); }
+    });
+    child.once("exit", code => {
+      if (!settled) { settled = true; clearTimeout(timeout); reject(new Error(`Preview exited before reporting a port (${code})`)); }
+    });
   });
   const url = "http://127.0.0.1:" + port;
   try {

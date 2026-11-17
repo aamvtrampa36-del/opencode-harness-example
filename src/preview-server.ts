@@ -25,7 +25,7 @@ const MIME = {
   ".wasm": "application/wasm", ".woff2": "font/woff2", ".woff": "font/woff",
   ".map": "application/json"
 };
-http.createServer(async (req, res) => {
+const server = http.createServer(async (req, res) => {
   if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405).end(); return; }
   try {
     const url = new URL(req.url || "/", "http://container");
@@ -127,5 +127,11 @@ http.createServer(async (req, res) => {
     else res.writeHead(code, { "Content-Type": "text/plain", "Cache-Control": "no-store" })
       .end(code === 404 ? "Project files not found" : "Project archive or preview unavailable");
   }
-}).listen(Number(process.env.PREVIEW_PORT || ${PREVIEW_PORT}), "0.0.0.0");
+});
+server.listen(Number(process.env.PREVIEW_PORT || ${PREVIEW_PORT}), "0.0.0.0", () => {
+  const address = server.address();
+  if (process.env.PREVIEW_REPORT_PORT === "true" && address && typeof address === "object") {
+    process.stdout.write(String(address.port) + "\n");
+  }
+});
 `;

@@ -3,6 +3,9 @@ import { aggregateIncident, type IncidentRecord } from "./incident-diagnostics";
 import { ALLOWED_REPOS, normalizeOwnedRepository } from "./github";
 import { MAX_SPECIALIZATIONS, mergeSpecializations, validateSpecialization, type Specialization } from "./specializations";
 import { publicMcp, validateRemoteMcp, type PublicMcpConfig, type RemoteMcpConfig } from "./mcp-config";
+import { auth, type StoredOAuthTokens } from "@modelcontextprotocol/client";
+import { RemoteMcpOAuthProvider, type OAuthTokenRecord } from "./mcp-oauth";
+import type { ConnectorEventName } from "./connector-adapter";
 
 /**
  * One owner-scoped, persisted settings object shared by all browser workspaces.
@@ -12,6 +15,17 @@ import { publicMcp, validateRemoteMcp, type PublicMcpConfig, type RemoteMcpConfi
  */
 const MAX_KEY = 512;
 const NO_STORE = { "Cache-Control": "no-store" };
+const OAUTH_ATTEMPT_TTL = 15 * 60 * 1000;
+
+export type TokenEconomizerHookStatus = {
+  name: ConnectorEventName;
+  at: number;
+  succeeded: boolean;
+};
+
+export type TokenEconomizerContextStatus = { at: number; characters: number };
+
+export type TemplateProposal = { id: string; createdAt: number; template: Specialization };
 
 export interface ProviderStatus {
   openRouterConfigured: boolean;
@@ -94,12 +108,144 @@ export class PersonalSettings extends DurableObject<Env> {
     return this.ctx.storage.get<string>("openrouter-api-key");
   }
 
+  async defaultImageModel(): Promise<string | undefined> {
+    return this.ctx.storage.get<string>("default-image-model-v1");
+  }
+
+  async setDefaultImageModel(model: string | undefined): Promise<void> {
+    if (model === undefined) {
+      await this.ctx.storage.delete("default-image-model-v1");
+      return;
+    }
+    if (typeof model !== "string" || model.length > 160 ||
+        !/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:+-]*$/i.test(model)) {
+      throw new Error("Modelo de imagen inválido");
+    }
+    await this.ctx.storage.put("default-image-model-v1", model);
+  }
+
   async getGitHubKey(): Promise<string | undefined> {
     return this.ctx.storage.get<string>("github-api-key");
   }
 
-  async getRemoteMcps(): Promise<RemoteMcpConfig[]> {
+  private async remoteMcpRecords(): Promise<RemoteMcpConfig[]> {
     return (await this.ctx.storage.get<RemoteMcpConfig[]>("remote-mcps-v1")) ?? [];
+  }
+
+  async getRemoteMcps(): Promise<RemoteMcpConfig[]> {
+    const saved = await this.remoteMcpRecords();
+    return Promise.all(saved.map(async config => {
+      if (config.auth !== "oauth") return config;
+      let record = await this.ctx.storage.get<OAuthTokenRecord>(`mcp-oauth:${config.id}:tokens`);
+      if (record?.tokens.refresh_token && typeof record.tokens.expires_in === "number" &&
+          record.savedAt + record.tokens.expires_in * 1000 < Date.now() + 60_000) {
+        try {
+          const callback = await this.ctx.storage.get<string>(`mcp-oauth:${config.id}:callback`);
+          if (!callback) throw new Error("OAuth callback is unavailable");
+          const provider = new RemoteMcpOAuthProvider({ id: config.id, callbackUrl: callback,
+            state: crypto.randomUUID(), store: this.ctx.storage });
+          const result = await auth(provider, { serverUrl: config.url, scope: config.scope });
+          record = await this.ctx.storage.get<OAuthTokenRecord>(`mcp-oauth:${config.id}:tokens`);
+          if (result !== "AUTHORIZED") record = undefined;
+        } catch {
+          record = undefined;
+        }
+      }
+      return { ...config, connected: Boolean(record?.tokens.access_token),
+        ...(record?.tokens.access_token ? { token: record.tokens.access_token } : {}) };
+    }));
+  }
+
+  async startRemoteMcpOAuth(input: { id: string; callbackUrl: string; scope?: string; workspace?: string }): Promise<{ authorizationUrl: string }> {
+    if (!/^[a-z][a-z0-9-]{1,39}$/.test(input.id)) throw new Error("Invalid MCP ID");
+    const config = (await this.ctx.storage.get<RemoteMcpConfig[]>("remote-mcps-v1") ?? [])
+      .find(item => item.id === input.id);
+    if (!config || config.auth !== "oauth") throw new Error("Guarda primero el servidor MCP con autenticación OAuth");
+    const callback = new URL(input.callbackUrl);
+    if (callback.protocol !== "https:" || callback.pathname !== "/api/settings/mcp/oauth/callback" ||
+        callback.search || callback.hash || callback.username || callback.password) {
+      throw new Error("Invalid OAuth callback URL");
+    }
+    if (input.workspace && !/^[a-f0-9-]{36}$/i.test(input.workspace)) throw new Error("Invalid workspace");
+    const scope = input.scope?.trim() || config.scope;
+    if (scope && (scope.length > 300 || !/^[a-z0-9:_./ -]+$/i.test(scope))) throw new Error("Invalid OAuth scope");
+    const state = crypto.randomUUID();
+    const provider = new RemoteMcpOAuthProvider({ id: input.id, callbackUrl: callback.toString(), state, store: this.ctx.storage });
+    const result = await auth(provider, { serverUrl: config.url, forceReauthorization: true,
+      ...(scope ? { scope } : {}) });
+    if (result !== "REDIRECT" || !provider.authorizationUrl) throw new Error("OAuth server did not start an authorization flow");
+    if (provider.authorizationUrl.protocol !== "https:" || provider.authorizationUrl.username || provider.authorizationUrl.password) {
+      throw new Error("OAuth authorization endpoint must use HTTPS");
+    }
+    await this.ctx.storage.put(`mcp-oauth:${input.id}:callback`, callback.toString());
+    await this.ctx.storage.put(`mcp-oauth:${input.id}:attempt-state`, state);
+    await this.ctx.storage.put(`mcp-oauth-attempt:${state}`, {
+      id: input.id, callbackUrl: callback.toString(), scope, workspace: input.workspace,
+      createdAt: Date.now()
+    });
+    return { authorizationUrl: provider.authorizationUrl.toString() };
+  }
+
+  async completeRemoteMcpOAuth(state: string, code: string, issuer?: string): Promise<{ id: string; workspace?: string }> {
+    if (!/^[a-f0-9-]{36}$/i.test(state) || typeof code !== "string" || code.length > 4096 || !code) {
+      throw new Error("Invalid OAuth callback");
+    }
+    const attemptKey = `mcp-oauth-attempt:${state}`;
+    const attempt = await this.ctx.storage.get<{ id: string; callbackUrl: string; scope?: string; workspace?: string; createdAt: number }>(attemptKey);
+    const storedState = attempt && await this.ctx.storage.get<string>(`mcp-oauth:${attempt.id}:attempt-state`);
+    if (!attempt || storedState !== state || Date.now() - attempt.createdAt > OAUTH_ATTEMPT_TTL) {
+      await this.ctx.storage.delete(attemptKey);
+      throw new Error("OAuth attempt expired or state did not match");
+    }
+    try {
+      const config = (await this.ctx.storage.get<RemoteMcpConfig[]>("remote-mcps-v1") ?? [])
+        .find(item => item.id === attempt.id);
+      if (!config || config.auth !== "oauth") throw new Error("MCP server configuration changed during OAuth");
+      const provider = new RemoteMcpOAuthProvider({ id: attempt.id, callbackUrl: attempt.callbackUrl,
+        state, store: this.ctx.storage });
+      const result = await auth(provider, { serverUrl: config.url, authorizationCode: code,
+        ...(attempt.scope ? { scope: attempt.scope } : {}), ...(issuer ? { iss: issuer } : {}) });
+      if (result !== "AUTHORIZED") throw new Error("OAuth authorization did not complete");
+      await this.ctx.storage.delete(`mcp-oauth:${attempt.id}:verifier`);
+      const updated = (await this.ctx.storage.get<RemoteMcpConfig[]>("remote-mcps-v1") ?? [])
+        .map(item => item.id === attempt.id ? { ...item, scope: attempt.scope ?? item.scope, connected: true } : item);
+      await this.ctx.storage.put("remote-mcps-v1", updated);
+      return { id: attempt.id, ...(attempt.workspace ? { workspace: attempt.workspace } : {}) };
+    } finally {
+      await this.ctx.storage.delete(attemptKey);
+      await this.ctx.storage.delete(`mcp-oauth:${attempt.id}:attempt-state`);
+    }
+  }
+
+  /** Optional personal integrations stay off until explicitly installed and enabled. */
+  async connectorSettings(): Promise<{ tokenEconomizerEnabled: boolean }> {
+    return { tokenEconomizerEnabled:
+      (await this.ctx.storage.get<boolean>("connector-token-economizer-enabled-v1")) ?? false };
+  }
+
+  async setTokenEconomizerEnabled(enabled: boolean): Promise<void> {
+    if (typeof enabled !== "boolean") throw new Error("El estado del conector debe ser verdadero o falso.");
+    await this.ctx.storage.put("connector-token-economizer-enabled-v1", enabled);
+  }
+
+  async tokenEconomizerLastHook(): Promise<TokenEconomizerHookStatus | undefined> {
+    return this.ctx.storage.get<TokenEconomizerHookStatus>("connector-token-economizer-last-hook-v1");
+  }
+
+  async tokenEconomizerLastContext(): Promise<TokenEconomizerContextStatus | undefined> {
+    return this.ctx.storage.get<TokenEconomizerContextStatus>("connector-token-economizer-last-context-v1");
+  }
+
+  async recordTokenEconomizerHook(name: ConnectorEventName, succeeded: boolean,
+    contextCharacters = 0): Promise<void> {
+    await this.ctx.storage.put("connector-token-economizer-last-hook-v1", {
+      name, at: Date.now(), succeeded
+    } satisfies TokenEconomizerHookStatus);
+    if (succeeded && Number.isSafeInteger(contextCharacters) && contextCharacters > 0) {
+      await this.ctx.storage.put("connector-token-economizer-last-context-v1", {
+        at: Date.now(), characters: contextCharacters
+      } satisfies TokenEconomizerContextStatus);
+    }
   }
 
   async listPublicMcps(): Promise<PublicMcpConfig[]> {
@@ -108,14 +254,24 @@ export class PersonalSettings extends DurableObject<Env> {
 
   async saveRemoteMcp(value: unknown): Promise<PublicMcpConfig> {
     const input = validateRemoteMcp(value);
-    const current = await this.getRemoteMcps();
+    const current = await this.remoteMcpRecords();
     const existing = current.find(e => e.id === input.id);
     if (!existing && current.length >= 12) throw new Error("MCP limit reached (12 servers)");
     const raw = value as Record<string, unknown>;
     const token = input.token || (raw.clearToken === true ? undefined : existing?.token);
+    const authMode = raw.auth === undefined ? (existing?.auth ?? input.auth) : input.auth;
     const updated: RemoteMcpConfig = {
-      id: input.id, url: input.url, enabled: input.enabled, ...(token ? { token } : {})
+      id: input.id, url: input.url, enabled: input.enabled, auth: authMode,
+      ...(input.scope ? { scope: input.scope } : existing?.scope ? { scope: existing.scope } : {}),
+      ...(input.toolAllowlist ? { toolAllowlist: input.toolAllowlist } : existing?.toolAllowlist ? { toolAllowlist: existing.toolAllowlist } : {}),
+      ...(authMode === "bearer" && token ? { token } : {}),
+      ...(authMode === "oauth" ? { connected: existing?.connected ?? false } : {})
     };
+    if (existing && (existing.url !== updated.url || existing.auth !== updated.auth)) {
+      for (const key of ["client", "tokens", "verifier", "discovery", "callback", "attempt-state"])
+        await this.ctx.storage.delete(`mcp-oauth:${input.id}:${key}`);
+      updated.connected = false;
+    }
     await this.ctx.storage.put("remote-mcps-v1",
       [...current.filter(e => e.id !== updated.id), updated].sort((a, b) => a.id.localeCompare(b.id)));
     return publicMcp(updated);
@@ -124,7 +280,9 @@ export class PersonalSettings extends DurableObject<Env> {
   async removeRemoteMcp(id: string): Promise<void> {
     if (!/^[a-z][a-z0-9-]{1,39}$/.test(id)) throw new Error("Invalid MCP ID");
     await this.ctx.storage.put("remote-mcps-v1",
-      (await this.getRemoteMcps()).filter(config => config.id !== id));
+      (await this.remoteMcpRecords()).filter(config => config.id !== id));
+    for (const key of ["client", "tokens", "verifier", "discovery", "callback", "attempt-state"])
+      await this.ctx.storage.delete(`mcp-oauth:${id}:${key}`);
   }
 
   /** Return the seven virtual defaults plus persisted overrides/custom entries. */
@@ -157,6 +315,42 @@ export class PersonalSettings extends DurableObject<Env> {
     if (!/^[a-z][a-z0-9-]{1,39}$/.test(id)) throw new Error("Invalid specialization ID");
     const saved = (await this.ctx.storage.get<Specialization[]>("specializations-v1")) ?? [];
     await this.ctx.storage.put("specializations-v1", saved.filter(p => p.id !== id));
+  }
+
+  async listTemplateProposals(): Promise<TemplateProposal[]> {
+    return (await this.ctx.storage.get<TemplateProposal[]>("specialization-proposals-v1")) ?? [];
+  }
+
+  /** Agent-created templates stay as drafts until the owner approves them in Settings. */
+  async proposeSpecialization(input: unknown): Promise<{ id: string }> {
+    const template = validateSpecialization(input);
+    if (!template.enabled) throw new Error("A proposed template must be enabled");
+    const proposals = await this.listTemplateProposals();
+    if (proposals.length >= 5) throw new Error("There are already five pending template suggestions");
+    const id = crypto.randomUUID();
+    await this.ctx.storage.put("specialization-proposals-v1", [
+      ...proposals,
+      { id, createdAt: Date.now(), template }
+    ]);
+    return { id };
+  }
+
+  async approveTemplateProposal(id: string): Promise<Specialization> {
+    const proposals = await this.listTemplateProposals();
+    const proposal = proposals.find(item => item.id === id);
+    if (!proposal) throw new Error("Template suggestion not found");
+    if ((await this.listSpecializations()).some(item => item.id === proposal.template.id)) {
+      throw new Error("Template ID already exists. Ask the agent to suggest a different ID.");
+    }
+    const saved = await this.saveSpecialization(proposal.template);
+    await this.ctx.storage.put("specialization-proposals-v1", proposals.filter(item => item.id !== id));
+    return saved;
+  }
+
+  async rejectTemplateProposal(id: string): Promise<void> {
+    if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error("Invalid template suggestion ID");
+    await this.ctx.storage.put("specialization-proposals-v1",
+      (await this.listTemplateProposals()).filter(item => item.id !== id));
   }
 
   async connectOpenRouter(raw: unknown): Promise<{ configured: true; usage: KeyUsage }> {

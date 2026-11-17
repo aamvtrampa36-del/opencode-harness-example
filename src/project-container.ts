@@ -25,9 +25,12 @@ export function validateIsolatedRegistration(
   const project = validateProject(requested.project);
   if (existing) {
     if (existing.project !== project ||
-        (existing.repository ?? "").toLowerCase() !== (requested.repository ?? "").toLowerCase()) {
+        (requested.repository !== undefined &&
+          (existing.repository ?? "").toLowerCase() !== requested.repository.toLowerCase())) {
       throw Error("Este proyecto aislado ya pertenece a otro repositorio");
     }
+    // Choosing a registered repo-backed project for Linux does not unbind it.
+    // An explicitly supplied, different repository is still rejected above.
     return existing;
   }
   if (legacy.some(item => item.name === project)) {

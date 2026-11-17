@@ -3,8 +3,10 @@ import type { AgentMode } from "./protocol";
 const MODE_PREFIX = "opencode-session-mode:";
 
 export function readSessionMode(storage: Pick<Storage, "getItem">, object: string, session: string): AgentMode {
-  const mode = storage.getItem(MODE_PREFIX + object + ":" + session);
-  return mode === "build" || mode === "plan" || mode === "review" || mode === "creative" ? mode : "review";
+  // Modes are no longer persistent UI choices. Legacy sessions return to
+  // general chat; one-shot read-only actions can still request `review`.
+  void storage.getItem(MODE_PREFIX + object + ":" + session);
+  return "build";
 }
 
 export function saveSessionMode(storage: Pick<Storage, "setItem">, object: string, session: string, mode: AgentMode): void {

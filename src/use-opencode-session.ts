@@ -72,6 +72,7 @@ type State = {
   /** Live deltas by assistant message id, until a snapshot catches up. */
   readonly live: Readonly<Record<string, LiveText>>;
   readonly error: string | undefined;
+  readonly workflow: Extract<ServerMessage, { type: "workflow" }> | undefined;
 };
 
 const INITIAL_STATE: State = {
@@ -82,7 +83,8 @@ const INITIAL_STATE: State = {
   pending: [],
   sessions: [],
   live: {},
-  error: undefined
+  error: undefined,
+  workflow: undefined
 };
 
 /** Drop live text a snapshot has caught up with. */
@@ -150,6 +152,9 @@ export function useOpenCodeSession(
         case "sessions":
           setState((current) => ({ ...current, sessions: message.sessions }));
           return;
+        case "workflow":
+          setState((current) => ({ ...current, workflow: message }));
+          return;
         case "snapshot":
           if (message.session !== session) return;
           setState((current) => ({
@@ -213,13 +218,14 @@ export function useOpenCodeSession(
 
   /** Idle: starts a run. Busy: queued as a follow-up, or steers the run. */
   const submit = useCallback(
-    (text: string, whenBusy: "followUp" | "steer" = "followUp", model: ModelSelectionID = "cloudflare", mode: AgentMode = "build", specialization?: string, project?: string, repository?: string) => {
+    (text: string, whenBusy: "followUp" | "steer" = "followUp", model: ModelSelectionID = "cloudflare", mode: AgentMode = "build", specialization?: string, project?: string, repository?: string, files?: readonly { data: string; mime: string; name: string }[]) => {
       const accepted = send({ type: "submit", id: crypto.randomUUID(), text, whenBusy, model, mode,
         ...(specialization ? { specialization } : {}),
         ...(project ? { project } : {}),
-        ...(repository ? { repository } : {}) });
+        ...(repository ? { repository } : {}), ...(files?.length ? { files } : {}) });
       setState((current) => ({
         ...current,
+        ...(accepted && current.workflow?.status !== "running" ? { workflow: undefined } : {}),
         error: accepted ? undefined : "Sin conexión: la tarea no se envió. Reintenta cuando aparezca En línea."
       }));
       return accepted;

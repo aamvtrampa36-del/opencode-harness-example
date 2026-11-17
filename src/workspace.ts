@@ -10,6 +10,7 @@ import type { GitHubAction } from "./github";
 import type { ScopedToolAction } from "./project-scope";
 import { executeBoundRepositoryAction } from "./scoped-github";
 import { resolveScopedLinuxProject } from "./scoped-linux-tools";
+import type { GeneratedImage } from "./openrouter-images";
 
 /**
  * OpenCode's tools that need a local filesystem or process. The Workers
@@ -29,9 +30,22 @@ export type LinuxRunner = {
   }>;
 };
 
+export type ImageGenerationRunner = {
+  getModel(sessionID: string): Promise<string | undefined>;
+  generate(sessionID: string, prompt: string): Promise<GeneratedImage>;
+};
+
+export type SubagentRunner = {
+  isChild(sessionID: string): Promise<boolean>;
+  start(sessionID: string, task: string, kind: "analysis" | "decision"): Promise<{ session: string }>;
+  result(parentSession: string, childSession: string): Promise<{ status: "running" | "finished"; text: string }>;
+};
+
+export type TemplateProposalRunner = { propose(value: unknown): Promise<{ id: string }> };
+
 const LOCAL_TOOLS = ["read", "write", "edit", "patch", "glob", "grep", "shell"];
 
-const SYSTEM = `You are OpenCode running in a Cloudflare Durable Object, not the user's computer. Each project uses a separate Linux Container. The linux tool runs commands in the selected project; inspect_linux reads its files without executing commands. A selected GitHub repository is imported into its Container from a pinned commit without sending credentials to Linux. This is a source archive, not a Git checkout: .git and Git history are absent. Use the scoped github tool to create an opencode/* branch, write the tested text files to that branch, review the diff, and open a draft PR. Do not claim a local git push or checkout exists. Previous shared projects remain available as backups and must be restored to a new name before development. Containers checkpoint files before idle suspension. To give the user a live browser preview, create a static production build at /workspace/projects/{project-slug}/dist/index.html with relative asset URLs. For Vite use base './'; for HTML-only projects copy HTML, CSS and JS into dist/. The web UI provides a Ver app button. Do not claim the preview is working until tested. Never claim a command passed until its returned exitCode is zero. Never claim to have run tools or tests you could not actually run.\n\nDEVELOPMENT: Understand requirements, use small reversible changes, inspect diffs, report tests actually performed and unresolved issues. Create proposals or drafts first. Do not delete important data, write to production, merge to main, change credentials or deploy services without explicit approval. Never make up tool results or source contents.\n\nOFFICIAL SOURCES: You may plan, draft, edit and review, but the owner approves final integration and publication. NEVER overwrite official sources, canonize editorial content, merge production changes or publish without explicit authorization for the exact operation. Keep drafts distinguishable from approved materials.\n\nGITHUB: When the github tool is available, use it to read the owner's repositories approved in Settings, create opencode/* review branches, save changed text files and open draft pull requests. It never merges or pushes to main. For remote GitHub review use repo_review, repo_read and repo_info: these tools automatically resolve the repository from the authenticated session. DO NOT inspect /bundle/.git/HEAD or use /bundle as a checkout of the selected GitHub repository. Generic workspace tools are blocked in project sessions because the Durable Object workspace is shared. Use the scoped inspect_linux or GitHub tools for reads. In Plan/Review use repo_review with the opencode/* branch directly. If the bridge is unavailable, ask the user to connect GitHub privately in Settings; never ask for a token in chat.\n\nCOST/SECURITY: Prefer inexpensive models for ordinary tasks. Never print API secrets. Do not disable authentication or launch billable infrastructure without informed authorization.\n\nOPERATIONS: State the actual available tools and constraints. A separate Linux Container is available through the scoped linux tool. Explain only genuine missing capabilities, and never fake command results, tools, or tests. Do not use the shared workspace tools in project sessions. Concise Spanish unless the user requests otherwise.`;
+const SYSTEM = `You are OpenCode running in a Cloudflare Durable Object, not the user's computer. Each project uses a separate Linux Container. The linux tool runs commands in the selected project; inspect_linux reads its files without executing commands. The linux command starts in the selected project's root: use relative paths such as dist/index.html, never /bundle or other absolute workspace paths. A selected GitHub repository is imported into its Container from a pinned commit without sending credentials to Linux. This is a source archive, not a Git checkout: .git and Git history are absent. Use the scoped github tool to create an opencode/* branch, write the tested text files to that branch, review the diff, and open a draft PR. Do not claim a local git push or checkout exists. Previous shared projects remain available as backups and must be restored to a new name before development. Containers checkpoint files before idle suspension. To give the user a live browser preview, create the build in the selected project directory's relative dist/ folder; for HTML-only projects create dist/index.html, and for Vite use base './'. The web UI provides a Ver app button. Do not claim the preview is working until tested. Never claim a command passed until its returned exitCode is zero. Never claim to have run tools or tests you could not actually run.\n\nDEVELOPMENT: Understand requirements, use small reversible changes, inspect diffs, report tests actually performed and unresolved issues. Create proposals or drafts first. Do not delete important data, write to production, merge to main, change credentials or deploy services without explicit approval. Never make up tool results or source contents.\n\nOFFICIAL SOURCES: You may plan, draft, edit and review, but the owner approves final integration and publication. NEVER overwrite official sources, canonize editorial content, merge production changes or publish without explicit authorization for the exact operation. Keep drafts distinguishable from approved materials.\n\nGITHUB: When the github tool is available, use it to read the owner's repositories approved in Settings, create opencode/* review branches, save changed text files and open draft pull requests. It never merges or pushes to main. For remote GitHub review use repo_review, repo_read and repo_info: these tools automatically resolve the repository from the authenticated session. DO NOT inspect /bundle/.git/HEAD or use /bundle as a checkout of the selected GitHub repository. Generic workspace tools are blocked in project sessions because the Durable Object workspace is shared. Use the scoped inspect_linux or GitHub tools for reads. In Plan/Review use repo_review with the opencode/* branch directly. If the bridge is unavailable, ask the user to connect GitHub privately in Settings; never ask for a token in chat.\n\nCOST/SECURITY: Prefer inexpensive models for ordinary tasks. Never print API secrets. Do not disable authentication or launch billable infrastructure without informed authorization.\n\nOPERATIONS: State the actual available tools and constraints. A separate Linux Container is available through the scoped linux tool. Explain only genuine missing capabilities, and never fake command results, tools, or tests. Do not use the shared workspace tools in project sessions. Concise Spanish unless the user requests otherwise.`;
 
 /**
  * The shared `exec` description is written for a choice of shell backends.
@@ -118,7 +132,10 @@ export function workspacePlugin(
   github?: GitHubRunner,
   scopeGuard?: (sessionID: string, action: ScopedToolAction) => Promise<void>,
   getBoundRepository?: (sessionID: string) => Promise<string>,
-  getBoundProject?: (sessionID: string) => Promise<string>
+  getBoundProject?: (sessionID: string) => Promise<string>,
+  imageGeneration?: ImageGenerationRunner,
+  subagents?: SubagentRunner,
+  templateProposals?: TemplateProposalRunner
 ): Plugin.Plugin {
   const { tools, execute } = createPiTools({
     ...options,
@@ -132,7 +149,12 @@ export function workspacePlugin(
       }
     }
   });
-  const sharedWorkspaceToolNames = tools.map((tool) => tool.name.replace(/[^a-zA-Z0-9_-]/g, "_"));
+  // The OpenCode code-mode entrypoint executes against this shared Worker
+  // workspace too, but is registered by the runtime rather than createPiTools.
+  const sharedWorkspaceToolNames = [
+    ...tools.map((tool) => tool.name.replace(/[^a-zA-Z0-9_-]/g, "_")),
+    "execute"
+  ];
   const projectToolNames = ["linux", "inspect_linux", "github", "repo_review", "repo_info", "repo_read"];
   const githubToolNames = ["github", "repo_review", "repo_info", "repo_read"];
 
@@ -145,7 +167,7 @@ export function workspacePlugin(
         });
         editor.update("plan", (agent) => {
           agent.system = SYSTEM +
-            "\n\nPLAN/REVIEW MODE: Only analyze and inspect. Do not modify files, change Git branches, perform deployments, publish narrative or install packages. Provide grounded observations and a concise plan. The user must switch to Develop before implementing changes.";
+            "\n\nREAD-ONLY STAGE: Only analyze and inspect. Do not modify files, change Git branches, perform deployments, publish narrative or install packages. Provide grounded observations and a concise result. The next workflow stage may act if it is explicitly configured to use tools.";
         });
       });
       if (scopeGuard && ctx.session) {
@@ -153,6 +175,13 @@ export function workspacePlugin(
         // per session. Expose the shared Workspace only for confirmed
         // unscoped conversations and isolated project tools after binding.
         await ctx.session.hook("context", async ({ sessionID, tools: available }) => {
+          const isSubagent = await subagents?.isChild(sessionID) ?? false;
+          if (!await imageGeneration?.getModel(sessionID)) delete available.generate_image;
+          if (isSubagent) {
+            delete available.start_subagent;
+            delete available.subagent_result;
+            delete available.propose_template;
+          }
           let project: string | undefined;
           try {
             if (!getBoundProject) throw new Error("Session scope is unavailable");
@@ -166,6 +195,10 @@ export function workspacePlugin(
           }
           if (!project) {
             for (const name of projectToolNames) delete available[name];
+            if (isSubagent) {
+              const allowed = new Set(["read", "glob", "grep", "ls", "find", "stat"]);
+              for (const name of Object.keys(available)) if (!allowed.has(name)) delete available[name];
+            }
             return;
           }
 
@@ -178,18 +211,95 @@ export function workspacePlugin(
           if (!repository) {
             for (const name of githubToolNames) delete available[name];
           }
+          if (isSubagent) {
+            const allowed = new Set(["inspect_linux", ...(repository
+              ? ["repo_review", "repo_info", "repo_read"] : [])]);
+            for (const name of Object.keys(available)) if (!allowed.has(name)) delete available[name];
+          }
         });
       }
       await ctx.tool.transform((editor) => {
         for (const id of LOCAL_TOOLS) editor.remove(id);
+        if (templateProposals) editor.add({
+          name: "propose_template",
+          description: "Prepara una plantilla de trabajo como borrador pendiente. Nunca la guarda como plantilla activa: la persona propietaria debe revisarla y aprobarla en Configurar → Plantillas.",
+          input: { type: "object", properties: {
+            templateJson: { type: "string", description: "Objeto JSON Specialization con id, name, instructions, enabled:true, model opcional y stages opcionales (name, instructions, model, mode). Máximo 20000 caracteres." }
+          }, required: ["templateJson"], additionalProperties: false },
+          options: { codemode: false },
+          async execute(input) {
+            const value = input as { templateJson?: unknown };
+            if (typeof value.templateJson !== "string" || value.templateJson.length > 20_000)
+              throw new Error("La plantilla debe ser JSON y no superar 20000 caracteres.");
+            let parsed: unknown;
+            try { parsed = JSON.parse(value.templateJson); }
+            catch { throw new Error("El borrador no contiene JSON válido."); }
+            const proposal = await templateProposals!.propose(parsed);
+            return { content: JSON.stringify({ status: "pending-owner-approval", proposal: proposal.id,
+              next: "La plantilla solo se activa cuando la persona propietaria la aprueba en Configurar → Plantillas." }) };
+          }
+        });
+        if (imageGeneration) editor.add({
+          name: "generate_image",
+          description: "Genera una imagen mediante el modelo de OpenRouter elegido en la plantilla activa. Úsala solo cuando la persona pida una imagen; devuelve el archivo visual en la conversación.",
+          input: { type: "object", properties: {
+            prompt: { type: "string", description: "Descripción visual de la imagen, hasta 8000 caracteres" }
+          }, required: ["prompt"], additionalProperties: false },
+          options: { codemode: false },
+          async execute(input, context) {
+            const { prompt } = input as { prompt?: unknown };
+            if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 8_000)
+              throw new Error("Describe la imagen en un máximo de 8000 caracteres.");
+            const generated = await imageGeneration!.generate(context.sessionID, prompt);
+            return { content: [
+              { type: "file", uri: `data:${generated.mime};base64,${generated.data}`,
+                mime: generated.mime, name: "imagen-generada" },
+              { type: "text", text: generated.cost === null ? "Imagen generada." :
+                `Imagen generada. Coste informado por OpenRouter: $${generated.cost.toFixed(4)}.` }
+            ] };
+          }
+        });
+        if (subagents) {
+          editor.add({
+            name: "start_subagent",
+            description: "Inicia un subagente de solo lectura en una sesión derivada, con el mismo proyecto y repositorio autorizados. Usa tareas acotadas y no repitas la misma delegación. Indica kind=decision solo para comparar opciones y recomendar una decisión; los demás encargos usan kind=analysis y el modelo heredado.",
+            input: { type: "object", properties: {
+              task: { type: "string", description: "Una tarea independiente y concreta, hasta 4000 caracteres" },
+              kind: { type: "string", enum: ["analysis", "decision"], description: "analysis por defecto; decision solo para comparar y recomendar" }
+            }, required: ["task"], additionalProperties: false },
+            options: { codemode: false },
+            async execute(input, context) {
+              const { task, kind } = input as { task?: unknown; kind?: unknown };
+              if (typeof task !== "string" || !task.trim() || task.length > 4_000)
+                throw new Error("La tarea del subagente debe tener entre 1 y 4000 caracteres.");
+              if (kind !== undefined && kind !== "analysis" && kind !== "decision")
+                throw new Error("El tipo del subagente debe ser analysis o decision.");
+              const result = await subagents!.start(context.sessionID, task, kind === "decision" ? "decision" : "analysis");
+              return { content: JSON.stringify({ ...result, status: "started",
+                next: "Consulta subagent_result con este session id cuando necesites su resultado." }) };
+            }
+          });
+          editor.add({
+            name: "subagent_result",
+            description: "Consulta el estado y el resumen de un subagente iniciado por esta conversación.",
+            input: { type: "object", properties: {
+              session: { type: "string", description: "Identificador de la sesión devuelto por start_subagent" }
+            }, required: ["session"], additionalProperties: false },
+            options: { codemode: false },
+            async execute(input, context) {
+              const { session } = input as { session?: unknown };
+              if (typeof session !== "string") throw new Error("Identificador de subagente inválido.");
+              return { content: JSON.stringify(await subagents!.result(context.sessionID, session)) };
+            }
+          });
+        }
         if (linux) {
           editor.add({
             name: "linux",
-            description: "Run one real command in the selected project's separate Linux Container. A bound GitHub repository is prepared from a pinned source archive, without .git or credentials. Use github to write tested files to an opencode/* branch and open a draft PR. Output includes the real exitCode.",
+            description: "Run one real command in the selected project's separate Linux Container. The current directory is already the authorized project root: use relative paths such as dist/index.html, never /bundle or other absolute workspace paths. The conversation selects the project automatically; do not pass a project argument. A bound GitHub repository is prepared from a pinned source archive, without .git or credentials. Use github to write tested files to an opencode/* branch and open a draft PR. Output includes the real exitCode.",
             input: {
               type: "object",
               properties: {
-                project: { type: "string", description: "Optional legacy project ID. Normally omit it: the target is derived from the authorized session, not model input." },
                 command: { type: "string", description: "Shell script to execute INSIDE the project directory; no more than 12000 characters" }
               },
               required: ["command"],
@@ -210,11 +320,10 @@ export function workspacePlugin(
         if (linux) {
           editor.add({
             name: "inspect_linux",
-            description: "READ-ONLY inspection of an existing Linux project. List one directory or read one UTF-8 text file (max 32 KiB) without running commands, installing packages or modifying files. Use this in Plan or Review. Hidden secrets, node_modules, and .git are excluded. Enter project slug and a safe relative path.",
+            description: "READ-ONLY inspection of the Linux project selected in this conversation. The project is resolved automatically; do not pass a project argument. List one directory or read one UTF-8 text file (max 32 KiB) without running commands, installing packages or modifying files. Use this in Plan or Review. Hidden secrets, node_modules, and .git are excluded.",
             input: {
               type: "object",
               properties: {
-                project: { type: "string", description: "Optional legacy project ID; the authorized session determines the target automatically." },
                 action: { type: "string", enum: ["list", "read"], description: "List folder or read text file" },
                 path: { type: "string", description: "Relative path under project, empty string for project root listing" }
               },

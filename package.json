@@ -17,6 +17,7 @@
   "dependencies": {
     "@cloudflare/computer": "0.10.0",
     "@cloudflare/kumo": "2.17.0",
+    "@modelcontextprotocol/client": "2.0.0",
     "@opencode/plugin": "2.0.24",
     "@opencode/sdk": "2.0.24",
     "@phosphor-icons/react": "2.1.10",
