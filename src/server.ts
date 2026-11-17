@@ -16,6 +16,7 @@ import { createAI } from "agents/models/opencode";
 import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
 import { workspacePlugin } from "./workspace";
+import { createDynamicMcpModule } from "./dynamic-mcp";
 import { tokenEconomizerAdapter } from "./token-economizer-adapter";
 import type { ConnectorEvent, ConnectorOutput } from "./connector-adapter";
 import { openRouterCredentialPlugin } from "./openrouter";
@@ -822,6 +823,25 @@ export class OpenCodeAgent extends DurableObject<Env> {
         root: "/workspace",
         access: "read-write",
         modules: { "codemode:git": createGitModule({ allowNetwork: true }) }
+      }),
+      new CodemodeBackend({
+        id: "dynamic-mcp",
+        loader: this.env.LOADER,
+        root: "/dynamic",
+        access: "read",
+        defaultTimeoutMs: 45_000,
+        maxTimeoutMs: 45_000,
+        maxCpuMs: 30_000,
+        maxSourceBytes: 128_000,
+        maxInputBytes: 256_000,
+        maxResultBytes: 1_000_000,
+        maxCapabilityCalls: 48,
+        maxConcurrentCapabilityCalls: 4,
+        maxHostCallMs: 35_000,
+        egress: { mode: "none" },
+        modules: {
+          "codemode:mcp": createDynamicMcpModule(() => this.personalConfig.getRemoteMcps())
+        }
       })
     ]
   });
