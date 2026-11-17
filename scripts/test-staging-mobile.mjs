@@ -657,7 +657,7 @@ try {
       'const status = statusCall.structuredContent;',
       'const catalog = catalogCall.structuredContent;',
       'const resource = readCall.structuredContent;',
-      'return { server: server.id, status: status.status, skillCount: catalog.skills.length, resourceStatus: resource.status, path: resource.path, chars: resource.content.length };',
+      'return { server: server.id, status: status.status, cdfStatus: status.cdf.status, cdfGeneration: status.cdf.generation, skillCount: catalog.skills.length, resourceStatus: resource.status, path: resource.path, chars: resource.content.length };',
       "}",
       "No escribas, no ejecutes scripts y no uses otros servicios."
     ].join("\n");
@@ -686,6 +686,7 @@ try {
     await dynamicCall.locator("summary").click();
     const dynamicResult = await dynamicCall.locator("pre").last().innerText();
     assert.match(dynamicResult, /"status"\s*:\s*"READY"/, "Code Mode debe devolver el estado real de WorkBench.");
+    assert.match(dynamicResult, /"cdfStatus"\s*:\s*"PASS"/, "Code Mode debe devolver el estado CDF real expuesto por WorkBench.");
     assert.match(dynamicResult, /"resourceStatus"\s*:\s*"RUNTIME_RESOURCE"/, "Code Mode debe devolver el recurso leído.");
     assert.match(dynamicResult, /skills\/cdf-workbench\/SKILL\.md/, "Code Mode debe devolver la ruta relativa del Skill.");
     cdfWorkbenchToolsVerified = 3;
@@ -887,7 +888,7 @@ try {
     session => localStorage.getItem("opencode-model-preset:" + session), initialSession
   ), initialModelPreset, "La prueba debe conservar el modelo original de la sesión del propietario.");
 
-  console.log(`${localHost ? "Local" : "Staging"} mobile smoke aprobado: 393 × 852, reconexión, sesión aislada, perfiles, OpenRouter, proyectos (${completedProjectTrials}/3 creados; ${projectModel}), CDF WorkBench (${cdfWorkbenchToolsVerified}/3 herramientas), TokenEconomizer (${tokenEconomizerSessionsVerified}/4 sesiones; ${learnedContextCharacters} caracteres reutilizables), y ajustes.`);
+  console.log(`${localHost ? "Local" : "Staging"} mobile smoke aprobado: 393 × 852, reconexión, sesión aislada, perfiles, OpenRouter, proyectos (${completedProjectTrials}/3 creados; ${projectModel}), CDF WorkBench/CLOUD (${cdfWorkbenchToolsVerified}/3 herramientas), TokenEconomizer (${tokenEconomizerSessionsVerified}/4 sesiones; ${learnedContextCharacters} caracteres reutilizables), y ajustes.`);
 } finally {
   if (disableTokenEconomizerAfterTest) {
     await page.evaluate(async () => fetch("/api/settings/connectors/token-economizer", {
