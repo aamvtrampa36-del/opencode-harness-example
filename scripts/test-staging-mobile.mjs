@@ -695,12 +695,43 @@ try {
 
       const task = `Crea una aplicación web estática mínima llamada "${trial.name}" en el proyecto ya seleccionado. Usa la herramienta linux sin campo project para crear dist/index.html con HTML, CSS y JavaScript incrustados. La página debe mostrar exactamente el título "${trial.marker}" y una interacción pequeña útil para la aplicación. No instales dependencias, no uses internet ni edites otros proyectos. Verifica con una llamada Linux que dist/index.html existe y contiene ese título. Responde brevemente solo después de recibir resultados reales de la herramienta.`;
       const previousProjectToolCount = await page.locator("main details.bg-kumo-base").count();
+      const projectSession = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
+      console.log(`Iniciando ${trial.name}: project=${project}, session=${projectSession}, model=${selectedProjectModel}.`);
       await page.getByRole("textbox", { name: "Escribir a OpenCode" }).fill(task);
       await page.getByRole("button", { name: "Enviar mensaje" }).click();
       await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
       try {
         await page.getByRole("status").filter({ hasText: "En línea" }).waitFor({ timeout: 150_000 });
       } catch (error) {
+        const evidence = await page.evaluate(async previousCount => {
+          const session = localStorage.getItem("opencode-harness-session") ?? "";
+          const object = localStorage.getItem("opencode-harness-object") ?? "";
+          let transcriptStatus = 0;
+          let transcript = "";
+          try {
+            const response = await fetch("/api/session/export?" + new URLSearchParams({ object, session }), {
+              cache: "no-store", signal: AbortSignal.timeout(8_000)
+            });
+            transcriptStatus = response.status;
+            transcript = response.ok ? (await response.text()).slice(-8_000) : "";
+          } catch (exportError) {
+            transcript = `Export failed: ${String(exportError).slice(0, 300)}`;
+          }
+          return {
+            session,
+            statuses: [...document.querySelectorAll('[role="status"]')].map(element => element.innerText),
+            messages: [...document.querySelectorAll("main .sd-theme")].slice(-6)
+              .map(element => element.innerText.slice(0, 1_200)),
+            tools: [...document.querySelectorAll("main details.bg-kumo-base")].slice(previousCount)
+              .map(card => ({
+                summary: (card.querySelector("summary")?.innerText ?? "").slice(0, 500),
+                outputs: [...card.querySelectorAll("pre")].map(output => output.innerText.slice(0, 1_200))
+              })),
+            transcriptStatus,
+            transcript
+          };
+        }, previousProjectToolCount).catch(evidenceError => ({ captureError: String(evidenceError).slice(0, 500) }));
+        console.log(`Project task timeout evidence: ${JSON.stringify({ name: trial.name, project, ...evidence })}`);
         await page.getByRole("button", { name: "Detener" }).click().catch(() => undefined);
         throw error;
       }
