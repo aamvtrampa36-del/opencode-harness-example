@@ -42,9 +42,10 @@ function rig(routerReady: boolean) {
 
 describe("actual session model dispatch", () => {
   test("the economical simple profile keeps its configured provider model", async () => {
-    const app = rig(true);
+    // Native Workers AI must remain usable when OpenRouter is not configured.
+    const app = rig(false);
     await app.send("economy");
-    expect(app.configured).toEqual([{providerID:"openrouter",id:"deepseek/deepseek-v4.1-flash-1017"}]);
+    expect(app.configured).toEqual([{providerID:"cloudflare",id:"@cf/deepseek-ai/deepseek-v4.1-flash-1017"}]);
     expect(app.requests).toHaveLength(1);
     const sessions = app.sent.map(message => JSON.parse(message) as { type?: string; sessions?: { id: string; busy: boolean }[] })
       .find(message => message.type === "sessions");
