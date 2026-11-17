@@ -4,7 +4,7 @@ import { readSessionSpecialization, saveSessionSpecialization } from "./session-
 import { isInternalReminder } from "./message-display";
 import { repositoryProjectSlug } from "./project-container";
 import { SettingsPanel } from "./settings-panel";
-import { MODEL_PRESETS, isModelSelection, resolveModelSelection, usableModelSelection, type ModelSelectionID } from "./model-presets";
+import { MODEL_PRESETS, isModelSelection, resolveModelSelection, type ModelSelectionID } from "./model-presets";
 import { ModelPicker } from "./model-picker";
 import type { Specialization } from "./specializations";
 import {
@@ -474,10 +474,8 @@ function App() {
       .catch(() => setAuthorizedRepos([]));
   }, []);
   const [modelPreset, setModelPreset] = useState<ModelSelectionID>(() => modelForSession(session));
-  const selectModel = (next: ModelSelectionID) => {
-    setModelPreset(next);
-    localStorage.setItem(MODEL_KEY + ":" + session, next);
-  };
+  // The server confirms the model before local state or storage is changed.
+  const selectModel = (next: ModelSelectionID) => { void requestModelChange(next); };
   const [sessionsOpen, setSessionsOpen] = useState(
     () => window.matchMedia("(min-width: 1100px)").matches
   );
@@ -515,6 +513,10 @@ function App() {
   const {
     status,
     openRouterAvailable,
+    confirmedModel,
+    modelChanging,
+    modelPending,
+    selectModel: requestModelChange,
     messages,
     busy,
     pending,
@@ -535,6 +537,12 @@ function App() {
     setSpecialization(readSessionSpecialization(localStorage, object, ROOT_SESSION));
     setImageTask(false);
   });
+
+  useEffect(() => {
+    if (!confirmedModel) return;
+    setModelPreset(confirmedModel);
+    localStorage.setItem(MODEL_KEY + ":" + session, confirmedModel);
+  }, [confirmedModel, session]);
 
   useEffect(() => {
     const main = mainRef.current;
@@ -966,6 +974,14 @@ function App() {
   };
 
   const submit = (whenBusy: "followUp" | "steer" = "followUp") => {
+    if (modelChanging) {
+      fail(new Error("Espera la confirmación del cambio de modelo antes de enviar."));
+      return;
+    }
+    if (modelPending && busy) {
+      fail(new Error("El modelo se aplicará después de terminar la tarea actual."));
+      return;
+    }
     const text = prompt.trim();
     if ((!text && !draftImages.length) || !connected) return;
     if (imageTask && !imageModel) {
@@ -984,7 +1000,8 @@ function App() {
       ? "Proyecto Linux seleccionado: " + project + ". Las herramientas linux e inspect_linux usan automáticamente este proyecto; no incluyas un parámetro project. " +
         "No modifiques otros proyectos ni producción sin autorización.\n\nTarea: " + requestText
       : requestText;
-    const selectedModel = usableModelSelection(modelPreset, openRouterAvailable);
+    // Never silently downgrade a provider chosen by the user.
+    const selectedModel = confirmedModel ?? modelPreset;
     if (draftImages.length && resolveModelSelection(selectedModel).providerID !== "openrouter") {
       setImageError("Selecciona un modelo OpenRouter que acepte imágenes antes de enviar.");
       return;
@@ -1146,8 +1163,8 @@ function App() {
                 </p>
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-1">
-                <ModelPicker value={usableModelSelection(modelPreset, openRouterAvailable)}
-                  onChange={selectModel} routerReady={openRouterAvailable} disabled={busy}
+                <ModelPicker value={confirmedModel ?? modelPreset}
+                  onChange={selectModel} routerReady={openRouterAvailable} disabled={!connected || modelChanging}
                   capability={draftImages.length ? "imageInput" : "tools"} />
                 <Button type="button" variant="ghost" shape="square"
                   aria-label="Mostrar opciones de OpenCode" aria-expanded={actionsOpen}
@@ -1156,6 +1173,10 @@ function App() {
                   icon={<GearIcon size={18} />} />
               </div>
             </div>
+            {modelChanging || modelPending ? <p role="status" aria-live="polite"
+              className="mt-1 truncate text-[11px] text-kumo-subtle">
+              {modelChanging ? "Confirmando cambio de modelo…" : "Modelo guardado para el siguiente turno"}
+            </p> : null}
             {workflow ? <p role="status" aria-live="polite" className="mt-1 truncate text-[11px] text-kumo-subtle">
               {workflow.status === "running"
                 ? `Flujo: etapa ${workflow.stage}/${workflow.total} · ${workflow.name}`
