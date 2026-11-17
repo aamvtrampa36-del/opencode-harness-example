@@ -5,7 +5,9 @@ import { isOpenRouterFreeModel, OPENROUTER_FREE, parseOpenRouterCatalogue } from
 describe("OpenRouter model selection", () => {
   test("preserves simple presets and accepts official routers", () => {
     expect(isModelSelection("economy")).toBe(true);
-    expect(resolveModelSelection("economy").id).toBe("deepseek/deepseek-v4.1-flash-1017");
+    expect(resolveModelSelection("economy")).toEqual({
+      providerID: "cloudflare", id: "@cf/deepseek-ai/deepseek-v4.1-flash-1017"
+    });
     expect(isModelSelection("openrouter:openrouter/auto")).toBe(true);
     expect(isModelSelection("openrouter:openrouter/auto-code")).toBe(true);
     expect(resolveModelSelection("openrouter:openrouter/auto-code"))
