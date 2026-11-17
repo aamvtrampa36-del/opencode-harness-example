@@ -34,9 +34,8 @@ const context = await browser.newContext({
 const page = await context.newPage();
 const pageErrors = [];
 const waitForActiveConversation = async session => page.waitForFunction(selected => {
-  const row = [...document.querySelectorAll("[data-session-id]")]
-    .find(element => element.getAttribute("data-session-id") === selected);
-  return row?.getAttribute("aria-current") === "page";
+  const download = document.querySelector('a[download^="opencode-conversacion-"]');
+  return Boolean(download && new URL(download.href).searchParams.get("session") === selected);
 }, session, { timeout: 20_000 });
 let disableTokenEconomizerAfterTest = false;
 let tokenEconomizerSessionsVerified = 0;
