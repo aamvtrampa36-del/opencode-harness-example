@@ -6,6 +6,12 @@ import { publicMcp, validateRemoteMcp, type PublicMcpConfig, type RemoteMcpConfi
 import { auth, type StoredOAuthTokens } from "@modelcontextprotocol/client";
 import { RemoteMcpOAuthProvider, type OAuthTokenRecord } from "./mcp-oauth";
 import type { ConnectorEventName } from "./connector-adapter";
+import {
+  isPersonalMemoryNote,
+  MAX_PERSONAL_MEMORY_NOTES,
+  validatePersonalMemoryContent,
+  type PersonalMemoryNote
+} from "./personal-memory";
 
 /**
  * One owner-scoped, persisted settings object shared by all browser workspaces.
@@ -70,6 +76,54 @@ async function checkProvider(url: string, token: string): Promise<KeyUsage> {
 }
 
 export class PersonalSettings extends DurableObject<Env> {
+  async listMemoryNotes(): Promise<PersonalMemoryNote[]> {
+    const stored: unknown = await this.ctx.storage.get("personal-memory-v1");
+    return (Array.isArray(stored) ? stored.filter(isPersonalMemoryNote) : [])
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  async saveMemoryNote(content: unknown, id?: unknown): Promise<PersonalMemoryNote> {
+    const cleanContent = validatePersonalMemoryContent(content);
+    if (id !== undefined && (typeof id !== "string" || !/^[a-f0-9-]{36}$/i.test(id))) {
+      throw new Error("Identificador de nota inválido.");
+    }
+    const now = Date.now();
+    return this.ctx.storage.transaction(async tx => {
+      const stored: unknown = await tx.get("personal-memory-v1");
+      const notes = Array.isArray(stored) ? stored.filter(isPersonalMemoryNote) : [];
+      if (id) {
+        const index = notes.findIndex(note => note.id === id);
+        if (index < 0) throw new Error("La nota ya no existe.");
+        const updated = { ...notes[index], content: cleanContent, updatedAt: now };
+        notes[index] = updated;
+        await tx.put("personal-memory-v1", notes);
+        return updated;
+      }
+      if (notes.length >= MAX_PERSONAL_MEMORY_NOTES) {
+        throw new Error(`La memoria admite como máximo ${MAX_PERSONAL_MEMORY_NOTES} notas.`);
+      }
+      const note: PersonalMemoryNote = { id: crypto.randomUUID(), content: cleanContent,
+        createdAt: now, updatedAt: now };
+      notes.push(note);
+      await tx.put("personal-memory-v1", notes);
+      return note;
+    });
+  }
+
+  async removeMemoryNote(id: unknown): Promise<boolean> {
+    if (typeof id !== "string" || !/^[a-f0-9-]{36}$/i.test(id)) {
+      throw new Error("Identificador de nota inválido.");
+    }
+    return this.ctx.storage.transaction(async tx => {
+      const stored: unknown = await tx.get("personal-memory-v1");
+      const notes = Array.isArray(stored) ? stored.filter(isPersonalMemoryNote) : [];
+      const remaining = notes.filter(note => note.id !== id);
+      if (remaining.length === notes.length) return false;
+      await tx.put("personal-memory-v1", remaining);
+      return true;
+    });
+  }
+
   /** Read-only owner-scoped incident ledger, without prompt or credential text. */
   async listIncidents(): Promise<IncidentRecord[]> {
     return (await this.ctx.storage.get<IncidentRecord[]>("incident-ledger-v1")) ?? [];

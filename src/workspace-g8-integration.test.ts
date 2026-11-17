@@ -316,4 +316,54 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
     await filterContext!({ sessionID: "ses_child_repo", tools: projectRepo });
     expect(Object.keys(projectRepo).sort()).toEqual(["inspect_linux", "repo_info", "repo_read", "repo_review"]);
   });
+
+  test("generalist web and explicit memory tools are registered with read/write boundaries", async () => {
+    const toolSpecs = new Map<string, any>();
+    const notes: Array<{ id: string; content: string; createdAt: number; updatedAt: number }> = [];
+    const systems: string[] = [];
+    const plugin = workspacePlugin({} as Workspace, {}, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined, undefined, {
+        list: async () => notes,
+        save: async (content, id) => {
+          const now = Date.now();
+          const note = { id: id ?? "f2f96f1a-9c4a-47db-b865-089e3a27789b", content,
+            createdAt: now, updatedAt: now };
+          const index = notes.findIndex(item => item.id === note.id);
+          if (index < 0) notes.push(note); else notes[index] = note;
+          return note;
+        },
+        remove: async id => {
+          const index = notes.findIndex(item => item.id === id);
+          if (index < 0) return false;
+          notes.splice(index, 1);
+          return true;
+        }
+      });
+    await plugin.setup({
+      agent: { transform: async (cb: (editor: any) => unknown) => cb({ update: (_id: string, fn: (agent: any) => void) => {
+        const agent = { system: "" };
+        fn(agent);
+        systems.push(agent.system);
+      } }) },
+      tool: { transform: async (cb: (editor: any) => unknown) => cb({
+        remove: () => undefined, add: (spec: any) => toolSpecs.set(spec.name, spec)
+      }) }
+    } as any);
+
+    for (const name of ["web_read", "remember", "recall", "forget"]) {
+      expect(toolSpecs.get(name).options).toEqual({ codemode: false });
+    }
+    expect(toolSpecs.get("web_read").input.required).toEqual(["url"]);
+    const saved = await toolSpecs.get("remember").execute({ content: "Prefiero español" },
+      { sessionID: "ses_test", agent: "build" });
+    const rememberedId = JSON.parse(saved.content).id;
+    const recalled = await toolSpecs.get("recall").execute({}, { sessionID: "ses_test", agent: "plan" });
+    expect(JSON.parse(recalled.content).notes[0].content).toBe("Prefiero español");
+    await expect(toolSpecs.get("remember").execute({ content: "No autorizado" },
+      { sessionID: "ses_test", agent: "plan" })).rejects.toThrow("solo pueden leer");
+    const forgotten = await toolSpecs.get("forget").execute({ id: rememberedId },
+      { sessionID: "ses_test", agent: "build" });
+    expect(JSON.parse(forgotten.content)).toEqual({ removed: true });
+    expect(systems.some(prompt => prompt.includes("GENERAL ASSISTANT") && prompt.includes("Never create or update memory automatically"))).toBe(true);
+  });
 });

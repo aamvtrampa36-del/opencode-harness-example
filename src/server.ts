@@ -934,7 +934,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
                 .some(item => item.id === sessionID && Boolean(item.parent)),
               start: (sessionID, task, kind) => this.startSubagent(sessionID, task, kind),
               result: (parentSession, childSession) => this.subagentResult(parentSession, childSession) },
-            { propose: value => this.personalConfig.proposeSpecialization(value) })
+            { propose: value => this.personalConfig.proposeSpecialization(value) },
+            { list: () => this.personalConfig.listMemoryNotes(),
+              save: (content, id) => this.personalConfig.saveMemoryNote(content, id),
+              remove: id => this.personalConfig.removeMemoryNote(id) })
         ]
       }),
     // Low effort: with more, the model sometimes writes its whole answer
@@ -1059,6 +1062,30 @@ export default {
           githubConfigured: existing.githubConfigured ||
             Boolean((env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN)
         }, { headers: { "Cache-Control": "no-store" } });
+      }
+      if (url.pathname === "/api/settings/memory") {
+        if (request.method === "GET") {
+          return Response.json({ notes: await personal.listMemoryNotes() },
+            { headers: { "Cache-Control": "no-store" } });
+        }
+        if (request.method === "POST" || request.method === "DELETE") {
+          if (!settingsOriginAllowed) return Response.json({ error: "Se requiere una solicitud JSON del mismo origen." }, { status: 403 });
+          const raw = await request.text();
+          if (raw.length > 14_000) return Response.json({ error: "La solicitud supera el límite permitido." }, { status: 413 });
+          try {
+            const body = JSON.parse(raw) as { id?: unknown; content?: unknown };
+            if (request.method === "POST") {
+              return Response.json({ note: await personal.saveMemoryNote(body.content, body.id) },
+                { headers: { "Cache-Control": "no-store" } });
+            }
+            return Response.json({ removed: await personal.removeMemoryNote(body.id) },
+              { headers: { "Cache-Control": "no-store" } });
+          } catch (error) {
+            return Response.json({ error: error instanceof Error ? error.message : "La nota no se pudo guardar." },
+              { status: 422, headers: { "Cache-Control": "no-store" } });
+          }
+        }
+        return new Response("Method not allowed", { status: 405, headers: { "Allow": "GET, POST, DELETE" } });
       }
       if (url.pathname === "/api/settings/connectors" && request.method === "GET") {
         const [settings, tokenEconomizerLastHook, tokenEconomizerLastContext] = await Promise.all([

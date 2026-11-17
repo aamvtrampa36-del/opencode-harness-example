@@ -5,6 +5,7 @@ import { ConnectorPanel } from "./connector-panel";
 import { useEffect, useState } from "react";
 import { MODEL_PRESETS } from "./model-presets";
 import { ImageModelPicker } from "./image-model-picker";
+import { MemoryPanel } from "./memory-panel";
 
 type ConnectionState = {
   openRouterConfigured: boolean;
@@ -32,7 +33,7 @@ export function SettingsPanel({
   onChanged: () => void;
   onImageModelSaved: (model: string) => void;
 }) {
-  const [tab, setTab] = useState<"models" | "connections" | "tools">("models");
+  const [tab, setTab] = useState<"models" | "connections" | "tools" | "memory">("models");
   const [connected, setConnected] = useState<ConnectionState | null>(null);
   const [provider, setProvider] = useState<ProviderName>("openrouter");
   const [key, setKey] = useState("");
@@ -184,9 +185,9 @@ export function SettingsPanel({
         </div>
         <button type="button" className={buttonStyle} onClick={onClose}>Cerrar</button>
       </div>
-      <nav role="tablist" aria-label="Secciones de ajustes" className="mt-4 grid grid-cols-3 gap-1 rounded-2xl bg-kumo-elevated p-1">
+      <nav role="tablist" aria-label="Secciones de ajustes" className="mt-4 grid grid-cols-4 gap-1 rounded-2xl bg-kumo-elevated p-1">
         {([
-          ["models", "Modelos"], ["connections", "Conexiones"], ["tools", "Herramientas"]
+          ["models", "Modelos"], ["connections", "Conexiones"], ["tools", "Herramientas"], ["memory", "Memoria"]
         ] as const).map(([id, label]) => (
           <button key={id} type="button" role="tab" aria-selected={tab === id}
             className={tabStyle + (tab === id ? " bg-kumo-base shadow-sm" : " text-kumo-subtle")}
@@ -290,6 +291,11 @@ export function SettingsPanel({
       <ConnectorPanel workspace={workspace} />
       <McpPanel workspace={workspace} />
       <AgentCheckPanel workspace={workspace} />
+      </div> : null}
+
+      {tab === "memory" ? <div role="tabpanel" aria-label="Memoria personal"
+        className="mt-4 max-h-[68dvh] overflow-y-auto overscroll-contain pr-1">
+        <MemoryPanel />
       </div> : null}
     </section>
   );
