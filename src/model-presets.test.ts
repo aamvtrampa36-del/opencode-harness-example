@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MODEL_PRESETS, isModelPreset, resolveModelSelection } from "./model-presets";
+import { MODEL_PRESETS, isModelPreset, resolveModelSelection, usableModelSelection } from "./model-presets";
 
 describe("model authorization", () => {
   test("recognizes only allowlisted identifiers", () => {
@@ -31,6 +31,19 @@ describe("model authorization", () => {
       expect(preset.id).toContain("/");
       expect(preset.id).not.toContain("sk-");
     }
+  });
+
+  test("a native DeepSeek choice remains selected without any OpenRouter credential", () => {
+    expect(usableModelSelection("economy", false)).toBe("economy");
+    expect(usableModelSelection("cloudflare", false)).toBe("cloudflare");
+    expect(usableModelSelection("economy", true)).toBe("economy");
+  });
+
+  test("only OpenRouter choices fall back when their provider is unavailable", () => {
+    expect(usableModelSelection("review", false)).toBe("cloudflare");
+    expect(usableModelSelection("openrouter:openrouter/auto", false)).toBe("cloudflare");
+    expect(usableModelSelection("review", true)).toBe("review");
+    expect(usableModelSelection("openrouter:openrouter/auto", true)).toBe("openrouter:openrouter/auto");
   });
 
   test("premium inference is never the default preset", () => {
