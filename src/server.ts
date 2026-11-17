@@ -25,6 +25,7 @@ import { getOpenRouterCatalogue } from "./openrouter-catalog";
 import { assertOpenRouterImageModel, generateOpenRouterImage, getOpenRouterImageModels } from "./openrouter-images";
 import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import { GitHubBridge } from "./github";
+import { ExperimentalPinnedReadCache } from "./experimental-pinned-read-cache";
 import { verifyG8Proofs, G8_PROOFS } from "./g8-smoke";
 import { assessG8LiveHistory, g8LivePrompt, G8_LIVE_CHECK_VERSION, type G8LiveCheck } from "./g8-live-agent";
 import { G9_PROOF_VERSION, G9_REPO, G9_BRANCH, G9_PROJECT, G9_SOURCE, G9_TEST_PATH, G9_BROKEN, G9_FIXED, G9_TEST_SOURCE, assessG9History, g9AgentPrompt, assertG9BoundGitHubOperation, type G9ProofState } from "./g9-selfdev";
@@ -640,14 +641,19 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
   }
 
+  /** Isolated experiment only; disabled unless explicitly enabled by a separate test Worker. */
+  private readonly exp4PinnedReadCache = new ExperimentalPinnedReadCache();
   private readonly githubRunner = {
     execute: async (input: Parameters<GitHubBridge["execute"]>[0]) => {
       const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
         || await this.personalConfig.getGitHubKey();
       if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
       // Wrap the global fetch so it is called with the correct receiver in Workers.
+      const experimentalOnly = (this.env as Env & { OPENCODE_EXP4_PINNED_READ_CACHE?: string })
+        .OPENCODE_EXP4_PINNED_READ_CACHE === "enabled-for-isolated-tests";
       return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
-        await this.personalConfig.getAllowedRepositories()).execute(input);
+        await this.personalConfig.getAllowedRepositories(),
+        experimentalOnly ? this.exp4PinnedReadCache : undefined).execute(input);
     }
   };
   async isOpenRouterConfigured(): Promise<boolean> {

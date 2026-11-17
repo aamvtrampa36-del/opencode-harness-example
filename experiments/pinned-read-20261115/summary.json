@@ -1,0 +1,76 @@
+{
+  "result": "PARTIAL_VALIDATION",
+  "source": {
+    "run": 43765245699,
+    "job": 132968757180,
+    "sha": "0cee05b6de3100be6179fb3506ac2c119441e8ef",
+    "provenance": "CI stdout; transcribed AFTER CI to branch, not recorded synchronously"
+  },
+  "failurePreserved": "Earlier CI 43764670138 failed comparator due solely to JSON property ordering, fixed before baseline",
+  "baseline": {
+    "run": 43764760157,
+    "job": 132967259769,
+    "sha": "2251fca270c40b8135fc85afff3b4a019d3eda8c",
+    "cases": 12
+  },
+  "audit": {
+    "begins": 24,
+    "ends": 24,
+    "unique": 24,
+    "passed": 24,
+    "failed": 0
+  },
+  "scenarios": [
+    {
+      "scenario": "pinned_repeat",
+      "originalGets": 10,
+      "candidateGets": 1,
+      "originalBytes": 18730,
+      "candidateBytes": 1873,
+      "getSavingsPct": 90,
+      "byteSavingsPct": 90,
+      "originalMs": 22.881,
+      "candidateMs": 2.5766666666666667
+    },
+    {
+      "scenario": "pinned_many",
+      "originalGets": 12,
+      "candidateGets": 3,
+      "originalBytes": 22476,
+      "candidateBytes": 5619,
+      "getSavingsPct": 75,
+      "byteSavingsPct": 75,
+      "originalMs": 26.118666666666666,
+      "candidateMs": 6.7556666666666665
+    },
+    {
+      "scenario": "mutable_branch",
+      "originalGets": 8,
+      "candidateGets": 8,
+      "originalBytes": 14696,
+      "candidateBytes": 14696,
+      "getSavingsPct": 0,
+      "byteSavingsPct": 0,
+      "originalMs": 17.640666666666664,
+      "candidateMs": 17.235666666666667
+    },
+    {
+      "scenario": "mixed",
+      "originalGets": 9,
+      "candidateGets": 4,
+      "originalBytes": 16797,
+      "candidateBytes": 7424,
+      "getSavingsPct": 55.556,
+      "byteSavingsPct": 55.802,
+      "originalMs": 19.191,
+      "candidateMs": 8.622666666666666
+    }
+  ],
+  "limits": [
+    "No real LLM task; no provider tokens or costs",
+    "Fake HTTP includes synthetic 2ms response delay; measured times not real GitHub Cloudflare",
+    "Immutable SHA-only reuse; branch/main calls unchanged",
+    "Current DO is not deployed; no production benefit measured",
+    "15s cached response may fail to detect a remote permission revocation before TTL expires; no production integration approved"
+  ]
+}
