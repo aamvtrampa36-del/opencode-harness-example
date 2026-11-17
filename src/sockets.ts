@@ -11,7 +11,7 @@ import {
   type OpenCodeSessionEvent,
   type OpenCodeSessionId
 } from "agents/harness/opencode";
-import type { ClientMessage, ServerMessage, SessionSnapshot } from "./protocol";
+import type { ClientMessage, ServerMessage, SessionSnapshot, ModelRun } from "./protocol";
 
 const SESSION_TAG_PREFIX = "opencode-session:";
 const SESSION_QUERY = "session";
@@ -105,6 +105,8 @@ export class OpenCodeSessionSockets {
   readonly #waitUntil: (promise: Promise<unknown>) => void;
   readonly #getSelectedModel: (session: string) => Promise<ModelSelectionID | undefined>;
   readonly #saveSelectedModel: (session: string, model: ModelSelectionID) => Promise<void>;
+  readonly #getModelRuns: (session: string) => Promise<ModelRun[]>;
+  readonly #appendModelRun: (session: string, run: ModelRun) => Promise<void>;
   /** One event stream per running session, or its opening. */
   readonly #watches = new Map<
     OpenCodeSessionId,
@@ -216,7 +218,9 @@ export class OpenCodeSessionSockets {
     getDefaultImageModel: () => Promise<string | undefined> = async () => undefined,
     waitUntil: (promise: Promise<unknown>) => void = promise => { void promise; },
     getSelectedModel: (session: string) => Promise<ModelSelectionID | undefined> = async () => undefined,
-    saveSelectedModel: (session: string, model: ModelSelectionID) => Promise<void> = async () => undefined
+    saveSelectedModel: (session: string, model: ModelSelectionID) => Promise<void> = async () => undefined,
+    getModelRuns: (session: string) => Promise<ModelRun[]> = async () => [],
+    appendModelRun: (session: string, run: ModelRun) => Promise<void> = async () => undefined
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
@@ -230,6 +234,8 @@ export class OpenCodeSessionSockets {
     this.#waitUntil = waitUntil;
     this.#getSelectedModel = getSelectedModel;
     this.#saveSelectedModel = saveSelectedModel;
+    this.#getModelRuns = getModelRuns;
+    this.#appendModelRun = appendModelRun;
   }
 
   async #record(event: IncidentObservation): Promise<void> {
@@ -471,6 +477,14 @@ export class OpenCodeSessionSockets {
         const receipt = await handle.submit(input, {
           whenBusy: message.whenBusy === "steer" ? "steer" : "followUp"
         });
+        if (!running) {
+          const actual = resolveModelSelection(workflow ? selections[0]! : selection);
+          try {
+            await this.#appendModelRun(session, { operationId: receipt.operationId,
+              model: workflow ? selections[0]! : selection,
+              providerID: actual.providerID, id: actual.id, at: Date.now() });
+          } catch { console.warn("Model execution provenance could not be saved"); }
+        }
         const configuration = active && running ? active : { mode, model: selection,
           specialization: message.specialization, ...(workflow ? { workflow: true } : {}), operations: new Set<string>() };
         configuration.operations.add(receipt.operationId);
@@ -564,15 +578,16 @@ export class OpenCodeSessionSockets {
 
   async #snapshot(session: OpenCodeSessionId): Promise<SessionSnapshot> {
     const handle = this.#harness.session(session);
-    const [messages, busy, pending] = await Promise.all([
+    const [messages, busy, pending, modelRuns] = await Promise.all([
       handle.history(),
       handle.busy(),
-      this.#harness.pending({ session })
+      this.#harness.pending({ session }),
+      this.#getModelRuns(session)
     ]);
     // The underlying flag can transiently report idle while an accepted operation
     // is still unsettled. Do not advertise availability in that gap.
     const operationPending = (this.#activeConfigurations.get(session)?.operations.size ?? 0) > 0;
-    return { session, messages, busy: busy || operationPending, pending };
+    return { session, messages, busy: busy || operationPending, pending, modelRuns };
   }
 
   /** Send every socket on the session a snapshot, one at a time. */
