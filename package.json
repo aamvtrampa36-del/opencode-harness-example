@@ -12,12 +12,15 @@
     "typecheck": "tsc --noEmit",
     "types": "wrangler types env.d.ts --include-runtime false",
     "selftest": "bun scripts/selftest.mjs",
-    "test:staging:mobile": "node scripts/test-staging-mobile.mjs"
+    "test:staging:mobile": "node scripts/test-staging-mobile.mjs",
+    "test:staging:control:mcp": "node scripts/test-staging-control-mcp.mjs",
+    "test:staging:control:unit": "bun test src/staging-control-mcp/server.test.ts"
   },
   "dependencies": {
     "@cloudflare/computer": "0.10.0",
     "@cloudflare/kumo": "2.17.0",
     "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/server": "2.4.0",
     "@opencode/plugin": "2.0.24",
     "@opencode/sdk": "2.0.24",
     "@phosphor-icons/react": "2.1.10",
@@ -25,7 +28,8 @@
     "agents": "0.33.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "streamdown": "2.7.1"
+    "streamdown": "2.7.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.62.3",

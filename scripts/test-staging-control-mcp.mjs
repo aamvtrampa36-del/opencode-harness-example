@@ -1,0 +1,54 @@
+import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+
+const MCP_URL = "https://opencode-staging-control-mcp.cdf-cloud-mvp-20261019.workers.dev/mcp";
+const accessId = process.env.CF_ACCESS_CLIENT_ID;
+const accessSecret = process.env.CF_ACCESS_CLIENT_SECRET;
+if (!accessId || !accessSecret) {
+  throw new Error("Configura CF_ACCESS_CLIENT_ID y CF_ACCESS_CLIENT_SECRET en GitHub Actions Secrets.");
+}
+
+const client = new Client({ name: "opencode-staging-control-e2e", version: "1.0.0" });
+const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
+  requestInit: {
+    headers: {
+      "CF-Access-Client-Id": accessId,
+      "CF-Access-Client-Secret": accessSecret
+    }
+  }
+});
+
+try {
+  await client.connect(transport);
+  const { tools } = await client.listTools();
+  const names = tools.map(tool => tool.name).sort();
+  assert.deepEqual(names, [
+    "staging_cancel_task", "staging_review_task", "staging_start_task",
+    "staging_status", "staging_task_status", "staging_task_transcript"
+  ]);
+
+  const status = await client.callTool({ name: "staging_status", arguments: {} });
+  assert.equal(status.isError, undefined);
+  const block = status.content.find(item => item.type === "text");
+  assert.ok(block && "text" in block && typeof block.text === "string", "MCP status must return JSON text.");
+  const parsed = JSON.parse(block.text);
+  assert.equal(parsed.targetWorker, "opencode-g1-staging", "MCP target must remain fixed to Staging.");
+  assert.equal(parsed.status, "ok", "The Staging health check must report ok.");
+
+  const evidence = {
+    checkedAt: new Date().toISOString(),
+    targetWorker: parsed.targetWorker,
+    status: parsed.status,
+    mcpUrl: new URL(MCP_URL).origin + "/mcp",
+    tools: names,
+    operationsExecuted: ["tools/list", "tools/call staging_status"]
+  };
+  const outputPath = join(process.env.RUNNER_TEMP ?? "/tmp", "opencode-staging-control-mcp.json");
+  await writeFile(outputPath, JSON.stringify(evidence, null, 2) + "\n", { mode: 0o600 });
+  console.log(`OpenCode staging MCP E2E passed; evidence saved to ${outputPath}`);
+} finally {
+  await client.close().catch(() => undefined);
+  await transport.close().catch(() => undefined);
+}

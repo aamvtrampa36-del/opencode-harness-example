@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "opencode-staging-control-mcp",
+  "main": "src/staging-control-mcp/worker.ts",
+  "compatibility_date": "2026-11-17",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "MCP_ENABLED": "true"
+  },
+  "services": [
+    {
+      "binding": "STAGING_HEALTH",
+      "service": "opencode-g1-staging"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "STAGING_SUPERVISOR",
+        "class_name": "OpenCodeAgent",
+        "script_name": "opencode-g1-staging"
+      }
+    ]
+  },
+  "observability": {
+    "enabled": true
+  }
+}
