@@ -369,9 +369,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
           throw new Error("Supervisor: sesión no autorizada");
         assertSupervisorBoundGitHubOperation(action.operation, action.branch, task.branch);
       }
-      const g9 = await this.ctx.storage.get<G9ProofState>("g9-selfdev-v1");
-      if(g9?.session === sessionID) {
-        assertG9BoundGitHubOperation(action.operation, action.branch);
+      // Retain the branch guard for both legacy and new isolated G9 sessions.
+      for (const key of ["g9-selfdev-v1", "g9-native-e2e-v2"]) {
+        const g9 = await this.ctx.storage.get<G9ProofState>(key);
+        if (g9?.session === sessionID) assertG9BoundGitHubOperation(action.operation, action.branch);
       }
     }
   }
@@ -500,9 +501,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (!token) return {status:"rejected",reason:"Conecta GitHub dentro de OpenCode Cloud."};
     let already: G9ProofState | undefined;
     await this.ctx.storage.transaction(async tx => {
-      already = await tx.get<G9ProofState>("g9-selfdev-v1");
+      already = await tx.get<G9ProofState>("g9-native-e2e-v2");
       if(!already) {
-        await tx.put("g9-selfdev-v1", {
+        await tx.put("g9-native-e2e-v2", {
           version:G9_PROOF_VERSION,status:"starting",startedAt:Date.now()
         } satisfies G9ProofState);
       }
@@ -526,41 +527,37 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const seedScript="const fs=require('node:fs');"+
         "fs.writeFileSync('add.mjs',"+JSON.stringify(G9_BROKEN)+");"+
         "fs.writeFileSync('add.test.mjs',"+JSON.stringify(G9_TEST_SOURCE)+");";
-      const seed=await this.linuxRunner.run(G9_PROJECT,
-        "node -e "+JSON.stringify(seedScript)+" && node --test --test-reporter=tap add.test.mjs");
-      if(seed.exitCode!==1 || !seed.stdout.includes("not ok")) {
-        throw new Error("El fixture inicial no falló como se esperaba; no se inicia inferencia.");
-      }
+      // Bind the authorized repository BEFORE the first Linux command. Its
+      // source archive must be prepared while the isolated project is fresh;
+      // otherwise prepareRepository refuses to import after a seeded write.
       const created=await this.harness.sessions.create();
       await this.bindSessionScope(created.id,{project:G9_PROJECT,repository:G9_REPO});
       state.session=created.id;
-      await this.ctx.storage.put("g9-selfdev-v1",state);
+      await this.ctx.storage.put("g9-native-e2e-v2",state);
+      const seed=await this.linuxRunner.run(G9_PROJECT,
+        "node -e "+JSON.stringify(seedScript)+" && node --test --test-reporter=tap add.test.mjs", created.id);
+      if(seed.exitCode!==1 || !seed.stdout.includes("not ok")) {
+        throw new Error("El fixture inicial no falló como se esperaba; no se inicia inferencia.");
+      }
       const handle=this.harness.session(created.id);
       await handle.setAgent("build");
-      // Prefer the same inexpensive model that completed G2; a functional
-      // Cloudflare model is available if the owner has no OpenRouter connection.
-      let selected: {providerID:string;id:string}|undefined;
-      if(await this.isOpenRouterConfigured()){
-        try {
-          const registration=await this.refreshOpenRouter();
-          if(registration.active) selected={providerID:"openrouter",id:MODEL_PRESETS.review.id};
-        }catch { /* Use existing Workers AI provider, never expose credentials. */ }
-      }
-      await handle.setModel(selected ?? this.ai(MODEL_ID));
+      // The G9 acceptance is explicitly for native Cloudflare DeepSeek.
+      // Never route through OpenRouter or silently downgrade to another model.
+      await handle.setModel({providerID:"cloudflare",id:MODEL_PRESETS.economy.id});
       await handle.submit(g9AgentPrompt(),{whenBusy:"followUp"});
       state.status="running";
-      await this.ctx.storage.put("g9-selfdev-v1",state);
+      await this.ctx.storage.put("g9-native-e2e-v2",state);
       return {status:"started",session:created.id};
     }catch(error){
       state.status="failed";
       state.reason=error instanceof Error ? error.message.slice(0,240) : "No se pudo iniciar G9";
-      await this.ctx.storage.put("g9-selfdev-v1",state);
+      await this.ctx.storage.put("g9-native-e2e-v2",state);
       return {status:"failed",reason:state.reason,session:state.session};
     }
   }
 
   async getG9SelfDev(): Promise<unknown> {
-    const state=await this.ctx.storage.get<G9ProofState>("g9-selfdev-v1");
+    const state=await this.ctx.storage.get<G9ProofState>("g9-native-e2e-v2");
     if(!state || state.version!==G9_PROOF_VERSION)return {status:"not-started"};
     if(state.status==="failed" || state.status==="passed") return {
       status:state.status,reason:state.reason,result:state.result,session:state.session,
@@ -584,7 +581,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         "El agente no completó la secuencia roja → escritura GitHub → verde → diff → PR borrador. "+
         "Herramientas observadas: "+evidence.toolCalls+"; fallidas: "+evidence.failedTools);
       state.status="verifying";
-      await this.ctx.storage.put("g9-selfdev-v1",state);
+      await this.ctx.storage.put("g9-native-e2e-v2",state);
       const [source,original,comparison]=await Promise.all([
         this.githubRunner.execute({action:"read",repo:G9_REPO,ref:G9_BRANCH,path:G9_SOURCE}),
         this.githubRunner.execute({action:"read",repo:G9_REPO,ref:G9_BRANCH,path:G9_TEST_PATH}),
@@ -611,13 +608,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
       }
       state.status="passed";
       state.reason=undefined;
-      await this.ctx.storage.put("g9-selfdev-v1",state);
+      await this.ctx.storage.put("g9-native-e2e-v2",state);
       return {status:"passed",result:state.result,session:state.session,
         branch:G9_BRANCH,independentLinuxExitCode:check.exitCode};
     }catch(error){
       state.status="failed";
       state.reason=error instanceof Error ? error.message.slice(0,350):"No se pudo verificar G9";
-      await this.ctx.storage.put("g9-selfdev-v1",state);
+      await this.ctx.storage.put("g9-native-e2e-v2",state);
       return {status:"failed",reason:state.reason,result:state.result,
         session:state.session,branch:G9_BRANCH};
     }
