@@ -501,24 +501,23 @@ try {
       .fill(`Sin usar herramientas, explica brevemente el comando de pruebas apropiado para el proyecto ${tokenEconomizerProject}.`);
     await page.getByRole("button", { name: "Enviar mensaje" }).click();
     await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
-    let learnedContextHandle;
-    try {
-      learnedContextHandle = await page.waitForFunction(async previousAt => {
-        const response = await fetch("/api/settings/connectors", { cache: "no-store" });
-        if (!response.ok) return false;
-        const state = await response.json();
-        const context = state.tokenEconomizerLastContext;
-        return Number(context?.characters) > 0 && context?.at > previousAt ? context : false;
-      }, previousContextAt, { timeout: 45_000, polling: 500 });
-    } catch (error) {
-      const state = await readConnectorStateAfter();
-      console.log(`TokenEconomizer learned-context evidence: ${JSON.stringify({
-        lastHook: state?.tokenEconomizerLastHook,
-        lastContext: state?.tokenEconomizerLastContext
-      })}`);
-      throw error;
+    let learnedContext;
+    let latestConnectorState;
+    const learnDeadline = Date.now() + 45_000;
+    while (Date.now() < learnDeadline) {
+      latestConnectorState = await readConnectorStateAfter();
+      const context = latestConnectorState?.tokenEconomizerLastContext;
+      if (Number(context?.characters) > 0 && context?.at > previousContextAt) {
+        learnedContext = context;
+        break;
+      }
+      await page.waitForTimeout(500);
     }
-    const learnedContext = await learnedContextHandle.jsonValue();
+    console.log(`TokenEconomizer learned-context evidence: ${JSON.stringify({
+      previousContextAt,
+      lastHook: latestConnectorState?.tokenEconomizerLastHook,
+      lastContext: latestConnectorState?.tokenEconomizerLastContext
+    })}`);
     assert.ok(learnedContext && learnedContext.characters > 0,
       "TokenEconomizer debe devolver contexto reutilizable tras aprender del proyecto Linux.");
     learnedContextCharacters = learnedContext.characters;
