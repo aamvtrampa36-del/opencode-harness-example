@@ -29,6 +29,7 @@ export type ClientMessage =
       readonly repository?: string;
       readonly files?: readonly { readonly data: string; readonly mime: string; readonly name: string }[];
     }
+  | { readonly type: "select_model"; readonly id?: string; readonly model: ModelSelectionID }
   | { readonly type: "abort"; readonly id?: string }
   | { readonly type: "create"; readonly id?: string }
   | { readonly type: "delegate"; readonly id?: string; readonly project: string }
@@ -46,6 +47,8 @@ export type SessionSnapshot = {
 /** Server → client. */
 export type ServerMessage =
   | { readonly type: "hello"; readonly session: OpenCodeSessionId; readonly openRouterAvailable: boolean }
+  /** Server-authoritative selection for this session, persisted in the existing DO. */
+  | { readonly type: "model_selection"; readonly session: OpenCodeSessionId; readonly model: ModelSelectionID; readonly pending: boolean }
   | {
       readonly type: "sessions";
       readonly sessions: readonly OpenCodeSessionInfo[];
