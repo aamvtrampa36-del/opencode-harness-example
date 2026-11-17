@@ -365,5 +365,9 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
       { sessionID: "ses_test", agent: "build" });
     expect(JSON.parse(forgotten.content)).toEqual({ removed: true });
     expect(systems.some(prompt => prompt.includes("GENERAL ASSISTANT") && prompt.includes("Never create or update memory automatically"))).toBe(true);
+    expect(systems.some(prompt => prompt.includes("a module-level `return` is a syntax error") &&
+      prompt.includes("export default async function () { return 1 + 1; }"))).toBe(true);
+    expect(systems.some(prompt => prompt.includes("do not keep retrying that URL") &&
+      prompt.includes("do not claim a search happened if none is connected"))).toBe(true);
   });
 });
