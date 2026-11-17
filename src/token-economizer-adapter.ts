@@ -175,9 +175,13 @@ export function tokenEconomizerAdapter(
               const call = assistant(tokenSessionID, tokenSessionID, String(value.assistantMessageID ?? "")).parts
                 .find(part => part.callID === value.id);
               const toolError = value.error as { message?: unknown } | undefined;
-              if (call) call.state = name === "session.tool.success"
-                ? { status: "completed", input: call.state, output: textOf(value.content), metadata: value.metadata ?? {} }
-                : { status: "error", input: call.state, error: String(toolError?.message ?? textOf(value.content)) };
+              if (call) {
+                const runningState = call.state as { input?: unknown } | undefined;
+                const toolInput = runningState?.input ?? {};
+                call.state = name === "session.tool.success"
+                  ? { status: "completed", input: toolInput, output: textOf(value.content), metadata: value.metadata ?? {} }
+                  : { status: "error", input: toolInput, error: String(toolError?.message ?? textOf(value.content)) };
+              }
             } else if (/^session\.execution\.(succeeded|failed|interrupted)$/.test(name) || name === "session.idle") {
               await closeTurn(sessionID, name.endsWith("interrupted") ? "interrupted" : "end_turn");
             } else if (name === "session.deleted") {

@@ -87,11 +87,16 @@ describe("TokenEconomizer OpenCode adapter", () => {
     expect(end?.transcript).toContain("Python 3 disponible");
     expect(end?.project).toBe("proyecto-prueba");
     const exported = JSON.parse(end?.transcript ?? "{}") as {
-      messages?: Array<{ info?: { path?: { cwd?: string } }; parts?: Array<{ tool?: string }> }>
+      messages?: Array<{ info?: { path?: { cwd?: string } }; parts?: Array<{
+        tool?: string; state?: { status?: string; input?: Record<string, unknown>; output?: string }
+      }> }>
     };
-    expect(exported.messages?.flatMap(message => message.parts ?? []).map(part => part.tool))
-      .toContain("bash");
-    expect(exported.messages?.find(message => message.parts?.some(part => part.tool === "bash"))?.info?.path?.cwd)
+    const bashMessage = exported.messages?.find(message => message.parts?.some(part => part.tool === "bash"));
+    const bashCall = bashMessage?.parts?.find(part => part.tool === "bash");
+    expect(bashCall).toMatchObject({ tool: "bash", state: {
+      status: "completed", input: { command: "python3 --version" }, output: "Python 3 disponible"
+    } });
+    expect(bashMessage?.info?.path?.cwd)
       .toBe("/workspace/projects/opencode-connectors/workspaces/proyecto-prueba");
 
     const secondEnd = waitForEnd();
