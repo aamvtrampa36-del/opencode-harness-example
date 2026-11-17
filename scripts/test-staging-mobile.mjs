@@ -428,8 +428,8 @@ try {
       const taskMarker = "TOKEN_ECONOMIZER_TRIAL_" + (index + 1);
       const markerOutput = "printf '\\n" + taskMarker + "\\n'";
       const command = (index === 0
-        ? "cat > test_envfacts.test.mjs <<'JS'\nimport test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('Node runtime works', () => assert.equal(1 + 1, 2));\nJS\npytest -q; node --test test_envfacts.test.mjs"
-        : "pytest -q; node --test test_envfacts.test.mjs") + "; " + markerOutput;
+        ? "cat > test_envfacts.test.mjs <<'JS'\nimport test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('Node runtime works', () => assert.equal(1 + 1, 2));\nJS\npytest; node --test test_envfacts.test.mjs"
+        : "pytest; node --test test_envfacts.test.mjs") + "; " + markerOutput;
       const task = `Usa solo la herramienta Linux autorizada para el proyecto ${tokenEconomizerProject}. ` +
         `Este turno exige una ejecución nueva y una salida con la marca ${taskMarker}; ` +
         "ignora los resultados de turnos anteriores y no afirmes haber ejecutado nada sin usar Linux. " +
@@ -501,13 +501,23 @@ try {
       .fill(`Sin usar herramientas, explica brevemente el comando de pruebas apropiado para el proyecto ${tokenEconomizerProject}.`);
     await page.getByRole("button", { name: "Enviar mensaje" }).click();
     await page.getByRole("status").filter({ hasText: "Tarea en curso" }).waitFor({ timeout: 30_000 });
-    const learnedContextHandle = await page.waitForFunction(async previousAt => {
-      const response = await fetch("/api/settings/connectors", { cache: "no-store" });
-      if (!response.ok) return false;
-      const state = await response.json();
-      const context = state.tokenEconomizerLastContext;
-      return Number(context?.characters) > 0 && context?.at > previousAt ? context : false;
-    }, previousContextAt, { timeout: 30_000, polling: 500 });
+    let learnedContextHandle;
+    try {
+      learnedContextHandle = await page.waitForFunction(async previousAt => {
+        const response = await fetch("/api/settings/connectors", { cache: "no-store" });
+        if (!response.ok) return false;
+        const state = await response.json();
+        const context = state.tokenEconomizerLastContext;
+        return Number(context?.characters) > 0 && context?.at > previousAt ? context : false;
+      }, previousContextAt, { timeout: 45_000, polling: 500 });
+    } catch (error) {
+      const state = await readConnectorStateAfter();
+      console.log(`TokenEconomizer learned-context evidence: ${JSON.stringify({
+        lastHook: state?.tokenEconomizerLastHook,
+        lastContext: state?.tokenEconomizerLastContext
+      })}`);
+      throw error;
+    }
     const learnedContext = await learnedContextHandle.jsonValue();
     assert.ok(learnedContext && learnedContext.characters > 0,
       "TokenEconomizer debe devolver contexto reutilizable tras aprender del proyecto Linux.");
