@@ -95,5 +95,10 @@ describe("G9 genuine agent developer flow acceptance",()=>{
     expect(prompt).toContain("linux");
     expect(prompt).toContain("github");
     expect(prompt).toContain("no finjas éxito");
+    expect(prompt).toContain("DeepSeek Workers AI");
+    expect(prompt).not.toContain("a - b");
+    expect(prompt).not.toContain("a + b");
+    expect(prompt).not.toContain("bug: usa resta");
+    expect(prompt).not.toContain("linux con project=");
   });
 });
