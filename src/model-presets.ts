@@ -37,6 +37,11 @@ export const MODEL_PRESETS = {
   }
 } as const;
 
+/** Explicit provider registration is required before OpenCode can select these models. */
+export const NATIVE_WORKERS_AI_MODELS = Object.values(MODEL_PRESETS)
+  .filter(preset => preset.providerID === "cloudflare")
+  .map(preset => preset.id);
+
 export type ModelPresetID = keyof typeof MODEL_PRESETS;
 
 export function isModelPreset(value: unknown): value is ModelPresetID {
