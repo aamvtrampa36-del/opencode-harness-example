@@ -169,7 +169,10 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
     const repo = "aamvtrampa36-del/cdf-cloud-engine";
     let filterContext: ((event: {sessionID: string; tools: Record<string, unknown>}) => void | Promise<void>) | undefined;
     const plugin = workspacePlugin(
-      {} as Workspace,
+      { runtime: { backends: () => [
+        { id: "codemode", callable: true, description: "workspace" },
+        { id: "dynamic-mcp", callable: true, description: "MCP" }
+      ] } } as unknown as Workspace,
       {},
       { inspect: async () => ({}), run: async () => ({}) } as any,
       { execute: async () => ({}) },
@@ -212,6 +215,7 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
     expect(projectOnly).not.toHaveProperty("ls");
     expect(projectOnly).not.toHaveProperty("find");
     expect(projectOnly).not.toHaveProperty("execute");
+    expect(projectOnly).toHaveProperty("exec");
     expect(projectOnly).toHaveProperty("linux");
     expect(projectOnly).toHaveProperty("inspect_linux");
     expect(projectOnly).not.toHaveProperty("github");
@@ -220,9 +224,51 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
     await filterContext!({sessionID:"ses_repo", tools:projectWithRepo});
     expect(projectWithRepo).not.toHaveProperty("find");
     expect(projectWithRepo).not.toHaveProperty("execute");
+    expect(projectWithRepo).toHaveProperty("exec");
     expect(projectWithRepo).toHaveProperty("linux");
     expect(projectWithRepo).toHaveProperty("github");
     expect(projectWithRepo).toHaveProperty("repo_read");
+  });
+
+  test("forces project-bound exec calls onto the isolated Dynamic Worker backend", async () => {
+    const toolSpecs = new Map<string, any>();
+    let execution: { command: string; backend?: string; cwd?: string; env?: Record<string, string> } | undefined;
+    const workspace = {
+      runtime: {
+        backends: () => [
+          { id: "codemode", callable: true, description: "workspace" },
+          { id: "dynamic-mcp", callable: true, description: "MCP" }
+        ],
+        exec: async (command: string, options: { backend?: string; cwd?: string; env?: Record<string, string> }) => {
+          execution = { command, backend: options.backend, cwd: options.cwd, env: options.env };
+          return {
+            async *[Symbol.asyncIterator]() {
+              yield { name: "exit", code: 0, result: { ok: true } };
+            }
+          };
+        }
+      }
+    } as unknown as Workspace;
+    const plugin = workspacePlugin(
+      workspace, {}, undefined, undefined,
+      async () => { throw new Error("Shared workspace guard must not permit project access"); },
+      undefined, async () => "cdf-cloud-engine"
+    );
+    await plugin.setup({
+      agent: {transform: async () => undefined},
+      tool: {transform: async (cb: (ed: any) => unknown) => cb({
+        remove: () => undefined,
+        add: (spec: any) => toolSpecs.set(spec.name, spec)
+      })}
+    } as any);
+
+    await toolSpecs.get("exec").execute({
+      command: "export default () => ({ ok: true })",
+      backend: "codemode",
+      cwd: "/workspace/elsewhere",
+      env: { SHOULD_NOT_REACH_DYNAMIC_WORKER: "value" }
+    }, { id: "call-1", sessionID: "ses_project", agent: "build", signal: new AbortController().signal });
+    expect(execution).toEqual({ command: "export default () => ({ ok: true })", backend: "dynamic-mcp" });
   });
 
   test("subagents only receive read tools for their bound scope", async () => {
