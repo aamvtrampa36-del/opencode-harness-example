@@ -4,7 +4,7 @@ import { readSessionSpecialization, saveSessionSpecialization } from "./session-
 import { isInternalReminder } from "./message-display";
 import { repositoryProjectSlug } from "./project-container";
 import { SettingsPanel } from "./settings-panel";
-import { MODEL_PRESETS, isModelSelection, resolveModelSelection, type ModelSelectionID } from "./model-presets";
+import { MODEL_PRESETS, isModelSelection, resolveModelSelection, usableModelSelection, type ModelSelectionID } from "./model-presets";
 import { ModelPicker } from "./model-picker";
 import type { Specialization } from "./specializations";
 import {
@@ -741,13 +741,18 @@ function App() {
     setIsolationResult("");
     try {
       const response = await fetch("/api/dev/isolation-probe", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+        // An unresponsive staging probe must not leave Android showing a spinner forever.
+        signal: AbortSignal.timeout(240_000)
       });
       const result = await response.json() as { passed?: boolean; error?: string };
       if (!response.ok || !result.passed) throw new Error(result.error ?? "Prueba incompleta");
       setIsolationResult("Prueba superada: dos Containers sintéticos no compartieron archivos. Este ensayo no verifica todas las rutas ni la recuperación de sesiones.");
     } catch (error) {
-      setIsolationResult("No se comprobó el aislamiento: " + (error instanceof Error ? error.message : "Error"));
+      const timeout = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+      setIsolationResult(timeout
+        ? "La prueba no respondió en cuatro minutos. Estado desconocido: consulta los registros antes de repetirla."
+        : "No se comprobó el aislamiento: " + (error instanceof Error ? error.message : "Error"));
     } finally {
       setIsolationBusy(false);
     }
@@ -979,7 +984,7 @@ function App() {
       ? "Proyecto Linux seleccionado: " + project + ". Las herramientas linux e inspect_linux usan automáticamente este proyecto; no incluyas un parámetro project. " +
         "No modifiques otros proyectos ni producción sin autorización.\n\nTarea: " + requestText
       : requestText;
-    const selectedModel = openRouterAvailable ? modelPreset : "cloudflare";
+    const selectedModel = usableModelSelection(modelPreset, openRouterAvailable);
     if (draftImages.length && resolveModelSelection(selectedModel).providerID !== "openrouter") {
       setImageError("Selecciona un modelo OpenRouter que acepte imágenes antes de enviar.");
       return;
@@ -1141,7 +1146,7 @@ function App() {
                 </p>
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-1">
-                <ModelPicker value={openRouterAvailable ? modelPreset : "cloudflare"}
+                <ModelPicker value={usableModelSelection(modelPreset, openRouterAvailable)}
                   onChange={selectModel} routerReady={openRouterAvailable} disabled={busy}
                   capability={draftImages.length ? "imageInput" : "tools"} />
                 <Button type="button" variant="ghost" shape="square"

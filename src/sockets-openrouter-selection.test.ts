@@ -3,14 +3,14 @@ import { OpenCodeSessionSockets } from "./sockets";
 import type { OpenCodeHarness } from "agents/harness/opencode";
 import type { Connection } from "agents/lifecycle";
 
-function rig(routerReady: boolean) {
+function rig(routerReady: boolean, failWait = false) {
   const configured: unknown[] = [];
   const requests: string[] = [];
   const fakeHandle = {
     setModel: async (value: unknown) => { configured.push(value); },
     setAgent: async () => undefined,
     submit: async (text: string) => { requests.push(text); return { operationId: "test-model-run" }; },
-    wait: async () => undefined,
+    wait: async () => { if (failWait) throw new Error("simulated-provider-failure"); },
     history: async () => [],
     busy: async () => false,
     events: async () => ({ start: () => undefined, stop: async () => undefined })
@@ -42,9 +42,10 @@ function rig(routerReady: boolean) {
 
 describe("actual session model dispatch", () => {
   test("the economical simple profile keeps its configured provider model", async () => {
-    const app = rig(true);
+    // Native Workers AI must remain usable when OpenRouter is not configured.
+    const app = rig(false);
     await app.send("economy");
-    expect(app.configured).toEqual([{providerID:"openrouter",id:"deepseek/deepseek-v4.1-flash-1017"}]);
+    expect(app.configured).toEqual([{providerID:"cloudflare",id:"@cf/deepseek-ai/deepseek-v4.1-flash-1017"}]);
     expect(app.requests).toHaveLength(1);
     const sessions = app.sent.map(message => JSON.parse(message) as { type?: string; sessions?: { id: string; busy: boolean }[] })
       .find(message => message.type === "sessions");
@@ -77,6 +78,17 @@ describe("actual session model dispatch", () => {
       globalThis.fetch = originalFetch;
     }
   });
+  test("a rejected agent operation clears the busy state and exposes its error", async () => {
+    const app = rig(false, true);
+    await app.send("economy");
+    await Bun.sleep(10);
+    const events = app.sent.map(value => JSON.parse(value) as { type?: string; message?: string; busy?: boolean });
+    expect(events.some(value => value.type === "error" && value.message?.includes("simulated-provider-failure"))).toBe(true);
+    const snapshots = events.filter(value => value.type === "snapshot");
+    expect(snapshots.at(-1)?.busy).toBe(false);
+    expect(app.configured).toEqual([{ providerID: "cloudflare", id: "@cf/deepseek-ai/deepseek-v4.1-flash-1017" }]);
+  });
+
   test("no private credential means no OpenRouter invocation", async () => {
     const app = rig(false);
     await app.send("openrouter:openrouter/auto");

@@ -20,7 +20,7 @@ import { createDynamicMcpModule } from "./dynamic-mcp";
 import { tokenEconomizerAdapter } from "./token-economizer-adapter";
 import type { ConnectorEvent, ConnectorOutput } from "./connector-adapter";
 import { openRouterCredentialPlugin } from "./openrouter";
-import { isModelSelection, MODEL_PRESETS, resolveModelSelection } from "./model-presets";
+import { isModelSelection, MODEL_PRESETS, NATIVE_WORKERS_AI_MODELS, resolveModelSelection } from "./model-presets";
 import { getOpenRouterCatalogue } from "./openrouter-catalog";
 import { assertOpenRouterImageModel, generateOpenRouterImage, getOpenRouterImageModels } from "./openrouter-images";
 import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
@@ -370,9 +370,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
           throw new Error("Supervisor: sesión no autorizada");
         assertSupervisorBoundGitHubOperation(action.operation, action.branch, task.branch);
       }
-      const g9 = await this.ctx.storage.get<G9ProofState>("g9-selfdev-v1");
-      if(g9?.session === sessionID) {
-        assertG9BoundGitHubOperation(action.operation, action.branch);
+      // Retain the branch guard for both legacy and new isolated G9 sessions.
+      for (const key of ["g9-selfdev-v1", "g9-native-e2e-v2"]) {
+        const g9 = await this.ctx.storage.get<G9ProofState>(key);
+        if (g9?.session === sessionID) assertG9BoundGitHubOperation(action.operation, action.branch);
       }
     }
   }
@@ -501,9 +502,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (!token) return {status:"rejected",reason:"Conecta GitHub dentro de OpenCode Cloud."};
     let already: G9ProofState | undefined;
     await this.ctx.storage.transaction(async tx => {
-      already = await tx.get<G9ProofState>("g9-selfdev-v1");
+      already = await tx.get<G9ProofState>("g9-native-e2e-v2");
       if(!already) {
-        await tx.put("g9-selfdev-v1", {
+        await tx.put("g9-native-e2e-v2", {
           version:G9_PROOF_VERSION,status:"starting",startedAt:Date.now()
         } satisfies G9ProofState);
       }
@@ -527,42 +528,57 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const seedScript="const fs=require('node:fs');"+
         "fs.writeFileSync('add.mjs',"+JSON.stringify(G9_BROKEN)+");"+
         "fs.writeFileSync('add.test.mjs',"+JSON.stringify(G9_TEST_SOURCE)+");";
-      const seed=await this.linuxRunner.run(G9_PROJECT,
-        "node -e "+JSON.stringify(seedScript)+" && node --test --test-reporter=tap add.test.mjs");
-      if(seed.exitCode!==1 || !seed.stdout.includes("not ok")) {
-        throw new Error("El fixture inicial no falló como se esperaba; no se inicia inferencia.");
-      }
+      // Bind the authorized repository BEFORE the first Linux command. Its
+      // source archive must be prepared while the isolated project is fresh;
+      // otherwise prepareRepository refuses to import after a seeded write.
       const created=await this.harness.sessions.create();
       await this.bindSessionScope(created.id,{project:G9_PROJECT,repository:G9_REPO});
       state.session=created.id;
-      await this.ctx.storage.put("g9-selfdev-v1",state);
+      await this.ctx.storage.put("g9-native-e2e-v2",state);
+      const seed=await this.linuxRunner.run(G9_PROJECT,
+        "node -e "+JSON.stringify(seedScript)+" && node --test --test-reporter=tap add.test.mjs", created.id);
+      if(seed.exitCode!==1 || !seed.stdout.includes("not ok")) {
+        throw new Error("El fixture inicial no falló como se esperaba; no se inicia inferencia.");
+      }
       const handle=this.harness.session(created.id);
       await handle.setAgent("build");
-      // Prefer the same inexpensive model that completed G2; a functional
-      // Cloudflare model is available if the owner has no OpenRouter connection.
-      let selected: {providerID:string;id:string}|undefined;
-      if(await this.isOpenRouterConfigured()){
-        try {
-          const registration=await this.refreshOpenRouter();
-          if(registration.active) selected={providerID:"openrouter",id:MODEL_PRESETS.review.id};
-        }catch { /* Use existing Workers AI provider, never expose credentials. */ }
-      }
-      await handle.setModel(selected ?? this.ai(MODEL_ID));
+      // The G9 acceptance is explicitly for native Cloudflare DeepSeek.
+      // Never route through OpenRouter or silently downgrade to another model.
+      await handle.setModel({providerID:"cloudflare",id:MODEL_PRESETS.economy.id});
       await handle.submit(g9AgentPrompt(),{whenBusy:"followUp"});
       state.status="running";
-      await this.ctx.storage.put("g9-selfdev-v1",state);
+      await this.ctx.storage.put("g9-native-e2e-v2",state);
       return {status:"started",session:created.id};
     }catch(error){
       state.status="failed";
       state.reason=error instanceof Error ? error.message.slice(0,240) : "No se pudo iniciar G9";
-      await this.ctx.storage.put("g9-selfdev-v1",state);
+      await this.ctx.storage.put("g9-native-e2e-v2",state);
       return {status:"failed",reason:state.reason,session:state.session};
     }
   }
 
   async getG9SelfDev(): Promise<unknown> {
-    const state=await this.ctx.storage.get<G9ProofState>("g9-selfdev-v1");
+    const state=await this.ctx.storage.get<G9ProofState>("g9-native-e2e-v2");
     if(!state || state.version!==G9_PROOF_VERSION)return {status:"not-started"};
+    // Recover a false-negative caused by the previous TAP-only parser. Re-read
+    // the ACTUAL persisted tool transcript; no model retry or synthetic PASS.
+    // Independent GitHub + Node verification below remains mandatory.
+    if(state.status === "failed" && state.session &&
+       state.reason?.startsWith("El agente no completó la secuencia roja")) {
+      try {
+        const handle=this.harness.session(state.session);
+        const [running,history]=await Promise.all([handle.busy(),handle.history()]);
+        const evidence=assessG9History(history);
+        if(!running && evidence.passed){
+          state.status="running";
+          state.reason=undefined;
+          state.result=evidence;
+          await this.ctx.storage.put("g9-native-e2e-v2",state);
+        }
+      }catch(error){
+        console.warn("G9 revalidation unavailable",error);
+      }
+    }
     if(state.status==="failed" || state.status==="passed") return {
       status:state.status,reason:state.reason,result:state.result,session:state.session,
       branch:G9_BRANCH
@@ -585,7 +601,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         "El agente no completó la secuencia roja → escritura GitHub → verde → diff → PR borrador. "+
         "Herramientas observadas: "+evidence.toolCalls+"; fallidas: "+evidence.failedTools);
       state.status="verifying";
-      await this.ctx.storage.put("g9-selfdev-v1",state);
+      await this.ctx.storage.put("g9-native-e2e-v2",state);
       const [source,original,comparison]=await Promise.all([
         this.githubRunner.execute({action:"read",repo:G9_REPO,ref:G9_BRANCH,path:G9_SOURCE}),
         this.githubRunner.execute({action:"read",repo:G9_REPO,ref:G9_BRANCH,path:G9_TEST_PATH}),
@@ -612,13 +628,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
       }
       state.status="passed";
       state.reason=undefined;
-      await this.ctx.storage.put("g9-selfdev-v1",state);
+      await this.ctx.storage.put("g9-native-e2e-v2",state);
       return {status:"passed",result:state.result,session:state.session,
         branch:G9_BRANCH,independentLinuxExitCode:check.exitCode};
     }catch(error){
       state.status="failed";
       state.reason=error instanceof Error ? error.message.slice(0,350):"No se pudo verificar G9";
-      await this.ctx.storage.put("g9-selfdev-v1",state);
+      await this.ctx.storage.put("g9-native-e2e-v2",state);
       return {status:"failed",reason:state.reason,result:state.result,
         session:state.session,branch:G9_BRANCH};
     }
@@ -697,13 +713,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
         JSON.stringify("const fs=require('node:fs');if(fs.readFileSync('proof.txt','utf8')!==" +
           JSON.stringify(token) + ")process.exit(2);console.log('AGENT_PROOF_OK:" + token + "')");
       const prompt = "Esta es una autoprueba REAL de herramientas, no una tarea de conversación. " +
-        "Usa la herramienta linux con project=" + project + " y command=" +
+        "Usa la herramienta linux SOLO con command=" +
         JSON.stringify(command) + ". Debes CREAR el archivo proof.txt en el Container y VERIFICARLO con Node. " +
         "No generes código solamente en tu respuesta. Espera el resultado real de linux " +
         "y describe su exitCode. No alteres ningún otro proyecto.";
       const repairPrompt = "Prueba REAL de reparación autónoma de código. Proyecto Linux aislado: " +
         project + ". Emplea ÚNICAMENTE la herramienta cuyo nombre exacto es linux " +
-        "(con parámetros project y command). NO uses inspect_linux, exec, herramientas de archivos ni otros nombres. " +
+        "(con el parámetro command; el proyecto se determina automáticamente por la sesión, NO envíes project). NO uses inspect_linux, exec, herramientas de archivos ni otros nombres. " +
         "Ya existen calc.mjs con un defecto y calc.test.mjs con el test original. " +
         "Paso 1: llama a linux para ejecutar node --test --test-reporter=tap calc.test.mjs; observa el fallo. " +
         "Paso 2: llama a linux con cat calc.mjs && cat calc.test.mjs para inspeccionar ambos archivos. " +
@@ -808,6 +824,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   // Workers AI over the AI binding, as an OpenCode provider plugin.
   readonly ai = createAI({ binding: this.env.AI });
+  // Register every native preset BEFORE the harness initializes. A plain
+  // {providerID, id} selector does not add a model to OpenCode's provider.
+  private readonly registeredWorkersModels = NATIVE_WORKERS_AI_MODELS.map(id => this.ai(id));
   // Files in the object's own storage. `exec` runs JavaScript in a Worker
   // Loader isolate with no network of its own. `git` turns on
   // `workspace.git`, which `codemode:git` uses to clone over HTTPS from the host.

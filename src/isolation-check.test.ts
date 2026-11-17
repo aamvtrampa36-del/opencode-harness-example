@@ -25,6 +25,27 @@ describe("real isolation probe", () => {
       expect(command).toContain("intrusion");
     }
   });
+  test("runs independent containers concurrently without skipping any verification phase", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const visited: string[] = [];
+    const result = await checkIsolation(() => ({
+      run: async (_project: string, command: string) => {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        const receipt = command.match(/printf (A_READY|B_READY|A_ATTACKED|B_ATTACKED|A_UNCHANGED|B_UNCHANGED)/)?.[1];
+        if (!receipt) throw new Error("Missing expected receipt");
+        visited.push(receipt);
+        await Promise.resolve();
+        active--;
+        return { exitCode: 0, stdout: receipt };
+      }
+    }), "1234567890ab");
+    expect(result.passed).toBe(true);
+    expect(maxActive).toBe(2);
+    expect(visited).toEqual(["A_READY", "B_READY", "A_ATTACKED", "B_ATTACKED", "A_UNCHANGED", "B_UNCHANGED"]);
+  });
+
   test("rejects a shared container even when every shell command returns success", async () => {
     const shared = { run: async (project: string) => ({ project, exitCode: 0, stdout: "", stderr: "", truncated: false, persistence: "test" }) };
     await expect(checkIsolation(() => shared, "1234567890ab")).rejects.toThrow();

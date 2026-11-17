@@ -464,15 +464,25 @@ export class OpenCodeSessionSockets {
           this.#waitUntil(this.#continueWorkflow(session, configuration, selectedSpecialization, stages,
             selections, receipt.operationId, text));
         } else {
-          void handle
-            .wait(receipt.operationId)
-            .then(() => {
+          void handle.wait(receipt.operationId).then(
+            () => {
               configuration.operations.delete(receipt.operationId);
               return this.#settle(session);
-            })
-            .catch((error: unknown) => {
-              console.warn("OpenCode wait failed", error);
-            });
+            },
+            async (error: unknown) => {
+              // An accepted operation can fail before emitting run_end. Leaving
+              // its id in this in-memory set would show "Tarea en curso" forever.
+              configuration.operations.delete(receipt.operationId);
+              const message = error instanceof Error ? error.message.slice(0, 240) : "Error al ejecutar la tarea";
+              await this.#record({ source: "agent", code: classifyAgentFailure(message) });
+              for (const socket of this.#getWebSockets(sessionTag(session))) {
+                send(socket, { type: "error", message: "La tarea terminó con un error: " + message });
+              }
+              await this.#settle(session);
+            }
+          ).catch((error: unknown) => {
+            console.warn("OpenCode settlement failed", error);
+          });
         }
         return receipt;
       }

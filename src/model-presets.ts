@@ -11,9 +11,10 @@ export const MODEL_PRESETS = {
     tier: "baseline"
   },
   economy: {
-    label: "Económico · DeepSeek Flash",
-    providerID: "openrouter",
-    id: "deepseek/deepseek-v4.1-flash-1017",
+    // Cloudflare-hosted inference uses the existing AI binding, not an OpenRouter API key.
+    label: "Cloudflare · DeepSeek V4.1 Flash",
+    providerID: "cloudflare",
+    id: "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
     tier: "economy"
   },
   reasoning: {
@@ -35,6 +36,11 @@ export const MODEL_PRESETS = {
     tier: "review"
   }
 } as const;
+
+/** Explicit provider registration is required before OpenCode can select these models. */
+export const NATIVE_WORKERS_AI_MODELS = Object.values(MODEL_PRESETS)
+  .filter(preset => preset.providerID === "cloudflare")
+  .map(preset => preset.id);
 
 export type ModelPresetID = keyof typeof MODEL_PRESETS;
 
@@ -64,5 +70,11 @@ export function resolveModelSelection(selection: ModelSelectionID): {
     providerID: "openrouter", id: selection.slice("openrouter:".length)
   };
   throw new Error("Selección de modelo inválida");
+}
+
+/** Never silently replace a native Workers AI preset when OpenRouter is disconnected. */
+export function usableModelSelection(selection: ModelSelectionID, openRouterAvailable: boolean): ModelSelectionID {
+  return !openRouterAvailable && resolveModelSelection(selection).providerID === "openrouter"
+    ? "cloudflare" : selection;
 }
 

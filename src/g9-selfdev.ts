@@ -3,10 +3,10 @@
  * non-production source file in a private review branch and prove it with Linux.
  * The server seeds the fixture; the model must perform the actual code fix.
  */
-export const G9_PROOF_VERSION = "g9-selfdev-v1-20261111";
+export const G9_PROOF_VERSION = "g9-native-e2e-v2-20261117";
 export const G9_REPO = "aamvtrampa36-del/opencode-harness-example";
-export const G9_BRANCH = "opencode/g9-selfdev-20261111";
-export const G9_PROJECT = "g9-selfdev-proof";
+export const G9_BRANCH = "opencode/g9-native-e2e-20261117";
+export const G9_PROJECT = "g9-native-e2e-20261117";
 export const G9_SOURCE = "tests/g9-proof/add.mjs";
 export const G9_TEST_PATH = "tests/g9-proof/add.test.mjs";
 export const G9_BROKEN = "export function add(a, b) { return a - b; }\n";
@@ -74,11 +74,21 @@ export function assessG9History(messages: readonly unknown[]): G9Evidence {
         .map(x=>x.text??"").join("\n");
       let data: any;
       try {data=JSON.parse(output);} catch {continue;}
-      if(part.name === "linux" && data.project === G9_PROJECT){
-        if(data.exitCode !== 0 && typeof data.stdout === "string" &&
-           data.stdout.includes("not ok") && redAt < 0)redAt=pos;
-        if(data.exitCode === 0 && typeof data.stdout === "string" &&
-           data.stdout.includes("ok 1 - G9: add(2,3) is five") && greenAt < 0)greenAt=pos;
+      if(part.name === "linux" && data.project === G9_PROJECT &&
+         typeof data.stdout === "string"){
+        const out: string = data.stdout;
+        const title = "G9: add(2,3) is five";
+        // Node 24 emits Unicode spec output ("✖"/"✔") by default, while
+        // --test-reporter=tap emits "not ok"/"ok". Count either only with
+        // the actual command exit code AND a matching test/result summary.
+        const redTap = out.includes("not ok 1 - " + title);
+        const redSpec = out.includes("✖ " + title) &&
+          out.includes("ERR_ASSERTION") && /\bfail\s+1\b/.test(out);
+        const greenTap = out.includes("ok 1 - " + title) && !out.includes("not ok 1 - " + title);
+        const greenSpec = (out.includes("✔ " + title) || out.includes("✓ " + title)) &&
+          /\bpass\s+1\b/.test(out) && /\bfail\s+0\b/.test(out);
+        if(data.exitCode !== 0 && (redTap || redSpec) && redAt < 0) redAt = pos;
+        if(data.exitCode === 0 && (greenTap || greenSpec) && greenAt < 0) greenAt = pos;
       }
       if(part.name === "github" && data.repo?.toLowerCase()===G9_REPO.toLowerCase()){
         if(data.branch===G9_BRANCH && data.path===G9_SOURCE && typeof data.commitSha==="string")writeAt=pos;
@@ -109,26 +119,24 @@ export function assessG9History(messages: readonly unknown[]): G9Evidence {
     toolCalls,failedTools,prUrl};
 }
 
+/** The agent must inspect and diagnose; the fixture and fix remain server-only. */
 export function g9AgentPrompt(): string {
-  return "G9: ensayo REAL de autodesarrollo con un repositorio GitHub y Linux. " +
-    "Esta sesión ya está limitada a repo=" + G9_REPO + " y proyecto Linux=" + G9_PROJECT + ". " +
-    "El servidor creó una rama de revisión " + G9_BRANCH + " y sembró DOS archivos: " +
-    G9_SOURCE + " (bug: usa resta) y " + G9_TEST_PATH + " (test fijo; NO MODIFICAR). " +
-    "El Container del proyecto " + G9_PROJECT + " contiene los dos mismos archivos bajo " +
-    "sus nombres simples add.mjs/add.test.mjs y el test inicial falló. " +
-    "Trabaja con estas herramientas REALES, no inventes resultados: " +
-    "(1) llama a linux con project=" + G9_PROJECT +
-    " y command='node --test --test-reporter=tap add.test.mjs' para OBSERVAR el fallo. " +
-    "(2) usa github action=read para leer " + G9_SOURCE + " y " + G9_TEST_PATH +
-    " en repo " + G9_REPO + " ref " + G9_BRANCH + ". " +
-    "(3) usa github action=write para reparar SOLO " + G9_SOURCE +
-    " en branch " + G9_BRANCH + ", escribiendo el código exacto export function add(a, b) { return a + b; }, con commit message 'fix(g9): correct isolated add fixture'. " +
-    "(4) usa linux con project=" + G9_PROJECT +
-    " y command que actualice SOLO add.mjs de forma equivalente y luego ejecute " +
-    "'node --test --test-reporter=tap add.test.mjs' con exitCode 0. " +
-    "(5) usa repo_review con branch " + G9_BRANCH +
-    " (o github action=review), inspecciona los dos archivos añadidos respecto a main. " +
-    "(6) usa github action=pr para crear PR DRAFT, título 'test(g9): agent fixes isolated red-to-green fixture' " +
-    "y cuerpo con evidencias reales. Nunca merge, cambiar main, configurar credenciales, crear producción, " +
-    "ni tocar otros archivos, ramas o proyectos. Si una herramienta falla, indícalo y detente, no finjas éxito.";
+  return "G9: aceptación REAL de reparación autónoma con DeepSeek Workers AI. " +
+    "Tu conversación tiene un repositorio GitHub autorizado (" + G9_REPO + "), la rama de prueba " +
+    G9_BRANCH + " y un proyecto Linux aislado vinculado. " +
+    "Existe una prueba Node fallida y dos archivos sintéticos; NO conoces la causa ni la reparación. " +
+    "Primero usa la herramienta linux (SOLO campo command; el proyecto se resuelve automáticamente) " +
+    "para listar archivos y ejecutar el test fallido. Lee los archivos reales y diagnostica el defecto. " +
+    "Contrasta el test de GitHub en tests/g9-proof/add.test.mjs usando github action=read " +
+    "con repo=" + G9_REPO + " ref=" + G9_BRANCH + ", y descubre qué fuente importa. " +
+    "Lee esa fuente mediante github action=read antes de modificarla. " +
+    "Corrige exclusivamente la fuente defectuosa tanto en Linux como mediante " +
+    "github action=write en la rama autorizada. Nunca cambies el archivo de pruebas. " +
+    "Demuestra el resultado: ejecuta linux para obtener test rojo ANTES de la escritura GitHub " +
+    "y test verde DESPUÉS de escribir la reparación y sincronizar la fuente Linux. " +
+    "Después revisa el diff con repo_review branch=" + G9_BRANCH +
+    " y crea una PR DRAFT con github action=pr, repo=" + G9_REPO + ", branch=" +
+    G9_BRANCH + ". No hagas merge ni toques main, otros proyectos, CDF o producción. " +
+    "Describe los exitCode y el cambio basándote únicamente en las herramientas. " +
+    "Si no puedes completar una etapa, presenta el error real y no finjas éxito.";
 }

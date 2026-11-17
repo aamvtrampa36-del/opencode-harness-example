@@ -34,7 +34,13 @@ describe("G8 trusted session-bound GitHub read tools", () => {
     await executeBoundRepositoryAction("ses_test","plan",{action:"repo"},get,guard,execute);
     await executeBoundRepositoryAction("ses_test","plan",
       {action:"read",path:"README.md",ref:"main"},get,guard,execute);
-    expect(requests.map(x=>x.action)).toEqual(["repo","read"]);
+    await executeBoundRepositoryAction("ses_test","plan",
+      {action:"read",path:"src/model-presets.ts"},get,guard,execute);
+    expect(requests).toEqual([
+      { action: "repo", repo },
+      { action: "read", repo, path: "README.md", ref: "main" },
+      { action: "read", repo, path: "src/model-presets.ts" }
+    ]);
   });
 
   test("missing or malicious bindings never trigger GitHub", async () => {
