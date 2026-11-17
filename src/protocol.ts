@@ -35,6 +35,15 @@ export type ClientMessage =
   | { readonly type: "delegate"; readonly id?: string; readonly project: string }
   | { readonly type: "resync"; readonly id?: string };
 
+/** Backend-confirmed model set when an actual operation was submitted. */
+export type ModelRun = {
+  readonly operationId: string;
+  readonly model: ModelSelectionID;
+  readonly providerID: "cloudflare" | "openrouter";
+  readonly id: string;
+  readonly at: number;
+};
+
 /** One session's state: what a client renders. */
 export type SessionSnapshot = {
   readonly session: OpenCodeSessionId;
@@ -42,6 +51,7 @@ export type SessionSnapshot = {
   readonly messages: readonly OpenCodeMessage[];
   readonly busy: boolean;
   readonly pending: readonly OpenCodePendingOperation[];
+  readonly modelRuns: readonly ModelRun[];
 };
 
 /** Server → client. */
