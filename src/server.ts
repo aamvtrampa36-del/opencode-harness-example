@@ -19,7 +19,7 @@ import { workspacePlugin } from "./workspace";
 import { tokenEconomizerAdapter } from "./token-economizer-adapter";
 import type { ConnectorEvent, ConnectorOutput } from "./connector-adapter";
 import { openRouterCredentialPlugin } from "./openrouter";
-import { isModelSelection, MODEL_PRESETS, resolveModelSelection } from "./model-presets";
+import { isModelSelection, MODEL_PRESETS, NATIVE_WORKERS_AI_MODELS, resolveModelSelection } from "./model-presets";
 import { getOpenRouterCatalogue } from "./openrouter-catalog";
 import { assertOpenRouterImageModel, generateOpenRouterImage, getOpenRouterImageModels } from "./openrouter-images";
 import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
@@ -807,6 +807,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   // Workers AI over the AI binding, as an OpenCode provider plugin.
   readonly ai = createAI({ binding: this.env.AI });
+  // Register every native preset BEFORE the harness initializes. A plain
+  // {providerID, id} selector does not add a model to OpenCode's provider.
+  private readonly registeredWorkersModels = NATIVE_WORKERS_AI_MODELS.map(id => this.ai(id));
   // Files in the object's own storage. `exec` runs JavaScript in a Worker
   // Loader isolate with no network of its own. `git` turns on
   // `workspace.git`, which `codemode:git` uses to clone over HTTPS from the host.
