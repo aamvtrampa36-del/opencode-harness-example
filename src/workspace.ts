@@ -156,7 +156,6 @@ export function workspacePlugin(
     "execute"
   ];
   const projectToolNames = ["linux", "inspect_linux", "github", "repo_review", "repo_info", "repo_read"];
-  const githubToolNames = ["github", "repo_review", "repo_info", "repo_read"];
 
   return {
     id: "example.workspace",
@@ -209,7 +208,11 @@ export function workspacePlugin(
             // A project without an approved repository still has Linux tools.
           }
           if (!repository) {
-            for (const name of githubToolNames) delete available[name];
+            // Keep session-bound read tools discoverable even if the repository
+            // lookup fails during context construction. Their execution still
+            // resolves and authorizes the repository from Durable Object state.
+            // Hiding them leaves the model unable to report a useful scope error.
+            delete available.github;
           }
           if (isSubagent) {
             const allowed = new Set(["inspect_linux", ...(repository
