@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MODEL_PRESETS, isModelPreset, resolveModelSelection, usableModelSelection } from "./model-presets";
+import { MODEL_PRESETS, NATIVE_WORKERS_AI_MODELS, isModelPreset, resolveModelSelection, usableModelSelection } from "./model-presets";
 
 describe("model authorization", () => {
   test("recognizes only allowlisted identifiers", () => {
@@ -15,6 +15,13 @@ describe("model authorization", () => {
     expect(MODEL_PRESETS.cloudflare.providerID).toBe("cloudflare");
     expect(MODEL_PRESETS.cloudflare.tier).toBe("baseline");
     expect(MODEL_PRESETS.cloudflare.id).toBe("@cf/zai-org/glm-4.7-flash");
+  });
+
+  test("registers all native models explicitly, without registering OpenRouter models", () => {
+    expect(NATIVE_WORKERS_AI_MODELS).toEqual([
+      "@cf/zai-org/glm-4.7-flash",
+      "@cf/deepseek-ai/deepseek-v4.1-flash-1017"
+    ]);
   });
 
   test("economical DeepSeek runs natively through Cloudflare without an OpenRouter key", () => {
