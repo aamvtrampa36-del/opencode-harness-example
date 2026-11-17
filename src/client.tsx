@@ -516,6 +516,7 @@ function App() {
     confirmedModel,
     modelChanging,
     modelPending,
+    modelRuns,
     selectModel: requestModelChange,
     messages,
     busy,
@@ -1626,6 +1627,12 @@ function App() {
               <div className="absolute bottom-full right-0 z-30 mb-2 w-[min(88vw,340px)] space-y-2 rounded-xl border border-kumo-line bg-kumo-base p-3 text-xs shadow-xl">
                 <p aria-live="polite">{toolsCompleted} herramientas completadas{toolsFailed ? ` · ${toolsFailed} fallidas` : ""} en esta sesión.</p>
                 <p title="El cambio de consumo de OpenRouter es de cuenta, no una factura de la tarea">{lastCost}</p>
+                {modelRuns.length ? <div className="space-y-1 border-t border-kumo-line pt-2" aria-label="Modelos utilizados por operación">
+                  <p className="font-semibold">Modelo confirmado por operación</p>
+                  {modelRuns.slice(-5).reverse().map(run => <p key={run.operationId} className="break-all text-kumo-subtle">
+                    {run.providerID} · {run.id} · {new Date(run.at).toLocaleTimeString()}
+                  </p>)}
+                </div> : null}
                 <p aria-live="polite">
                   TokenEconomizer: {connectorActivity === null ? "consultando estado…" :
                     !connectorActivity.tokenEconomizerEnabled ? "desactivado" :
