@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -37,13 +38,29 @@ try {
   assert.equal(parsed.targetWorker, "opencode-g1-staging", "MCP target must remain fixed to Staging.");
   assert.equal(parsed.status, "ok", "The Staging health check must report ok.");
 
+  // Read-only RPC probe: an unknown task must fail with the supervisor's
+  // expected response, proving the fixed cross-Worker DO binding is reachable.
+  const unknownTaskId = randomUUID().replaceAll("-", "").slice(0, 16);
+  const unknownTask = await client.callTool({
+    name: "staging_task_status",
+    arguments: { id: unknownTaskId }
+  });
+  assert.equal(unknownTask.isError, true, "The fixed Staging supervisor should reject an unknown task ID.");
+  const unknownTaskBlock = unknownTask.content.find(item => item.type === "text");
+  assert.ok(unknownTaskBlock && "text" in unknownTaskBlock, "Unknown task response must contain a text error.");
+  assert.match(unknownTaskBlock.text, /Tarea del supervisor inexistente/);
+
   const evidence = {
     checkedAt: new Date().toISOString(),
     targetWorker: parsed.targetWorker,
     status: parsed.status,
     mcpUrl: new URL(MCP_URL).origin + "/mcp",
     tools: names,
-    operationsExecuted: ["tools/list", "tools/call staging_status"]
+    operationsExecuted: [
+      "tools/list",
+      "tools/call staging_status",
+      "tools/call staging_task_status (unknown ID; read only)"
+    ]
   };
   const outputPath = join(process.env.RUNNER_TEMP ?? "/tmp", "opencode-staging-control-mcp.json");
   await writeFile(outputPath, JSON.stringify(evidence, null, 2) + "\n", { mode: 0o600 });
