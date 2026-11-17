@@ -559,6 +559,25 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async getG9SelfDev(): Promise<unknown> {
     const state=await this.ctx.storage.get<G9ProofState>("g9-native-e2e-v2");
     if(!state || state.version!==G9_PROOF_VERSION)return {status:"not-started"};
+    // Recover a false-negative caused by the previous TAP-only parser. Re-read
+    // the ACTUAL persisted tool transcript; no model retry or synthetic PASS.
+    // Independent GitHub + Node verification below remains mandatory.
+    if(state.status === "failed" && state.session &&
+       state.reason?.startsWith("El agente no completó la secuencia roja")) {
+      try {
+        const handle=this.harness.session(state.session);
+        const [running,history]=await Promise.all([handle.busy(),handle.history()]);
+        const evidence=assessG9History(history);
+        if(!running && evidence.passed){
+          state.status="running";
+          state.reason=undefined;
+          state.result=evidence;
+          await this.ctx.storage.put("g9-native-e2e-v2",state);
+        }
+      }catch(error){
+        console.warn("G9 revalidation unavailable",error);
+      }
+    }
     if(state.status==="failed" || state.status==="passed") return {
       status:state.status,reason:state.reason,result:state.result,session:state.session,
       branch:G9_BRANCH
