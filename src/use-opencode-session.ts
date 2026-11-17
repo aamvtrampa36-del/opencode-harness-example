@@ -8,7 +8,7 @@ import type {
 } from "agents/harness/opencode";
 import { useAgent } from "agents/react";
 import { useCallback, useState } from "react";
-import type { ClientMessage, ServerMessage } from "./protocol";
+import type { ClientMessage, ServerMessage, ModelRun } from "./protocol";
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
 
@@ -72,6 +72,7 @@ type State = {
   readonly busy: boolean;
   readonly pending: readonly OpenCodePendingOperation[];
   readonly sessions: readonly OpenCodeSessionInfo[];
+  readonly modelRuns: readonly ModelRun[];
   /** Live deltas by assistant message id, until a snapshot catches up. */
   readonly live: Readonly<Record<string, LiveText>>;
   readonly error: string | undefined;
@@ -88,6 +89,7 @@ const INITIAL_STATE: State = {
   busy: false,
   pending: [],
   sessions: [],
+  modelRuns: [],
   live: {},
   error: undefined,
   workflow: undefined
@@ -176,6 +178,7 @@ export function useOpenCodeSession(
             busy: message.busy || message.pending.length > 0,
             modelPending: current.modelPending && (message.busy || message.pending.length > 0),
             pending: message.pending,
+            modelRuns: message.modelRuns ?? [],
             live: prune(current.live, message.messages)
           }));
           return;
