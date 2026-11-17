@@ -693,7 +693,7 @@ try {
       );
       assert.equal(selectedProjectModel, projectModel === "cloudflare" ? "cloudflare" : "openrouter:" + SMALL_FREE_MODEL);
 
-      const task = `Crea una aplicación web estática mínima llamada "${trial.name}" para el proyecto Linux ${project}. Usa la herramienta linux con project=${project} para crear dist/index.html con HTML, CSS y JavaScript incrustados. La página debe mostrar exactamente el título "${trial.marker}" y una interacción pequeña útil para la aplicación. No instales dependencias, no uses internet ni edites otros proyectos. Verifica con una llamada Linux que dist/index.html existe y contiene ese título. Responde brevemente solo después de recibir resultados reales de la herramienta.`;
+      const task = `Crea una aplicación web estática mínima llamada "${trial.name}" en el proyecto ya seleccionado. Usa la herramienta linux sin campo project para crear dist/index.html con HTML, CSS y JavaScript incrustados. La página debe mostrar exactamente el título "${trial.marker}" y una interacción pequeña útil para la aplicación. No instales dependencias, no uses internet ni edites otros proyectos. Verifica con una llamada Linux que dist/index.html existe y contiene ese título. Responde brevemente solo después de recibir resultados reales de la herramienta.`;
       const previousProjectToolCount = await page.locator("main details.bg-kumo-base").count();
       await page.getByRole("textbox", { name: "Escribir a OpenCode" }).fill(task);
       await page.getByRole("button", { name: "Enviar mensaje" }).click();

@@ -927,7 +927,7 @@ function App() {
       setProject(slug);
       setPrompt(kind === "android" ?
         "Crea una app Android nativa para esta idea: [describe aquí tu app]. " +
-        "Usa la herramienta linux con project=" + slug + ". " +
+        "La conversación ya está vinculada a su proyecto Linux; usa la herramienta linux sin enviar un campo project. " +
         "Genera los archivos Android completos en Java y Gradle, incluidas pruebas. " +
         "Prefiere funcionamiento offline y almacenamiento local. " +
         "No presupongas que Android SDK o Gradle están instalados en el Container. " +
@@ -936,7 +936,7 @@ function App() {
         "No modifiques servicios de producción."
         :
         "Crea una aplicación web a partir de esta idea: [describe aquí tu app]. " +
-        "Usa la herramienta linux con project=" + slug + " para crear archivos, instalar dependencias, " +
+        "La conversación ya está vinculada a su proyecto Linux; usa la herramienta linux sin enviar un campo project para crear archivos, instalar dependencias, " +
         "probar el código, corregir errores y compilar una versión de producción. " +
         "Usa rutas relativas para recursos (por ejemplo Vite base='./'). " +
         "La vista previa debe quedar en una carpeta dist/ con index.html. " +
@@ -976,8 +976,8 @@ function App() {
         "Descripción visual: " + text
       : text || "Analiza la imagen adjunta y ayúdame con ella.";
     const task = project && agentMode === "build"
-      ? "Proyecto Linux seleccionado: " + project + ". Si usas la herramienta linux, utiliza project=" + project +
-        ". No modifiques otros proyectos ni producción sin autorización.\n\nTarea: " + requestText
+      ? "Proyecto Linux seleccionado: " + project + ". Las herramientas linux e inspect_linux usan automáticamente este proyecto; no incluyas un parámetro project. " +
+        "No modifiques otros proyectos ni producción sin autorización.\n\nTarea: " + requestText
       : requestText;
     const selectedModel = openRouterAvailable ? modelPreset : "cloudflare";
     if (draftImages.length && resolveModelSelection(selectedModel).providerID !== "openrouter") {

@@ -291,11 +291,10 @@ export function workspacePlugin(
         if (linux) {
           editor.add({
             name: "linux",
-            description: "Run one real command in the selected project's separate Linux Container. A bound GitHub repository is prepared from a pinned source archive, without .git or credentials. Use github to write tested files to an opencode/* branch and open a draft PR. Output includes the real exitCode.",
+            description: "Run one real command in the selected project's separate Linux Container. The conversation selects the authorized project automatically; do not pass a project argument. A bound GitHub repository is prepared from a pinned source archive, without .git or credentials. Use github to write tested files to an opencode/* branch and open a draft PR. Output includes the real exitCode.",
             input: {
               type: "object",
               properties: {
-                project: { type: "string", description: "Optional legacy project ID. Normally omit it: the target is derived from the authorized session, not model input." },
                 command: { type: "string", description: "Shell script to execute INSIDE the project directory; no more than 12000 characters" }
               },
               required: ["command"],
@@ -316,11 +315,10 @@ export function workspacePlugin(
         if (linux) {
           editor.add({
             name: "inspect_linux",
-            description: "READ-ONLY inspection of an existing Linux project. List one directory or read one UTF-8 text file (max 32 KiB) without running commands, installing packages or modifying files. Use this in Plan or Review. Hidden secrets, node_modules, and .git are excluded. Enter project slug and a safe relative path.",
+            description: "READ-ONLY inspection of the Linux project selected in this conversation. The project is resolved automatically; do not pass a project argument. List one directory or read one UTF-8 text file (max 32 KiB) without running commands, installing packages or modifying files. Use this in Plan or Review. Hidden secrets, node_modules, and .git are excluded.",
             input: {
               type: "object",
               properties: {
-                project: { type: "string", description: "Optional legacy project ID; the authorized session determines the target automatically." },
                 action: { type: "string", enum: ["list", "read"], description: "List folder or read text file" },
                 path: { type: "string", description: "Relative path under project, empty string for project root listing" }
               },

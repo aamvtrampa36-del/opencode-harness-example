@@ -119,17 +119,23 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
   test("routes Linux to the trusted session and rejects another project's slug", async () => {
     const toolSpecs = new Map<string, any>();
     const runs: Array<{project: string; session?: string}> = [];
+    const inspections: Array<{project: string; session?: string}> = [];
     const plugin = workspacePlugin(
       {} as Workspace, {},
       {
-        inspect: async () => ({}),
+        inspect: async (project: string, _action: string, _path: string, session?: string) => {
+          inspections.push({project, session});
+          return {};
+        },
         run: async (project: string, _command: string, session?: string) => {
           runs.push({project, session});
           return {project, exitCode: 0, stdout: "", stderr: "", truncated: false, persistence: "test"};
         }
       },
       undefined,
-      async (_session, action) => assertScopedTool({project:"cdf-cloud-engine"}, action)
+      async (_session, action) => assertScopedTool({project:"cdf-cloud-engine"}, action),
+      undefined,
+      async () => "cdf-cloud-engine"
     );
     await plugin.setup({
       agent: {transform: async () => undefined},
@@ -138,16 +144,22 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
         add: (spec: any) => toolSpecs.set(spec.name,spec)
       })}
     } as any);
+    expect(toolSpecs.get("linux").input.properties).not.toHaveProperty("project");
+    expect(toolSpecs.get("inspect_linux").input.properties).not.toHaveProperty("project");
     const allowed = await toolSpecs.get("linux").execute(
-      {project:"cdf-cloud-engine",command:"pwd"},
+      {command:"pwd"},
       {sessionID:"ses_test",agent:"build"}
     );
     expect(JSON.parse(allowed.content).exitCode).toBe(0);
+    await toolSpecs.get("inspect_linux").execute(
+      {action:"list",path:""}, {sessionID:"ses_test",agent:"plan"}
+    );
     await expect(toolSpecs.get("linux").execute(
       {project:"cdf-workbench",command:"pwd"},
       {sessionID:"ses_test",agent:"build"}
-    )).rejects.toThrow("proyecto distinto");
+    )).rejects.toThrow("Proyecto diferente al autorizado en esta sesión");
     expect(runs).toEqual([{project:"cdf-cloud-engine",session:"ses_test"}]);
+    expect(inspections).toEqual([{project:"cdf-cloud-engine",session:"ses_test"}]);
   });
 
   test("session context exposes global tools only without a project", async () => {
