@@ -469,10 +469,11 @@ try {
       const previousHookAt = connectorBefore?.tokenEconomizerLastHook?.at ?? 0;
       const previousToolCount = await page.locator("main details.bg-kumo-base").count();
       const taskMarker = "TOKEN_ECONOMIZER_TRIAL_" + (index + 1);
-      const markerOutput = "printf '\\n" + taskMarker + "\\n'";
-      const command = (index === 0
-        ? "cat > test_envfacts.test.mjs <<'JS'\nimport test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('Node runtime works', () => assert.equal(1 + 1, 2));\nJS\npytest; node --test test_envfacts.test.mjs"
-        : "pytest; node --test test_envfacts.test.mjs") + "; " + markerOutput;
+      const fixture = "cat > test_envfacts.test.mjs <<'JS'\nimport test from 'node:test';\ntest('Node runtime works', () => {\n  if (1 + 1 !== 2) throw new Error('arithmetic check failed');\n});\nJS\n";
+      const command = (index === 0 ? fixture : "") +
+        "pytest; pytest_status=$?; node --test test_envfacts.test.mjs; node_status=$?; " +
+        "printf '\\n" + taskMarker + "\\n'; " +
+        'if [ "$pytest_status" -ne 0 ]; then exit "$pytest_status"; else exit "$node_status"; fi';
       const task = `Usa solo la herramienta Linux autorizada para el proyecto ${tokenEconomizerProject}. ` +
         `Este turno exige una ejecución nueva y una salida con la marca ${taskMarker}; ` +
         "ignora los resultados de turnos anteriores y no afirmes haber ejecutado nada sin usar Linux. " +
@@ -525,6 +526,10 @@ try {
         `TokenEconomizer prueba ${index + 1}: pytest debería reportar su ausencia real en esta imagen.`);
       assert.match(observedOutput, /# pass 1|pass 1/i,
         `TokenEconomizer prueba ${index + 1}: el runner Node integrado debe pasar.`);
+      assert.ok(outputs.some(value => value.startsWith("Error\n")),
+        `TokenEconomizer prueba ${index + 1}: el fallo real de pytest debe llegar como error de herramienta.`);
+      assert.match(observedOutput, /exitCode":127/,
+        `TokenEconomizer prueba ${index + 1}: el comando debe conservar el código 127 de pytest ausente.`);
       assert.match(observedOutput, new RegExp(tokenEconomizerProject),
         `TokenEconomizer prueba ${index + 1}: la salida no confirma el proyecto Linux autorizado.`);
       assert.match(observedOutput, new RegExp(taskMarker),
