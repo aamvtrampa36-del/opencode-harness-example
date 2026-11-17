@@ -10,6 +10,7 @@ const accessSecret = process.env.CF_ACCESS_CLIENT_SECRET;
 const sendLiveMessage = process.env.OPENCODE_STAGING_SEND_MESSAGE === "true";
 const developThreeProjects = process.env.OPENCODE_STAGING_DEVELOP_THREE_PROJECTS === "true";
 const projectModel = process.env.OPENCODE_STAGING_PROJECT_MODEL === "cloudflare" ? "cloudflare" : "openrouter-free";
+const diagnoseProject = process.env.OPENCODE_STAGING_DIAGNOSE_PROJECT?.trim() ?? "";
 const verifyCdfWorkbench = process.env.OPENCODE_STAGING_VERIFY_CDF_WORKBENCH === "true";
 const verifyTokenEconomizer = process.env.OPENCODE_STAGING_VERIFY_TOKEN_ECONOMIZER === "true";
 const SMALL_FREE_MODEL = "liquid/lfm-3-1.7b:free";
@@ -115,6 +116,30 @@ try {
   await page.screenshot({
     path: join(process.env.RUNNER_TEMP ?? "/tmp", "opencode-staging-mobile-393x852.png")
   });
+
+  if (diagnoseProject) {
+    assert.match(diagnoseProject, /^app-[a-z0-9]+$/, "El diagnóstico acepta solo IDs de apps Staging.");
+    const diagnostic = await page.evaluate(async project => {
+      const command = `printf 'cwd='; pwd; ` +
+        `printf 'workspace='; readlink -f /workspace/projects/${project}; ` +
+        `printf 'bundle='; readlink -f /bundle/projects/${project}; ` +
+        `for path in /workspace/projects/${project}/dist/index.html /bundle/projects/${project}/dist/index.html; ` +
+        `do if test -f "$path"; then stat -Lc '%n %s bytes' "$path"; else echo "MISSING $path"; fi; done; ` +
+        `env | grep '^PREVIEW_ROOT=' || true`;
+      try {
+        const response = await fetch("/api/dev/run", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ project, command }), cache: "no-store",
+          signal: AbortSignal.timeout(90_000)
+        });
+        const container = { status: response.status, body: await response.text() };
+        const previewResponse = await fetch(`/api/dev/preview/${project}/dist/index.html`, { cache: "no-store" });
+        const preview = { status: previewResponse.status, body: (await previewResponse.text()).slice(0, 500) };
+        return { container, preview };
+      } catch (error) { return { containerError: String(error).slice(0, 500) }; }
+    }, diagnoseProject);
+    console.log(`Existing project path diagnostic: ${JSON.stringify({ project: diagnoseProject, ...diagnostic })}`);
+  }
 
   // The general chat is the default; templates remain optional and selectable.
   const optionsButton = page.getByRole("button", { name: "Mostrar opciones de OpenCode" });
@@ -752,7 +777,7 @@ try {
             const response = await fetch("/api/dev/run", {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ project, command }), cache: "no-store",
-              signal: AbortSignal.timeout(15_000)
+              signal: AbortSignal.timeout(90_000)
             });
             return { status: response.status, body: await response.text() };
           } catch (error) { return { error: String(error).slice(0, 300) }; }
