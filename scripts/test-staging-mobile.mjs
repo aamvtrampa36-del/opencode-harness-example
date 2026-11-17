@@ -239,22 +239,32 @@ try {
   ), initialModelPreset, "La prueba no debe cambiar el modelo de la conversación preexistente.");
 
   if (sendLiveMessage) {
-    assert.ok(routerReady, "OpenRouter debe estar configurado para ejecutar el mensaje real.");
+    const useOpenRouterForLive = projectModel === "openrouter-free";
+    if (useOpenRouterForLive) {
+      assert.ok(routerReady, "OpenRouter debe estar configurado para ejecutar el mensaje real.");
+    }
     const readUsage = async () => page.evaluate(async () => {
       const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
       if (!response.ok) return null;
       const body = await response.json();
       return typeof body.usage?.usage === "number" ? body.usage.usage : null;
     });
-    const usageBeforeSmallModel = await readUsage();
-    assert.equal(typeof usageBeforeSmallModel, "number", "No se consultó el consumo base; se omite la llamada al modelo.");
+    const usageBeforeSmallModel = useOpenRouterForLive ? await readUsage() : null;
+    if (useOpenRouterForLive) {
+      assert.equal(typeof usageBeforeSmallModel, "number", "No se consultó el consumo base; se omite la llamada al modelo.");
+    }
+    const selectLiveModel = async () => {
+      if (useOpenRouterForLive) {
+        await selectOpenRouterModel(SMALL_FREE_MODEL);
+      } else {
+        await modelButton.click();
+        await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
+        await modelDialog.getByRole("listbox", { name: "Perfiles sencillos" })
+          .getByRole("option", { name: /Cloudflare/ }).click();
+      }
+    };
 
-    await modelButton.click();
-    await modelDialog.getByRole("button", { name: "OpenRouter", exact: true }).click();
-    await modelDialog.getByRole("checkbox", { name: "Solo modelos gratuitos" }).check();
-    await modelDialog.getByRole("searchbox", { name: "Buscar modelos con soporte de herramientas" }).fill(SMALL_FREE_MODEL);
-    const smallModelOptions = modelDialog.getByRole("listbox", { name: "Modelos OpenRouter" }).getByRole("option");
-    await smallModelOptions.filter({ hasText: SMALL_FREE_MODEL }).click();
+    await selectLiveModel();
     await page.getByRole("textbox", { name: "Escribir a OpenCode" })
       .fill("Responde exactamente con el texto PING-PRUEBA y nada más. No uses herramientas.");
     await page.getByRole("button", { name: "Enviar mensaje" }).click();
@@ -273,15 +283,21 @@ try {
     }
     assert.match(await pingMessage.innerText(), /PING-PRUEBA/i,
       "El modelo gratuito concreto debe producir una respuesta real.");
-    const usageAfterSmallModel = await readUsage();
-    assert.equal(typeof usageAfterSmallModel, "number", "No se pudo consultar el consumo tras el modelo gratuito concreto.");
-    const smallModelSpend = usageAfterSmallModel - usageBeforeSmallModel;
-    assert.ok(smallModelSpend >= 0 && smallModelSpend <= 0.10,
-      `El modelo gratuito concreto excedió el límite de US$0,10: $${smallModelSpend.toFixed(4)}.`);
-    console.log(`Modelo concreto gratuito aprobado (${SMALL_FREE_MODEL}); variación de cuenta: $${smallModelSpend.toFixed(4)}.`);
+    if (useOpenRouterForLive) {
+      const usageAfterSmallModel = await readUsage();
+      assert.equal(typeof usageAfterSmallModel, "number", "No se pudo consultar el consumo tras el modelo gratuito concreto.");
+      const smallModelSpend = usageAfterSmallModel - usageBeforeSmallModel;
+      assert.ok(smallModelSpend >= 0 && smallModelSpend <= 0.10,
+        `El modelo gratuito concreto excedió el límite de US$0,10: $${smallModelSpend.toFixed(4)}.`);
+      console.log(`Modelo concreto gratuito aprobado (${SMALL_FREE_MODEL}); variación de cuenta: $${smallModelSpend.toFixed(4)}.`);
+    } else {
+      console.log("Modelo Cloudflare gratuito respondió al mensaje real de prueba.");
+    }
 
-    const usageBeforeLongModel = await readUsage();
-    assert.equal(typeof usageBeforeLongModel, "number", "No se consultó el consumo antes de la prueba de segundo plano.");
+    const usageBeforeLongModel = useOpenRouterForLive ? await readUsage() : null;
+    if (useOpenRouterForLive) {
+      assert.equal(typeof usageBeforeLongModel, "number", "No se consultó el consumo antes de la prueba de segundo plano.");
+    }
     const previousBackgroundSession = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
     await optionsButton.click();
     await page.getByRole("button", { name: "Crear nueva aplicación" }).click();
@@ -296,7 +312,7 @@ try {
       selected => localStorage.getItem("opencode-active-project:" + selected), backgroundSession
     );
     assert.match(backgroundProject ?? "", /^app-[a-z0-9]+$/, "La tarea de segundo plano necesita un proyecto temporal aislado.");
-    await selectOpenRouterModel(SMALL_FREE_MODEL);
+    await selectLiveModel();
     const previousToolCount = await page.locator("main details.bg-kumo-base").count();
     await page.getByRole("textbox", { name: "Escribir a OpenCode" })
       .fill(`Usa una única llamada a la herramienta Linux para el proyecto ${backgroundProject}. Ejecuta exactamente: sleep 20; printf 'OPEN-CODE-BACKGROUND-OK\\n'. No edites archivos ni uses otras herramientas. Después informa brevemente el resultado.`);
@@ -352,11 +368,15 @@ try {
     const reply = await conversationPanel.locator(".sd-theme").last().innerText();
     assert.ok(reply.trim().length > 0, "El agente debe mostrar una respuesta real.");
 
-    const usageAfter = await readUsage();
-    assert.equal(typeof usageAfter, "number", "No se pudo comprobar el consumo después de la prueba de segundo plano.");
-    const delta = usageAfter - usageBeforeLongModel;
-    assert.ok(delta >= 0 && delta <= 0.10, `La variación de cuenta excedió US$0.10: $${delta.toFixed(4)}.`);
-    console.log(`Modelo gratis concreto respondió una tarea extensa; variación aproximada de cuenta: $${delta.toFixed(4)}.`);
+    if (useOpenRouterForLive) {
+      const usageAfter = await readUsage();
+      assert.equal(typeof usageAfter, "number", "No se pudo comprobar el consumo después de la prueba de segundo plano.");
+      const delta = usageAfter - usageBeforeLongModel;
+      assert.ok(delta >= 0 && delta <= 0.10, `La variación de cuenta excedió US$0.10: $${delta.toFixed(4)}.`);
+      console.log(`Modelo gratis concreto respondió una tarea extensa; variación aproximada de cuenta: $${delta.toFixed(4)}.`);
+    } else {
+      console.log("Modelo Cloudflare gratuito completó la tarea larga de segundo plano.");
+    }
 
   }
 
