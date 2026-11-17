@@ -149,7 +149,12 @@ export function workspacePlugin(
       }
     }
   });
-  const sharedWorkspaceToolNames = tools.map((tool) => tool.name.replace(/[^a-zA-Z0-9_-]/g, "_"));
+  // The OpenCode code-mode entrypoint executes against this shared Worker
+  // workspace too, but is registered by the runtime rather than createPiTools.
+  const sharedWorkspaceToolNames = [
+    ...tools.map((tool) => tool.name.replace(/[^a-zA-Z0-9_-]/g, "_")),
+    "execute"
+  ];
   const projectToolNames = ["linux", "inspect_linux", "github", "repo_review", "repo_info", "repo_read"];
   const githubToolNames = ["github", "repo_review", "repo_info", "repo_read"];
 

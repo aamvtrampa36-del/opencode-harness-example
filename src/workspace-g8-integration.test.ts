@@ -194,12 +194,13 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
       }}
     } as any);
 
-    const getTools = () => Object.fromEntries([...toolSpecs.keys()].map(name => [name, {}]));
+    const getTools = () => Object.fromEntries([...toolSpecs.keys(), "execute"].map(name => [name, {}]));
     const unscoped = getTools();
     await filterContext!({sessionID:"ses_free", tools:unscoped});
     expect(unscoped).toHaveProperty("read");
     expect(unscoped).toHaveProperty("ls");
     expect(unscoped).toHaveProperty("find");
+    expect(unscoped).toHaveProperty("execute");
     expect(unscoped).not.toHaveProperty("linux");
     expect(unscoped).not.toHaveProperty("github");
 
@@ -208,6 +209,7 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
     expect(projectOnly).not.toHaveProperty("read");
     expect(projectOnly).not.toHaveProperty("ls");
     expect(projectOnly).not.toHaveProperty("find");
+    expect(projectOnly).not.toHaveProperty("execute");
     expect(projectOnly).toHaveProperty("linux");
     expect(projectOnly).toHaveProperty("inspect_linux");
     expect(projectOnly).not.toHaveProperty("github");
@@ -215,6 +217,7 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
     const projectWithRepo = getTools();
     await filterContext!({sessionID:"ses_repo", tools:projectWithRepo});
     expect(projectWithRepo).not.toHaveProperty("find");
+    expect(projectWithRepo).not.toHaveProperty("execute");
     expect(projectWithRepo).toHaveProperty("linux");
     expect(projectWithRepo).toHaveProperty("github");
     expect(projectWithRepo).toHaveProperty("repo_read");
