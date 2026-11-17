@@ -5,6 +5,29 @@ import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 const MCP_URL = "https://opencode-staging-control-mcp.cdf-cloud-mvp-20261019.workers.dev/mcp";
+
+const unauthenticatedResponse = await fetch(MCP_URL, {
+  headers: { Accept: "application/json, text/event-stream" }
+});
+assert.equal(unauthenticatedResponse.status, 401, "Access Managed OAuth must challenge clients without a token.");
+const oauthChallenge = unauthenticatedResponse.headers.get("www-authenticate");
+assert.ok(oauthChallenge, "Access must return a WWW-Authenticate challenge.");
+assert.match(oauthChallenge, /^Bearer\b/i, "Access must advertise Bearer OAuth.");
+const resourceMetadataMatch = oauthChallenge.match(/resource_metadata\s*=\s*(?:"([^"]+)"|([^,\s]+))/i);
+assert.ok(resourceMetadataMatch, "The OAuth challenge must advertise protected resource metadata.");
+const resourceMetadataUrl = new URL(resourceMetadataMatch[1] ?? resourceMetadataMatch[2], MCP_URL);
+assert.equal(resourceMetadataUrl.protocol, "https:", "OAuth discovery must use HTTPS.");
+const resourceMetadataResponse = await fetch(resourceMetadataUrl, {
+  headers: { Accept: "application/json" }
+});
+assert.equal(resourceMetadataResponse.ok, true, "Protected resource metadata must be publicly discoverable.");
+const resourceMetadata = await resourceMetadataResponse.json();
+assert.equal(typeof resourceMetadata.resource, "string", "Protected resource metadata must identify the MCP resource.");
+assert.ok(
+  Array.isArray(resourceMetadata.authorization_servers) && resourceMetadata.authorization_servers.length > 0,
+  "Protected resource metadata must identify an authorization server."
+);
+
 const accessId = process.env.CF_ACCESS_CLIENT_ID;
 const accessSecret = process.env.CF_ACCESS_CLIENT_SECRET;
 if (!accessId || !accessSecret) {
@@ -55,6 +78,11 @@ try {
     targetWorker: parsed.targetWorker,
     status: parsed.status,
     mcpUrl: new URL(MCP_URL).origin + "/mcp",
+    oauthDiscovery: {
+      unauthenticatedStatus: unauthenticatedResponse.status,
+      resourceMetadata: resourceMetadata.resource,
+      authorizationServers: resourceMetadata.authorization_servers
+    },
     tools: names,
     operationsExecuted: [
       "tools/list",
