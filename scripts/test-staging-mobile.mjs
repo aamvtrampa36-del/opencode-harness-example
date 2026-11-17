@@ -566,9 +566,14 @@ try {
       await modelDialog.getByRole("option", { name: /Cloudflare/ }).click();
     }
     const cdfModel = routerReady ? "openrouter:openrouter/free" : "cloudflare";
-    assert.equal(await page.evaluate(
-      session => localStorage.getItem("opencode-model-preset:" + session), cdfSession
-    ), cdfModel);
+    const cdfSelection = await page.evaluate(session => ({
+      active: localStorage.getItem("opencode-harness-session"),
+      saved: localStorage.getItem("opencode-model-preset:" + session),
+      global: localStorage.getItem("opencode-model-preset"),
+      button: document.querySelector('button[aria-label^="Elegir modelo:"]')?.getAttribute("aria-label")
+    }), cdfSession);
+    if (cdfSelection.saved !== cdfModel) console.log(`CDF model selection evidence: ${JSON.stringify({ session: cdfSession, ...cdfSelection })}`);
+    assert.equal(cdfSelection.saved, cdfModel);
 
     const cdfTask = "Solo lectura en CDF WorkBench Staging. Usa exactamente las herramientas " +
       "personal-cdf-workbench-staging_workbench_status y personal-cdf-workbench-staging_workbench_catalog. " +
