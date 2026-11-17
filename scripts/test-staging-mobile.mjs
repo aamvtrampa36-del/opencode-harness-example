@@ -698,15 +698,24 @@ try {
         return { status: response.status, html: await response.text() };
       }, `/api/dev/preview/${project}/dist/index.html`);
       if (preview.status !== 200) {
-        const evidence = await page.evaluate(previousCount => ({
-          messages: [...document.querySelectorAll("main .sd-theme")].slice(-5)
-            .map(element => element.innerText.slice(0, 900)),
-          tools: [...document.querySelectorAll("main details.bg-kumo-base")].slice(previousCount)
-            .map(card => ({
-              summary: (card.querySelector("summary")?.innerText ?? "").slice(0, 500),
-              outputs: [...card.querySelectorAll("pre")].map(output => output.innerText.slice(0, 1200))
-            }))
-        }), previousProjectToolCount);
+        const evidence = await page.evaluate(async previousCount => {
+          const session = localStorage.getItem("opencode-harness-session") ?? "";
+          const object = localStorage.getItem("opencode-harness-object") ?? "";
+          const exported = await fetch("/api/session/export?" + new URLSearchParams({ object, session }), { cache: "no-store" });
+          return {
+            messages: [...document.querySelectorAll("main .sd-theme")].slice(-5)
+              .map(element => element.innerText.slice(0, 900)),
+            mainText: (document.querySelector("main")?.innerText ?? "").slice(-5000),
+            statuses: [...document.querySelectorAll('[role="status"]')].map(element => element.innerText),
+            tools: [...document.querySelectorAll("main details.bg-kumo-base")].slice(previousCount)
+              .map(card => ({
+                summary: (card.querySelector("summary")?.innerText ?? "").slice(0, 500),
+                outputs: [...card.querySelectorAll("pre")].map(output => output.innerText.slice(0, 1200))
+              })),
+            transcriptStatus: exported.status,
+            transcript: exported.ok ? (await exported.text()).slice(-4000) : ""
+          };
+        }, previousProjectToolCount);
         console.log(`Project preview failure evidence: ${JSON.stringify({ project, status: preview.status,
           body: preview.html.slice(0, 800), ...evidence })}`);
       }
