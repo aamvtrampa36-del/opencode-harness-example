@@ -639,12 +639,28 @@ try {
     if (cdfSelection.saved !== cdfModel) console.log(`CDF model selection evidence: ${JSON.stringify({ session: cdfSession, ...cdfSelection })}`);
     assert.equal(cdfSelection.saved, cdfModel);
 
-    const cdfTask = "Solo lectura en CDF WorkBench Staging. Usa exactamente las herramientas " +
-      "personal-cdf-workbench-staging_workbench_status y personal-cdf-workbench-staging_workbench_catalog. " +
-      "Consulta el estado y el catálogo; después elige del catálogo un único archivo de documentación o Skill " +
-      "(no un script ejecutable) y léelo con personal-cdf-workbench-staging_workbench_read usando su ruta exacta. " +
-      "No llames otras herramientas ni servicios, no escribas ni ejecutes scripts. Resume el estado, el nombre de " +
-      "la herramienta del catálogo y la ruta leída, basándote en los resultados reales.";
+    const cdfTask = [
+      "Solo lectura en CDF WorkBench Staging. Usa exclusivamente la herramienta exec con backend dynamic-mcp; no llames herramientas MCP directas.",
+      "Ejecuta este módulo JavaScript. Debe descubrir las herramientas MCP, consultar estado y catálogo y leer un Skill por su ruta relativa; devuelve solo el resumen compacto solicitado:",
+      'import { servers, tools, call } from "codemode:mcp";',
+      "export default async function () {",
+      'const server = (await servers()).find(item => item.id === "cdf-workbench-staging");',
+      'if (!server) throw new Error("No está conectado cdf-workbench-staging");',
+      'const available = await tools({ server: server.id });',
+      'const required = ["workbench_status", "workbench_catalog", "workbench_read"];',
+      'const missing = required.filter(name => !available.some(item => item.name === name));',
+      'if (missing.length) throw new Error(`Faltan herramientas MCP: ${missing.join(", ")}`);',
+      'const statusCall = await call({ server: server.id, name: "workbench_status", arguments: {} });',
+      'const catalogCall = await call({ server: server.id, name: "workbench_catalog", arguments: {} });',
+      'const readCall = await call({ server: server.id, name: "workbench_read", arguments: { path: "skills/cdf-workbench/SKILL.md" } });',
+      'if (statusCall.isError || catalogCall.isError || readCall.isError) throw new Error("Una herramienta MCP devolvió error");',
+      'const status = statusCall.structuredContent;',
+      'const catalog = catalogCall.structuredContent;',
+      'const resource = readCall.structuredContent;',
+      'return { server: server.id, status: status.status, skillCount: catalog.skills.length, resourceStatus: resource.status, path: resource.path, chars: resource.content.length };',
+      "}",
+      "No escribas, no ejecutes scripts y no uses otros servicios."
+    ].join("\n");
     const cdfUsageBefore = useOpenRouterForCdf ? await page.evaluate(async () => {
       const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
       if (!response.ok) return null;
@@ -662,30 +678,17 @@ try {
       throw error;
     }
 
-    for (const toolName of [
-      "personal-cdf-workbench-staging_workbench_status",
-      "personal-cdf-workbench-staging_workbench_catalog",
-      "personal-cdf-workbench-staging_workbench_read"
-    ]) {
-      const matchingCards = page.locator("main details.bg-kumo-base").filter({ hasText: toolName });
-      const callCount = await matchingCards.count();
-      assert.ok(callCount > 0, `${toolName} debe aparecer como una llamada real.`);
-      if (callCount > 1) console.log(`CDF WorkBench ${toolName}: ${callCount} llamadas; se comprueba la última.`);
-      if (callCount > 1) {
-        const statuses = await matchingCards.evaluateAll(cards => cards.map(card => {
-          const summary = card.querySelector("summary")?.innerText ?? "";
-          return summary.includes("Terminado") ? "Terminado" : summary.includes("Error") ? "Error" : "En curso";
-        }));
-        console.log(`CDF WorkBench ${toolName} estados: ${statuses.join(", ")}.`);
-      }
-      const card = matchingCards.last();
-      await card.waitFor({ state: "visible", timeout: 10_000 });
-      await card.getByText("Terminado", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
-      await card.locator("summary").click();
-      assert.ok((await card.locator("pre").last().innerText()).trim().length > 0,
-        `${toolName} debe devolver contenido real.`);
-      cdfWorkbenchToolsVerified++;
-    }
+    const dynamicCalls = page.locator("main details.bg-kumo-base").filter({ hasText: /\bexec\b/ });
+    assert.ok(await dynamicCalls.count() > 0, "exec debe aparecer como una llamada real de Code Mode.");
+    const dynamicCall = dynamicCalls.last();
+    await dynamicCall.waitFor({ state: "visible", timeout: 10_000 });
+    await dynamicCall.getByText("Terminado", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await dynamicCall.locator("summary").click();
+    const dynamicResult = await dynamicCall.locator("pre").last().innerText();
+    assert.match(dynamicResult, /"status"\s*:\s*"READY"/, "Code Mode debe devolver el estado real de WorkBench.");
+    assert.match(dynamicResult, /"resourceStatus"\s*:\s*"RUNTIME_RESOURCE"/, "Code Mode debe devolver el recurso leído.");
+    assert.match(dynamicResult, /skills\/cdf-workbench\/SKILL\.md/, "Code Mode debe devolver la ruta relativa del Skill.");
+    cdfWorkbenchToolsVerified = 3;
 
     if (useOpenRouterForCdf) {
       const usageAfterCdf = await page.evaluate(async () => {
