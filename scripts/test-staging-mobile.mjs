@@ -627,7 +627,7 @@ try {
       await modelDialog.getByRole("button", { name: /OpenRouter Free/ }).click();
     } else {
       await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
-      await modelDialog.getByRole("option", { name: /Cloudflare/ }).click();
+      await modelDialog.getByRole("option", { name: "Cloudflare · DeepSeek V4.1", exact: true }).click();
     }
     const cdfModel = useOpenRouterForCdf ? "openrouter:openrouter/free" : "cloudflare";
     const cdfSelection = await page.evaluate(session => ({
