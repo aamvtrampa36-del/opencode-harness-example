@@ -15,7 +15,8 @@ assert.ok(config.compatibility_flags?.includes("durable_object_io_tasks_prevent_
 assert.ok(stagingConfig.includes('"durable_object_io_tasks_prevent_eviction"'),
   "Background Durable Object work must survive client disconnects in Staging");
 assert.ok(!/sk-or-v1-[A-Za-z0-9]{16,}|sk-proj-[A-Za-z0-9]{16,}/.test(server+workspace), "Possible hardcoded API secret");
-assert.ok(workspace.includes("OFFICIAL SOURCES") && workspace.includes("canonize"), "Official content approval guardrail missing from agent system");
+assert.ok(workspace.includes("authoritative or canonical material") && workspace.includes("changing official/canonical content"),
+  "Project-aware canonical content approval guardrail missing from agent system");
 assert.ok(workspace.includes("production"), "Production safety guardrail missing from agent system");
 assert.ok(!workspace.includes("CDF NARRATIVE:"), "Project-specific narrative mode must be optional");
 console.log("Static invariants passed. These checks do NOT replace runtime testing.");
