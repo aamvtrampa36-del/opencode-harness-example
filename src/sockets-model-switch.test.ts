@@ -3,12 +3,14 @@ import { OpenCodeSessionSockets } from "./sockets";
 import type { OpenCodeHarness } from "agents/harness/opencode";
 import type { Connection } from "agents/lifecycle";
 import type { ModelSelectionID } from "./model-presets";
+import type { ModelRun } from "./protocol";
 
 function setup(routerReady = false) {
   let selected: ModelSelectionID | undefined;
   let busy = false;
   let counter = 0;
   const models: {providerID: string; id: string}[] = [];
+  const modelRuns: ModelRun[] = [];
   const prompts: string[] = [];
   const events: Record<string, unknown>[] = [];
   const fakeHandle = {
@@ -34,11 +36,13 @@ function setup(routerReady = false) {
     harness, () => [socket as unknown as WebSocket], async () => routerReady,
     undefined, undefined, undefined, undefined, undefined, undefined,
     async () => undefined,
-    async () => selected, async (_session: string, model: ModelSelectionID) => { selected = model; }
+    async () => selected, async (_session: string, model: ModelSelectionID) => { selected = model; },
+    async () => modelRuns, async (_session: string, run: ModelRun) => { modelRuns.push(run); }
   );
   return {
     get selected() { return selected; }, get models() { return models; },
     get events() { return events; }, get prompts() { return prompts; },
+    get modelRuns() { return modelRuns; },
     setBusy: (value: boolean) => { busy = value; },
     send: async (value: Record<string, unknown>) => service.options().handlers.onMessage(
       socket, JSON.stringify({ id: "test-" + Math.random().toString(36).slice(2), ...value })
@@ -61,6 +65,13 @@ describe("per-conversation multimodel switching through actual socket dispatcher
       expect(app.models.at(-1)).toEqual({ providerID: "cloudflare", id });
     }
     expect(app.prompts).toHaveLength(3);
+    expect(app.modelRuns).toHaveLength(3);
+    expect(app.modelRuns.map(run => run.id)).toEqual([
+      "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
+      "@cf/zai-org/glm-4.7-flash",
+      "@cf/deepseek-ai/deepseek-v4.1-flash-1017"
+    ]);
+    expect(app.modelRuns.every(run => run.providerID === "cloudflare" && run.operationId.startsWith("run-"))).toBe(true);
   });
 
   test("switching while a task is busy only records next-turn selection", async () => {
