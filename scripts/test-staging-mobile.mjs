@@ -33,6 +33,11 @@ const context = await browser.newContext({
 });
 const page = await context.newPage();
 const pageErrors = [];
+const waitForActiveConversation = async session => page.waitForFunction(selected => {
+  const row = [...document.querySelectorAll("[data-session-id]")]
+    .find(element => element.getAttribute("data-session-id") === selected);
+  return row?.getAttribute("aria-current") === "page";
+}, session, { timeout: 20_000 });
 let disableTokenEconomizerAfterTest = false;
 let tokenEconomizerSessionsVerified = 0;
 let learnedContextCharacters = 0;
@@ -72,6 +77,7 @@ try {
   );
   const newSession = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
   assert.ok(newSession && newSession !== initialSession, "Crear conversación debe seleccionar una sesión nueva.");
+  await waitForActiveConversation(newSession);
   await conversations.waitFor({ state: "hidden" });
 
   // A single offline/online cycle checks the app's existing socket recovery
@@ -395,6 +401,7 @@ try {
       const session = localStorage.getItem("opencode-harness-session");
       return session ? localStorage.getItem("opencode-active-project:" + session) : null;
     });
+    await waitForActiveConversation(await page.evaluate(() => localStorage.getItem("opencode-harness-session")));
     assert.match(tokenEconomizerProject ?? "", /^app-[a-z0-9]+$/, "TokenEconomizer necesita su propio proyecto de prueba.");
     // Tool tasks use the specific lightweight free model to avoid routing
     // variability; the OpenRouter Free route is tested with a text task above.
@@ -548,6 +555,7 @@ try {
       }, beforeCdfSession, { timeout: 20_000 }
     );
     const cdfSession = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
+    await waitForActiveConversation(cdfSession);
     await conversations.waitFor({ state: "hidden" });
 
     await modelButton.click();
@@ -595,6 +603,13 @@ try {
       const callCount = await matchingCards.count();
       assert.ok(callCount > 0, `${toolName} debe aparecer como una llamada real.`);
       if (callCount > 1) console.log(`CDF WorkBench ${toolName}: ${callCount} llamadas; se comprueba la última.`);
+      if (callCount > 1) {
+        const statuses = await matchingCards.evaluateAll(cards => cards.map(card => {
+          const summary = card.querySelector("summary")?.innerText ?? "";
+          return summary.includes("Terminado") ? "Terminado" : summary.includes("Error") ? "Error" : "En curso";
+        }));
+        console.log(`CDF WorkBench ${toolName} estados: ${statuses.join(", ")}.`);
+      }
       const card = matchingCards.last();
       await card.waitFor({ state: "visible", timeout: 10_000 });
       await card.getByText("Terminado", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
@@ -648,6 +663,7 @@ try {
           return Boolean(session && session !== old && localStorage.getItem("opencode-active-project:" + session));
         }, previous, { timeout: 20_000 }
       );
+      await waitForActiveConversation(await page.evaluate(() => localStorage.getItem("opencode-harness-session")));
       const project = await page.evaluate(() => {
         const session = localStorage.getItem("opencode-harness-session");
         return session ? localStorage.getItem("opencode-active-project:" + session) : null;
