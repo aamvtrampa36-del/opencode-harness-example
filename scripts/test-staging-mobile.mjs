@@ -741,6 +741,22 @@ try {
         return { status: response.status, html: await response.text() };
       }, `/api/dev/preview/${project}/dist/index.html`);
       if (preview.status !== 200) {
+        const containerEvidence = await page.evaluate(async project => {
+          const command = `printf 'cwd='; pwd; ` +
+            `printf 'workspace='; readlink -f /workspace/projects/${project}; ` +
+            `printf 'bundle='; readlink -f /bundle/projects/${project}; ` +
+            `for path in /workspace/projects/${project}/dist/index.html /bundle/projects/${project}/dist/index.html; ` +
+            `do if test -f "$path"; then stat -Lc '%n %s bytes' "$path"; else echo "MISSING $path"; fi; done; ` +
+            `env | grep '^PREVIEW_ROOT=' || true`;
+          try {
+            const response = await fetch("/api/dev/run", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ project, command }), cache: "no-store",
+              signal: AbortSignal.timeout(15_000)
+            });
+            return { status: response.status, body: await response.text() };
+          } catch (error) { return { error: String(error).slice(0, 300) }; }
+        }, project);
         const evidence = await page.evaluate(async previousCount => {
           const session = localStorage.getItem("opencode-harness-session") ?? "";
           const object = localStorage.getItem("opencode-harness-object") ?? "";
@@ -760,7 +776,7 @@ try {
           };
         }, previousProjectToolCount);
         console.log(`Project preview failure evidence: ${JSON.stringify({ project, status: preview.status,
-          body: preview.html.slice(0, 800), ...evidence })}`);
+          body: preview.html.slice(0, 800), containerEvidence, ...evidence })}`);
       }
       assert.equal(preview.status, 200, `${trial.name}: la vista previa debe responder HTTP 200.`);
       assert.ok(preview.html.includes(trial.marker), `${trial.name}: falta el título comprobable en dist/index.html.`);
