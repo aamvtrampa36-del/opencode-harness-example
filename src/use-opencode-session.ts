@@ -8,7 +8,7 @@ import type {
 } from "agents/harness/opencode";
 import { useAgent } from "agents/react";
 import { useCallback, useState } from "react";
-import type { ClientMessage, ServerMessage } from "./protocol";
+import type { ClientMessage, ServerMessage, ModelRun } from "./protocol";
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
 
@@ -65,10 +65,14 @@ export function partTexts(
 type State = {
   readonly status: ConnectionStatus;
   readonly openRouterAvailable: boolean;
+  readonly confirmedModel: ModelSelectionID | undefined;
+  readonly modelChanging: boolean;
+  readonly modelPending: boolean;
   readonly messages: readonly OpenCodeMessage[];
   readonly busy: boolean;
   readonly pending: readonly OpenCodePendingOperation[];
   readonly sessions: readonly OpenCodeSessionInfo[];
+  readonly modelRuns: readonly ModelRun[];
   /** Live deltas by assistant message id, until a snapshot catches up. */
   readonly live: Readonly<Record<string, LiveText>>;
   readonly error: string | undefined;
@@ -78,10 +82,14 @@ type State = {
 const INITIAL_STATE: State = {
   status: "connecting",
   openRouterAvailable: false,
+  confirmedModel: undefined,
+  modelChanging: false,
+  modelPending: false,
   messages: [],
   busy: false,
   pending: [],
   sessions: [],
+  modelRuns: [],
   live: {},
   error: undefined,
   workflow: undefined
@@ -149,6 +157,11 @@ export function useOpenCodeSession(
         case "hello":
           setState((current) => ({ ...current, openRouterAvailable: message.openRouterAvailable }));
           return;
+        case "model_selection":
+          if (message.session !== session) return;
+          setState((current) => ({ ...current, confirmedModel: message.model,
+            modelChanging: false, modelPending: message.pending, error: undefined }));
+          return;
         case "sessions":
           setState((current) => ({ ...current, sessions: message.sessions }));
           return;
@@ -163,7 +176,9 @@ export function useOpenCodeSession(
             // Queued work starts as soon as the current run ends: keep
             // showing the session as busy between the two.
             busy: message.busy || message.pending.length > 0,
+            modelPending: current.modelPending && (message.busy || message.pending.length > 0),
             pending: message.pending,
+            modelRuns: message.modelRuns ?? [],
             live: prune(current.live, message.messages)
           }));
           return;
@@ -201,7 +216,7 @@ export function useOpenCodeSession(
             onUnknownSession();
             return;
           }
-          setState((current) => ({ ...current, error: message.message }));
+          setState((current) => ({ ...current, error: message.message, modelChanging: false }));
           return;
         default:
           return;
@@ -215,6 +230,14 @@ export function useOpenCodeSession(
     (message: ClientMessage): boolean => trySendJson(agent, message),
     [agent]
   );
+
+  /** A selection is applied only after the existing Durable Object confirms it. */
+  const selectModel = useCallback((model: ModelSelectionID): boolean => {
+    const accepted = send({ type: "select_model", id: crypto.randomUUID(), model });
+    setState(current => ({ ...current, modelChanging: accepted,
+      error: accepted ? undefined : "Sin conexión: no se cambió el modelo." }));
+    return accepted;
+  }, [send]);
 
   /** Idle: starts a run. Busy: queued as a follow-up, or steers the run. */
   const submit = useCallback(
@@ -297,5 +320,5 @@ export function useOpenCodeSession(
     }));
   }, []);
 
-  return { ...state, submit, abort, create, fail };
+  return { ...state, submit, selectModel, abort, create, fail };
 }
