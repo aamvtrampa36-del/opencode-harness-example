@@ -19,11 +19,24 @@ type DynamicMcpState = {
 type DynamicMcpContext = WorkspaceModuleCallContext & { state: Promise<DynamicMcpState> };
 export type ConnectMcp = (endpoint: RemoteMcpConfig, signal: AbortSignal) => Promise<McpConnection>;
 
+/** Cloudflare Workers only accepts `follow` or `manual`; manually reject redirects to keep auth local. */
+export function createMcpFetch(baseFetch: typeof fetch = fetch): typeof fetch {
+  return async (input, init) => {
+    const response = await baseFetch(input, { ...init, redirect: "manual" });
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error("Se bloqueó una redirección del servidor MCP.");
+    }
+    return response;
+  };
+}
+
 async function connectMcp(endpoint: RemoteMcpConfig, signal: AbortSignal): Promise<McpConnection> {
   const client = new Client({ name: "opencode-dynamic-workers", version: "1.0.0" });
   const transport = new StreamableHTTPClientTransport(new URL(endpoint.url), {
+    fetch: createMcpFetch(),
     requestInit: {
-      redirect: "error",
+      redirect: "manual",
       ...(endpoint.token ? { headers: { Authorization: `Bearer ${endpoint.token}` } } : {})
     }
   });

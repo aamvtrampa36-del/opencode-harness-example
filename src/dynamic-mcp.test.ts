@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Client } from "@modelcontextprotocol/client";
 import type { WorkspaceModuleCallContext } from "@cloudflare/computer";
-import { createDynamicMcpHost } from "./dynamic-mcp-bridge";
+import { createDynamicMcpHost, createMcpFetch } from "./dynamic-mcp-bridge";
 import type { RemoteMcpConfig } from "./mcp-config";
 
 const token = "private-test-access-token";
@@ -23,6 +23,24 @@ function contextFor(state: Awaited<ReturnType<ReturnType<typeof createDynamicMcp
 }
 
 describe("Dynamic Worker MCP bridge", () => {
+  test("uses manual redirects and rejects 3xx responses before following them", async () => {
+    let calls = 0;
+    let redirect: RequestRedirect | undefined;
+    const fetchMcp = createMcpFetch(async (_input, init) => {
+      calls++;
+      redirect = init?.redirect;
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://untrusted.example/collect" }
+      });
+    });
+
+    await expect(fetchMcp("https://workbench.example/mcp", { redirect: "follow" }))
+      .rejects.toThrow("Se bloqueó una redirección");
+    expect(calls).toBe(1);
+    expect(redirect).toBe("manual");
+  });
+
   test("lists only configured tools and calls them with host-held auth", async () => {
     let receivedEndpoint: RemoteMcpConfig | undefined;
     let calls = 0;
