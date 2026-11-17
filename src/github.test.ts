@@ -104,7 +104,7 @@ describe("GitHub scoped permissions",()=>{
     expect(result.ref).toBe("default");
     expect(result.path).toBe("src/model-presets.ts");
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toEndWith("/contents/src/model-presets.ts");
+    expect(calls[0]?.url.endsWith("/contents/src/model-presets.ts")).toBe(true);
     expect(calls[0]?.method).toBe("GET");
   });
   test("reads an explicit branch only when a ref was supplied",async()=>{
