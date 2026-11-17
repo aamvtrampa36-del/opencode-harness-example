@@ -146,6 +146,8 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
     } as any);
     expect(toolSpecs.get("linux").input.properties).not.toHaveProperty("project");
     expect(toolSpecs.get("inspect_linux").input.properties).not.toHaveProperty("project");
+    expect(toolSpecs.get("linux").description).toContain("use relative paths");
+    expect(toolSpecs.get("linux").description).toContain("never /bundle");
     const allowed = await toolSpecs.get("linux").execute(
       {command:"pwd"},
       {sessionID:"ses_test",agent:"build"}

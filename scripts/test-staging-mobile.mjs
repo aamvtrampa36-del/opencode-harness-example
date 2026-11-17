@@ -392,7 +392,9 @@ try {
   await settingsDialog.waitFor({ state: "hidden" });
 
   if (verifyTokenEconomizer) {
-    assert.ok(routerReady, "OpenRouter debe estar disponible para probar TokenEconomizer con inferencia gratuita.");
+    if (projectModel === "openrouter-free") {
+      assert.ok(routerReady, "OpenRouter debe estar disponible para probar TokenEconomizer con inferencia gratuita.");
+    }
     const readConnectorState = async () => page.evaluate(async () => {
       const response = await fetch("/api/settings/connectors", { cache: "no-store" });
       if (!response.ok) return null;
@@ -428,9 +430,16 @@ try {
     });
     await waitForActiveConversation(await page.evaluate(() => localStorage.getItem("opencode-harness-session")));
     assert.match(tokenEconomizerProject ?? "", /^app-[a-z0-9]+$/, "TokenEconomizer necesita su propio proyecto de prueba.");
-    // Tool tasks use the specific lightweight free model to avoid routing
-    // variability; the OpenRouter Free route is tested with a text task above.
-    await selectOpenRouterModel(SMALL_FREE_MODEL);
+    // Use Cloudflare's free daily allocation when selected; otherwise use one
+    // concrete lightweight OpenRouter model to avoid routing variability.
+    if (projectModel === "cloudflare") {
+      await modelButton.click();
+      await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
+      await modelDialog.getByRole("listbox", { name: "Perfiles sencillos" })
+        .getByRole("option", { name: /Cloudflare/ }).click();
+    } else {
+      await selectOpenRouterModel(SMALL_FREE_MODEL);
+    }
 
     const readConnectorStateAfter = async () => page.evaluate(async () => {
       const response = await fetch("/api/settings/connectors", { cache: "no-store" });
@@ -445,13 +454,15 @@ try {
         state.tokenEconomizerLastHook?.succeeded === true &&
         state.tokenEconomizerLastHook?.at > previousAt;
     }, beforeAt, { timeout: 60_000, polling: 500 });
-    const usageBeforeTokenEconomizer = await page.evaluate(async () => {
+    const usageBeforeTokenEconomizer = projectModel === "openrouter-free" ? await page.evaluate(async () => {
       const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
       if (!response.ok) return null;
       const body = await response.json();
       return typeof body.usage?.usage === "number" ? body.usage.usage : null;
-    });
-    assert.equal(typeof usageBeforeTokenEconomizer, "number", "No se pudo consultar el consumo antes de TokenEconomizer.");
+    }) : null;
+    if (projectModel === "openrouter-free") {
+      assert.equal(typeof usageBeforeTokenEconomizer, "number", "No se pudo consultar el consumo antes de TokenEconomizer.");
+    }
 
     for (let index = 0; index < 4; index++) {
       const connectorBefore = await readConnectorStateAfter();
@@ -554,17 +565,21 @@ try {
       "TokenEconomizer debe devolver contexto reutilizable tras aprender del proyecto Linux.");
     learnedContextCharacters = learnedContext.characters;
     await page.getByRole("status").filter({ hasText: "En línea" }).waitFor({ timeout: 180_000 });
-    const usageAfterTokenEconomizer = await page.evaluate(async () => {
-      const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
-      if (!response.ok) return null;
-      const body = await response.json();
-      return typeof body.usage?.usage === "number" ? body.usage.usage : null;
-    });
-    assert.equal(typeof usageAfterTokenEconomizer, "number", "No se pudo consultar el consumo después de TokenEconomizer.");
-    const tokenEconomizerSpend = usageAfterTokenEconomizer - usageBeforeTokenEconomizer;
-    assert.ok(tokenEconomizerSpend >= 0 && tokenEconomizerSpend <= 0.10,
-      `La prueba gratuita de TokenEconomizer excedió US$0,10: $${tokenEconomizerSpend.toFixed(4)}.`);
-    console.log(`TokenEconomizer: 4 sesiones reales cerradas; siguiente turno recibió ${learnedContextCharacters} caracteres aprendidos; coste reportado $${tokenEconomizerSpend.toFixed(4)}.`);
+    if (projectModel === "openrouter-free") {
+      const usageAfterTokenEconomizer = await page.evaluate(async () => {
+        const response = await fetch("/api/settings/openrouter/usage", { cache: "no-store" });
+        if (!response.ok) return null;
+        const body = await response.json();
+        return typeof body.usage?.usage === "number" ? body.usage.usage : null;
+      });
+      assert.equal(typeof usageAfterTokenEconomizer, "number", "No se pudo consultar el consumo después de TokenEconomizer.");
+      const tokenEconomizerSpend = usageAfterTokenEconomizer - usageBeforeTokenEconomizer;
+      assert.ok(tokenEconomizerSpend >= 0 && tokenEconomizerSpend <= 0.10,
+        `La prueba gratuita de TokenEconomizer excedió US$0,10: $${tokenEconomizerSpend.toFixed(4)}.`);
+      console.log(`TokenEconomizer: 4 sesiones reales cerradas; siguiente turno recibió ${learnedContextCharacters} caracteres aprendidos; coste reportado $${tokenEconomizerSpend.toFixed(4)}.`);
+    } else {
+      console.log(`TokenEconomizer: 4 sesiones reales cerradas con Cloudflare; siguiente turno recibió ${learnedContextCharacters} caracteres aprendidos.`);
+    }
   }
 
   let cdfWorkbenchToolsVerified = 0;
@@ -718,7 +733,7 @@ try {
       );
       assert.equal(selectedProjectModel, projectModel === "cloudflare" ? "cloudflare" : "openrouter:" + SMALL_FREE_MODEL);
 
-      const task = `Crea una aplicación web estática mínima llamada "${trial.name}" en el proyecto ya seleccionado. Usa la herramienta linux sin campo project para crear dist/index.html con HTML, CSS y JavaScript incrustados. La página debe mostrar exactamente el título "${trial.marker}" y una interacción pequeña útil para la aplicación. No instales dependencias, no uses internet ni edites otros proyectos. Verifica con una llamada Linux que dist/index.html existe y contiene ese título. Responde brevemente solo después de recibir resultados reales de la herramienta.`;
+      const task = `Crea una aplicación web estática mínima llamada "${trial.name}" en el proyecto ya seleccionado. Usa la herramienta linux sin campo project; ya inicia en la carpeta del proyecto. Crea el archivo con la ruta relativa dist/index.html; no uses /bundle ni rutas absolutas. Incluye HTML, CSS y JavaScript. La página debe mostrar exactamente el título "${trial.marker}" y una interacción pequeña útil para la aplicación. No instales dependencias, no uses internet ni edites otros proyectos. Verifica con una llamada Linux que dist/index.html existe y contiene ese título. Responde brevemente solo después de recibir resultados reales de la herramienta.`;
       const previousProjectToolCount = await page.locator("main details.bg-kumo-base").count();
       const projectSession = await page.evaluate(() => localStorage.getItem("opencode-harness-session"));
       console.log(`Iniciando ${trial.name}: project=${project}, session=${projectSession}, model=${selectedProjectModel}.`);
