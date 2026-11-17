@@ -14,6 +14,10 @@ const diagnoseProject = process.env.OPENCODE_STAGING_DIAGNOSE_PROJECT?.trim() ??
 const verifyCdfWorkbench = process.env.OPENCODE_STAGING_VERIFY_CDF_WORKBENCH === "true";
 const verifyTokenEconomizer = process.env.OPENCODE_STAGING_VERIFY_TOKEN_ECONOMIZER === "true";
 const SMALL_FREE_MODEL = "liquid/lfm-3-1.7b:free";
+// The deployed Staging UI currently exposes DeepSeek V4.1 as its available
+// Cloudflare simple profile; tolerate the optional "Flash" suffix by release.
+const STAGING_CLOUDFLARE_PROFILE = /^Cloudflare · DeepSeek V4\.1(?: Flash)?$/;
+const STAGING_CLOUDFLARE_PRESET = "economy";
 
 if (targetUrl.origin !== STAGING_URL && !localHost) {
   throw new Error("La prueba solo permite Staging o un servidor local; Producción queda excluida.");
@@ -39,6 +43,12 @@ const waitForActiveConversation = async session => page.waitForFunction(selected
   const download = document.querySelector('a[download^="opencode-conversacion-"]');
   return Boolean(download && new URL(download.href).searchParams.get("session") === selected);
 }, session, { timeout: 20_000 });
+const waitForModelPreset = async (session, preset) => page.waitForFunction(
+  ({ selectedSession, expected }) =>
+    localStorage.getItem("opencode-model-preset:" + selectedSession) === expected,
+  { selectedSession: session, expected: preset },
+  { timeout: 15_000 }
+);
 let disableTokenEconomizerAfterTest = false;
 let tokenEconomizerSessionsVerified = 0;
 let learnedContextCharacters = 0;
@@ -106,13 +116,14 @@ try {
   await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
   const profiles = modelDialog.getByRole("listbox", { name: "Perfiles sencillos" });
   assert.equal(await profiles.getByRole("option").count(), 5, "Deben seguir disponibles los cinco perfiles simples.");
-  await profiles.getByRole("option", { name: "Cloudflare · GLM-4.7 Flash", exact: true }).click();
+  await profiles.getByRole("option", { name: STAGING_CLOUDFLARE_PROFILE }).click();
 
   const selectedSession = newSession;
+  await waitForModelPreset(selectedSession, STAGING_CLOUDFLARE_PRESET);
   const selectedProfile = await page.evaluate(
     session => localStorage.getItem("opencode-model-preset:" + session), selectedSession
   );
-  assert.equal(selectedProfile, "cloudflare", "El perfil elegido debe guardarse en la conversación actual.");
+  assert.equal(selectedProfile, STAGING_CLOUDFLARE_PRESET, "El perfil elegido debe guardarse en la conversación actual.");
   await page.screenshot({
     path: join(process.env.RUNNER_TEMP ?? "/tmp", "opencode-staging-mobile-393x852.png")
   });
@@ -161,18 +172,21 @@ try {
   const routerReady = providerNotConfigured === 0;
   if (routerReady) {
     await modelDialog.getByRole("button", { name: /Auto Router/ }).click();
+    await waitForModelPreset(selectedSession, "openrouter:openrouter/auto");
     assert.equal(await page.evaluate(
       session => localStorage.getItem("opencode-model-preset:" + session), selectedSession
     ), "openrouter:openrouter/auto");
 
     await modelButton.click();
     await modelDialog.getByRole("button", { name: /Auto Code/ }).click();
+    await waitForModelPreset(selectedSession, "openrouter:openrouter/auto-code");
     assert.equal(await page.evaluate(
       session => localStorage.getItem("opencode-model-preset:" + session), selectedSession
     ), "openrouter:openrouter/auto-code");
 
     await modelButton.click();
     await modelDialog.getByRole("button", { name: /OpenRouter Free/ }).click();
+    await waitForModelPreset(selectedSession, "openrouter:openrouter/free");
     assert.equal(await page.evaluate(
       session => localStorage.getItem("opencode-model-preset:" + session), selectedSession
     ), "openrouter:openrouter/free", "La opción OpenRouter Free debe guardar la ruta gratuita por conversación.");
@@ -188,6 +202,7 @@ try {
     assert.match(smallFreeDetails, /Gratis/);
     assert.match(smallFreeDetails, /\$0\.0000/);
     await smallFreeOption.click();
+    await waitForModelPreset(selectedSession, "openrouter:" + SMALL_FREE_MODEL);
     assert.equal(await page.evaluate(
       session => localStorage.getItem("opencode-model-preset:" + session), selectedSession
     ), "openrouter:" + SMALL_FREE_MODEL, "El filtro debe permitir elegir un modelo específico con coste cero.");
@@ -197,6 +212,7 @@ try {
     const firstModelId = await modelOptions.first().locator("span").nth(1).innerText();
     await modelDialog.getByRole("searchbox", { name: "Buscar modelos con soporte de herramientas" }).fill(firstModelId);
     await modelOptions.first().click();
+    await waitForModelPreset(selectedSession, "openrouter:" + firstModelId);
     const concreteSelection = await page.evaluate(
       session => localStorage.getItem("opencode-model-preset:" + session), selectedSession
     );
@@ -205,14 +221,16 @@ try {
 
     await modelButton.click();
     await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
-    await modelDialog.getByRole("option", { name: "Cloudflare · GLM-4.7 Flash", exact: true }).click();
+    await modelDialog.getByRole("option", { name: STAGING_CLOUDFLARE_PROFILE }).click();
+    await waitForModelPreset(selectedSession, STAGING_CLOUDFLARE_PRESET);
     assert.equal(await page.evaluate(
       session => localStorage.getItem("opencode-model-preset:" + session), selectedSession
-    ), "cloudflare", "Debe poder volver a un perfil sencillo.");
+    ), STAGING_CLOUDFLARE_PRESET, "Debe poder volver a un perfil sencillo.");
   } else {
     console.log("OpenRouter no está configurado en Staging; se verificó la selección simple y se omitió el catálogo.");
     await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
-    await modelDialog.getByRole("option", { name: "Cloudflare · GLM-4.7 Flash", exact: true }).click();
+    await modelDialog.getByRole("option", { name: STAGING_CLOUDFLARE_PROFILE }).click();
+    await waitForModelPreset(selectedSession, STAGING_CLOUDFLARE_PRESET);
   }
 
   await conversationsButton.click();
@@ -233,7 +251,7 @@ try {
   );
   assert.equal(await page.evaluate(
     session => localStorage.getItem("opencode-model-preset:" + session), selectedSession
-  ), "cloudflare", "Al volver, debe conservarse el modelo elegido en esa conversación.");
+  ), STAGING_CLOUDFLARE_PRESET, "Al volver, debe conservarse el modelo elegido en esa conversación.");
   assert.equal(await page.evaluate(
     session => localStorage.getItem("opencode-model-preset:" + session), initialSession
   ), initialModelPreset, "La prueba no debe cambiar el modelo de la conversación preexistente.");
@@ -256,11 +274,13 @@ try {
     const selectLiveModel = async () => {
       if (useOpenRouterForLive) {
         await selectOpenRouterModel(SMALL_FREE_MODEL);
+        await waitForModelPreset(selectedSession, "openrouter:" + SMALL_FREE_MODEL);
       } else {
         await modelButton.click();
         await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
         await modelDialog.getByRole("listbox", { name: "Perfiles sencillos" })
-          .getByRole("option", { name: "Cloudflare · GLM-4.7 Flash", exact: true }).click();
+          .getByRole("option", { name: STAGING_CLOUDFLARE_PROFILE }).click();
+        await waitForModelPreset(selectedSession, STAGING_CLOUDFLARE_PRESET);
       }
     };
 
@@ -456,9 +476,11 @@ try {
       await modelButton.click();
       await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
       await modelDialog.getByRole("listbox", { name: "Perfiles sencillos" })
-        .getByRole("option", { name: "Cloudflare · GLM-4.7 Flash", exact: true }).click();
+        .getByRole("option", { name: STAGING_CLOUDFLARE_PROFILE }).click();
+      await waitForModelPreset(await page.evaluate(() => localStorage.getItem("opencode-harness-session")), STAGING_CLOUDFLARE_PRESET);
     } else {
       await selectOpenRouterModel(SMALL_FREE_MODEL);
+      await waitForModelPreset(await page.evaluate(() => localStorage.getItem("opencode-harness-session")), "openrouter:" + SMALL_FREE_MODEL);
     }
 
     const readConnectorStateAfter = async () => page.evaluate(async () => {
@@ -627,9 +649,10 @@ try {
       await modelDialog.getByRole("button", { name: /OpenRouter Free/ }).click();
     } else {
       await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
-      await modelDialog.getByRole("option", { name: "Cloudflare · GLM-4.7 Flash", exact: true }).click();
+      await modelDialog.getByRole("option", { name: STAGING_CLOUDFLARE_PROFILE }).click();
     }
-    const cdfModel = useOpenRouterForCdf ? "openrouter:openrouter/free" : "cloudflare";
+    const cdfModel = useOpenRouterForCdf ? "openrouter:openrouter/free" : STAGING_CLOUDFLARE_PRESET;
+    await waitForModelPreset(cdfSession, cdfModel);
     const cdfSelection = await page.evaluate(session => ({
       active: localStorage.getItem("opencode-harness-session"),
       saved: localStorage.getItem("opencode-model-preset:" + session),
@@ -748,13 +771,14 @@ try {
         await modelButton.click();
         await modelDialog.getByRole("button", { name: "Simple", exact: true }).click();
         await modelDialog.getByRole("listbox", { name: "Perfiles sencillos" })
-          .getByRole("option", { name: "Cloudflare · GLM-4.7 Flash", exact: true }).click();
+          .getByRole("option", { name: STAGING_CLOUDFLARE_PROFILE }).click();
+        await waitForModelPreset(await page.evaluate(() => localStorage.getItem("opencode-harness-session")), STAGING_CLOUDFLARE_PRESET);
       }
       const selectedProjectModel = await page.evaluate(
         session => localStorage.getItem("opencode-model-preset:" + session),
         await page.evaluate(() => localStorage.getItem("opencode-harness-session"))
       );
-      assert.equal(selectedProjectModel, projectModel === "cloudflare" ? "cloudflare" : "openrouter:" + SMALL_FREE_MODEL);
+      assert.equal(selectedProjectModel, projectModel === "cloudflare" ? STAGING_CLOUDFLARE_PRESET : "openrouter:" + SMALL_FREE_MODEL);
 
       const task = `Crea una aplicación web estática mínima llamada "${trial.name}" en el proyecto ya seleccionado. Usa la herramienta linux sin campo project; ya inicia en la carpeta del proyecto. Crea el archivo con la ruta relativa dist/index.html; no uses /bundle ni rutas absolutas. Incluye HTML, CSS y JavaScript. La página debe mostrar exactamente el título "${trial.marker}" y una interacción pequeña útil para la aplicación. No instales dependencias, no uses internet ni edites otros proyectos. Verifica con una llamada Linux que dist/index.html existe y contiene ese título. Responde brevemente solo después de recibir resultados reales de la herramienta.`;
       const previousProjectToolCount = await page.locator("main details.bg-kumo-base").count();

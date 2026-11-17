@@ -35,6 +35,6 @@ bun run test:staging:control:unit
 bunx wrangler deploy --dry-run --config wrangler.mcp-staging.jsonc
 ```
 
-`.github/workflows/opencode-staging-control-e2e.yml` runs unit/build validation independently of remote E2E. Its Staging job runs the existing Playwright mobile suite with all model/task inputs unset, then connects through an MCP client and calls only `tools/list` and `staging_status`. It uploads a screenshot and a credential-free JSON evidence file. No AI agent drives the browser.
+`.github/workflows/opencode-staging-control-e2e.yml` runs unit/build validation, UI E2E, and MCP E2E as independent jobs. The UI job runs the existing Playwright mobile suite with all model/task inputs unset. The MCP job installs production dependencies only, verifies Playwright is absent, then connects through an MCP client and calls only `tools/list` and `staging_status`. Each remote job uploads its own evidence artifact. No AI agent drives the browser.
 
 Required GitHub Actions secrets are the existing `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET`, scoped to the Staging Access application. The visual test only accepts the known Staging origin (or localhost for a local run); the MCP E2E URL is a fixed Staging URL.
