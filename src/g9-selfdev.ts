@@ -83,10 +83,10 @@ export function assessG9History(messages: readonly unknown[]): G9Evidence {
         // the actual command exit code AND a matching test/result summary.
         const redTap = out.includes("not ok 1 - " + title);
         const redSpec = out.includes("✖ " + title) &&
-          out.includes("ERR_ASSERTION") && /\\bfail\\s+1\\b/.test(out);
+          out.includes("ERR_ASSERTION") && /\bfail\s+1\b/.test(out);
         const greenTap = out.includes("ok 1 - " + title) && !out.includes("not ok 1 - " + title);
         const greenSpec = (out.includes("✔ " + title) || out.includes("✓ " + title)) &&
-          /\\bpass\\s+1\\b/.test(out) && /\\bfail\\s+0\\b/.test(out);
+          /\bpass\s+1\b/.test(out) && /\bfail\s+0\b/.test(out);
         if(data.exitCode !== 0 && (redTap || redSpec) && redAt < 0) redAt = pos;
         if(data.exitCode === 0 && (greenTap || greenSpec) && greenAt < 0) greenAt = pos;
       }
