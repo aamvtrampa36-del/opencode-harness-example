@@ -1,0 +1,120 @@
+name: OpenCode Staging remote control and UI E2E
+
+on:
+  push:
+    branches: [feat/opencode-staging-mcp-final-20261118, staging/opencode-g1-20261118]
+  pull_request:
+    branches: [main, staging/opencode-g1-20261118]
+  workflow_dispatch:
+    inputs:
+      run_openrouter_check:
+        description: "Ejecutar una inferencia real en Staging con OpenRouter y probar Bun/Linux (consume cuota de IA)"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opencode-staging-control-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Unit tests and regressions
+        run: bun test
+      - name: Build MCP Worker without deploying
+        run: bunx wrangler deploy --dry-run --config wrangler.mcp-staging.jsonc
+
+  staging-ui-e2e:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: unit-and-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+      - name: Confirm staging Access credentials are available
+        shell: bash
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          test -n "$CF_ACCESS_CLIENT_ID" || { echo "Missing repository secret CF_ACCESS_CLIENT_ID"; exit 1; }
+          test -n "$CF_ACCESS_CLIENT_SECRET" || { echo "Missing repository secret CF_ACCESS_CLIENT_SECRET"; exit 1; }
+      - name: Verify OpenCode Staging mobile interface
+        run: bun run test:staging:mobile
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          RUNNER_TEMP: ${{ runner.temp }}
+      - name: Upload visual evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-staging-mobile-e2e
+          path: ${{ runner.temp }}/opencode-staging-mobile-393x852.png
+          if-no-files-found: ignore
+          retention-days: 7
+
+  staging-mcp-e2e:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: unit-and-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install production dependencies without Playwright
+        run: bun install --frozen-lockfile --production
+      - name: Verify Playwright is absent
+        run: test ! -d node_modules/playwright
+      - name: Confirm staging Access credentials are available
+        shell: bash
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          test -n "$CF_ACCESS_CLIENT_ID" || { echo "Missing repository secret CF_ACCESS_CLIENT_ID"; exit 1; }
+          test -n "$CF_ACCESS_CLIENT_SECRET" || { echo "Missing repository secret CF_ACCESS_CLIENT_SECRET"; exit 1; }
+      - name: Verify remote MCP protocol and staging health
+        run: bun run test:staging:control:mcp
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          OPENCODE_STAGING_OPENROUTER_CHECK: ${{ inputs.run_openrouter_check }}
+          RUNNER_TEMP: ${{ runner.temp }}
+      - name: Upload MCP evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-staging-control-mcp-e2e
+          path: ${{ runner.temp }}/opencode-staging-control-mcp.json
+          if-no-files-found: ignore
+          retention-days: 7

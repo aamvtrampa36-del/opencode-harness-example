@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
+import { BUN_RUNTIME_VERSION } from "./dev-runtime";
 
 const project = "agent-check-123";
 const token = "abcdef1234";
@@ -22,6 +23,26 @@ describe("OpenCode end-to-end tool proof", () => {
     ],project,token);
     expect(result.correctLinuxResult).toBe(true);
     expect(result.finishedLinuxTools).toBe(1);
+  });
+  test("pins the Bun runtime to the version printed by Linux", () => {
+    const result = assessAgentToolEvidence([
+      tool(JSON.stringify({project,exitCode:0,stdout:BUN_RUNTIME_VERSION+"\nAGENT_PROOF_OK:"+token}))
+    ],project,token);
+    expect(result.bunVersion).toBe(BUN_RUNTIME_VERSION);
+    expect(result.bunVersionVerified).toBe(true);
+    const wrong = assessAgentToolEvidence([
+      tool(JSON.stringify({project,exitCode:0,stdout:"1.4.3\nAGENT_PROOF_OK:"+token}))
+    ],project,token);
+    expect(wrong.correctLinuxResult).toBe(true);
+    expect(wrong.bunVersion).toBe("1.4.3");
+    expect(wrong.bunVersionVerified).toBe(false);
+    const splitCalls = assessAgentToolEvidence([
+      tool(JSON.stringify({project,exitCode:0,stdout:BUN_RUNTIME_VERSION+"\n"})),
+      tool(JSON.stringify({project,exitCode:0,stdout:"AGENT_PROOF_OK:"+token}))
+    ],project,token);
+    expect(splitCalls.correctLinuxResult).toBe(true);
+    expect(splitCalls.bunVersion).toBeUndefined();
+    expect(splitCalls.bunVersionVerified).toBe(false);
   });
   test("unmatched project, token, exit code and errors fail", () => {
     const variants = [
@@ -114,6 +135,7 @@ describe("Isolated autonomous code-repair rehearsal", () => {
   test("only expected proof modes are supported", () => {
     expect(isAgentCheckKind("linux")).toBe(true);
     expect(isAgentCheckKind("repair")).toBe(true);
+    expect(isAgentCheckKind("bun")).toBe(true);
     expect(isAgentCheckKind("shell-arbitrary")).toBe(false);
   });
   test("seeded code is wrong and the seed runs a failing Node test", () => {

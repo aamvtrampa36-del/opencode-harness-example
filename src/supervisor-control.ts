@@ -1,8 +1,9 @@
 import { normalizeOwnedRepository } from "./github";
 
 /**
- * Supervisor access is additive to Cloudflare Access, never a replacement.
- * No token, disabled flag, or invalid bearer => no remote execution.
+ * The remote MCP authenticates at Cloudflare Access. Every Durable Object
+ * entrypoint also requires the Staging-only environment flag; the legacy HTTP
+ * route additionally keeps its separate bearer check.
  */
 export const SUPERVISOR_WORKSPACE = "opencode-supervisor-v1";
 export const SUPERVISOR_API_PREFIX = "/api/supervisor/v1";
@@ -122,7 +123,7 @@ export function supervisorPrompt(task: SupervisorStart, branch: string, project:
   return "Tarea de desarrollo supervisada y REVERSIBLE. Repositorio autorizado: " +
     task.repository + ". Proyecto Linux exclusivo: " + project + ". Rama precreada: " + branch +
     (branch.startsWith("opencode/staging-")
-      ? ". BASE REAL: opencode/staging-control-mcp-20261118, NO main. La importación Linux inicial puede contener main: usa git fetch para recuperar el commit exacto de staging en un checkout aislado; verifica HEAD y usa github.read con ref de Staging si hace falta. No presentes los archivos de main como si fuesen Staging"
+      ? ". BASE REAL: staging/opencode-g1-20261118, NO main. La importación Linux inicial puede contener main: usa git fetch y cambia a staging/opencode-g1-20261118 antes de inspeccionar o modificar el repositorio; verifica HEAD y usa github.read con ref de Staging si hace falta. No presentes los archivos de main como si fuesen Staging"
       : "") +
     ". Tienes permiso para leer el código autorizado, ejecutar pruebas y escribir SOLO en esa rama " +
     "usando la herramienta github; prepara exclusivamente una PR borrador. " +

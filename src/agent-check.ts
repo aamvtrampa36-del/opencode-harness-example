@@ -1,3 +1,5 @@
+import { BUN_RUNTIME_VERSION } from "./dev-runtime";
+
 /** Verify native OpenCode tool evidence, never inferred from assistant prose. */
 export type AgentCheckEvidence = {
   requestedTools: number;
@@ -9,6 +11,10 @@ export type AgentCheckEvidence = {
   verifiedRepairSequence: boolean;
   /** A model/provider emitted an invalid tool name containing protocol delimiters. */
   malformedToolCall?: boolean;
+  /** Version printed by the actual Linux tool, when its first output line is a version. */
+  bunVersion?: string;
+  /** True only when Linux printed the repository's pinned Bun version. */
+  bunVersionVerified?: boolean;
 };
 
 export function assessAgentToolEvidence(
@@ -32,6 +38,7 @@ export function assessAgentToolEvidence(
   let observedFailingTest = false;
   let verifiedRepairSequence = false;
   let malformedToolCall = false;
+  let bunVersion: string | undefined;
   for (const message of messages) {
     if (message.type !== "assistant") continue;
     for (const part of message.content ?? []) {
@@ -52,13 +59,17 @@ export function assessAgentToolEvidence(
           stdout?: string;
         };
         if (result.project !== project) continue;
+        const stdout = result.stdout ?? "";
+        const firstLine = stdout.split(/\r?\n/, 1)[0]?.trim();
         // Seeding the fixture server-side is not proof that the model saw its failure.
         if (result.exitCode !== 0 && result.stdout?.includes("not ok")) {
           observedFailingTest = true;
         }
-        if (result.exitCode === 0 &&
-            result.stdout?.includes("AGENT_PROOF_OK:" + token)) {
+        if (result.exitCode === 0 && stdout.includes("AGENT_PROOF_OK:" + token)) {
           correctLinuxResult = true;
+          if (firstLine && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(firstLine)) {
+            bunVersion = firstLine;
+          }
           if (observedFailingTest) verifiedRepairSequence = true;
         }
       } catch {
@@ -66,7 +77,11 @@ export function assessAgentToolEvidence(
       }
     }
   }
-  return { requestedTools, finishedLinuxTools, correctLinuxResult, observedFailingTest, verifiedRepairSequence, malformedToolCall };
+  return {
+    requestedTools, finishedLinuxTools, correctLinuxResult, observedFailingTest,
+    verifiedRepairSequence, malformedToolCall, bunVersion,
+    bunVersionVerified: bunVersion === BUN_RUNTIME_VERSION
+  };
 }
 
 /** Reuse only a genuinely unfinished proof; terminal attempts are retryable. */
@@ -123,7 +138,7 @@ export const REPAIR_TEST = [
   ""
 ].join("\n");
 
-export const AGENT_CHECK_KINDS = ["linux", "repair"] as const;
+export const AGENT_CHECK_KINDS = ["linux", "repair", "bun"] as const;
 export type AgentCheckKind = (typeof AGENT_CHECK_KINDS)[number];
 export function isAgentCheckKind(value: unknown): value is AgentCheckKind {
   return typeof value === "string" && AGENT_CHECK_KINDS.some(kind => kind === value);
