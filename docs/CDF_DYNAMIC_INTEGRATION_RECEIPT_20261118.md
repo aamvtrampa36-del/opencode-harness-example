@@ -53,3 +53,18 @@ An account-local ephemeral Worker `cdf-dynamic-isolated-lab-20261118` was create
 - CDF CLOUD as consumer through authorized read-only metadata path, no canonical changes: **IMPLEMENTED in WorkBench draft**.
 - Artifacts, Queues, new D1/R2, Workers for Platforms and broad new orchestration: **DEFERRED** because existing infrastructure suffices for the current goal.
 - Direct production implementation: **BLOCKED pending live tests, dependency integration and proven rollback**.
+
+## Continuación de integración y pruebas vivas — 18 de noviembre de 2026
+
+**Estado: INTEGRAL PARTIAL.** El contenido anterior conserva las evidencias de la primera etapa; estos resultados posteriores prevalecen cuando exista discrepancia.
+
+- [PR #78](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/78) compone #68, #76 y #77 en `integration/dynamic-execution-20261118`, conservando las rutas de supervisión y añadiendo `DynamicToolRegistry`, `pure-tools` y `remoteDynamicToolsStatus`. [CI de la composición: PASS](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/44347462032). Permanece en borrador, sin merge ni despliegue.
+- La PR WorkBench #49 ahora separa su script de staging (`cdf-workbench-dynamic-staging`) del productivo (`cdf-workbench-mirror`), sus orígenes y sus namespaces KV de OAuth. Su base D1 y Gateway permanecen orientados a staging. La nueva namespace fue creada dentro del producto Workers KV ya disponible, sin crear una suscripción nueva.
+- **Defecto real resuelto**: Worker Loader rechazó las claves dinámicas `.mjs` con el error `Module name must end with '.js' or '.py'`. Se sustituyeron por `candidate.js` y `entry.js` en el ejecutor WorkBench; las pruebas del repositorio se actualizaron. El host Worker puede seguir siendo un módulo `.mjs`.
+- **LIVE VERIFIED limitado**: un Worker temporal, aislado y sin secretos ejecutó código fijo mediante `LOADER.load()` y `LOADER.get()`. En tres pruebas sintéticas obtuvo `[4,9,16]`; la salida de red se bloqueó y `get()` llamó al constructor una vez para dos invocaciones dentro de una solicitud. Las peticiones HTTP regresaron 200 con `pass:true`. No se demostró caché persistente entre solicitudes.
+- **LIVE VERIFIED limitado**: un segundo Worker temporal importó el módulo `src/dynamic-exec.mjs` de WorkBench #49 **sin alterar su código**; ejecutó una transformación sobre `[2,3,5]` y obtuvo `{count:3,total:10}`. Rechazó una fuente con uso de `fetch`, una entrada mayor que el límite y la ejecución desactivada. La respuesta HTTP fue 200, `pass:true`, y reportó 12 ms para la ejecución sintética.
+- Ambos laboratorios se desactivaron y eliminaron; el inventario de la cuenta volvió a **12 Workers sin laboratorios**. Ninguno disponía de CDF Gateway, bases de datos, credenciales ni permisos editoriales.
+
+**Pendientes críticos antes de promover a producción:** probar el código compuesto completo de OpenCode contra su Durable Object y sesiones reales sin comprometerlas; desplegar WorkBench staging únicamente con credenciales y redirect OAuth independientes, comprobar scopes MCP de extremo a extremo; ejecutar prueba real de `workbench_dynamic_cdf_check` con Gateway de staging y autorización configurada; demostrar una reversión del Worker que preserve datos y sesiones; medir el coste/latencia con cargas representativas. Los cambios de producción, el motor Python de CDF y el canon no se modificaron en esta misión.
+
+**Decisión de optimización:** `get()` está soportado y funcionó en laboratorio, pero WorkBench continúa usando `load()` hasta disponer de un benchmark real y política de invalidación; no se afirma ahorro económico ni reutilización de isolate entre solicitudes.
