@@ -72,7 +72,8 @@ try {
     const started = JSON.parse(startedBlock.text);
     assert.equal(started.provider, "openrouter");
     assert.equal(started.requestedModel, "z-ai/glm-5.3-flash");
-    assert.ok(["started", "existing"].includes(started.status), `Unexpected diagnostic start status: ${started.status}`);
+    assert.ok(["started", "existing"].includes(started.status),
+      `Unexpected diagnostic start result: ${JSON.stringify({ status: started.status, message: started.message, model: started.model, kind: started.kind })}`);
 
     const deadline = Date.now() + 6.5 * 60_000;
     while (Date.now() < deadline) {
