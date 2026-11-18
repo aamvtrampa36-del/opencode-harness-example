@@ -99,6 +99,51 @@ describe("OpenCode staging MCP server", () => {
     expect(SUPERVISOR_OBJECT).toBe("opencode-supervisor-v1");
     expect(STAGING_REPOSITORY).toBe("aamvtrampa36-del/opencode-harness-example");
   });
+
+  test("refreshes the live status when an idempotent start request is reused", async () => {
+    const id = "b1234567890cdefa";
+    let statusReads = 0;
+    const supervisor: StagingSupervisor = {
+      async startSupervisedTask() {
+        return { id, status: "running", reused: true, branch: `opencode/staging-${id}` };
+      },
+      async supervisedTaskStatus(taskId) {
+        statusReads++;
+        expect(taskId).toBe(id);
+        return { id, status: "finished", session: "sesFinished", reviewRequired: true };
+      },
+      async cancelSupervisedTask(taskId) { return { id: taskId, status: "cancelled" }; },
+      async supervisedTaskReview(taskId) { return { id: taskId, reviewRequired: true, approved: false }; },
+      async supervisedTaskTranscript() {
+        return JSON.stringify({ messages: [] });
+      }
+    };
+    const server = createStagingControlServer({
+      async readHealth() { return Response.json({ status: "ok" }); },
+      supervisor: () => supervisor
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "staging-control-idempotency-test", version: "1.0.0" });
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    try {
+      const response = await client.callTool({
+        name: "staging_start_task",
+        arguments: { requestId: id, prompt: "Repite la consulta de estado idempotente" }
+      });
+      expect(JSON.parse(textContent(response))).toMatchObject({
+        id,
+        status: "finished",
+        reused: true,
+        targetWorker: STAGING_WORKER
+      });
+      expect(statusReads).toBe(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
 });
 
 function textContent(value: { content: Array<{ type: string; text?: string }> }): string {

@@ -88,10 +88,15 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
     }
   }, async ({ requestId, prompt }) => {
     try {
-      const task = await bindings.supervisor().startSupervisedTask({
+      const supervisor = bindings.supervisor();
+      const task = asRecord(await supervisor.startSupervisedTask({
         requestId, repository: STAGING_REPOSITORY, prompt
-      });
-      return result({ ...asRecord(task), targetWorker: STAGING_WORKER });
+      }));
+      if (task.reused === true && typeof task.id === "string") {
+        const current = asRecord(await supervisor.supervisedTaskStatus(task.id));
+        return result({ ...task, ...current, reused: true, targetWorker: STAGING_WORKER });
+      }
+      return result({ ...task, targetWorker: STAGING_WORKER });
     } catch (error) {
       return failed(error);
     }
