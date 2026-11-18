@@ -39,20 +39,44 @@ const context = await browser.newContext({
 });
 const page = await context.newPage();
 const pageErrors = [];
+const consoleErrors = [];
+const failedRequests = [];
 const waitForActiveConversation = async session => page.waitForFunction(selected => {
   const download = document.querySelector('a[download^="opencode-conversacion-"]');
   return Boolean(download && new URL(download.href).searchParams.get("session") === selected);
 }, session, { timeout: 20_000 });
-const waitForModelPreset = async (session, preset) => page.waitForFunction(
-  ({ selectedSession, expected }) =>
-    localStorage.getItem("opencode-model-preset:" + selectedSession) === expected,
-  { selectedSession: session, expected: preset },
-  { timeout: 15_000 }
-);
+const waitForModelPreset = async (session, preset) => {
+  try {
+    await page.waitForFunction(
+      ({ selectedSession, expected }) =>
+        localStorage.getItem("opencode-model-preset:" + selectedSession) === expected,
+      { selectedSession: session, expected: preset },
+      { timeout: 15_000 }
+    );
+  } catch (error) {
+    const observed = await page.evaluate(selectedSession => ({
+      session: localStorage.getItem("opencode-harness-session"),
+      preset: localStorage.getItem("opencode-model-preset:" + selectedSession),
+      modelButton: document.querySelector('button[aria-label^="Elegir modelo:"]')?.getAttribute("aria-label"),
+      status: [...document.querySelectorAll('[role="status"]')].map(item => item.textContent?.trim()).filter(Boolean),
+      alerts: [...document.querySelectorAll('[role="alert"]')].map(item => item.textContent?.trim()).filter(Boolean),
+      recentConsoleErrors: consoleErrors.slice(-8),
+      recentFailedRequests: failedRequests.slice(-8)
+    }), session).catch(() => ({ unavailable: true }));
+    throw new Error(`No se guardó el modelo ${preset}; estado observado: ${JSON.stringify(observed)}; ` +
+      (error instanceof Error ? error.message : String(error)));
+  }
+};
 let disableTokenEconomizerAfterTest = false;
 let tokenEconomizerSessionsVerified = 0;
 let learnedContextCharacters = 0;
 page.on("pageerror", error => pageErrors.push(error.message));
+page.on("console", message => {
+  if (message.type() === "error") consoleErrors.push(message.text());
+});
+page.on("requestfailed", request => failedRequests.push({
+  url: request.url(), failure: request.failure()?.errorText ?? "unknown"
+}));
 
 try {
   await page.goto(targetUrl.toString(), { waitUntil: "domcontentloaded", timeout: 60_000 });

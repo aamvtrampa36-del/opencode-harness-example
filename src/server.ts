@@ -689,19 +689,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const token = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
     const project = "agent-check-" + token;
     const created = await this.harness.sessions.create();
-    // Session creation waits for the harness plugin setup, which registers
-    // the native OpenRouter connector. Refresh it now and fail closed instead
-    // of letting a model error look like a provider fallback.
-    if (preset.providerID === "openrouter") {
-      try {
-        const registration = await this.refreshOpenRouter();
-        if (!registration.active) {
-          return { status: "failed", message: "OpenRouter está configurado, pero no se pudo activar su proveedor." };
-        }
-      } catch {
-        return { status: "failed", message: "No se pudo activar OpenRouter. Revisa la conexión desde OpenCode Staging." };
-      }
-    }
+    // OpenCode activates plugins lazily when the first prompt is submitted.
+    // Session creation alone does not run openRouterCredentialPlugin.setup,
+    // so refreshing its registered connector here would incorrectly report
+    // that the provider is inactive. The plugin loads and connects the
+    // server-side key as part of submit; the check then verifies the actual
+    // selected model and tool call, with no Workers AI fallback.
     const state = { session: created.id, project, token, model, kind, startedAt: Date.now() };
     await this.bindSessionScope(created.id, { project });
     // Atomically replace the previous terminal proof only after creating a new session.
