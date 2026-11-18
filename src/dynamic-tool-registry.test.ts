@@ -146,7 +146,11 @@ describe("OpenCode plugin integrates catalogue with isolated Dynamic Worker back
     const registry = new DynamicToolRegistry(new MemoryStore());
     const tools = new Map<string, any>();
     const ws = { runtime: {
-      backends: () => [{ id: "pure-tools", callable: true, description: "isolated" }],
+      backends: () => [
+        { id: "codemode", callable: true, description: "shared" },
+        { id: "dynamic-mcp", callable: true, description: "remote" },
+        { id: "pure-tools", callable: true, description: "isolated" }
+      ],
       exec: async (_src: string, options: { input: { values: unknown[] } }) =>
         ({ result: async () => ({ exitCode: 0, value: { count: options.input.values.length, ok: true } }) })
     }} as unknown as Workspace;
@@ -174,7 +178,11 @@ describe("OpenCode plugin integrates catalogue with isolated Dynamic Worker back
     const registry = new DynamicToolRegistry(new MemoryStore());
     const available = new Map<string, any>();
     const ws = { runtime: {
-      backends: () => [{ id: "pure-tools", callable: true, description: "isolated" }],
+      backends: () => [
+        { id: "codemode", callable: true, description: "shared" },
+        { id: "dynamic-mcp", callable: true, description: "remote" },
+        { id: "pure-tools", callable: true, description: "isolated" }
+      ],
       exec: async () => ({ result: async () => ({ exitCode: 4, value: { error: true } }) })
     }} as unknown as Workspace;
     const plugin = workspacePlugin(ws, {}, undefined, undefined, undefined, undefined,
