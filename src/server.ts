@@ -140,7 +140,29 @@ export class OpenCodeAgent extends DurableObject<Env> {
         { selection: "economy", providerID: "cloudflare", id: MODEL_PRESETS.economy.id },
         { selection: "cloudflare", providerID: "cloudflare", id: MODEL_PRESETS.cloudflare.id }
       ],
-      capabilities: ["status", "sessions", "start", "inspect", "continue", "select_model", "operation", "cancel", "review"]
+      capabilities: ["status", "sessions", "start", "inspect", "continue", "select_model", "operation", "cancel", "review", "dynamic_status"]
+    };
+  }
+
+  /** Read-only staging diagnostics of Dynamic Worker catalogue; no source, tests or tokens. */
+  async remoteDynamicToolsStatus(): Promise<unknown> {
+    this.assertStagingRemote();
+    const rows = await this.ctx.storage.list<{
+      id?: string; project?: string; sha256?: string; status?: string;
+      runs?: number; lastRunAt?: string; error?: string;
+    }>({ prefix: "dynamic-tools:v1:" });
+    const tools = [...rows.values()].map(item => ({
+      id: item.id ?? null, project: item.project ?? null,
+      version: item.sha256?.slice(0, 12) ?? null,
+      status: item.status ?? "UNKNOWN",
+      runs: item.runs ?? 0, lastRunAt: item.lastRunAt ?? null
+    })).sort((a, b) => String(a.project).localeCompare(String(b.project)) ||
+      String(a.id).localeCompare(String(b.id)));
+    return {
+      environment: "staging", worker: "opencode-g1-staging",
+      schema: "opencode.dynamic-tools.status.v1", total: tools.length,
+      tools: tools.slice(0, 64), truncated: tools.length > 64,
+      sourceExposed: false, executable: false
     };
   }
 
