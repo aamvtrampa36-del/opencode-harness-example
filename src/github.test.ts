@@ -83,7 +83,7 @@ describe("GitHub scoped permissions",()=>{
   test("pins OpenCode self-development to Staging and reviews against that base",async()=>{
     calls.length=0;
     const staged="opencode/staging-a1234567890bcdef";
-    const source="feat/staging-supervisor-control-20261111";
+    const source="opencode/staging-control-mcp-20261118";
     const r:any=await api.execute({action:"branch",repo:"aamvtrampa36-del/opencode-harness-example",branch:staged});
     expect(r.source).toBe(source);
     expect(r.sha).toBe("7d1669cba0f3c8ee08626425aaf551c8d5bd4bf7");
