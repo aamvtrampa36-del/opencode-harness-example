@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#4f46e5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#191a33" media="(prefers-color-scheme: dark)" />
+    <title>Tareas del día</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fondo: #f3f4fb;
+        --panel: #ffffff;
+        --tinta: #1c1e33;
+        --tinta-suave: #5d6078;
+        --linea: #e2e3ef;
+        --acento: #4f46e5;
+        --acento-contraste: #ffffff;
+        --peligro: #b3323c;
+        --peligro-suave: #fbeaec;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fondo: #14152a;
+          --panel: #1e2040;
+          --tinta: #eceef8;
+          --tinta-suave: #a9adc9;
+          --linea: #34365c;
+          --acento: #8f8aff;
+          --acento-contraste: #191a33;
+          --peligro: #ff9aa2;
+          --peligro-suave: #3c2430;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--fondo);
+        color: var(--tinta);
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+      .app {
+        max-width: 34rem;
+        margin: 0 auto;
+        padding: 1.25rem 1rem calc(2rem + env(safe-area-inset-bottom));
+      }
+      .cabecera { text-align: center; padding: 0.5rem 0 1.25rem; }
+      .fecha {
+        margin: 0;
+        color: var(--tinta-suave);
+        font-size: 0.85rem;
+        text-transform: capitalize;
+        letter-spacing: 0.04em;
+      }
+      h1 { margin: 0.15rem 0 0.25rem; font-size: 1.7rem; letter-spacing: -0.02em; }
+      .subtitulo { margin: 0; color: var(--tinta-suave); font-size: 0.95rem; }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--linea);
+        border-radius: 1rem;
+        padding: 1rem;
+        box-shadow: 0 8px 24px rgba(20, 22, 45, 0.08);
+      }
+      .etiqueta {
+        display: block;
+        font-size: 0.78rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--tinta-suave);
+        margin-bottom: 0.35rem;
+      }
+      .fila-entrada { display: flex; gap: 0.5rem; }
+      #entrada {
+        flex: 1;
+        min-width: 0;
+        font: inherit;
+        color: var(--tinta);
+        background: var(--fondo);
+        border: 1px solid var(--linea);
+        border-radius: 0.65rem;
+        padding: 0.7rem 0.8rem;
+      }
+      #entrada::placeholder { color: var(--tinta-suave); }
+      #entrada:focus-visible {
+        outline: 2px solid var(--acento);
+        outline-offset: 1px;
+        border-color: var(--acento);
+      }
+      .boton {
+        font: inherit;
+        font-weight: 600;
+        border: 0;
+        border-radius: 0.65rem;
+        padding: 0.7rem 1.05rem;
+        background: var(--acento);
+        color: var(--acento-contraste);
+        cursor: pointer;
+        min-height: 44px;
+      }
+      .boton:hover { filter: brightness(1.08); }
+      .boton:active { transform: translateY(1px); }
+      .boton:focus-visible { outline: 2px solid var(--tinta); outline-offset: 2px; }
+      .filtros {
+        display: flex;
+        gap: 0.35rem;
+        margin-top: 1rem;
+        background: var(--fondo);
+        border: 1px solid var(--linea);
+        border-radius: 0.8rem;
+        padding: 0.3rem;
+      }
+      .filtro {
+        flex: 1;
+        font: inherit;
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: var(--tinta-suave);
+        background: transparent;
+        border: 0;
+        border-radius: 0.55rem;
+        padding: 0.5rem 0.25rem;
+        cursor: pointer;
+        min-height: 44px;
+      }
+      .filtro:focus-visible { outline: 2px solid var(--acento); outline-offset: 1px; }
+      .filtro.activo {
+        background: var(--panel);
+        color: var(--tinta);
+        box-shadow: 0 1px 4px rgba(20, 22, 45, 0.14);
+      }
+      .contador { margin: 0.85rem 0 0; color: var(--tinta-suave); font-size: 0.9rem; }
+      .lista { list-style: none; margin: 0.5rem 0 0; padding: 0; display: grid; gap: 0.5rem; }
+      .tarea {
+        display: flex;
+        align-items: center;
+        gap: 0.65rem;
+        background: var(--fondo);
+        border: 1px solid var(--linea);
+        border-radius: 0.8rem;
+        padding: 0.45rem 0.6rem;
+        animation: entrar 0.18s ease-out;
+      }
+      @keyframes entrar {
+        from { opacity: 0; transform: translateY(3px); }
+        to { opacity: 1; transform: none; }
+      }
+      .marcar {
+        width: 1.35rem;
+        height: 1.35rem;
+        accent-color: var(--acento);
+        cursor: pointer;
+        flex: none;
+        margin: 0;
+      }
+      .marcar:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; }
+      .texto { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+      .tarea.hecha { opacity: 0.75; }
+      .tarea.hecha .texto { color: var(--tinta-suave); text-decoration: line-through; }
+      .borrar {
+        font: inherit;
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--peligro);
+        background: transparent;
+        border: 0;
+        border-radius: 0.5rem;
+        padding: 0.4rem 0.55rem;
+        cursor: pointer;
+        flex: none;
+        min-height: 44px;
+      }
+      .borrar:hover { background: var(--peligro-suave); }
+      .borrar:focus-visible { outline: 2px solid var(--peligro); outline-offset: 1px; }
+      .vacio {
+        margin: 1.1rem 0 0.2rem;
+        padding: 1.4rem 1rem;
+        text-align: center;
+        color: var(--tinta-suave);
+        border: 1.5px dashed var(--linea);
+        border-radius: 0.8rem;
+        background: var(--fondo);
+      }
+      .pie { text-align: center; color: var(--tinta-suave); font-size: 0.82rem; margin-top: 1.1rem; }
+      @media (prefers-reduced-motion: reduce) {
+        .tarea { animation: none; }
+        .boton:active { transform: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header class="cabecera">
+        <p class="fecha" id="fecha"></p>
+        <h1>Tareas del día</h1>
+        <p class="subtitulo">Organiza lo importante de hoy</p>
+      </header>
+      <main class="panel">
+        <form id="form" autocomplete="off">
+          <label class="etiqueta" for="entrada">Nueva tarea</label>
+          <div class="fila-entrada">
+            <input
+              id="entrada"
+              name="tarea"
+              type="text"
+              maxlength="200"
+              placeholder="¿Qué necesitas hacer hoy?"
+              required
+            />
+            <button type="submit" class="boton">Añadir</button>
+          </div>
+        </form>
+        <div class="filtros" role="group" aria-label="Filtrar tareas">
+          <button type="button" class="filtro activo" data-filtro="todas" aria-pressed="true">Todas</button>
+          <button type="button" class="filtro" data-filtro="pendientes" aria-pressed="false">Pendientes</button>
+          <button type="button" class="filtro" data-filtro="completadas" aria-pressed="false">Completadas</button>
+        </div>
+        <p class="contador" id="contador" role="status">Sin tareas</p>
+        <ul class="lista" id="lista" aria-label="Lista de tareas"></ul>
+        <p class="vacio" id="vacio" hidden></p>
+      </main>
+      <footer class="pie">
+        <p>Tus tareas se guardan en este navegador (localStorage).</p>
+      </footer>
+    </div>
+    <script>
+      (() => {
+        "use strict";
+        const CLAVE = "tareas-del-dia:v1";
+        const lista = document.getElementById("lista");
+        const vacio = document.getElementById("vacio");
+        const contador = document.getElementById("contador");
+        const entrada = document.getElementById("entrada");
+        const formulario = document.getElementById("form");
+        const botonesFiltro = Array.from(document.querySelectorAll(".filtro"));
+
+        let tareas = cargar();
+        let filtro = "todas";
+
+        function crearId() {
+          return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
+        }
+
+        function cargar() {
+          try {
+            const bruto = localStorage.getItem(CLAVE);
+            if (!bruto) return [];
+            const datos = JSON.parse(bruto);
+            if (!Array.isArray(datos)) return [];
+            return datos
+              .filter((t) => t && typeof t.texto === "string" && typeof t.hecha === "boolean")
+              .map((t) => ({
+                id: String(t.id ?? crearId()),
+                texto: t.texto,
+                hecha: t.hecha,
+                creada: typeof t.creada === "string" ? t.creada : new Date().toISOString()
+              }));
+          } catch {
+            return [];
+          }
+        }
+
+        function guardar() {
+          try {
+            localStorage.setItem(CLAVE, JSON.stringify(tareas));
+          } catch {
+            /* sin almacenamiento disponible: la app sigue en memoria */
+          }
+        }
+
+        function visibles() {
+          if (filtro === "pendientes") return tareas.filter((t) => !t.hecha);
+          if (filtro === "completadas") return tareas.filter((t) => t.hecha);
+          return tareas;
+        }
+
+        function mensajeVacio() {
+          if (tareas.length === 0) return "Aún no hay tareas. Añade la primera para empezar.";
+          if (filtro === "pendientes") return "No hay tareas pendientes. ¡Todo hecho!";
+          return "Todavía no has completado ninguna tarea.";
+        }
+
+        function textoContador() {
+          const pendientes = tareas.filter((t) => !t.hecha).length;
+          if (tareas.length === 0) return "Sin tareas";
+          return pendientes + " de " + tareas.length + " pendientes";
+        }
+
+        function render() {
+          lista.replaceChildren();
+          for (const tarea of visibles()) {
+            const li = document.createElement("li");
+            li.className = "tarea" + (tarea.hecha ? " hecha" : "");
+            li.dataset.id = tarea.id;
+
+            const caja = document.createElement("input");
+            caja.type = "checkbox";
+            caja.className = "marcar";
+            caja.checked = tarea.hecha;
+            caja.setAttribute("aria-label", "Completar tarea: " + tarea.texto);
+            caja.addEventListener("change", () => {
+              const teniaFoco = document.activeElement === caja;
+              tarea.hecha = caja.checked;
+              guardar();
+              render();
+              if (teniaFoco) {
+                const nueva = lista.querySelector('li[data-id="' + tarea.id + '"] .marcar');
+                if (nueva) nueva.focus();
+              }
+            });
+
+            const texto = document.createElement("span");
+            texto.className = "texto";
+            texto.textContent = tarea.texto;
+
+            const borrar = document.createElement("button");
+            borrar.type = "button";
+            borrar.className = "borrar";
+            borrar.textContent = "Eliminar";
+            borrar.setAttribute("aria-label", "Eliminar tarea: " + tarea.texto);
+            borrar.addEventListener("click", () => {
+              const teniaFoco = document.activeElement === borrar;
+              tareas = tareas.filter((t) => t.id !== tarea.id);
+              guardar();
+              render();
+              if (teniaFoco) entrada.focus();
+            });
+
+            li.append(caja, texto, borrar);
+            lista.append(li);
+          }
+          const hayTareasVisibles = visibles().length > 0;
+          vacio.hidden = hayTareasVisibles;
+          if (!hayTareasVisibles) vacio.textContent = mensajeVacio();
+          contador.textContent = textoContador();
+        }
+
+        function cambiarFiltro(nuevo) {
+          filtro = nuevo;
+          for (const boton of botonesFiltro) {
+            const activo = boton.dataset.filtro === filtro;
+            boton.classList.toggle("activo", activo);
+            boton.setAttribute("aria-pressed", String(activo));
+          }
+          render();
+        }
+
+        formulario.addEventListener("submit", (evento) => {
+          evento.preventDefault();
+          const texto = entrada.value.trim();
+          if (!texto) {
+            entrada.focus();
+            return;
+          }
+          tareas.unshift({
+            id: crearId(),
+            texto,
+            hecha: false,
+            creada: new Date().toISOString()
+          });
+          if (filtro === "completadas") cambiarFiltro("todas");
+          guardar();
+          render();
+          entrada.value = "";
+          entrada.focus();
+        });
+
+        for (const boton of botonesFiltro) {
+          boton.addEventListener("click", () => cambiarFiltro(boton.dataset.filtro));
+        }
+
+        document.getElementById("fecha").textContent = new Intl.DateTimeFormat("es", {
+          weekday: "long",
+          day: "numeric",
+          month: "long"
+        }).format(new Date());
+
+        render();
+      })();
+    </script>
+  </body>
+</html>
