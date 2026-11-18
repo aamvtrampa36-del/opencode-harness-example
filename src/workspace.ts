@@ -1,6 +1,6 @@
 import { assertAgentToolPermission } from "./tool-permissions";
 import type { Workspace } from "@cloudflare/computer";
-import type { DynamicToolRegistry, DynamicToolCase } from "./dynamic-tool-registry";
+import { sourceSha256, type DynamicToolRegistry, type DynamicToolCase } from "./dynamic-tool-registry";
 import {
   createPiTools,
   type CreatePiToolsOptions,
@@ -294,25 +294,24 @@ export function workspacePlugin(
               throw new Error("Planificación y Revisión no pueden crear ni ejecutar herramientas dinámicas.");
             }
             const project = getBoundProject ? await getBoundProject(context.sessionID) : "";
-            const scope = project ?? "";
+            // Unbound sessions must not share the global \"unscoped\" catalogue.
+            // Derive a stable, non-identifying namespace from the authenticated
+            // server-side session id; project sessions keep project reuse.
+            if (!project && (typeof context.sessionID !== "string" || !context.sessionID))
+              throw new Error("DYNAMIC_TOOL_SESSION_REQUIRED");
+            const scope = project || `session-${(await sourceSha256(context.sessionID)).slice(0,32)}`;
             const id = p.id ?? "";
             const runIsolated = async (source: string, value: unknown): Promise<unknown> => {
               // The backend has no modules or outbound network. Do not use dynamic-mcp:
               // it can deliberately invoke privileged MCP tools on the host side.
-              const stream = await workspace.runtime.exec(source, {
+              // @cloudflare/computer exposes the default-export return value
+              // through run.result().value, not an \"exit\" stream event.
+              const run = await workspace.runtime.exec(source, {
                 backend: "pure-tools", input: JSON.parse(JSON.stringify(value))
               });
-              let exited = false;
-              let result: unknown;
-              for await (const event of stream) {
-                if (event.name === "exit") {
-                  exited = true;
-                  if (event.code !== 0) throw new Error("DYNAMIC_TOOL_EXECUTION_FAILED");
-                  result = event.result;
-                }
-              }
-              if (!exited) throw new Error("DYNAMIC_TOOL_NO_EXIT");
-              return result;
+              const report = await run.result();
+              if (report.exitCode !== 0) throw new Error("DYNAMIC_TOOL_EXECUTION_FAILED");
+              return report.value;
             };
             let result: unknown;
             switch (action) {
