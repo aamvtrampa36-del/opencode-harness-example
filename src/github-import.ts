@@ -6,13 +6,17 @@ export async function githubSourceArchive(
   repository: string,
   token: string,
   allowed: readonly string[],
-  http: typeof fetch = fetch
+  http: typeof fetch = fetch,
+  sourceCommit?: string
 ): Promise<{ repo: string; commit: string; stream: ReadableStream<Uint8Array> }> {
   const repo = normalizeOwnedRepository(repository);
   if (!allowed.some(value => value.toLowerCase() === repo.toLowerCase())) {
     throw Error("Repositorio no autorizado");
   }
   if (!token) throw Error("Conecta GitHub en Configuración");
+  if (sourceCommit !== undefined && !/^[a-f0-9]{40}$/.test(sourceCommit)) {
+    throw Error("Commit de origen inválido");
+  }
   const base = "https://api.github.com/repos/" + repo;
   const headers = {
     Authorization: "Bearer " + token,
@@ -27,10 +31,13 @@ export async function githubSourceArchive(
       typeof metadata.default_branch !== "string" || !metadata.default_branch) {
     throw Error("GitHub devolvió datos de repositorio inválidos");
   }
-  const ref = await http(base + "/commits/" + encodeURIComponent(metadata.default_branch),
-    { headers, signal: AbortSignal.timeout(45_000) });
-  if (!ref.ok) throw Error("No se pudo identificar el commit del repositorio");
-  const commit = (await ref.json() as { sha?: string }).sha;
+  let commit = sourceCommit;
+  if (!commit) {
+    const ref = await http(base + "/commits/" + encodeURIComponent(metadata.default_branch),
+      { headers, signal: AbortSignal.timeout(45_000) });
+    if (!ref.ok) throw Error("No se pudo identificar el commit del repositorio");
+    commit = (await ref.json() as { sha?: string }).sha;
+  }
   if (!commit || !/^[a-f0-9]{40}$/.test(commit)) throw Error("GitHub devolvió un commit inválido");
   const archive = await http(base + "/tarball/" + commit, {
     headers, redirect: "follow", signal: AbortSignal.timeout(90_000)

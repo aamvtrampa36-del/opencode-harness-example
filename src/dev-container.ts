@@ -299,10 +299,13 @@ export class DevContainer extends DurableObject<Env> {
    * owner's GitHub credential; the Container receives only archive bytes.
    * Never overwrites a project, even after an interrupted previous import.
    */
-  async prepareRepository(project: string, repository: string): Promise<{
+  async prepareRepository(project: string, repository: string, sourceCommit?: string): Promise<{
     project: string; repository: string; commit: string; files: number; sha256: string;
   }> {
     const id = validateProject(project);
+    if (sourceCommit !== undefined && !/^[a-f0-9]{40}$/.test(sourceCommit)) {
+      throw new Error("Commit de origen inválido");
+    }
     const previous = this.commandQueue;
     let release = () => {};
     this.commandQueue = new Promise<void>(resolve => { release = resolve; });
@@ -320,20 +323,29 @@ export class DevContainer extends DurableObject<Env> {
         if (existing.project !== id || existing.repository.toLowerCase() !== repository.toLowerCase()) {
           throw Error("El entorno aislado ya pertenece a otro proyecto o repositorio");
         }
+        if (sourceCommit && existing.commit !== sourceCommit) {
+          throw Error("El proyecto ya está importado desde otro commit de origen");
+        }
         await this.ctx.storage.delete("repo-import-pending-v1");
         await this.recordProject(id);
         return existing;
       }
-      const pending = await this.ctx.storage.get<{project: string; repository: string}>("repo-import-pending-v1");
-      if (pending && (pending.project !== id || pending.repository.toLowerCase() !== repository.toLowerCase())) {
+      const pending = await this.ctx.storage.get<{
+        project: string; repository: string; sourceCommit?: string
+      }>("repo-import-pending-v1");
+      if (pending && (pending.project !== id ||
+          pending.repository.toLowerCase() !== repository.toLowerCase() ||
+          (pending.sourceCommit ?? "") !== (sourceCommit ?? ""))) {
         throw Error("Ya hay otra importación pendiente en este Container");
       }
       if (await this.ctx.storage.get("lastActivity") && !pending) {
         throw Error("El Container ya fue utilizado; no se importará sobre su contenido");
       }
-      if (!pending) await this.ctx.storage.put("repo-import-pending-v1", {project: id, repository});
+      if (!pending) await this.ctx.storage.put("repo-import-pending-v1", {
+        project: id, repository, ...(sourceCommit ? { sourceCommit } : {})
+      });
       const token = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN || await settings.getGitHubKey();
-      const source = await githubSourceArchive(repository, token || "", allowed);
+      const source = await githubSourceArchive(repository, token || "", allowed, fetch, sourceCommit);
       const container = await this.ensureRunning();
       this.busy++;
       await this.ctx.storage.put("lastActivity", Date.now());

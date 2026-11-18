@@ -4,13 +4,14 @@ import { GitHubBridge } from "./github";
 const calls: Array<{url:string; method:string; body?:any; headers:Headers}> = [];
 const fake = (async (url: any, init: any = {}) => {
   const route = String(url);
+  const lowerRoute = route.toLowerCase();
   calls.push({url:route, method:init.method||"GET", body:init.body?JSON.parse(init.body):undefined, headers:new Headers(init.headers||{})});
   let status=200;
   let body:any={};
-  if (route.endsWith("/repos/aamvtrampa36-del/cdf-cloud-engine") ||
-      route.endsWith("/repos/aamvtrampa36-del/opencode-harness-example")) {
+  if (lowerRoute.endsWith("/repos/aamvtrampa36-del/cdf-cloud-engine") ||
+      lowerRoute.endsWith("/repos/aamvtrampa36-del/opencode-harness-example")) {
     body={full_name:route.split("/repos/")[1],default_branch:"main",private:true};
-  } else if (route.includes("/git/ref/heads/staging%2Fopencode-g1-20261118")) {
+  } else if (lowerRoute.includes("/git/ref/heads/staging%2fopencode-g1-20261118")) {
     body={object:{sha:"7d1669cba0f3c8ee08626425aaf551c8d5bd4bf7"}};
   } else if (route.endsWith("/git/ref/heads/main")) {
     body={object:{sha:"a".repeat(40)}};
@@ -96,6 +97,14 @@ describe("GitHub scoped permissions",()=>{
     calls.length=0;
     await expect(api.execute({action:"branch",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:staged})).rejects.toThrow("OpenCode-only");
     expect(calls.every(x=>x.method==="GET")).toBe(true);
+  });
+  test("keeps case variants of the OpenCode repository on the Staging base",async()=>{
+    calls.length=0;
+    const r:any=await api.execute({action:"branch",
+      repo:"aamvtrampa36-del/OpenCode-Harness-Example",
+      branch:"opencode/staging-a1234567890bcdef"});
+    expect(r.source).toBe("staging/opencode-g1-20261118");
+    expect(calls.some(x=>x.url.includes("git/ref/heads/staging%2Fopencode-g1-20261118"))).toBe(true);
   });
   test("reads UTF-8 repository files from the default branch without a required ref",async()=>{
     calls.length=0;

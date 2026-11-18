@@ -32,7 +32,9 @@ const STAGING_REVIEW = /^opencode\/staging-[a-f0-9]{16}$/;
  * Legacy supervised branches and all other repositories stay on default main. */
 function reviewedBase(repo: string, branch: string, defaultBranch: string): string {
   if (!STAGING_REVIEW.test(branch)) return defaultBranch;
-  if (repo !== OPENCODE_REPO) throw new Error("Staging review branches are OpenCode-only");
+  if (repo.toLowerCase() !== OPENCODE_REPO.toLowerCase()) {
+    throw new Error("Staging review branches are OpenCode-only");
+  }
   return OPENCODE_STAGING_BASE;
 }
 const REPOSITORY_FORMAT = /^[A-Za-z0-9_.-]{1,100}$/;

@@ -44,7 +44,7 @@ import { repositoryImportScope } from "./repository-import-scope";
 import {
   SUPERVISOR_WORKSPACE, SUPERVISOR_API_PREFIX,
   assertSupervisorBoundGitHubOperation, supervisorBearerAllowed,
-  supervisorBranch, supervisorFingerprint, supervisorProject,
+  supervisorBaseCommit, supervisorBranch, supervisorFingerprint, supervisorProject,
   supervisorPrompt, supervisorResponse, supervisorTaskKey,
   validateSupervisorStart, type SupervisorTask
 } from "./supervisor-control";
@@ -69,7 +69,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (old) {
       if (old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
       return { id: old.id, repository: old.repository, branch: old.branch, project: old.project,
-        session: old.session, status: old.status, error: old.error,
+        baseCommit: old.baseCommit, session: old.session, status: old.status, error: old.error,
         operationId: old.operationId, model: old.model, reused: true };
     }
     const job: SupervisorTask = {
@@ -87,12 +87,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (reserved) {
       if (reserved.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
       return { id: reserved.id, repository: reserved.repository, branch: reserved.branch,
-        project: reserved.project, session: reserved.session, status: reserved.status,
+        project: reserved.project, baseCommit: reserved.baseCommit,
+        session: reserved.session, status: reserved.status,
         operationId: reserved.operationId, model: reserved.model, reused: true };
     }
     try {
       // Fail before inference if private GitHub integration is unavailable.
-      await this.githubRunner.execute({ action: "branch", repo: job.repository, branch: job.branch });
+      const branchResult = await this.githubRunner.execute({
+        action: "branch", repo: job.repository, branch: job.branch
+      });
+      const baseCommit = supervisorBaseCommit(branchResult, job.repository);
+      job.baseCommit = baseCommit;
+      await this.ctx.storage.put(key, job);
       const created = await this.harness.sessions.create();
       await this.bindSessionScope(created.id, { project: job.project, repository: job.repository });
       // The model may not create a second branch, or write outside its branch.
@@ -104,12 +110,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
       // Supervisor execution is explicitly cost-bounded to native Workers AI.
       // Never choose OpenRouter implicitly when starting a remote test.
       await handle.setModel({ providerID: "cloudflare", id: MODEL_PRESETS[job.model!].id });
-      const receipt = await handle.submit(supervisorPrompt(start, job.branch, job.project), { whenBusy: "followUp" });
+      const receipt = await handle.submit(
+        supervisorPrompt(start, job.branch, job.project, baseCommit),
+        { whenBusy: "followUp" }
+      );
       job.operationId = receipt.operationId;
       job.status = "running";
       await this.ctx.storage.put(key, job);
       return { id: job.id, session: created.id, project: job.project,
-        repository: job.repository, branch: job.branch, status: job.status,
+        repository: job.repository, branch: job.branch, baseCommit: job.baseCommit, status: job.status,
         operationId: job.operationId, model: job.model, reused: false };
     } catch (error) {
       job.status = "failed";
@@ -241,7 +250,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     this.assertStagingRemote();
     const job = await this.supervisedRecord(id);
     const base = { id: job.id, repository: job.repository, project: job.project,
-      branch: job.branch, session: job.session, startedAt: job.createdAt,
+      branch: job.branch, baseCommit: job.baseCommit, session: job.session, startedAt: job.createdAt,
       operationId: job.operationId, model: job.model, error: job.error };
     if (!job.session || job.status === "cancelled" || job.status === "failed")
       return { ...base, status: job.status, reviewRequired: true };
@@ -1007,7 +1016,20 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const registry = this.env.DEV.getByName("personal");
     await registry.reserveIsolatedProject(project, scope?.repository);
     const dev = this.env.DEV.getByName(projectContainerName(project));
-    if (scope?.repository) await dev.prepareRepository(project, scope.repository);
+    let sourceCommit: string | undefined;
+    if (sessionID) {
+      const taskId = await this.ctx.storage.get<string>("supervisor:session:" + sessionID);
+      if (taskId) {
+        const task = await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(taskId));
+        if (!task || task.project !== project ||
+            task.repository.toLowerCase() !== scope?.repository?.toLowerCase() ||
+            !task.baseCommit || !/^[a-f0-9]{40}$/.test(task.baseCommit)) {
+          throw new Error("La fuente de la tarea supervisada no está fijada a su SHA base");
+        }
+        sourceCommit = task.baseCommit;
+      }
+    }
+    if (scope?.repository) await dev.prepareRepository(project, scope.repository, sourceCommit);
     return dev;
   }
 
