@@ -92,12 +92,39 @@ describe("Dynamic Worker MCP bridge", () => {
     expect(closes).toBe(1);
   });
 
+  test("rejects mutating or ambiguous MCP tools even when remote hints claim read-only", async () => {
+    let calls = 0;
+    const client = {
+      connect: async () => undefined, close: async () => undefined,
+      listTools: async () => ({ tools: [
+        { name: "cdf_status", inputSchema: { type: "object", properties: {} } },
+        { name: "cdf_capsule", annotations: { readOnlyHint: true },
+          inputSchema: { type: "object", properties: {} } },
+        { name: "custom_write", annotations: { readOnlyHint: true },
+          inputSchema: { type: "object", properties: {} } },
+      ] }),
+      callTool: async () => { calls++; return { content: [], isError: false }; }
+    } as unknown as Pick<Client, "connect" | "close" | "listTools" | "callTool">;
+    const host = createDynamicMcpHost(async () => [{ ...endpoint, toolAllowlist: undefined }],
+      async () => ({ client }));
+    const state = await host.createState();
+    const context = contextFor(state);
+    const visible = await host.functions.tools([{server: "cdf-workbench"}], context) as {name: string}[];
+    expect(visible.map(x => x.name)).toEqual(["cdf_status"]);
+    for (const name of ["cdf_capsule", "custom_write"]) {
+      await expect(host.functions.call([{server:"cdf-workbench", name, arguments:{}}], context))
+        .rejects.toThrow("DYNAMIC_MCP_READ_ONLY_TOOL_REQUIRED");
+    }
+    expect(calls).toBe(0);
+    await host.dispose(state);
+  });
+
   test("recovers after an MCP tool error and stops at the per-run call limit", async () => {
     let calls = 0;
     const client = {
       connect: async () => undefined,
       close: async () => undefined,
-      listTools: async () => ({ tools: [] }),
+      listTools: async () => ({ tools: [{ name: "cdf_status", inputSchema: { type: "object", properties: {} } }] }),
       callTool: async () => {
         calls++;
         if (calls === 1) throw new Error(`temporary failure ${token}`);
