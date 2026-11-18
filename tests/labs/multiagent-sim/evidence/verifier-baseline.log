@@ -1,0 +1,21 @@
+bun test v1.4.4 (38afee6c8)
+
+tests/classify-numbers.test.mjs:
+(pass) classifyNumbers — contrato del PLANIFICADOR > L3: particiona y conserva orden y conteos [0.18ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L1: array vacío [0.02ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L2: -0 cuenta como cero, no como negativo [0.03ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L4: NaN se rechaza [0.12ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L5: ±Infinity se rechazan [0.04ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L6: cadenas numéricas se rechazan sin coerción [0.02ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L7: hueco de array disperso se rechaza en su índice [0.11ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L8: objeto envoltorio Number se rechaza [0.04ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L9: BigInt se rechaza [0.03ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L10: valores extremos finitos se aceptan [0.02ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L11: entrada que no es array se rechaza [0.04ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L12: no muta la entrada [0.04ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > atomicidad: un inválido al final no devuelve resultado parcial [0.03ms]
+
+ 13 pass
+ 0 fail
+ 21 expect() calls
+Ran 13 tests across 1 file. [6.00ms]
