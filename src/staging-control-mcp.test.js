@@ -45,7 +45,7 @@ describe("Staging-only remote MCP", () => {
   });
   test("implements MCP initialization, listing, ping and notifications without another agent", async () => {
     const initialized = await (await handleMcp(request(message("initialize", { protocolVersion: "2025-06-18" })), env)).json();
-    expect(initialized.result.serverInfo.name).toBe("opencode-staging-control");
+    expect(initialized.result.serverInfo.name).toBe("opencode-staging-debug-mcp-v2");
     const list = await (await handleMcp(request(message("tools/list")), env)).json();
     expect(list.result.tools).toHaveLength(9);
     expect(list.result.tools.find(x => x.name === "opencode_status").annotations.readOnlyHint).toBe(true);
