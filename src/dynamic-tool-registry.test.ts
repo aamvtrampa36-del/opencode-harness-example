@@ -103,10 +103,10 @@ describe("OpenCode plugin integrates catalogue with isolated Dynamic Worker back
         exec: async (_source: string, options: { backend: string; input: any }) => {
           usedBackend = options.backend;
           return {
-            async *[Symbol.asyncIterator]() {
-              yield { name: "exit", code: 0,
-                result: { count: options.input.values.length, ok: true } };
-            }
+            result: async () => ({
+              exitCode: 0, value: { count: options.input.values.length, ok: true },
+              stdout: "", stderr: ""
+            })
           };
         }
       }
@@ -139,5 +139,56 @@ describe("OpenCode plugin integrates catalogue with isolated Dynamic Worker back
     const result = await t.execute({ action: "run", id: "json-check", value: samples[0].input }, ctx);
     expect(JSON.parse(result.content).result).toEqual({ count: 2, ok: true });
     expect((await registry.list("unscoped"))).toHaveLength(0);
+    // The project-bound catalogue is shared only within its explicit project.
+    expect((await registry.list("cdf-cloud-engine"))).toHaveLength(1);
   });
+  test("different unbound sessions cannot list or execute each other's candidates", async () => {
+    const registry = new DynamicToolRegistry(new MemoryStore());
+    const tools = new Map<string, any>();
+    const ws = { runtime: {
+      backends: () => [{ id: "pure-tools", callable: true, description: "isolated" }],
+      exec: async (_src: string, options: { input: { values: unknown[] } }) =>
+        ({ result: async () => ({ exitCode: 0, value: { count: options.input.values.length, ok: true } }) })
+    }} as unknown as Workspace;
+    const p = workspacePlugin(ws, {}, undefined, undefined, undefined, undefined,
+      async () => "", undefined, undefined, undefined, registry);
+    await p.setup({ agent: { transform: async () => undefined },
+      tool: { transform: async (callback: (editor: any) => unknown) => callback({
+        remove: () => undefined, add: (tool: any) => tools.set(tool.name, tool)
+      }) }} as any);
+    const dynamic = tools.get("dynamic_tool");
+    const one = { sessionID: "ses_a", agent: "build" };
+    const two = { sessionID: "ses_b", agent: "build" };
+    await dynamic.execute({ action: "propose", id: "json-check", source: code, tests: samples }, one);
+    expect(JSON.parse((await dynamic.execute({ action: "list" }, one)).content)).toHaveLength(1);
+    expect(JSON.parse((await dynamic.execute({ action: "list" }, two)).content)).toHaveLength(0);
+    await expect(dynamic.execute({ action: "inspect", id: "json-check" }, two))
+      .rejects.toThrow("DYNAMIC_TOOL_NOT_FOUND");
+    await expect(dynamic.execute({ action: "run", id: "json-check", value: samples[0].input }, two))
+      .rejects.toThrow("DYNAMIC_TOOL_NOT_FOUND");
+    await expect(dynamic.execute({ action: "propose", id: "json-check", source: code, tests: samples },
+      { ...one, agent: "plan" })).rejects.toThrow("Planificación");
+  });
+
+  test("execution reports nonzero exit as failure instead of treating it as a successful JSON result", async () => {
+    const registry = new DynamicToolRegistry(new MemoryStore());
+    const available = new Map<string, any>();
+    const ws = { runtime: {
+      backends: () => [{ id: "pure-tools", callable: true, description: "isolated" }],
+      exec: async () => ({ result: async () => ({ exitCode: 4, value: { error: true } }) })
+    }} as unknown as Workspace;
+    const plugin = workspacePlugin(ws, {}, undefined, undefined, undefined, undefined,
+      async () => "project-foo", undefined, undefined, undefined, registry);
+    await plugin.setup({ agent: { transform: async () => undefined },
+      tool: { transform: async (callback: (editor: any) => unknown) => callback({
+        remove: () => undefined, add: (tool: any) => available.set(tool.name, tool)
+      }) }} as any);
+    const t = available.get("dynamic_tool"), ctx = { sessionID: "ses_1", agent: "build" };
+    await t.execute({ action: "propose", id: "json-check", source: code, tests: samples }, ctx);
+    const outcome = JSON.parse((await t.execute({ action: "verify", id: "json-check" }, ctx)).content);
+    expect(outcome.passed).toBe(false);
+    expect(outcome.failures).toEqual(["CASE_0_EXECUTION_ERROR", "CASE_1_EXECUTION_ERROR"]);
+    expect((await registry.list("project-foo"))[0].status).toBe("TESTED");
+  });
+
 });
