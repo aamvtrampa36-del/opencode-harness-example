@@ -90,6 +90,8 @@ try {
     assert.equal(openRouterCheck?.status, "passed", "OpenRouter and Linux diagnostic must pass before the deadline.");
     assert.equal(openRouterCheck.model, "review", "The actual check must use the fixed OpenRouter preset.");
     assert.equal(openRouterCheck.kind, "bun", "The check must exercise Bun in the managed Linux container.");
+    assert.equal(openRouterCheck.expectedBunVersion, "1.4.4");
+    assert.equal(openRouterCheck.bunVersion, "1.4.4", "Linux must print the pinned Bun version.");
     assert.equal(openRouterCheck.modelVerified, true);
     assert.equal(openRouterCheck.runtimeVerified, true);
     assert.equal(openRouterCheck.fileVerified, true, "Linux must independently verify the isolated proof file.");

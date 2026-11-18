@@ -32,6 +32,7 @@ import { assertScopedTool, requireSameScope, scopeStorageKey, validateProjectSco
 import { remoteMcpPlugin } from "./mcp-plugin";
 import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
 import { inlinePreviewAssets } from "./preview-inline";
+import { BUN_RUNTIME_VERSION } from "./dev-runtime";
 import { classifyAgentFailure, observeLinux, type IncidentObservation } from "./incident-diagnostics";
 import { validateExportIdentity, sessionExportResponse } from "./session-export";
 import { archiveDownloadResponse, archiveError } from "./download-response";
@@ -782,9 +783,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       return failed;
     }
     const evidence = assessAgentToolEvidence(history, state.project, state.token);
+    const runtimeVerified = state.kind !== "bun" || evidence.bunVersion === BUN_RUNTIME_VERSION;
     if (running) {
       if (Date.now() - state.startedAt < 6 * 60_000) {
-        return { status: "running", toolCalls: evidence.requestedTools, project: state.project, model: state.model, kind: state.kind };
+        return { status: "running", toolCalls: evidence.requestedTools, project: state.project, model: state.model, kind: state.kind,
+          ...(state.kind === "bun" ? { bunVersion: evidence.bunVersion, runtimeVerified } : {}) };
       }
       try { await handle.abort(); } catch { /* Preserve timeout as a failure. */ }
       const timeout = { status: "failed", reason: "La autoprueba superó seis minutos y se detuvo para evitar consumo indefinido.",
@@ -818,11 +821,16 @@ export class OpenCodeAgent extends DurableObject<Env> {
       } catch { /* Failed inspection or test cannot count as a verified repair. */ }
     }
     const outcome = {
-      status: toolSequenceVerified && fileVerified ? "passed" : "failed",
+      status: toolSequenceVerified && fileVerified && runtimeVerified ? "passed" : "failed",
       toolCalls: evidence.requestedTools,
       observedFailingTest: state.kind === "repair" ? evidence.observedFailingTest : undefined,
       fileVerified, project: state.project, model: state.model, kind: state.kind,
-      ...(toolSequenceVerified && fileVerified ? {} : { reason: explainAgentCheckFailure(evidence, state.kind === "repair" ? "repair" : "linux") })
+      ...(state.kind === "bun" ? { bunVersion: evidence.bunVersion, runtimeVerified } : {}),
+      ...(toolSequenceVerified && fileVerified && runtimeVerified ? {} : {
+        reason: !runtimeVerified
+          ? `Linux informó Bun ${evidence.bunVersion ?? "sin versión verificable"}; se requiere ${BUN_RUNTIME_VERSION}.`
+          : explainAgentCheckFailure(evidence, state.kind === "repair" ? "repair" : "linux")
+      })
     };
     await this.ctx.storage.put("agent-check-result-v1", outcome);
     if (outcome.status === "failed") {

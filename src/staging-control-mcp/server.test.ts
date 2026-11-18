@@ -18,7 +18,7 @@ describe("OpenCode staging MCP server", () => {
     const operations: string[] = [];
     const supervisor: StagingSupervisor = {
       async startAgentCheck(model, kind) { operations.push(`agent-check:${model}:${kind}`); return { status: "started", model, kind }; },
-      async agentCheckStatus() { operations.push("agent-check-status"); return { status: "passed", model: "review", kind: "bun", toolCalls: 1, fileVerified: true }; },
+      async agentCheckStatus() { operations.push("agent-check-status"); return { status: "passed", model: "review", kind: "bun", bunVersion: BUN_RUNTIME_VERSION, runtimeVerified: true, toolCalls: 1, fileVerified: true }; },
       async startSupervisedTask(input) {
         started = input;
         operations.push("start");
@@ -67,6 +67,7 @@ describe("OpenCode staging MCP server", () => {
       const modelCheckStatus = await client.callTool({ name: "staging_openrouter_check_status", arguments: {} });
       expect(JSON.parse(textContent(modelCheckStatus))).toMatchObject({
         status: "passed", expectedProvider: "openrouter", expectedModel: STAGING_OPENROUTER_MODEL,
+        expectedBunVersion: BUN_RUNTIME_VERSION, bunVersion: BUN_RUNTIME_VERSION,
         modelVerified: true, runtimeVerified: true, toolCalls: 1, fileVerified: true, targetWorker: STAGING_WORKER
       });
 

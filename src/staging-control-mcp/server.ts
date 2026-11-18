@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { renderConversationMarkdown } from "../session-export";
 import { MODEL_PRESETS } from "../model-presets";
+import { BUN_RUNTIME_VERSION } from "../dev-runtime";
 
 export const STAGING_WORKER = "opencode-g1-staging";
 export const STAGING_REPOSITORY = "aamvtrampa36-del/opencode-harness-example";
@@ -111,8 +112,10 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
         ...check,
         expectedModel: STAGING_OPENROUTER_MODEL,
         expectedProvider: "openrouter",
+        expectedBunVersion: BUN_RUNTIME_VERSION,
         modelVerified: check.model === "review",
-        runtimeVerified: check.status === "passed" && check.kind === "bun",
+        runtimeVerified: check.status === "passed" && check.kind === "bun" &&
+          check.bunVersion === BUN_RUNTIME_VERSION && check.runtimeVerified === true,
         targetWorker: STAGING_WORKER
       });
     } catch (error) {
