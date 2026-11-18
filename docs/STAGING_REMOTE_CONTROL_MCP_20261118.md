@@ -10,7 +10,7 @@ The supervisory task branch for OpenCode self-development now uses this staged s
 
 ## Authentication and transport
 
-- Remote MCP endpoint after deployment: `https://opencode-staging-control-mcp.<account-subdomain>.workers.dev/mcp` (subdomain must be confirmed from Cloudflare, not guessed).
+- Remote MCP endpoint after deployment: `https://opencode-staging-debug-mcp-v2.<account-subdomain>.workers.dev/mcp` (subdomain must be confirmed from Cloudflare, not guessed).
 - Only `POST /mcp` JSON-RPC requests are supported. MCP 2025-06-18 initialization, ping, tools/list and tools/call are implemented, with JSON response mode; `GET` streaming/SSE and OAuth discovery are intentionally not implemented.
 - Bind a **Worker secret** `MCP_TOKEN` containing a randomly generated 32–256 character value. No token or an invalid token means no access. Do not commit, paste into prompts, logs, or expose to model tools. Rotate through the Cloudflare dashboard / API. Never pass this credential to OpenCode or Containers.
 - Requests must include `Authorization: Bearer <token>` and `Content-Type: application/json`; present browser Origin must equal the endpoint's origin. No wildcard CORS. Treat the token as allowing code execution, albeit only inside existing scoped staging tasks.
@@ -66,3 +66,7 @@ The previous standalone `/api/supervisor/v1` HTTP route requires an `OPENCODE_SU
 MCP tool responses are truncated at 24 KB and transcript excerpts at 16 KB. There is no SSE stream, OAuth, arbitrary user session access, automated visual browser testing, or autonomous production promotion in this release. Playwright-based UI testing and compatible client installation are follow-up acceptance work; add them only when live MCP control is proven.
 
 The existing `docs/SUPERVISOR_REMOTE_CONTROL_STAGING_20261111.md` has historical facts, including some stale deployment/version references; this runbook supersedes them for the new connector.
+
+## Compatibility with an existing connected plugin
+
+An existing plugin **OpenCode Cloud Remote** already exposes six staging-specific functions; its separate Worker `opencode-staging-control-mcp` had an active version `d2cd370d-33de-4850-87a2-5de15c3b8a83`. Preserve it. This new adapter MUST use its distinct Worker name `opencode-staging-debug-mcp-v2` and must not overwrite/retire/replace the existing plugin, change its bindings, or assume new MCP tools are installed in ChatGPT. An accidental upload against the original name was reverted to version `d2cd370d-33de-4850-87a2-5de15c3b8a83` before this correction. Check the active deployment separately.
