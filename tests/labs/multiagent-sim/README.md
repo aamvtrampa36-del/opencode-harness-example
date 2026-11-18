@@ -85,7 +85,9 @@ evidence/repo-suite-sample.log   test autocontenido del repo
 
 - No se ejecutó la suite completa del repositorio: no hay `node_modules` y no se
   instalaron dependencias.
-- No hay `git`, `python3` ni backend `codemode` de workspace en esta sesión.
+- El Container no contiene repositorio Git (sin `.git`, `git status` falla), aunque
+  el binario `git` sí está disponible (`git hash-object` funcionó). Tampoco hay
+  `python3` ni backend `codemode` de workspace en esta sesión.
 - El experimento no mide calidad de modelos ni paralelismo; mide coordinación y
   trazabilidad de artefactos con pruebas ejecutables.
 
