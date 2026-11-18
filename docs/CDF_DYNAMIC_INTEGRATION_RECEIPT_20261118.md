@@ -90,3 +90,50 @@ Este resultado **solo prueba reversión de código/versiones en un Worker sin es
 - Las pruebas de WorkBench verifican también que el `cdf_status` del Gateway entrega al Worker dinámico **solo estado/generación**, rechazando falta de token, preservando el Container original y el manifiesto de scripts. La integración OAuth de staging **no tiene aún las credenciales y el registro de redirección verificados**.
 
 La política de promoción exige pruebas completas del propio servicio, no sustituibles por estas pruebas de laboratorio. El estado global continúa `INTEGRAL PARTIAL`.
+
+
+## Execution continuation — security and stateful rollback
+
+**Global classification: INTEGRAL PARTIAL.** This section supersedes older CI SHAs for the same feature branches.
+
+### Integrated OpenCode core and Remote
+
+- Integration PR: [#78](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/78). Confirmed CI for hardened code, Computer runtime `run.result().value`, isolated unbound session namespaces, lifecycle storage transactions, and concurrent revocation tests: [run 44357860676](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/44357860676) at commit `3f4cde6d4107c72fb1bdb92156ab142a5468bd51`. Full staging dry-run passed. No PR merge, no staging deploy.
+- One-off credential diagnostic [run 44355865698](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/44355865698): existing CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET were present; CLOUDFLARE_API_TOKEN was **missing**. No values were printed. The temporary probe workflow has been removed. Cloudflare Workers Builds lists **zero triggers** for the relevant Workers. Without a configured approved build/deploy path, the integrated full Worker bundle cannot be promoted through Github Actions.
+- [Issue #79](https://github.com/aamvtrampa36-del/opencode-harness-example/issues/79) tracks the external credential and E2E gates. A new secret or GitHub-provider integration was not authorized or created.
+
+### WorkBench candidate and current live baseline
+
+- WorkBench PR [#49](https://github.com/aamvtrampa36-del/CDF-WorkBench-/pull/49) has a tested fix for real CDF generation `"42"` (strictly normalized to safe integer 42) and rejects malformed/unsafe values. [CI run 44357914406](https://github.com/aamvtrampa36-del/CDF-WorkBench-/actions/runs/44357914406), commit `b29f53b47112d0c901cab48bf53cd2b6fbe06ea9`: PASS.
+- The *currently deployed* WorkBench runtime reports READY, has all **11 original Skills**, and a real, read-only Container execution of `cdf-resource-router/scripts/efficiency_guards.py --help` returned exit code 0, no persisted files or network access.
+- Both the CDF CLOUD direct and WorkBench-forwarded cdf_status eventually returned PASS, integrity ok, generation `"42"` and 28 documents. One earlier direct request returned CLOUDFLARE_SQL_ERROR but could not be reproduced on retest. It remains a monitoring signal, not a confirmed persistent outage.
+- The independent WorkBench staging Worker is not deployed. Its OAuth KV is separate and empty; independent callback/secret setup is not verified, and production values are not copied.
+
+### Real Cloudflare Durable Object stateful rollback laboratory
+
+| Operation | Active code version | Synthetic stored value | HTTP |
+|---|---|---|---|
+| Upload and seed A | `91bc4cbf-1fde-4cf1-9c1b-a2c319660b4a` | `{marker: "CDF-SYNTHETIC",count:7}` | 200 |
+| Deploy and read B | `58e01b68-5865-44be-b6a8-931b5a016609` | Unchanged, count 7 | 200 |
+| Deploy previous A at 100% and read | `91bc4cbf-1fde-4cf1-9c1b-a2c319660b4a` | Unchanged, count 7 | 200 |
+| Explicit synthetic-only deleteAll and read | A | `null` | 200 |
+
+Rollback API returned deployment `90916ae2-9c4f-40c4-a712-7579f2649425`, targeting A at 100%. The test Worker was disabled and deleted, with no residual test Worker among the account's **12 existing Workers**. It had no CDF, production storage, Secrets or real user records.
+
+**Limit:** this demonstrates Durable Object state preservation across *generic* Cloudflare Worker version rollback. It does **not** establish persistence of OpenCode production/staging sessions or ScriptRunner state after application-specific changes. Those real E2E tests and their authorization gates remain open. Complete Pass is NOT justified.
+
+### Production snapshot preserved
+
+- OpenCode production Worker `opencode-harness-example` version `d9d97df3-b9c5-4662-9de5-d8a6762b3d0d`.
+- OpenCode staging Worker `opencode-g1-staging` version `e129ca1f-271a-4940-a32a-aad595ea27c2`.
+- WorkBench production Worker `cdf-workbench-mirror` version `b88d35d5-2fef-4f22-9d24-c53681c50896`.
+- CDF CLOUD engine candidate version `960c4433-9ba8-4f1a-a9d5-d1cdfb6f548a`; Gateway version `29381f6a-99a5-4c5d-a0b5-7bac6f23db34`.
+- No new feature version was uploaded to any of these Workers.
+
+### Next acceptance gates
+
+1. Approved access to deploy CI-validated full OpenCode bundle to staging, with automatic rollback and no privilege reduction; token or approved alternate build connection needed.
+2. Real project/session registry lifecycle, denied MCP mutations, metadata-only remote diagnostics and DO session persistence after staging upgrade/revert.
+3. Independent WorkBench OAuth staging registration with authorized secrets and redirect, plus real new MCP tools with read-vs-execute scope denial; no code path into canon.
+4. Trace and compare latency and cost for repeated calls. `get()` was proven only within a request, not across requests.
+5. Only after all gates pass: controlled production promotion and post-deploy verification.
