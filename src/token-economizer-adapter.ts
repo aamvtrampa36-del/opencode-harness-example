@@ -1,5 +1,6 @@
 import type { Plugin } from "@opencode/plugin";
 import { invokeConnector, type ConnectorEvent, type ConnectorRunner } from "./connector-adapter";
+import { tokenEconomizerWorkspace } from "./token-economizer-contract";
 
 type TranscriptPart = Record<string, unknown>;
 type TranscriptMessage = { info: Record<string, unknown>; parts: TranscriptPart[] };
@@ -47,7 +48,7 @@ export function tokenEconomizerAdapter(
         if (!await enabled()) return {};
         let project = "global";
         try { project = await projectForSession(sourceSessionID) || "global"; } catch { /* global session */ }
-        workingDirectories.set(sessionID, "/workspace/projects/opencode-connectors/workspaces/" + project);
+        workingDirectories.set(sessionID, tokenEconomizerWorkspace(project));
         return invokeConnector(runner, "token-economizer", {
           name, sessionID, project, ...extra
         });
