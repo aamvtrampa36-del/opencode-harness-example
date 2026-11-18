@@ -171,7 +171,8 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
     const plugin = workspacePlugin(
       { runtime: { backends: () => [
         { id: "codemode", callable: true, description: "workspace" },
-        { id: "dynamic-mcp", callable: true, description: "MCP" }
+        { id: "dynamic-mcp", callable: true, description: "MCP" },
+          { id: "pure-tools", callable: true, description: "pure" }
       ] } } as unknown as Workspace,
       {},
       { inspect: async () => ({}), run: async () => ({}) } as any,
@@ -237,7 +238,8 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
       runtime: {
         backends: () => [
           { id: "codemode", callable: true, description: "workspace" },
-          { id: "dynamic-mcp", callable: true, description: "MCP" }
+          { id: "dynamic-mcp", callable: true, description: "MCP" },
+          { id: "pure-tools", callable: true, description: "pure" }
         ],
         exec: async (command: string, options: { backend?: string; cwd?: string; env?: Record<string, string> }) => {
           execution = { command, backend: options.backend, cwd: options.cwd, env: options.env };
