@@ -300,7 +300,7 @@ export function workspacePlugin(
               // The backend has no modules or outbound network. Do not use dynamic-mcp:
               // it can deliberately invoke privileged MCP tools on the host side.
               const stream = await workspace.runtime.exec(source, {
-                backend: "pure-tools", input: value
+                backend: "pure-tools", input: JSON.parse(JSON.stringify(value))
               });
               let exited = false;
               let result: unknown;
