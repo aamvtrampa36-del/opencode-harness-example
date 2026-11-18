@@ -1,4 +1,4 @@
-import { normalizeOwnedRepository } from "./github";
+import { normalizeOwnedRepository, OPENCODE_STAGING_BASE } from "./github";
 
 /**
  * The remote MCP authenticates at Cloudflare Access. Every Durable Object
@@ -27,6 +27,8 @@ export type SupervisorTask = {
   session?: string;
   createdAt: number;
   status: "preparing" | "running" | "failed" | "cancelled";
+  /** Immutable source commit used to seed this task's isolated Linux project. */
+  baseCommit?: string;
   model?: "economy" | "cloudflare";
   operationId?: string;
   error?: string;
@@ -64,8 +66,24 @@ export function supervisorBranch(id: string, repository?: string): string {
   supervisorTaskKey(id);
   // Only OpenCode's own self-improvement branches derive from Staging.
   // Existing G9 and other repository tasks continue using the default branch.
-  return (repository === "aamvtrampa36-del/opencode-harness-example"
+  return (repository?.toLowerCase() === "aamvtrampa36-del/opencode-harness-example"
     ? "opencode/staging-" : "opencode/supervised-") + id;
+}
+
+/** Verify the GitHub-created branch actually points at the authorized source. */
+export function supervisorBaseCommit(result: unknown, repository: string): string {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error("GitHub no devolvió la base de la rama supervisada");
+  }
+  const value = result as Record<string, unknown>;
+  if (typeof value.sha !== "string" || !/^[a-f0-9]{40}$/.test(value.sha)) {
+    throw new Error("GitHub no devolvió un SHA de base verificable");
+  }
+  if (repository.toLowerCase() === "aamvtrampa36-del/opencode-harness-example" &&
+      value.source !== OPENCODE_STAGING_BASE) {
+    throw new Error("La tarea de OpenCode debe partir de Staging");
+  }
+  return value.sha;
 }
 
 export function supervisorProject(id: string): string {
@@ -119,12 +137,18 @@ export function supervisorResponse(data: unknown, status = 200): Response {
  * Never let the executing agent promote, merge, deploy or mutate a second
  * project using the supervisor route. Promotion is a separate trusted process.
  */
-export function supervisorPrompt(task: SupervisorStart, branch: string, project: string): string {
+export function supervisorPrompt(task: SupervisorStart, branch: string, project: string,
+  baseCommit: string): string {
+  if (!/^[a-f0-9]{40}$/.test(baseCommit)) throw new Error("SHA base de la tarea inválido");
+  const selfDevelopment = task.repository.toLowerCase() === "aamvtrampa36-del/opencode-harness-example";
   return "Tarea de desarrollo supervisada y REVERSIBLE. Repositorio autorizado: " +
     task.repository + ". Proyecto Linux exclusivo: " + project + ". Rama precreada: " + branch +
-    (branch.startsWith("opencode/staging-")
-      ? ". BASE REAL: staging/opencode-g1-20261118, NO main. La importación Linux inicial puede contener main: usa git fetch y cambia a staging/opencode-g1-20261118 antes de inspeccionar o modificar el repositorio; verifica HEAD y usa github.read con ref de Staging si hace falta. No presentes los archivos de main como si fuesen Staging"
-      : "") +
+    (selfDevelopment
+      ? ". BASE REAL: " + OPENCODE_STAGING_BASE + "; SHA verificado: " + baseCommit +
+        ". El Container Linux se importará desde ese SHA exacto y no contiene .git. No uses git status, fetch ni checkout en el Container. Lee archivos locales desde esa base; usa repo_read con ref " + branch +
+        " cuando necesites consultar la rama GitHub. No leas ni presentes main como Staging"
+      : ". SHA base verificado: " + baseCommit +
+        ". El Container Linux se importará desde ese commit exacto y no contiene .git. No uses git status, fetch ni checkout en el Container") +
     ". Tienes permiso para leer el código autorizado, ejecutar pruebas y escribir SOLO en esa rama " +
     "usando la herramienta github; prepara exclusivamente una PR borrador. " +
     "La copia importada a Linux no contiene .git: usa github para crear commits. " +

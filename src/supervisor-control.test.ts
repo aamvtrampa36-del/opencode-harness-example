@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   SUPERVISOR_WORKSPACE, assertSupervisorBoundGitHubOperation,
-  supervisorBearerAllowed, supervisorBranch, supervisorFingerprint,
+  supervisorBaseCommit, supervisorBearerAllowed, supervisorBranch, supervisorFingerprint,
   supervisorProject, supervisorPrompt, supervisorResponse,
   supervisorTaskKey, validateSupervisorStart
 } from "./supervisor-control";
@@ -33,12 +33,21 @@ describe("OpenCode remote supervisor — fail closed", () => {
     const branch = supervisorBranch(input.requestId);
     expect(branch).toBe("opencode/supervised-a1234567890bcdef");
     expect(supervisorBranch(input.requestId, repos[0])).toBe("opencode/staging-a1234567890bcdef");
+    expect(supervisorBranch(input.requestId, "aamvtrampa36-del/OpenCode-Harness-Example"))
+      .toBe("opencode/staging-a1234567890bcdef");
     expect(supervisorBranch(input.requestId, repos[1])).toBe(branch);
+    const base = "7d1669cba0f3c8ee08626425aaf551c8d5bd4bf7";
     const stagingPrompt = supervisorPrompt(
-      input, supervisorBranch(input.requestId, repos[0]), supervisorProject(input.requestId)
+      input, supervisorBranch(input.requestId, repos[0]), supervisorProject(input.requestId), base
     );
-    expect(stagingPrompt).toContain("NO main");
+    expect(stagingPrompt).toContain("No leas ni presentes main como Staging");
     expect(stagingPrompt).toContain("staging/opencode-g1-20261118");
+    expect(stagingPrompt).toContain(base);
+    expect(stagingPrompt).toContain("no contiene .git");
+    expect(stagingPrompt).not.toContain("usa git fetch");
+    expect(supervisorBaseCommit({source:"staging/opencode-g1-20261118",sha:base}, repos[0])).toBe(base);
+    expect(() => supervisorBaseCommit({source:"main",sha:base}, repos[0])).toThrow("partir de Staging");
+    expect(() => supervisorBaseCommit({source:"main",sha:"bad"}, repos[1])).toThrow("SHA de base");
     expect(stagingPrompt).not.toContain("staging-supervisor-control-20261111");
     expect(() => supervisorTaskKey("bad")).toThrow();
     for (const operation of ["write", "pr", "review"]) {
@@ -67,7 +76,8 @@ describe("OpenCode remote supervisor — fail closed", () => {
     expect(await supervisorFingerprint(input)).toBe(current);
     expect(await supervisorFingerprint({ ...input, repository: repos[1] })).not.toBe(current);
     expect(await supervisorFingerprint({ ...input, prompt: input.prompt + " modificado" })).not.toBe(current);
-    const p = supervisorPrompt(input, supervisorBranch(input.requestId), supervisorProject(input.requestId));
+    const p = supervisorPrompt(input, supervisorBranch(input.requestId), supervisorProject(input.requestId),
+      "a".repeat(40));
     expect(p).toContain(repos[0]);
     expect(p).toContain("opencode/supervised-");
     expect(p).toContain("PR borrador");
