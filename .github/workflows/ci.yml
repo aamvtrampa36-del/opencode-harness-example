@@ -2,9 +2,9 @@ name: OpenCode validation
 
 on:
   push:
-    branches: [feat/staging-conversation-markdown-export-20261111, feat/staging-supervisor-control-20261111, feat/opencode-staging-base-20261112]
+    branches: [feat/staging-conversation-markdown-export-20261111, feat/staging-supervisor-control-20261111, feat/opencode-staging-base-20261112, feat/opencode-staging-mcp-final-20261118, staging/opencode-g1-20261118]
   pull_request:
-    branches: [main]
+    branches: [main, staging/opencode-g1-20261118]
   workflow_dispatch:
 
 permissions:

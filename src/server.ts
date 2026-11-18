@@ -32,6 +32,7 @@ import { assertScopedTool, requireSameScope, scopeStorageKey, validateProjectSco
 import { remoteMcpPlugin } from "./mcp-plugin";
 import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
 import { inlinePreviewAssets } from "./preview-inline";
+import { BUN_RUNTIME_VERSION } from "./dev-runtime";
 import { classifyAgentFailure, observeLinux, type IncidentObservation } from "./incident-diagnostics";
 import { validateExportIdentity, sessionExportResponse } from "./session-export";
 import { archiveDownloadResponse, archiveError } from "./download-response";
@@ -822,7 +823,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
       await handle.setModel(model === "cloudflare" ? this.ai(MODEL_ID) : {
         providerID: preset.providerID, id: preset.id
       });
-      const command = "printf '" + token + "' > proof.txt && node -e " +
+      const command = (kind === "bun" ? "bun --version && " : "") +
+        "printf '" + token + "' > proof.txt && node -e " +
         JSON.stringify("const fs=require('node:fs');if(fs.readFileSync('proof.txt','utf8')!==" +
           JSON.stringify(token) + ")process.exit(2);console.log('AGENT_PROOF_OK:" + token + "')");
       const prompt = "Esta es una autoprueba REAL de herramientas, no una tarea de conversación. " +
@@ -842,7 +844,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
         "y, únicamente cuando el test pase, imprime AGENT_PROOF_OK:" + token +
         " en la salida de esa misma llamada Linux. Espera los exitCode reales. " +
         "No basta con describir la reparación; todas las acciones deben realizarse mediante linux.";
-      await handle.submit(kind === "repair" ? repairPrompt : prompt, { whenBusy: "followUp" });
+      const bunPrompt = "Autoprueba REAL de OpenRouter, Bun y la herramienta Linux. " +
+        "Usa la herramienta linux SOLO con command=" + JSON.stringify(command) +
+        ". Debes ejecutar Bun " + BUN_RUNTIME_VERSION + ", crear proof.txt en el Container y verificarlo con Node. " +
+        "Espera el exitCode real de la herramienta y describe la versión de Bun que imprimió. " +
+        "No alteres ningún otro proyecto ni uses otras herramientas.";
+      await handle.submit(kind === "repair" ? repairPrompt : kind === "bun" ? bunPrompt : prompt, { whenBusy: "followUp" });
       return { status: "started", session: created.id, project, model, kind };
     } catch (error) {
       const failed = {
@@ -883,9 +890,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       return failed;
     }
     const evidence = assessAgentToolEvidence(history, state.project, state.token);
+    const runtimeVerified = state.kind !== "bun" || evidence.bunVersion === BUN_RUNTIME_VERSION;
     if (running) {
       if (Date.now() - state.startedAt < 6 * 60_000) {
-        return { status: "running", toolCalls: evidence.requestedTools, project: state.project, model: state.model, kind: state.kind };
+        return { status: "running", toolCalls: evidence.requestedTools, project: state.project, model: state.model, kind: state.kind,
+          ...(state.kind === "bun" ? { bunVersion: evidence.bunVersion, runtimeVerified } : {}) };
       }
       try { await handle.abort(); } catch { /* Preserve timeout as a failure. */ }
       const timeout = { status: "failed", reason: "La autoprueba superó seis minutos y se detuvo para evitar consumo indefinido.",
@@ -919,11 +928,16 @@ export class OpenCodeAgent extends DurableObject<Env> {
       } catch { /* Failed inspection or test cannot count as a verified repair. */ }
     }
     const outcome = {
-      status: toolSequenceVerified && fileVerified ? "passed" : "failed",
+      status: toolSequenceVerified && fileVerified && runtimeVerified ? "passed" : "failed",
       toolCalls: evidence.requestedTools,
       observedFailingTest: state.kind === "repair" ? evidence.observedFailingTest : undefined,
       fileVerified, project: state.project, model: state.model, kind: state.kind,
-      ...(toolSequenceVerified && fileVerified ? {} : { reason: explainAgentCheckFailure(evidence, state.kind === "repair" ? "repair" : "linux") })
+      ...(state.kind === "bun" ? { bunVersion: evidence.bunVersion, runtimeVerified } : {}),
+      ...(toolSequenceVerified && fileVerified && runtimeVerified ? {} : {
+        reason: !runtimeVerified
+          ? `Linux informó Bun ${evidence.bunVersion ?? "sin versión verificable"}; se requiere ${BUN_RUNTIME_VERSION}.`
+          : explainAgentCheckFailure(evidence, state.kind === "repair" ? "repair" : "linux")
+      })
     };
     await this.ctx.storage.put("agent-check-result-v1", outcome);
     if (outcome.status === "failed") {

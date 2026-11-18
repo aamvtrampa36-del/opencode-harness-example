@@ -22,6 +22,7 @@ import { GITHUB_IMPORT_SOURCE } from "./github-import-source";
 import { githubSourceArchive } from "./github-import";
 import { validateIsolatedRegistration, type IsolatedProject } from "./project-container";
 import { assertRecoverableContainer, SNAPSHOT_TTL_MS } from "./snapshot-policy";
+import { BUN_RUNTIME_VERSION, commandRequiresBun } from "./dev-runtime";
 
 /**
  * Opt-in Linux computer. There is exactly ONE named instance ("personal")
@@ -140,6 +141,7 @@ export class DevContainer extends DurableObject<Env> {
       instance: "basic",
       shell: "bash",
       git: "install-on-demand",
+      bun: `install-on-demand (${BUN_RUNTIME_VERSION})`,
       persistMode: "Cloudflare container snapshots (beta, 30-day TTL)"
     };
   }
@@ -412,6 +414,7 @@ export class DevContainer extends DurableObject<Env> {
     await this.ctx.storage.put("lastActivity", Date.now());
     try {
       await this.ensureGitAvailable(container);
+      if (commandRequiresBun(command)) await this.ensureBunAvailable(container);
       // Pass the command as a positional argument: no injection into wrapper.
       // GNU timeout bounds one foreground command to 180 s. Jobs that need
       // longer must be broken into resumable steps.
@@ -455,6 +458,23 @@ export class DevContainer extends DurableObject<Env> {
     if (outcome.exitCode !== 0) {
       const error = new TextDecoder().decode(outcome.stderr).slice(-350);
       throw new Error("Git bootstrap failed in the Linux container: " + (error || "package installation failed"));
+    }
+  }
+
+  /** Install the pinned Bun version in the isolated Linux container, not the checkout. */
+  private async ensureBunAvailable(container: NonNullable<DurableObjectState["container"]>): Promise<void> {
+    const script = [
+      `if command -v bun >/dev/null 2>&1 && [ "$(bun --version 2>/dev/null)" = "${BUN_RUNTIME_VERSION}" ]; then exit 0; fi`,
+      "command -v npm >/dev/null 2>&1 || { echo 'npm is unavailable in the managed Node image' >&2; exit 127; }",
+      `timeout --signal=TERM 150s npm install --global --no-audit --no-fund bun@${BUN_RUNTIME_VERSION} >/dev/null`,
+      `test "$(bun --version 2>/dev/null)" = "${BUN_RUNTIME_VERSION}"`
+    ].join(" && ");
+    const process = await container.exec(["bash", "-lc", script], {
+      signal: AbortSignal.timeout(160_000)
+    });
+    const output = await process.output();
+    if (output.exitCode !== 0) {
+      throw new Error(`Bun ${BUN_RUNTIME_VERSION} bootstrap failed in the Linux container (exit ${output.exitCode ?? "unknown"}).`);
     }
   }
 
