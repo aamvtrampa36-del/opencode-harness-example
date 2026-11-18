@@ -1,0 +1,6 @@
+probe_id=a74e19c0df6832ab
+written_at_utc=2026-11-18T07:59:24Z
+pid=3219
+host=968f9d3e7ec36e419701585b8b0669a9869c9b158a3a5d31eefd3347fac9e8b
+cwd=/workspace/projects/supervised-a74e19c0df6832ab/tests/labs/multiagent-sim
+random=bd165ee2651159b9b832c3f8124e7c31
