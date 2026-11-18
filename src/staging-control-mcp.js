@@ -7,7 +7,7 @@
  * Notifications receive HTTP 202; GET/SSE is deliberately not supported.
  * Tool exceptions are structured isError results, never invented PASS.
  */
-export const STAGING_MCP_NAME = "opencode-staging-control";
+export const STAGING_MCP_NAME = "opencode-staging-debug-mcp-v2";
 export const STAGING_SUPERVISOR_OBJECT = "opencode-supervisor-v1";
 const ID = /^[a-f0-9]{16}$/;
 const REPO = /^aamvtrampa36-del\/[A-Za-z0-9_.-]{1,100}$/;
