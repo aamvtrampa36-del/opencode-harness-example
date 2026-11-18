@@ -122,7 +122,7 @@ export function supervisorPrompt(task: SupervisorStart, branch: string, project:
   return "Tarea de desarrollo supervisada y REVERSIBLE. Repositorio autorizado: " +
     task.repository + ". Proyecto Linux exclusivo: " + project + ". Rama precreada: " + branch +
     (branch.startsWith("opencode/staging-")
-      ? ". BASE REAL: feat/staging-supervisor-control-20261111, NO main. La importación Linux inicial puede contener main: usa git fetch para recuperar el commit exacto de staging en un checkout aislado; verifica HEAD y usa github.read con ref de Staging si hace falta. No presentes los archivos de main como si fuesen Staging"
+      ? ". BASE REAL: opencode/staging-control-mcp-20261118, NO main. La importación Linux inicial puede contener main: usa git fetch para recuperar el commit exacto de staging en un checkout aislado; verifica HEAD y usa github.read con ref de Staging si hace falta. No presentes los archivos de main como si fuesen Staging"
       : "") +
     ". Tienes permiso para leer el código autorizado, ejecutar pruebas y escribir SOLO en esa rama " +
     "usando la herramienta github; prepara exclusivamente una PR borrador. " +
