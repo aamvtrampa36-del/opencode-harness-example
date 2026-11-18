@@ -19,10 +19,15 @@ export type DynamicToolEntry = {
   lastDurationMs?: number;
   error?: string;
 };
-export type RegistryStorage = {
+export type RegistryTxn = {
   get<T>(key: string): Promise<T | undefined>;
   put<T>(key: string, value: T): Promise<void>;
+};
+export type RegistryStorage = RegistryTxn & {
   list<T>(options: { prefix: string }): Promise<Map<string, T>>;
+  // Cloudflare DurableObjectStorage supplies atomic transactions. The
+  // optional fallback exists for in-memory test fixtures only.
+  transaction?<T>(callback: (txn: RegistryTxn) => Promise<T>): Promise<T>;
 };
 export type ToolExecutor = (source: string, input: unknown) => Promise<unknown>;
 
@@ -101,6 +106,26 @@ function safeSummary(entry: DynamicToolEntry) {
 export class DynamicToolRegistry {
   constructor(private readonly storage: RegistryStorage) {}
 
+  /** Atomic status/data transition: a late verification cannot resurrect a
+   * revoked tool, and concurrent runs cannot overwrite newer status. */
+  private async transition<R>(
+    project: string, id: string,
+    update: (current: DynamicToolEntry) => { entry: DynamicToolEntry; result: R }
+  ): Promise<R> {
+    if (!IDENTIFIER.test(id)) throw new Error("INVALID_DYNAMIC_TOOL_ID");
+    const storageKey = key(catalogScope(project), id);
+    const perform = async (txn: RegistryTxn) => {
+      const current = await txn.get<DynamicToolEntry>(storageKey);
+      if (!current) throw new Error("DYNAMIC_TOOL_NOT_FOUND");
+      const { entry, result } = update(current);
+      await txn.put(storageKey, entry);
+      return result;
+    };
+    return this.storage.transaction
+      ? this.storage.transaction(perform)
+      : perform(this.storage);
+  }
+
   async list(project: string) {
     const scope = catalogScope(project);
     const rows = await this.storage.list<DynamicToolEntry>({ prefix: PREFIX + scope + ":" });
@@ -133,6 +158,12 @@ export class DynamicToolRegistry {
     const sha256 = await sourceSha256(source);
     if (existing) {
       if (existing.sha256 !== sha256) throw new Error("DYNAMIC_TOOL_VERSION_CONFLICT");
+      if (!sameJson(existing.tests, tests) ||
+          !sameJson(existing.documentation, documentation)) {
+        // Same executable code but different tests or provenance must be
+        // proposed under a new ID and independently verified.
+        throw new Error("DYNAMIC_TOOL_DEFINITION_CONFLICT");
+      }
       return safeSummary(existing);
     }
     const count = (await this.list(scope)).length;
@@ -160,34 +191,34 @@ export class DynamicToolRegistry {
         failures.push("CASE_" + index + "_EXECUTION_ERROR");
       }
     }
-    // Re-read to prevent promoting a deprecated or replaced record after a slow test.
-    const current = await this.lookup(project, id);
-    if (current.sha256 !== row.sha256 || current.status === "DEPRECATED") {
-      throw new Error("DYNAMIC_TOOL_CHANGED_DURING_VERIFICATION");
-    }
     const ok = failures.length === 0;
-    const updated: DynamicToolEntry = {
-      ...current, status: ok ? "VERIFIED" : "TESTED",
-      verifiedAt: ok ? new Date().toISOString() : undefined,
-      error: ok ? undefined : failures.join(",")
-    };
-    await this.storage.put(key(catalogScope(project), id), updated);
-    return { ...safeSummary(updated), passed: ok, failures };
+    return this.transition(project, id, current => {
+      if (current.sha256 !== row.sha256 || current.status === "DEPRECATED") {
+        throw new Error("DYNAMIC_TOOL_CHANGED_DURING_VERIFICATION");
+      }
+      const updated: DynamicToolEntry = {
+        ...current, status: ok ? "VERIFIED" : "TESTED",
+        verifiedAt: ok ? new Date().toISOString() : undefined,
+        error: ok ? undefined : failures.join(",")
+      };
+      return { entry: updated, result: { ...safeSummary(updated), passed: ok, failures } };
+    });
   }
 
   async activate(project: string, id: string) {
-    const row = await this.lookup(project, id);
-    if (row.status !== "VERIFIED" && row.status !== "ACTIVE") throw new Error("DYNAMIC_TOOL_NOT_VERIFIED");
-    const updated = { ...row, status: "ACTIVE" as const };
-    await this.storage.put(key(catalogScope(project), id), updated);
-    return safeSummary(updated);
+    return this.transition(project, id, row => {
+      if (row.status !== "VERIFIED" && row.status !== "ACTIVE")
+        throw new Error("DYNAMIC_TOOL_NOT_VERIFIED");
+      const updated = { ...row, status: "ACTIVE" as const };
+      return { entry: updated, result: safeSummary(updated) };
+    });
   }
 
   async deactivate(project: string, id: string) {
-    const row = await this.lookup(project, id);
-    const updated = { ...row, status: "DEPRECATED" as const };
-    await this.storage.put(key(catalogScope(project), id), updated);
-    return safeSummary(updated);
+    return this.transition(project, id, row => {
+      const updated = { ...row, status: "DEPRECATED" as const };
+      return { entry: updated, result: safeSummary(updated) };
+    });
   }
 
   async run(project: string, id: string, input: unknown, execute: ToolExecutor) {
@@ -197,14 +228,17 @@ export class DynamicToolRegistry {
     const started = Date.now();
     const result = await execute(row.source, input);
     json(result);
-    // Avoid resurrecting a revoked record after a concurrent run.
-    const current = await this.lookup(project, id);
-    if (current.sha256 === row.sha256 && current.status === "ACTIVE") {
-      await this.storage.put(key(catalogScope(project), id), {
+    // After execution, reject a result if the tool was revoked while
+    // running. A DO transaction prevents stale metrics overwriting revocation.
+    await this.transition(project, id, current => {
+      if (current.sha256 !== row.sha256 || current.status !== "ACTIVE")
+        throw new Error("DYNAMIC_TOOL_REVOKED_DURING_RUN");
+      const updated: DynamicToolEntry = {
         ...current, runs: current.runs + 1, lastRunAt: new Date().toISOString(),
         lastDurationMs: Date.now() - started
-      });
-    }
+      };
+      return { entry: updated, result: true };
+    });
     return { result, sha256: row.sha256, durationMs: Date.now() - started };
   }
 }
