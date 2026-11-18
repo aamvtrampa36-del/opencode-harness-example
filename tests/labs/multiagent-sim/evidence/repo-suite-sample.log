@@ -1,0 +1,15 @@
+bun test v1.4.4 (38afee6c8)
+
+src/agent-check.test.ts:
+(pass) OpenCode end-to-end tool proof > model prose is not sufficient [0.18ms]
+(pass) OpenCode end-to-end tool proof > real matching tool content and exit code is evidence [0.29ms]
+(pass) OpenCode end-to-end tool proof > pins the Bun runtime to the version printed by Linux [0.13ms]
+(pass) OpenCode end-to-end tool proof > unmatched project, token, exit code and errors fail [0.13ms]
+(pass) Agent verification repeat policy > unlimited development is explicit and does not change production defaults [0.03ms]
+(pass) Agent verification repeat policy > an active check is reused to avoid duplicate inference [0.03ms]
+(pass) Agent verification repeat policy > a completed or failed check can be attempted again [0.02ms]
+(pass) Diagnostic model selection and evidence explanations > offers only the baseline and economical provider models [0.19ms]
+(pass) Diagnostic model selection and evidence explanations > distinguishes provider/tool/non-persistent failures [0.06ms]
+(pass) Strict red-to-green tool evidence > a passing tool call alone does NOT prove the agent inspected the failure [0.03ms]
+(pass) Strict red-to-green tool evidence > the failing test must be observed BEFORE a successful tool call [0.04ms]
+(pass) Strict red-to-green tool evidence > a failing test from another project does not count [0.03ms]
