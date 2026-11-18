@@ -71,8 +71,12 @@ instalaron dependencias (fuera del alcance y del coste de este laboratorio).
 
 ## 6. Límites técnicos observados
 
-- `git` no existe en el Container (`fatal: not a git repository`): la entrega se
-  hace con la herramienta GitHub, no con push local.
+- No hay repositorio `.git` en el Container (la base se importó como archivo
+  de fuentes): `git status` falla con `fatal: not a git repository`. El binario
+  `git` sí existe (v2.47.3) y funciona en operaciones que no requieren
+  repositorio: `git hash-object` se usó para comparar hashes locales con el
+  `fileSha` de GitHub. La entrega se hace con la herramienta GitHub, no con push
+  local.
 - Backend `codemode` de workspace no disponible: el host fuerza `dynamic-mcp` y la
   lectura devolvió `Error: no such path: /dynamic`.
 - `python3` no instalado.
