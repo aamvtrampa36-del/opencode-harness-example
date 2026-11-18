@@ -23,6 +23,7 @@ const TASK = str("Identificador hexadecimal de 16 caracteres de una tarea de sta
 export const TOOLS = [
   { name: "opencode_status", description: "Comprueba el supervisor OpenCode STAGING real y sus modelos", inputSchema: noFields, readOnly: true },
   { name: "opencode_sessions", description: "Enumera SOLO sesiones supervisadas del Durable Object de staging", inputSchema: noFields, readOnly: true },
+  { name: "opencode_dynamic_status", description: "Consulta catálogo de herramientas dinámicas de staging sin leer ni ejecutar código. No expone fuentes, fixtures ni credenciales.", inputSchema: noFields, readOnly: true },
   { name: "opencode_inspect", description: "Estado y fragmento limitado del historial real de la tarea supervisada", inputSchema: obj({ taskId: TASK }, ["taskId"]), readOnly: true },
   { name: "opencode_submit", description: "Crea UNA tarea de prueba aislada, rama de revisión y ejecución de OpenCode, con ID idempotente; consume inferencia económica", inputSchema: obj({
     requestId: str("ID hexadecimal único; repetir conserva la misma tarea", 16),
@@ -95,6 +96,7 @@ export async function dispatchTool(stub, name, raw) {
   switch (name) {
     case "opencode_status": return stub.remoteSupervisorStatus();
     case "opencode_sessions": return stub.remoteSupervisorSessions();
+    case "opencode_dynamic_status": return stub.remoteDynamicToolsStatus();
     case "opencode_inspect": return stub.remoteSupervisorInspect(a.taskId);
     case "opencode_submit": return stub.startSupervisedTask({
       requestId: a.requestId, repository: a.repository,

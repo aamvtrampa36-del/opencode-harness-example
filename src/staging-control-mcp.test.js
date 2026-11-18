@@ -7,6 +7,7 @@ const calls = [];
 const backend = {
   remoteSupervisorStatus: async () => ({ environment: "staging", worker: "opencode-g1-staging", ready: true }),
   remoteSupervisorSessions: async () => ({ environment: "staging", sessions: [] }),
+  remoteDynamicToolsStatus: async () => ({ environment: "staging", tools: [{id:"json-check",version:"123456789abc",status:"VERIFIED"}], sourceExposed:false,executable:false }),
   remoteSupervisorInspect: async id => ({ id, transcriptExcerpt: "test history" }),
   startSupervisedTask: async input => { calls.push(["start", input]); return { id: input.requestId, status: "running" }; },
   remoteSupervisorContinue: async input => { calls.push(["continue", input]); return { taskId: input.id, status: "submitted", operationId: "op1" }; },
@@ -47,7 +48,7 @@ describe("Staging-only remote MCP", () => {
     const initialized = await (await handleMcp(request(message("initialize", { protocolVersion: "2025-06-18" })), env)).json();
     expect(initialized.result.serverInfo.name).toBe("opencode-staging-debug-mcp-v2");
     const list = await (await handleMcp(request(message("tools/list")), env)).json();
-    expect(list.result.tools).toHaveLength(9);
+    expect(list.result.tools).toHaveLength(10);
     expect(list.result.tools.find(x => x.name === "opencode_status").annotations.readOnlyHint).toBe(true);
     expect(list.result.tools.some(x => x.name.includes("production") || x.name.includes("merge"))).toBe(false);
     expect((await handleMcp(request(message("ping")), env)).status).toBe(200);
@@ -58,6 +59,11 @@ describe("Staging-only remote MCP", () => {
   test("calls the real bound staging stub, never an untrusted Worker URL", async () => {
     const status = await call("opencode_status");
     expect(JSON.parse(status.result.content[0].text)).toMatchObject({ environment:"staging", ready:true });
+    const dyn = await call("opencode_dynamic_status");
+    const tools = JSON.parse(dyn.result.content[0].text);
+    expect(tools.sourceExposed).toBe(false);
+    expect(tools.executable).toBe(false);
+    expect(JSON.stringify(tools)).not.toContain("export default");
     const sessions = await call("opencode_sessions");
     expect(JSON.parse(sessions.result.content[0].text).sessions).toEqual([]);
     const read = await call("opencode_operation", { taskId:"a1234567890bcdef" });
