@@ -70,3 +70,22 @@ The existing `docs/SUPERVISOR_REMOTE_CONTROL_STAGING_20261111.md` has historical
 ## Compatibility with an existing connected plugin
 
 An existing plugin **OpenCode Cloud Remote** already exposes six staging-specific functions; its separate Worker `opencode-staging-control-mcp` had an active version `d2cd370d-33de-4850-87a2-5de15c3b8a83`. Preserve it. This new adapter MUST use its distinct Worker name `opencode-staging-debug-mcp-v2` and must not overwrite/retire/replace the existing plugin, change its bindings, or assume new MCP tools are installed in ChatGPT. An accidental upload against the original name was reverted to version `d2cd370d-33de-4850-87a2-5de15c3b8a83` before this correction. Check the active deployment separately.
+
+## Verified Cloudflare rollout (18 Nov 2026)
+
+- Existing OpenCode staging Worker was built from tested branch commit `e730f9a13d75e0d6cff7819d486b9c62a6153c06`, Cloudflare Build `a3de4fec-d590-4904-a1be-a6e55b575f99` `stopped/success`, staging version `8135af81-65b1-4445-abb3-5013c58df97b`. Previous staging version `86b36b45-ab17-4a40-908f-1b06cd8a492c` remains a rollback reference.
+- New independent MCP script `opencode-staging-debug-mcp-v2` is deployed, Worker version `a2460754-384a-45de-aeac-95033ec81fc8`, with exactly one external Durable Object binding: `STAGING_AGENT` -> `OpenCodeAgent` -> `opencode-g1-staging`.
+- The account's actual Workers subdomain is `cdf-cloud-mvp-20261019`; the new script's `workers.dev` route was enabled with previews disabled. Endpoint: `https://opencode-staging-debug-mcp-v2.cdf-cloud-mvp-20261019.workers.dev/mcp`.
+- The new Worker's `MCP_TOKEN` secret is **not configured**. All MCP requests return `503 MCP_DISABLED_NO_AUTH_SECRET` until a strong secret is set. This is deliberate fail-closed behavior, not a successful live MCP connection.
+- This environment does not currently expose a tool that can both configure a private token and prove an authenticated live MCP client invocation without disclosing/reusing that token. Do not claim live MCP access, sessions, Linux, or GitHub E2E PASS merely from the source code tests and Cloudflare deployment.
+- The previously connected `OpenCode Cloud Remote` plugin has a separate Worker `opencode-staging-control-mcp`. Its prior active version `d2cd370d-33de-4850-87a2-5de15c3b8a83` was restored after a temporary collision and confirmed as its current active deployment. Do not repurpose that Worker.
+- Current CI for the branch `e72676df072b4dc25ddcd93ed720e53b01712b30` passed; main and production remain unmodified.
+
+### Owner activation steps
+
+1. In Cloudflare Workers dashboard open the **new** script `opencode-staging-debug-mcp-v2`, navigate to Settings → Variables and Secrets and add `MCP_TOKEN` as an encrypted secret (32+ random characters); do not share it in GitHub, prompts or logs.
+2. Configure an external MCP client that supports Streamable HTTP, JSON response mode and a Bearer authorization header. Use the endpoint above and provide the token to the client through its secure credential setup.
+3. Verify `initialize`, `tools/list`, `opencode_status` and permission denial with invalid token/production target before submitting a model task.
+4. If the target client requires OAuth or SSE, the adapter must be extended or fronted by a compatible auth/transport integration **before** declaring that client supported. The present release is a small verified protocol subset, not proven compatible with every MCP client.
+5. Once live calls work, exercise idempotent submit/status/inspect/continue with the cheapest available native model in an isolated project; independently verify tool results and run a Playwright smoke with the repository's existing staging workflow.
+
