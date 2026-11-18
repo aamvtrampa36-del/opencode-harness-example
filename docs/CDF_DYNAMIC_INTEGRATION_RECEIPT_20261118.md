@@ -68,3 +68,25 @@ An account-local ephemeral Worker `cdf-dynamic-isolated-lab-20261118` was create
 **Pendientes críticos antes de promover a producción:** probar el código compuesto completo de OpenCode contra su Durable Object y sesiones reales sin comprometerlas; desplegar WorkBench staging únicamente con credenciales y redirect OAuth independientes, comprobar scopes MCP de extremo a extremo; ejecutar prueba real de `workbench_dynamic_cdf_check` con Gateway de staging y autorización configurada; demostrar una reversión del Worker que preserve datos y sesiones; medir el coste/latencia con cargas representativas. Los cambios de producción, el motor Python de CDF y el canon no se modificaron en esta misión.
 
 **Decisión de optimización:** `get()` está soportado y funcionó en laboratorio, pero WorkBench continúa usando `load()` hasta disponer de un benchmark real y política de invalidación; no se afirma ahorro económico ni reutilización de isolate entre solicitudes.
+
+## Rollback en Cloudflare: A → B → A (laboratorio real)
+
+La prueba aislada `cdf-rollback-lab-20261118` se ejecutó sin bindings, credenciales, Durable Objects ni datos de CDF:
+
+| Paso | Versión | Evidencia HTTP |
+|---|---|---|
+| Crear y publicar A | `33d0b19f-e4e0-4150-81ac-5ae7ec92a5ee` | 200, `{"version":"A","synthetic":true}` |
+| Subir B | `8d4bd184-d62d-4f89-aff7-e3efd91226bb` | 200, `{"version":"B","synthetic":true}` |
+| Revertir con `POST /deployments`, 100% A | `33d0b19f-e4e0-4150-81ac-5ae7ec92a5ee` | 200, `{"version":"A","synthetic":true}` |
+
+El rollback API informó un despliegue nuevo `f0512883-f355-4b3f-89cc-4189f78dc975` cuyo 100% apuntaba a la versión A. El laboratorio se desactivó y eliminó. Una nueva lectura del inventario Cloudflare reportó **12 Workers** y ningún Worker temporal. Las versiones de producción y staging de OpenCode y WorkBench seguían sin cambios.
+
+Este resultado **solo prueba reversión de código/versiones en un Worker sin estado**. No certifica el efecto en migraciones, Durable Objects, Containers, SQL, sesiones o autenticación de OpenCode/WorkBench.
+
+## Resultado actualizado de CI
+
+- Integración OpenCode [#78](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/78), commit `83b6e6c98bf056526dd0595d68807035e67b0931`: [CI PASS, run 44350355566](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/44350355566).
+- WorkBench [#49](https://github.com/aamvtrampa36-del/CDF-WorkBench-/pull/49), commit `474d0a605a3ce0285bd635c607382842ea75d9ce`: [CI PASS, run 44350189059](https://github.com/aamvtrampa36-del/CDF-WorkBench-/actions/runs/44350189059).
+- Las pruebas de WorkBench verifican también que el `cdf_status` del Gateway entrega al Worker dinámico **solo estado/generación**, rechazando falta de token, preservando el Container original y el manifiesto de scripts. La integración OAuth de staging **no tiene aún las credenciales y el registro de redirección verificados**.
+
+La política de promoción exige pruebas completas del propio servicio, no sustituibles por estas pruebas de laboratorio. El estado global continúa `INTEGRAL PARTIAL`.
