@@ -17,6 +17,7 @@ import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
+import { DynamicToolRegistry } from "./dynamic-tool-registry";
 import { tokenEconomizerAdapter } from "./token-economizer-adapter";
 import type { ConnectorEvent, ConnectorOutput } from "./connector-adapter";
 import { openRouterCredentialPlugin } from "./openrouter";
@@ -830,6 +831,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   // Files in the object's own storage. `exec` runs JavaScript in a Worker
   // Loader isolate with no network of its own. `git` turns on
   // `workspace.git`, which `codemode:git` uses to clone over HTTPS from the host.
+  private readonly dynamicToolRegistry = new DynamicToolRegistry(this.ctx.storage);
   readonly workspace = new Workspace({
     // SAFETY: DurableObjectStorage has every member DurableObjectStorageLike
     // names; computer declares its own narrower type to avoid depending on
@@ -861,6 +863,22 @@ export class OpenCodeAgent extends DurableObject<Env> {
         modules: {
           "codemode:mcp": createDynamicMcpModule(() => this.personalConfig.getRemoteMcps())
         }
+      }),
+      // Pure, reusable functions cannot call MCP tools, read files, or reach the network.
+      // This backend is the actual sandbox; source-string inspection is only a preflight.
+      new CodemodeBackend({
+        id: "pure-tools",
+        loader: this.env.LOADER,
+        root: "/pure-tools",
+        access: "read",
+        defaultTimeoutMs: 10_000,
+        maxTimeoutMs: 10_000,
+        maxCpuMs: 2_000,
+        maxSourceBytes: 16_000,
+        maxInputBytes: 32_000,
+        maxResultBytes: 32_000,
+        egress: { mode: "none" },
+        modules: {}
       })
     ]
   });
@@ -953,7 +971,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
                 .some(item => item.id === sessionID && Boolean(item.parent)),
               start: (sessionID, task, kind) => this.startSubagent(sessionID, task, kind),
               result: (parentSession, childSession) => this.subagentResult(parentSession, childSession) },
-            { propose: value => this.personalConfig.proposeSpecialization(value) })
+            { propose: value => this.personalConfig.proposeSpecialization(value) },
+            this.dynamicToolRegistry)
         ]
       }),
     // Low effort: with more, the model sometimes writes its whole answer
