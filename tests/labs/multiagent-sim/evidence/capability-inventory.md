@@ -11,7 +11,8 @@ Rama de entrega: `opencode/staging-a74e19c0df6832ab`.
 | Persistencia entre operaciones | Sí | mismo SHA-256 en 2 llamadas separadas |
 | Ejecución JS (Node) | Sí | `node v24.22.1`; salida JSON real |
 | Ejecución de tests (Bun) | Sí | `bun 1.4.4`; 13 pass / 0 fail |
-| `git` en Container | **No** | `fatal: not a git repository` (sin `.git`) |
+| Repositorio `.git` en Container | **No** | `git status` → `fatal: not a git repository` |
+| Binario `git` | Sí, sin repositorio | `git --version` → 2.47.3; `git hash-object` devuelve hashes que coinciden con `fileSha` de GitHub |
 | `python3` | **No** | `command not found` |
 | `node_modules` | **No** instalado | `ls node_modules` vacío; solo tests autocontenidos corren |
 | Backend `codemode` de workspace | **No disponible** en sesión de proyecto | el servidor fuerza `dynamic-mcp`; error `no such path: /dynamic` |
@@ -41,7 +42,16 @@ $ python3 --version
 bash: python3: command not found
 $ git status
 fatal: not a git repository (or any of the parent directories): .git
+$ git --version
+git version 2.47.3
+$ git hash-object src/classify-numbers.mjs tests/classify-numbers.test.mjs README.md
+d175f9b0a2499c9fe60f594b6f5d49279814d9cf
+b9fca590ddf39faa9bf11afdf2e9ca5cc44c5e56
+39a19a647a2f7fe3a3b445993c4a2161fcdcc6a2
 ```
+
+Los tres hashes coinciden con los `fileSha` que devolvió la API de GitHub para la
+rama de entrega.
 
 Persistencia (2 operaciones separadas, ~4 s):
 
