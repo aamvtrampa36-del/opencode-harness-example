@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      run_openrouter_check:
+        description: "Ejecutar una inferencia real en Staging con OpenRouter y probar Bun/Linux (consume cuota de IA)"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -77,7 +83,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: unit-and-build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -102,6 +108,7 @@ jobs:
         env:
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          OPENCODE_STAGING_OPENROUTER_CHECK: ${{ inputs.run_openrouter_check }}
           RUNNER_TEMP: ${{ runner.temp }}
       - name: Upload MCP evidence
         if: always()

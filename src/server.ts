@@ -673,19 +673,6 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (preset.providerID === "openrouter" && !(await this.isOpenRouterConfigured())) {
       return { status: "rejected", message: "Conecta OpenRouter antes de probar este modelo. No se consumió la cuota." };
     }
-    // This diagnostic must prove the OpenRouter route itself. Refresh the
-    // native integration explicitly and fail closed instead of allowing a
-    // model-unavailable error to be mistaken for a provider fallback.
-    if (preset.providerID === "openrouter") {
-      try {
-        const registration = await this.refreshOpenRouter();
-        if (!registration.active) {
-          return { status: "rejected", message: "OpenRouter está configurado, pero no se pudo activar su proveedor. No se inició la prueba." };
-        }
-      } catch {
-        return { status: "rejected", message: "No se pudo activar OpenRouter. Revisa la conexión desde OpenCode Staging; no se inició la prueba." };
-      }
-    }
     const previous = await this.ctx.storage.get<{
       session: string; project: string; token: string; startedAt: number; model?: string; kind?: string; error?: string
     }>("agent-check-v1");
@@ -702,6 +689,19 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const token = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
     const project = "agent-check-" + token;
     const created = await this.harness.sessions.create();
+    // Session creation waits for the harness plugin setup, which registers
+    // the native OpenRouter connector. Refresh it now and fail closed instead
+    // of letting a model error look like a provider fallback.
+    if (preset.providerID === "openrouter") {
+      try {
+        const registration = await this.refreshOpenRouter();
+        if (!registration.active) {
+          return { status: "failed", message: "OpenRouter está configurado, pero no se pudo activar su proveedor." };
+        }
+      } catch {
+        return { status: "failed", message: "No se pudo activar OpenRouter. Revisa la conexión desde OpenCode Staging." };
+      }
+    }
     const state = { session: created.id, project, token, model, kind, startedAt: Date.now() };
     await this.bindSessionScope(created.id, { project });
     // Atomically replace the previous terminal proof only after creating a new session.

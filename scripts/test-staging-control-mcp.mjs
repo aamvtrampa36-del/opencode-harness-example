@@ -35,6 +35,7 @@ if (!accessId || !accessSecret) {
 }
 
 const client = new Client({ name: "opencode-staging-control-e2e", version: "1.0.0" });
+const runOpenRouterCheck = process.env.OPENCODE_STAGING_OPENROUTER_CHECK === "true";
 const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
   requestInit: {
     headers: {
@@ -62,6 +63,38 @@ try {
   assert.equal(parsed.targetWorker, "opencode-g1-staging", "MCP target must remain fixed to Staging.");
   assert.equal(parsed.status, "ok", "The Staging health check must report ok.");
 
+  let openRouterCheck;
+  if (runOpenRouterCheck) {
+    const startedResult = await client.callTool({ name: "staging_openrouter_check", arguments: {} });
+    assert.equal(startedResult.isError, undefined, "OpenRouter diagnostic should start through the MCP.");
+    const startedBlock = startedResult.content.find(item => item.type === "text");
+    assert.ok(startedBlock && "text" in startedBlock, "Diagnostic start should return JSON text.");
+    const started = JSON.parse(startedBlock.text);
+    assert.equal(started.provider, "openrouter");
+    assert.equal(started.requestedModel, "z-ai/glm-5.3-flash");
+    assert.ok(["started", "existing"].includes(started.status), `Unexpected diagnostic start status: ${started.status}`);
+
+    const deadline = Date.now() + 6.5 * 60_000;
+    while (Date.now() < deadline) {
+      const statusResult = await client.callTool({ name: "staging_openrouter_check_status", arguments: {} });
+      assert.equal(statusResult.isError, undefined, "OpenRouter diagnostic status should be readable.");
+      const statusBlock = statusResult.content.find(item => item.type === "text");
+      assert.ok(statusBlock && "text" in statusBlock, "Diagnostic status should return JSON text.");
+      openRouterCheck = JSON.parse(statusBlock.text);
+      if (openRouterCheck.status === "passed") break;
+      assert.ok(["queued", "running"].includes(openRouterCheck.status),
+        `OpenRouter diagnostic failed: ${openRouterCheck.reason ?? openRouterCheck.status}`);
+      await new Promise(resolve => setTimeout(resolve, 8_000));
+    }
+    assert.equal(openRouterCheck?.status, "passed", "OpenRouter and Linux diagnostic must pass before the deadline.");
+    assert.equal(openRouterCheck.model, "review", "The actual check must use the fixed OpenRouter preset.");
+    assert.equal(openRouterCheck.kind, "bun", "The check must exercise Bun in the managed Linux container.");
+    assert.equal(openRouterCheck.modelVerified, true);
+    assert.equal(openRouterCheck.runtimeVerified, true);
+    assert.equal(openRouterCheck.fileVerified, true, "Linux must independently verify the isolated proof file.");
+    assert.ok(openRouterCheck.toolCalls >= 1, "The agent must make a real Linux tool call.");
+  }
+
   // Read-only RPC probe: an unknown task must fail with the supervisor's
   // expected response, proving the fixed cross-Worker DO binding is reachable.
   const unknownTaskId = randomUUID().replaceAll("-", "").slice(0, 16);
@@ -88,9 +121,11 @@ try {
     operationsExecuted: [
       "tools/list",
       "tools/call staging_status",
-      "tools/call staging_task_status (unknown ID; read only)"
+      "tools/call staging_task_status (unknown ID; read only)",
+      ...(runOpenRouterCheck ? ["tools/call staging_openrouter_check and poll status (OpenRouter + Bun + Linux proof)"] : [])
     ]
   };
+  if (openRouterCheck) evidence.openRouterCheck = openRouterCheck;
   const outputPath = join(process.env.RUNNER_TEMP ?? "/tmp", "opencode-staging-control-mcp.json");
   await writeFile(outputPath, JSON.stringify(evidence, null, 2) + "\n", { mode: 0o600 });
   console.log(`OpenCode staging MCP E2E passed; evidence saved to ${outputPath}`);
