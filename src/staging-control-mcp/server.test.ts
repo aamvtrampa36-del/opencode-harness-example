@@ -1,9 +1,11 @@
 import { Client } from "@modelcontextprotocol/client";
 import { InMemoryTransport } from "@modelcontextprotocol/server";
 import { describe, expect, test } from "bun:test";
+import { BUN_RUNTIME_VERSION, commandRequiresBun } from "../dev-runtime";
 import {
   createStagingControlServer,
   STAGING_REPOSITORY,
+  STAGING_OPENROUTER_MODEL,
   STAGING_WORKER,
   SUPERVISOR_OBJECT,
   type StagingSupervisor
@@ -15,6 +17,8 @@ describe("OpenCode staging MCP server", () => {
     let healthReads = 0;
     const operations: string[] = [];
     const supervisor: StagingSupervisor = {
+      async startAgentCheck(model, kind) { operations.push(`agent-check:${model}:${kind}`); return { status: "started", model, kind }; },
+      async agentCheckStatus() { operations.push("agent-check-status"); return { status: "passed", model: "review", kind: "bun", toolCalls: 1, fileVerified: true }; },
       async startSupervisedTask(input) {
         started = input;
         operations.push("start");
@@ -46,13 +50,25 @@ describe("OpenCode staging MCP server", () => {
     try {
       const { tools } = await client.listTools();
       expect(tools.map(tool => tool.name).sort()).toEqual([
-        "staging_cancel_task", "staging_review_task", "staging_start_task",
+        "staging_cancel_task", "staging_openrouter_check", "staging_openrouter_check_status",
+        "staging_review_task", "staging_start_task",
         "staging_status", "staging_task_status", "staging_task_transcript"
       ]);
 
       const status = await client.callTool({ name: "staging_status", arguments: {} });
       expect(JSON.parse(textContent(status))).toMatchObject({ targetWorker: STAGING_WORKER, status: "ok" });
       expect(healthReads).toBe(1);
+
+      const modelCheck = await client.callTool({ name: "staging_openrouter_check", arguments: {} });
+      expect(JSON.parse(textContent(modelCheck))).toMatchObject({
+        status: "started", model: "review", kind: "bun", provider: "openrouter",
+        requestedModel: STAGING_OPENROUTER_MODEL, targetWorker: STAGING_WORKER
+      });
+      const modelCheckStatus = await client.callTool({ name: "staging_openrouter_check_status", arguments: {} });
+      expect(JSON.parse(textContent(modelCheckStatus))).toMatchObject({
+        status: "passed", expectedProvider: "openrouter", expectedModel: STAGING_OPENROUTER_MODEL,
+        modelVerified: true, runtimeVerified: true, toolCalls: 1, fileVerified: true, targetWorker: STAGING_WORKER
+      });
 
       const start = await client.callTool({
         name: "staging_start_task",
@@ -85,7 +101,8 @@ describe("OpenCode staging MCP server", () => {
       expect(transcriptText).not.toContain("ghp_abcdefghijklmnopqrstuvwx");
       expect(transcriptText).not.toContain("oculto");
       expect(operations).toEqual([
-        "start", "status:a1234567890bcdef", "cancel:a1234567890bcdef", "review:a1234567890bcdef",
+        "agent-check:review:bun", "agent-check-status", "start", "status:a1234567890bcdef",
+        "cancel:a1234567890bcdef", "review:a1234567890bcdef",
         "status:a1234567890bcdef"
       ]);
     } finally {
@@ -98,12 +115,15 @@ describe("OpenCode staging MCP server", () => {
     expect(STAGING_WORKER).toBe("opencode-g1-staging");
     expect(SUPERVISOR_OBJECT).toBe("opencode-supervisor-v1");
     expect(STAGING_REPOSITORY).toBe("aamvtrampa36-del/opencode-harness-example");
+    expect(STAGING_OPENROUTER_MODEL).toBe("z-ai/glm-5.3-flash");
   });
 
   test("refreshes the live status when an idempotent start request is reused", async () => {
     const id = "b1234567890cdefa";
     let statusReads = 0;
     const supervisor: StagingSupervisor = {
+      async startAgentCheck(model, kind) { return { status: "started", model, kind }; },
+      async agentCheckStatus() { return { status: "not-started" }; },
       async startSupervisedTask() {
         return { id, status: "running", reused: true, branch: `opencode/staging-${id}` };
       },
@@ -151,3 +171,14 @@ function textContent(value: { content: Array<{ type: string; text?: string }> })
   if (!block?.text) throw new Error("MCP tool returned no text block");
   return block.text;
 }
+
+describe("managed Linux runtime selection", () => {
+  test("bootstraps the pinned Bun only when the shell command invokes bun or bunx", () => {
+    expect(BUN_RUNTIME_VERSION).toBe("1.4.4");
+    expect(commandRequiresBun("bun --version")).toBe(true);
+    expect(commandRequiresBun("bun run test")).toBe(true);
+    expect(commandRequiresBun("bunx wrangler deploy --dry-run")).toBe(true);
+    expect(commandRequiresBun("node --version && npm --version")).toBe(false);
+    expect(commandRequiresBun("echo bun is a runtime")).toBe(false);
+  });
+});

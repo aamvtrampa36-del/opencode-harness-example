@@ -1,10 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { renderConversationMarkdown } from "../session-export";
+import { MODEL_PRESETS } from "../model-presets";
 
 export const STAGING_WORKER = "opencode-g1-staging";
 export const STAGING_REPOSITORY = "aamvtrampa36-del/opencode-harness-example";
 export const SUPERVISOR_OBJECT = "opencode-supervisor-v1";
+export const STAGING_OPENROUTER_MODEL = MODEL_PRESETS.review.id;
 
 export interface StagingSupervisor {
   startSupervisedTask(input: unknown): Promise<unknown>;
@@ -12,6 +14,8 @@ export interface StagingSupervisor {
   cancelSupervisedTask(id: string): Promise<unknown>;
   supervisedTaskReview(id: string): Promise<unknown>;
   supervisedTaskTranscript(id: string): Promise<string>;
+  startAgentCheck(model: "review", kind: "bun"): Promise<unknown>;
+  agentCheckStatus(): Promise<unknown>;
 }
 
 export interface StagingControlBindings {
@@ -75,6 +79,42 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
         ? (health as { status?: unknown }).status : "unknown";
       const payload = { targetWorker: STAGING_WORKER, status, health };
       return status === "ok" ? result(payload) : { ...result(payload), isError: true };
+    } catch (error) {
+      return failed(error);
+    }
+  });
+
+  server.registerTool("staging_openrouter_check", {
+    description: `Inicia una autoprueba real en Staging con OpenRouter (${STAGING_OPENROUTER_MODEL}), Bun 1.4.4 y la herramienta Linux. Valida conexión del proveedor, llamada de modelo, versión del runtime y escritura/verificación de un archivo temporal aislado. Consume inferencia y CPU; no modifica el repositorio ni GitHub.`,
+    inputSchema: {}
+  }, async () => {
+    try {
+      const started = asRecord(await bindings.supervisor().startAgentCheck("review", "bun"));
+      return result({
+        ...started,
+        requestedModel: STAGING_OPENROUTER_MODEL,
+        provider: "openrouter",
+        targetWorker: STAGING_WORKER
+      });
+    } catch (error) {
+      return failed(error);
+    }
+  });
+
+  server.registerTool("staging_openrouter_check_status", {
+    description: "Consulta la última autoprueba OpenRouter + Linux de Staging. Incluye estado, preset elegido, número real de llamadas a herramientas y verificación del archivo temporal; nunca devuelve credenciales.",
+    inputSchema: {}
+  }, async () => {
+    try {
+      const check = asRecord(await bindings.supervisor().agentCheckStatus());
+      return result({
+        ...check,
+        expectedModel: STAGING_OPENROUTER_MODEL,
+        expectedProvider: "openrouter",
+        modelVerified: check.model === "review",
+        runtimeVerified: check.status === "passed" && check.kind === "bun",
+        targetWorker: STAGING_WORKER
+      });
     } catch (error) {
       return failed(error);
     }

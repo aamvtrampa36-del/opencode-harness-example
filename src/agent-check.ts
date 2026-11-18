@@ -123,7 +123,7 @@ export const REPAIR_TEST = [
   ""
 ].join("\n");
 
-export const AGENT_CHECK_KINDS = ["linux", "repair"] as const;
+export const AGENT_CHECK_KINDS = ["linux", "repair", "bun"] as const;
 export type AgentCheckKind = (typeof AGENT_CHECK_KINDS)[number];
 export function isAgentCheckKind(value: unknown): value is AgentCheckKind {
   return typeof value === "string" && AGENT_CHECK_KINDS.some(kind => kind === value);

@@ -114,6 +114,7 @@ describe("Isolated autonomous code-repair rehearsal", () => {
   test("only expected proof modes are supported", () => {
     expect(isAgentCheckKind("linux")).toBe(true);
     expect(isAgentCheckKind("repair")).toBe(true);
+    expect(isAgentCheckKind("bun")).toBe(true);
     expect(isAgentCheckKind("shell-arbitrary")).toBe(false);
   });
   test("seeded code is wrong and the seed runs a failing Node test", () => {

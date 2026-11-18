@@ -13,11 +13,14 @@ This repository contains a remote, stateless MCP endpoint and a separate determi
 
 The MCP Worker is independent of Playwright. It uses the existing OpenCode supervisor RPC methods and does not create a second agent runtime, Linux container, model connection, or GitHub integration.
 
+The managed Linux container starts with Node 24. When a shell command explicitly invokes `bun` or `bunx`, its isolated container installs and verifies the repository-pinned Bun `1.4.4` version on demand. The installation is kept by the existing container snapshot and does not edit repository files.
+
 ## MCP endpoint and tools
 
 The endpoint is Streamable HTTP at `https://opencode-staging-control-mcp.cdf-cloud-mvp-20261019.workers.dev/mcp`.
 
 - `staging_status`: read the fixed Staging `/api/health` endpoint.
+- `staging_openrouter_check` / `staging_openrouter_check_status`: start and inspect an explicit OpenRouter (`z-ai/glm-5.3-flash`) plus Bun 1.4.4 and Linux proof check. The OpenCode side refreshes and verifies OpenRouter registration before inference; this diagnostic has no Workers AI fallback. It creates a proof file only in its isolated disposable project and does not edit the supervised repository or GitHub. It consumes model inference and Linux CPU.
 - `staging_start_task`: start an idempotent supervised task with a fixed repository, 16-character lowercase hexadecimal request ID, and bounded prompt. This creates a Staging branch and can consume model/CPU resources.
 - `staging_task_status`: inspect an existing task.
 - `staging_cancel_task`: request cancellation.

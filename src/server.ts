@@ -673,6 +673,19 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (preset.providerID === "openrouter" && !(await this.isOpenRouterConfigured())) {
       return { status: "rejected", message: "Conecta OpenRouter antes de probar este modelo. No se consumió la cuota." };
     }
+    // This diagnostic must prove the OpenRouter route itself. Refresh the
+    // native integration explicitly and fail closed instead of allowing a
+    // model-unavailable error to be mistaken for a provider fallback.
+    if (preset.providerID === "openrouter") {
+      try {
+        const registration = await this.refreshOpenRouter();
+        if (!registration.active) {
+          return { status: "rejected", message: "OpenRouter está configurado, pero no se pudo activar su proveedor. No se inició la prueba." };
+        }
+      } catch {
+        return { status: "rejected", message: "No se pudo activar OpenRouter. Revisa la conexión desde OpenCode Staging; no se inició la prueba." };
+      }
+    }
     const previous = await this.ctx.storage.get<{
       session: string; project: string; token: string; startedAt: number; model?: string; kind?: string; error?: string
     }>("agent-check-v1");
@@ -709,7 +722,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
       await handle.setModel(model === "cloudflare" ? this.ai(MODEL_ID) : {
         providerID: preset.providerID, id: preset.id
       });
-      const command = "printf '" + token + "' > proof.txt && node -e " +
+      const command = (kind === "bun" ? "bun --version && " : "") +
+        "printf '" + token + "' > proof.txt && node -e " +
         JSON.stringify("const fs=require('node:fs');if(fs.readFileSync('proof.txt','utf8')!==" +
           JSON.stringify(token) + ")process.exit(2);console.log('AGENT_PROOF_OK:" + token + "')");
       const prompt = "Esta es una autoprueba REAL de herramientas, no una tarea de conversación. " +
@@ -729,7 +743,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
         "y, únicamente cuando el test pase, imprime AGENT_PROOF_OK:" + token +
         " en la salida de esa misma llamada Linux. Espera los exitCode reales. " +
         "No basta con describir la reparación; todas las acciones deben realizarse mediante linux.";
-      await handle.submit(kind === "repair" ? repairPrompt : prompt, { whenBusy: "followUp" });
+      const bunPrompt = "Autoprueba REAL de OpenRouter, Bun y la herramienta Linux. " +
+        "Usa la herramienta linux SOLO con command=" + JSON.stringify(command) +
+        ". Debes ejecutar Bun 1.4.4, crear proof.txt en el Container y verificarlo con Node. " +
+        "Espera el exitCode real de la herramienta y describe la versión de Bun que imprimió. " +
+        "No alteres ningún otro proyecto ni uses otras herramientas.";
+      await handle.submit(kind === "repair" ? repairPrompt : kind === "bun" ? bunPrompt : prompt, { whenBusy: "followUp" });
       return { status: "started", session: created.id, project, model, kind };
     } catch (error) {
       const failed = {

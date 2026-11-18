@@ -49,7 +49,8 @@ try {
   const { tools } = await client.listTools();
   const names = tools.map(tool => tool.name).sort();
   assert.deepEqual(names, [
-    "staging_cancel_task", "staging_review_task", "staging_start_task",
+    "staging_cancel_task", "staging_openrouter_check", "staging_openrouter_check_status",
+    "staging_review_task", "staging_start_task",
     "staging_status", "staging_task_status", "staging_task_transcript"
   ]);
 
