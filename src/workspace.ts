@@ -1,5 +1,6 @@
 import { assertAgentToolPermission } from "./tool-permissions";
 import type { Workspace } from "@cloudflare/computer";
+import type { DynamicToolRegistry, DynamicToolCase } from "./dynamic-tool-registry";
 import {
   createPiTools,
   type CreatePiToolsOptions,
@@ -47,7 +48,7 @@ const LOCAL_TOOLS = ["read", "write", "edit", "patch", "glob", "grep", "shell"];
 
 const SYSTEM = `You are OpenCode running in a Cloudflare Durable Object, not the user's computer. Each project uses a separate Linux Container. The linux tool runs commands in the selected project; inspect_linux reads its files without executing commands. The linux command starts in the selected project's root: use relative paths such as dist/index.html, never /bundle or other absolute workspace paths. A selected GitHub repository is imported into its Container from a pinned commit without sending credentials to Linux. This is a source archive, not a Git checkout: .git and Git history are absent. Use the scoped github tool to create an opencode/* branch, write the tested text files to that branch, review the diff, and open a draft PR. Do not claim a local git push or checkout exists. Previous shared projects remain available as backups and must be restored to a new name before development. Containers checkpoint files before idle suspension. To give the user a live browser preview, create the build in the selected project directory's relative dist/ folder; for HTML-only projects create dist/index.html, and for Vite use base './'. The web UI provides a Ver app button. Do not claim the preview is working until tested. Never claim a command passed until its returned exitCode is zero. Never claim to have run tools or tests you could not actually run.\n\nDEVELOPMENT: Understand requirements, use small reversible changes, inspect diffs, report tests actually performed and unresolved issues. Create proposals or drafts first. Do not delete important data, write to production, merge to main, change credentials or deploy services without explicit approval. Never make up tool results or source contents.\n\nOFFICIAL SOURCES: You may plan, draft, edit and review, but the owner approves final integration and publication. NEVER overwrite official sources, canonize editorial content, merge production changes or publish without explicit authorization for the exact operation. Keep drafts distinguishable from approved materials.\n\nGITHUB: When the github tool is available, use it to read the owner's repositories approved in Settings, create opencode/* review branches, save changed text files and open draft pull requests. It never merges or pushes to main. For source-file questions about the selected GitHub repository, use repo_read with the requested path FIRST (default branch is used if no ref is specified). Use repo_info for repository metadata and repo_review ONLY for diffs of existing opencode/* review branches. Do not substitute inspect_linux for an explicit GitHub API read; inspect_linux is for local isolated files. Execute the requested reads before summarizing, and never claim to have read a file from a directory listing alone. DO NOT inspect /bundle/.git/HEAD or use /bundle as a checkout of the selected GitHub repository. Generic workspace tools are blocked in project sessions because the Durable Object workspace is shared. Use the scoped inspect_linux or GitHub tools for reads. In Plan/Review use repo_review with the opencode/* branch directly. If the bridge is unavailable, ask the user to connect GitHub privately in Settings; never ask for a token in chat.\n\nCOST/SECURITY: Prefer inexpensive models for ordinary tasks. Never print API secrets. Do not disable authentication or launch billable infrastructure without informed authorization.\n\nOPERATIONS: State the actual available tools and constraints. A separate Linux Container is available through the scoped linux tool. Explain only genuine missing capabilities, and never fake command results, tools, or tests. Do not use the shared workspace tools in project sessions. Concise Spanish unless the user requests otherwise.`;
 
-const DYNAMIC_WORKERS_GUIDANCE = `DYNAMIC WORKERS: Project sessions keep only the exec tool from the shared workspace tools, and the server forces it onto the dynamic-mcp backend. Use it for short JavaScript runs and sequences of existing remote MCP tools. Import servers, tools and call from codemode:mcp to find connected servers and their current input schemas. The host keeps OAuth and bearer credentials private and enforces the configured tool allowlist. This backend has no project file access. The codemode backend can access the shared workspace and is available only in unscoped sessions. Use direct MCP calls for a single simple operation when that is clearer.`;
+const DYNAMIC_WORKERS_GUIDANCE = `DYNAMIC WORKERS: Project sessions keep only the exec tool from the shared workspace tools, and the server forces it onto the dynamic-mcp backend. Use it for short JavaScript runs and sequences of existing remote MCP tools. Import servers, tools and call from codemode:mcp to find connected servers and their current input schemas. The host keeps OAuth and bearer credentials private and enforces the configured tool allowlist. This backend has no project file access. The codemode backend can access the shared workspace and is available only in unscoped sessions. Use direct MCP calls for a single simple operation when that is clearer. The dynamic_tool catalogue is project-scoped and runs pure JavaScript without MCP modules, network or filesystem. Propose at least two distinct synthetic tests, verify, then activate before use. Do not treat agent-written tests as independent security review.`;
 
 /**
  * The shared `exec` description makes the two JavaScript backend choices clear.
@@ -147,7 +148,8 @@ export function workspacePlugin(
   getBoundProject?: (sessionID: string) => Promise<string>,
   imageGeneration?: ImageGenerationRunner,
   subagents?: SubagentRunner,
-  templateProposals?: TemplateProposalRunner
+  templateProposals?: TemplateProposalRunner,
+  dynamicCatalog?: DynamicToolRegistry
 ): Plugin.Plugin {
   const { tools, execute } = createPiTools({
     ...options,
@@ -159,7 +161,10 @@ export function workspacePlugin(
           description: "Runs ES module source with read/write access to the shared workspace and codemode:git. Unscoped sessions only."
         },
         "dynamic-mcp": {
-          description: "Runs ES module source in a read-only, network-isolated Dynamic Worker. It can call existing configured MCP tools through codemode:mcp and is available in project sessions."
+          description: "Runs ES module source in a network-isolated Dynamic Worker. It can call existing configured MCP tools through codemode:mcp, subject to each MCP server scope. It is NOT a guarantee that remote tools cannot write."
+        },
+        "pure-tools": {
+          description: "Runs a pure JavaScript function in a Dynamic Worker without MCP modules, network, or filesystem."
         }
       }
     }
@@ -195,6 +200,7 @@ export function workspacePlugin(
             delete available.start_subagent;
             delete available.subagent_result;
             delete available.propose_template;
+            delete available.dynamic_tool;
           }
           let project: string | undefined;
           try {
@@ -257,6 +263,73 @@ export function workspacePlugin(
             const proposal = await templateProposals!.propose(parsed);
             return { content: JSON.stringify({ status: "pending-owner-approval", proposal: proposal.id,
               next: "La plantilla solo se activa cuando la persona propietaria la aprueba en Configurar → Plantillas." }) };
+          }
+        });
+        if (dynamicCatalog) editor.add({
+          name: "dynamic_tool",
+          description: "Project-scoped catalogue of pure JavaScript Dynamic Workers. list/inspect are read-only. propose records a candidate with at least two distinct synthetic cases; verify executes all cases in a capability-free isolate; activate permits reuse; run executes an active entry; deactivate revokes it. Never use this tool for canonical CDF writes, shell, packages or remote MCP operations. Verification means supplied test cases passed, not independent security approval.",
+          input: {
+            type: "object",
+            properties: {
+              action: { type: "string", enum: ["list", "inspect", "propose", "verify", "activate", "run", "deactivate"] },
+              id: { type: "string", description: "Stable lower-case id (2–40 characters)" },
+              source: { type: "string", description: "Pure JS ES module with default export, <= 16KB" },
+              tests: { type: "array", description: "At least two distinct synthetic {input, expected} test cases",
+                items: { type: "object", properties: { input: {}, expected: {} },
+                  required: ["input", "expected"], additionalProperties: false } },
+              documentation: { type: "array", items: { type: "string" }, description: "Official documentation URLs" },
+              value: { description: "JSON input for run" }
+            },
+            required: ["action"],
+            additionalProperties: false
+          },
+          options: { codemode: false },
+          async execute(input, context) {
+            const p = input as {
+              action?: string; id?: string; source?: string;
+              tests?: DynamicToolCase[]; documentation?: string[]; value?: unknown
+            };
+            const action = p.action ?? "";
+            if (context.agent === "plan" && !["list", "inspect"].includes(action)) {
+              throw new Error("Planificación y Revisión no pueden crear ni ejecutar herramientas dinámicas.");
+            }
+            const project = getBoundProject ? await getBoundProject(context.sessionID) : "";
+            const scope = project ?? "";
+            const id = p.id ?? "";
+            const runIsolated = async (source: string, value: unknown): Promise<unknown> => {
+              // The backend has no modules or outbound network. Do not use dynamic-mcp:
+              // it can deliberately invoke privileged MCP tools on the host side.
+              const stream = await workspace.runtime.exec(source, {
+                backend: "pure-tools", input: value
+              });
+              let exited = false;
+              let result: unknown;
+              for await (const event of stream) {
+                if (event.name === "exit") {
+                  exited = true;
+                  if (event.code !== 0) throw new Error("DYNAMIC_TOOL_EXECUTION_FAILED");
+                  result = event.result;
+                }
+              }
+              if (!exited) throw new Error("DYNAMIC_TOOL_NO_EXIT");
+              return result;
+            };
+            let result: unknown;
+            switch (action) {
+              case "list": result = await dynamicCatalog.list(scope); break;
+              case "inspect": result = await dynamicCatalog.inspect(scope, id); break;
+              case "propose":
+                if (typeof p.source !== "string") throw new Error("DYNAMIC_TOOL_SOURCE_REQUIRED");
+                result = await dynamicCatalog.propose(scope, id, p.source,
+                  p.tests ?? [], p.documentation ?? []);
+                break;
+              case "verify": result = await dynamicCatalog.verify(scope, id, runIsolated); break;
+              case "activate": result = await dynamicCatalog.activate(scope, id); break;
+              case "run": result = await dynamicCatalog.run(scope, id, p.value, runIsolated); break;
+              case "deactivate": result = await dynamicCatalog.deactivate(scope, id); break;
+              default: throw new Error("DYNAMIC_TOOL_ACTION_INVALID");
+            }
+            return { content: JSON.stringify(result) };
           }
         });
         if (imageGeneration) editor.add({
