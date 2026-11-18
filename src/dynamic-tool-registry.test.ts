@@ -76,6 +76,61 @@ describe("Project-scoped Dynamic Worker tool catalogue", () => {
       .rejects.toThrow("DYNAMIC_TOOL_NOT_ACTIVE");
   });
 
+  test("a revoked candidate cannot be promoted by a concurrent verification", async () => {
+    const registry = new DynamicToolRegistry(new MemoryStore());
+    await registry.propose("cdf", "json-check", code, samples);
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const startedPromise = new Promise<void>(r => started = r);
+    const hold = new Promise<void>(r => release = r);
+    const verifying = registry.verify("cdf", "json-check", async (_source, input: any) => {
+      started();
+      await hold;
+      return { count: input.values.length, ok: true };
+    });
+    await startedPromise;
+    await registry.deactivate("cdf", "json-check");
+    release();
+    await expect(verifying).rejects.toThrow("DYNAMIC_TOOL_CHANGED_DURING_VERIFICATION");
+    expect((await registry.list("cdf"))[0].status).toBe("DEPRECATED");
+    await expect(registry.activate("cdf", "json-check")).rejects.toThrow("DYNAMIC_TOOL_NOT_VERIFIED");
+  });
+
+  test("revocation during an active execution discards its result and leaves no stale metrics", async () => {
+    const registry = new DynamicToolRegistry(new MemoryStore());
+    await registry.propose("cdf", "json-check", code, samples);
+    await registry.verify("cdf", "json-check", run);
+    await registry.activate("cdf", "json-check");
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const startedPromise = new Promise<void>(r => started = r);
+    const hold = new Promise<void>(r => release = r);
+    const pending = registry.run("cdf", "json-check", samples[0].input, async (_source, input) => {
+      started();
+      await hold;
+      return run(code, input);
+    });
+    await startedPromise;
+    await registry.deactivate("cdf", "json-check");
+    release();
+    await expect(pending).rejects.toThrow("DYNAMIC_TOOL_REVOKED_DURING_RUN");
+    const [entry] = await registry.list("cdf");
+    expect(entry.status).toBe("DEPRECATED");
+    expect(entry.runs).toBe(0);
+  });
+
+  test("same source cannot silently reuse approval with different test cases", async () => {
+    const registry = new DynamicToolRegistry(new MemoryStore());
+    await registry.propose("cdf", "json-check", code, samples);
+    await registry.verify("cdf", "json-check", run);
+    await registry.activate("cdf", "json-check");
+    await expect(registry.propose("cdf", "json-check", code, [
+      { input: { values: [7] }, expected: { count: 1, ok: true } },
+      samples[1]
+    ])).rejects.toThrow("DYNAMIC_TOOL_DEFINITION_CONFLICT");
+    expect((await registry.list("cdf"))[0].status).toBe("ACTIVE");
+  });
+
   test("code-execution errors do not promote, and no input or result over limit is accepted", async () => {
     const registry = new DynamicToolRegistry(new MemoryStore());
     await registry.propose("cdf", "json-check", code, samples);
