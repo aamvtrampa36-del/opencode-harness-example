@@ -17,6 +17,7 @@ describe("OpenCode staging MCP server", () => {
     let requestedWorkspace: string | undefined;
     let startCount = 0;
     let healthReads = 0;
+    let largeDiagnostics = false;
     const operations: string[] = [];
     const supervisor: StagingSupervisor = {
       async remoteSupervisorStatus() { return { ready: true, defaultModel: "economy" }; },
@@ -30,7 +31,12 @@ describe("OpenCode staging MCP server", () => {
       async remoteSupervisorMcpServers() { operations.push("mcp-servers"); return { servers: [{ id: "test-mcp" }] }; },
       async remoteSupervisorMcpTools(server) { operations.push(`mcp-tools:${server}`); return { tools: [{ name: "read" }] }; },
       async remoteSupervisorMcpCall(input) { operations.push(`mcp-call:${input.server}.${input.name}`); return { result: { isError: false } }; },
-      async remoteSupervisorDiagnostics() { operations.push("diagnostics"); return { incidents: [] }; },
+      async remoteSupervisorDiagnostics() {
+        operations.push("diagnostics");
+        return { targetWorker: STAGING_WORKER, incidents: largeDiagnostics
+          ? Array.from({ length: 120 }, (_, index) => ({ id: index, message: "diagnostic detail ".repeat(60) }))
+          : [] };
+      },
       async remoteSupervisorAgentCheck(model, kind) { operations.push(`agent-check:${model}:${kind}`); return { status: "started", model, kind }; },
       async remoteSupervisorAgentCheckStatus() { operations.push("agent-check-status"); return { status: "passed" }; },
       async startAgentCheck(model, kind) { operations.push(`agent-check:${model}:${kind}`); return { status: "started", model, kind }; },
@@ -102,6 +108,13 @@ describe("OpenCode staging MCP server", () => {
       } }))).result.isError).toBe(false);
       expect(JSON.parse(textContent(await client.callTool({ name: "staging_diagnostics", arguments: {} })))
         .incidents).toEqual([]);
+      largeDiagnostics = true;
+      const largeDiagnosticPayload = JSON.parse(textContent(
+        await client.callTool({ name: "staging_diagnostics", arguments: {} })
+      ));
+      expect(largeDiagnosticPayload.targetWorker).toBe(STAGING_WORKER);
+      expect(largeDiagnosticPayload._responseTruncated).toBe(true);
+      expect(Array.isArray(largeDiagnosticPayload.incidents)).toBe(true);
       expect(JSON.parse(textContent(await client.callTool({ name: "staging_agent_check", arguments: {} })))
         .model).toBe("economy");
       expect(JSON.parse(textContent(await client.callTool({ name: "staging_agent_check_status", arguments: {} })))

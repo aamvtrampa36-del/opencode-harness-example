@@ -67,9 +67,60 @@ function safeValue(value: unknown, depth = 0): unknown {
   return value;
 }
 
+type JsonClip = { value: unknown; truncated: boolean };
+
+function clipJsonValue(
+  value: unknown, limits: { stringChars: number; arrayItems: number; objectKeys: number; depth: number },
+  depth = 0
+): JsonClip {
+  if (depth > limits.depth) return { value: "[profundidad recortada]", truncated: true };
+  if (typeof value === "string") {
+    if (value.length <= limits.stringChars) return { value, truncated: false };
+    const marker = "[recortado]";
+    return { value: value.slice(0, Math.max(0, limits.stringChars - marker.length)) + marker, truncated: true };
+  }
+  if (Array.isArray(value)) {
+    const items = value.slice(0, limits.arrayItems).map(item => clipJsonValue(item, limits, depth + 1));
+    return { value: items.map(item => item.value),
+      truncated: value.length > limits.arrayItems || items.some(item => item.truncated) };
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    const clipped: Record<string, unknown> = {};
+    let truncated = entries.length > limits.objectKeys;
+    for (const [key, item] of entries.slice(0, limits.objectKeys)) {
+      const child = clipJsonValue(item, limits, depth + 1);
+      clipped[key] = child.value;
+      truncated ||= child.truncated;
+    }
+    return { value: clipped, truncated };
+  }
+  return { value, truncated: false };
+}
+
 function jsonText(value: unknown, maxChars = 16_000): string {
-  const json = JSON.stringify(safeValue(value), null, 2) ?? "null";
-  return json.length <= maxChars ? json : json.slice(0, maxChars) + "\n[Salida recortada]";
+  const safe = safeValue(value);
+  const json = JSON.stringify(safe, null, 2) ?? "null";
+  if (json.length <= maxChars) return json;
+
+  const limits = [
+    { stringChars: 2048, arrayItems: 64, objectKeys: 64, depth: 16 },
+    { stringChars: 1024, arrayItems: 32, objectKeys: 32, depth: 12 },
+    { stringChars: 512, arrayItems: 16, objectKeys: 16, depth: 10 },
+    { stringChars: 256, arrayItems: 8, objectKeys: 12, depth: 8 },
+    { stringChars: 64, arrayItems: 4, objectKeys: 8, depth: 6 },
+    { stringChars: 16, arrayItems: 0, objectKeys: 4, depth: 4 }
+  ];
+  for (const limit of limits) {
+    const clipped = clipJsonValue(safe, limit);
+    let candidate = clipped.value;
+    if (clipped.truncated && candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+      candidate = { ...(candidate as Record<string, unknown>), _responseTruncated: true };
+    }
+    const bounded = JSON.stringify(candidate, null, 2) ?? "null";
+    if (bounded.length <= maxChars) return bounded;
+  }
+  return JSON.stringify({ _responseTruncated: true, message: "Resultado omitido por límite de tamaño" });
 }
 
 function result(value: unknown, maxChars?: number) {
