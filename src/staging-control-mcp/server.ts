@@ -65,6 +65,16 @@ function failed(error: unknown) {
   return { content: [{ type: "text" as const, text: message }], isError: true };
 }
 
+/**
+ * Fail closed: this tool has no workspace or session-fork parameters. A caller
+ * that sends `workspace` (with or without `sourceSession`) is rejected instead
+ * of silently starting a task against the fixed repository.
+ */
+const startTaskInput = z.object({
+  requestId: z.string().regex(/^[a-f0-9]{16}$/).describe("ID único idempotente, exactamente 16 caracteres hexadecimales en minúscula"),
+  prompt: z.string().min(12).max(5000).describe("Instrucción de desarrollo para Staging, entre 12 y 5000 caracteres")
+}).strict();
+
 export function createStagingControlServer(bindings: StagingControlBindings): McpServer {
   const server = new McpServer({ name: "opencode-staging-control", version: "1.0.0" });
 
@@ -125,10 +135,7 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
 
   server.registerTool("staging_start_task", {
     description: "Inicia una tarea supervisada en el repositorio fijo de Staging. Crea una rama y puede consumir inferencia y CPU. Usa un requestId hexadecimal de 16 caracteres para que los reintentos sean idempotentes. La revisión y promoción quedan fuera de este conector.",
-    inputSchema: {
-      requestId: z.string().regex(/^[a-f0-9]{16}$/).describe("ID único idempotente, exactamente 16 caracteres hexadecimales en minúscula"),
-      prompt: z.string().min(12).max(5000).describe("Instrucción de desarrollo para Staging, entre 12 y 5000 caracteres")
-    }
+    inputSchema: startTaskInput
   }, async ({ requestId, prompt }) => {
     try {
       const supervisor = bindings.supervisor();
