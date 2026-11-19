@@ -17,10 +17,12 @@ import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
+import { createDynamicMcpHost } from "./dynamic-mcp-bridge";
 import { tokenEconomizerAdapter } from "./token-economizer-adapter";
 import type { ConnectorEvent, ConnectorOutput } from "./connector-adapter";
 import { openRouterCredentialPlugin } from "./openrouter";
-import { isModelSelection, MODEL_PRESETS, NATIVE_WORKERS_AI_MODELS, resolveModelSelection } from "./model-presets";
+import { isModelSelection, MODEL_PRESETS, NATIVE_WORKERS_AI_MODELS, resolveModelSelection,
+  type ModelSelectionID } from "./model-presets";
 import { getOpenRouterCatalogue } from "./openrouter-catalog";
 import { assertOpenRouterImageModel, generateOpenRouterImage, getOpenRouterImageModels } from "./openrouter-images";
 import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
@@ -34,7 +36,7 @@ import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCh
 import { inlinePreviewAssets } from "./preview-inline";
 import { BUN_RUNTIME_VERSION } from "./dev-runtime";
 import { classifyAgentFailure, observeLinux, type IncidentObservation } from "./incident-diagnostics";
-import { validateExportIdentity, sessionExportResponse } from "./session-export";
+import { renderConversationMarkdown, validateExportIdentity, sessionExportResponse } from "./session-export";
 import { archiveDownloadResponse, archiveError } from "./download-response";
 import { githubRepositoryDownload } from "./github-download";
 import { checkIsolation } from "./isolation-check";
@@ -45,7 +47,8 @@ import {
   SUPERVISOR_WORKSPACE, SUPERVISOR_API_PREFIX,
   assertSupervisorBoundGitHubOperation, supervisorBearerAllowed,
   supervisorBaseCommit, supervisorBranch, supervisorFingerprint, supervisorProject,
-  supervisorPrompt, supervisorResponse, supervisorTaskKey,
+  supervisorPrompt, supervisorResponse, supervisorTaskKey, supervisorStartOperationId,
+  supervisorTurnOperationId, classifySupervisorOperation,
   validateSupervisorStart, type SupervisorTask
 } from "./supervisor-control";
 
@@ -65,66 +68,143 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const start = validateSupervisorStart(raw, await this.personalConfig.getAllowedRepositories());
     const key = supervisorTaskKey(start.requestId);
     const fingerprint = await supervisorFingerprint(start);
-    const old = await this.ctx.storage.get<SupervisorTask>(key);
-    if (old) {
-      if (old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
-      return { id: old.id, repository: old.repository, branch: old.branch, project: old.project,
-        baseCommit: old.baseCommit, session: old.session, status: old.status, error: old.error,
-        operationId: old.operationId, model: old.model, reused: true };
+    let old = await this.ctx.storage.get<SupervisorTask>(key);
+    let reused = Boolean(old);
+    if (old && old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
+    if (old && ["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(old.status)) {
+      return this.supervisorTaskReceipt(old, true);
+    }
+    if (!old) {
+      const selection = start.model ?? "economy";
+      const model = resolveModelSelection(selection);
+      if (model.providerID === "openrouter") {
+        if (!await this.isOpenRouterConfigured()) throw new Error("Conecta OpenRouter antes de usar este modelo; no se inició la tarea");
+        await assertOpenRouterModelSupportsTools(model.id);
+      }
     }
     const job: SupervisorTask = {
       id: start.requestId, repository: start.repository,
       project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId, start.repository),
-      fingerprint, createdAt: Date.now(), status: "preparing", model: start.model ?? "economy"
+      fingerprint, createdAt: old?.createdAt ?? Date.now(), status: "preparing",
+      model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
-    // Atomic reservation prevents duplicate branches and duplicate model spending.
-    const reserved = await this.ctx.storage.transaction(async tx => {
-      const current = await tx.get<SupervisorTask>(key);
-      if (current) return current;
-      await tx.put(key, job);
-      return null;
-    });
-    if (reserved) {
-      if (reserved.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
-      return { id: reserved.id, repository: reserved.repository, branch: reserved.branch,
-        project: reserved.project, baseCommit: reserved.baseCommit,
-        session: reserved.session, status: reserved.status,
-        operationId: reserved.operationId, model: reserved.model, reused: true };
-    }
-    try {
-      // Fail before inference if private GitHub integration is unavailable.
-      const branchResult = await this.githubRunner.execute({
-        action: "branch", repo: job.repository, branch: job.branch
+    if (!old) {
+      // Atomic reservation prevents duplicate branches and duplicate model spending.
+      const reservation = await this.ctx.storage.transaction(async tx => {
+        const current = await tx.get<SupervisorTask>(key);
+        if (current) return { task: current, created: false };
+        await tx.put(key, job);
+        return { task: job, created: true };
       });
-      const baseCommit = supervisorBaseCommit(branchResult, job.repository);
-      job.baseCommit = baseCommit;
-      await this.ctx.storage.put(key, job);
-      const created = await this.harness.sessions.create();
-      await this.bindSessionScope(created.id, { project: job.project, repository: job.repository });
-      // The model may not create a second branch, or write outside its branch.
-      await this.ctx.storage.put("supervisor:session:" + created.id, job.id);
-      job.session = created.id;
-      await this.ctx.storage.put(key, job);
-      const handle = this.harness.session(created.id);
-      await handle.setAgent("build");
-      // Supervisor execution is explicitly cost-bounded to native Workers AI.
-      // Never choose OpenRouter implicitly when starting a remote test.
-      await handle.setModel({ providerID: "cloudflare", id: MODEL_PRESETS[job.model!].id });
-      const receipt = await handle.submit(
-        supervisorPrompt(start, job.branch, job.project, baseCommit),
-        { whenBusy: "followUp" }
-      );
-      job.operationId = receipt.operationId;
-      job.status = "running";
-      await this.ctx.storage.put(key, job);
-      return { id: job.id, session: created.id, project: job.project,
-        repository: job.repository, branch: job.branch, baseCommit: job.baseCommit, status: job.status,
-        operationId: job.operationId, model: job.model, reused: false };
+      old = reservation.task;
+      reused = !reservation.created;
+      if (old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
+    }
+    return this.withSupervisorStartLock(start.requestId, async () => {
+      const saved = await this.ctx.storage.get<SupervisorTask>(key);
+      if (!saved) throw new Error("La reserva de la tarea desapareció");
+      if (["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(saved.status)) {
+        return this.supervisorTaskReceipt(saved, true);
+      }
+      return this.advanceSupervisedTask(saved, start, reused);
+    }, old);
+  }
+
+  private supervisorTaskReceipt(task: SupervisorTask, reused: boolean): Record<string, unknown> {
+    return { id: task.id, repository: task.repository, branch: task.branch, project: task.project,
+      baseCommit: task.baseCommit, session: task.session, status: task.status, error: task.error,
+      operationId: task.operationId, model: task.model, ...(task.forkedFrom ? { forkedFrom: task.forkedFrom } : {}),
+      reused };
+  }
+
+  private async withSupervisorStartLock<T>(
+    id: string, run: () => Promise<T>, current: SupervisorTask
+  ): Promise<T | Record<string, unknown>> {
+    const key = "supervisor:lock:" + id;
+    const token = crypto.randomUUID();
+    const acquired = await this.ctx.storage.transaction(async tx => {
+      const existing = await tx.get<{ token: string; expiresAt: number }>(key);
+      if (existing && existing.expiresAt > Date.now()) return false;
+      await tx.put(key, { token, expiresAt: Date.now() + 60_000 });
+      return true;
+    });
+    if (!acquired) return { ...this.supervisorTaskReceipt(current, true), retryAfterMs: 1_000 };
+    try { return await run(); }
+    finally {
+      await this.ctx.storage.transaction(async tx => {
+        const existing = await tx.get<{ token: string }>(key);
+        if (existing?.token === token) await tx.delete(key);
+      });
+    }
+  }
+
+  private async advanceSupervisedTask(
+    job: SupervisorTask, start: ReturnType<typeof validateSupervisorStart>, reused: boolean
+  ) {
+    const key = supervisorTaskKey(job.id);
+    try {
+      if (!job.baseCommit) {
+        // The deterministic branch reservation safely recovers after a lost GitHub response.
+        const branchResult = await this.githubRunner.ensureSupervisorBranch(job.repository, job.branch);
+        job.baseCommit = supervisorBaseCommit(branchResult, job.repository);
+        job.updatedAt = Date.now();
+        await this.ctx.storage.put(key, job);
+      }
+      if (!job.session) {
+        let created;
+        if (start.sourceSession) {
+          const exists = (await this.harness.sessions.list()).some(item => item.id === start.sourceSession);
+          if (!exists) throw new Error("La sesión de origen ya no existe en este workspace");
+          created = await this.harness.sessions.fork(start.sourceSession);
+        } else {
+          created = await this.harness.sessions.create();
+        }
+        await this.bindSessionScope(created.id, { project: job.project, repository: job.repository });
+        // The model may not create a second branch, or write outside its branch.
+        await this.ctx.storage.put("supervisor:session:" + created.id, job.id);
+        job.session = created.id;
+        job.updatedAt = Date.now();
+        await this.ctx.storage.put(key, job);
+      }
+      await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
+      const handle = this.harness.session(job.session!);
+      if (!job.operationId) {
+        await handle.setAgent("build");
+        const model = resolveModelSelection(job.model ?? "economy");
+        await handle.setModel(model);
+        job.operationId = supervisorStartOperationId(job.id);
+        job.status = "running";
+        job.updatedAt = Date.now();
+        // Store the native idempotency key before sending anything to OpenCode.
+        await this.ctx.storage.put(key, job);
+      }
     } catch (error) {
       job.status = "failed";
       job.error = error instanceof Error ? error.message.slice(0, 230) : "No se pudo iniciar la tarea";
+      job.updatedAt = Date.now();
       await this.ctx.storage.put(key, job);
-      return { id: job.id, status: job.status, error: job.error, branch: job.branch };
+    }
+    if (job.status === "failed" || !job.session || !job.operationId || !job.baseCommit) {
+      return this.supervisorTaskReceipt(job, reused);
+    }
+    try {
+      const receipt = await this.harness.session(job.session).submit(
+        supervisorPrompt(start, job.branch, job.project, job.baseCommit),
+        { operationId: job.operationId, whenBusy: "followUp" }
+      );
+      job.status = "running";
+      job.error = undefined;
+      job.updatedAt = Date.now();
+      await this.ctx.storage.put(key, job);
+      return { ...this.supervisorTaskReceipt(job, reused), accepted: receipt.accepted };
+    } catch (error) {
+      // The durable operation may have been accepted before the RPC failed.
+      // Keep the same operationId so a retry can retrieve the original receipt.
+      job.status = "unknown";
+      job.error = error instanceof Error ? error.message.slice(0, 230) : "No se pudo confirmar el envío";
+      job.updatedAt = Date.now();
+      await this.ctx.storage.put(key, job);
+      return this.supervisorTaskReceipt(job, reused);
     }
   }
 
@@ -135,7 +215,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
   }
 
-  /** Cross-Worker RPC: only the supervisor DO, never arbitrary user sessions. */
+  /** Cross-Worker RPC: only the Staging namespace can call these methods. */
   async remoteSupervisorStatus(): Promise<unknown> {
     this.assertStagingRemote();
     const sessions = await this.harness.sessions.list();
@@ -145,40 +225,110 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
     return {
       environment: "staging", worker: "opencode-g1-staging", ready: true,
-      schema: "opencode.staging-control.v1", supervisedSessions: supervised,
-      models: [
-        { selection: "economy", providerID: "cloudflare", id: MODEL_PRESETS.economy.id },
-        { selection: "cloudflare", providerID: "cloudflare", id: MODEL_PRESETS.cloudflare.id }
-      ],
-      capabilities: ["status", "sessions", "start", "inspect", "continue", "select_model", "operation", "cancel", "review"]
+      schema: "opencode.staging-control.v2", supervisedSessions: supervised,
+      defaultModel: "economy",
+      capabilities: ["status", "models", "repositories", "sessions", "start", "inspect", "continue",
+        "select_model", "progress", "cancel", "review", "mcp_discovery", "mcp_call", "incidents", "agent_check"]
     };
+  }
+
+  async remoteSupervisorModels(): Promise<unknown> {
+    this.assertStagingRemote();
+    const openRouterConfigured = await this.isOpenRouterConfigured();
+    const models: Array<Record<string, unknown>> = Object.entries(MODEL_PRESETS)
+      .filter(([, model]) => model.providerID === "cloudflare" || openRouterConfigured)
+      .map(([selection, model]) => ({ selection, ...model }));
+    let catalogueAvailable = true;
+    let catalogueTruncated = false;
+    if (openRouterConfigured) {
+      try {
+        const catalogue = await getOpenRouterCatalogue();
+        const dynamic = catalogue
+          .filter(model => !Object.values(MODEL_PRESETS).some(preset =>
+            preset.providerID === "openrouter" && preset.id === model.id))
+          .sort((a, b) => {
+            const aPrice = (a.promptPerMillion ?? Number.MAX_SAFE_INTEGER) +
+              (a.completionPerMillion ?? Number.MAX_SAFE_INTEGER);
+            const bPrice = (b.promptPerMillion ?? Number.MAX_SAFE_INTEGER) +
+              (b.completionPerMillion ?? Number.MAX_SAFE_INTEGER);
+            return aPrice - bPrice || a.name.localeCompare(b.name);
+          });
+        catalogueTruncated = dynamic.length > 30;
+        for (const model of dynamic.slice(0, 30)) models.push({
+          selection: "openrouter:" + model.id, providerID: "openrouter", id: model.id,
+          name: model.name, contextLength: model.contextLength, tools: model.tools,
+          imageInput: model.imageInput,
+          pricingPerMillion: { prompt: model.promptPerMillion, completion: model.completionPerMillion }
+        });
+      } catch {
+        catalogueAvailable = false;
+      }
+    }
+    return { targetWorker: "opencode-g1-staging", defaultSelection: "economy",
+      openRouterConfigured, catalogueAvailable, catalogueTruncated, models };
+  }
+
+  async remoteSupervisorRepositories(): Promise<unknown> {
+    this.assertStagingRemote();
+    return { targetWorker: "opencode-g1-staging", repositories: await this.personalConfig.getAllowedRepositories() };
   }
 
   async remoteSupervisorSessions(): Promise<unknown> {
     this.assertStagingRemote();
     const sessions = await this.harness.sessions.list();
-    const result: Array<{ session: string; taskId: string; model?: string }> = [];
+    const result: Array<{ session: string; parent?: string; title?: string; taskId?: string; model?: string; status?: string; busy: boolean }> = [];
     for (const item of sessions.slice(-100)) {
       const id = await this.ctx.storage.get<string>("supervisor:session:" + item.id);
-      if (!id) continue;
-      const task = await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(id));
-      result.push({ session: item.id, taskId: id, model: task?.model });
+      const task = id ? await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(id)) : undefined;
+      result.push({ session: item.id, ...(item.parent ? { parent: item.parent } : {}),
+        ...(item.title ? { title: item.title.slice(0, 160) } : {}), ...(id ? { taskId: id } : {}),
+        ...(task?.model ? { model: task.model } : {}), ...(task?.status ? { status: task.status } : {}), busy: item.busy });
     }
     return { environment: "staging", sessions: result, limited: sessions.length > 100 };
   }
 
+  async remoteSupervisorInspectSession(id: string): Promise<unknown> {
+    this.assertStagingRemote();
+    if (!/^ses[A-Za-z0-9_]{1,64}$/.test(id)) throw new Error("Identificador de sesión inválido");
+    const sessionInfo = (await this.harness.sessions.list()).find(item => item.id === id);
+    if (!sessionInfo) throw new Error("La sesión no existe en este workspace Staging");
+    const [history, project] = await Promise.all([this.harness.session(id).history(), this.sessionProject(id)]);
+    const repository = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(id));
+    const markdown = renderConversationMarkdown(id, {
+      messages: history, project: project || undefined, repository: repository?.repository
+    });
+    return { environment: "staging", session: id, busy: sessionInfo.busy,
+      ...(sessionInfo.parent ? { parent: sessionInfo.parent } : {}),
+      ...(sessionInfo.title ? { title: sessionInfo.title.slice(0, 160) } : {}),
+      ...(project ? { project } : {}), ...(repository?.repository ? { repository: repository.repository } : {}),
+      transcriptExcerpt: markdown.slice(-12_000), truncated: markdown.length > 12_000 };
+  }
+
+  private async supervisorModel(model: unknown): Promise<{ providerID: string; id: string; selection: ModelSelectionID }> {
+    if (!isModelSelection(model)) throw new Error("Selecciona un modelo del catálogo OpenCode");
+    const resolved = resolveModelSelection(model);
+    if (resolved.providerID === "openrouter") {
+      if (!await this.isOpenRouterConfigured()) throw new Error("OpenRouter no está configurado en Staging");
+      await assertOpenRouterModelSupportsTools(resolved.id);
+    }
+    return { ...resolved, selection: model };
+  }
+
   async remoteSupervisorSelectModel(id: string, model: string): Promise<unknown> {
     this.assertStagingRemote();
-    if (model !== "economy" && model !== "cloudflare") throw new Error("Modelo remoto no autorizado");
+    const selected = await this.supervisorModel(model);
     const task = await this.supervisedRecord(id);
-    if (!task.session || task.status === "cancelled" || task.status === "failed") throw new Error("Sesión no disponible");
+    if (!task.session || ["cancelled", "cancel_requested", "failed"].includes(task.status)) {
+      throw new Error("Sesión no disponible");
+    }
     const handle = this.harness.session(task.session);
     if (await handle.busy()) throw new Error("La operación activa debe concluir antes del cambio");
-    await handle.setModel({ providerID: "cloudflare", id: MODEL_PRESETS[model].id });
-    task.model = model;
+    await handle.setModel({ providerID: selected.providerID, id: selected.id });
+    task.model = selected.selection;
+    task.updatedAt = Date.now();
     await this.ctx.storage.put(supervisorTaskKey(id), task);
     return { environment: "staging", taskId: id, session: task.session,
-      model, providerID: "cloudflare", id: MODEL_PRESETS[model].id };
+      selection: selected.selection, providerID: selected.providerID, id: selected.id };
   }
 
   async remoteSupervisorContinue(raw: unknown): Promise<unknown> {
@@ -192,41 +342,39 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (typeof v.prompt !== "string" || v.prompt.trim().length < 12 || v.prompt.length > 5000)
       throw new Error("Instrucción inválida");
     const task = await this.supervisedRecord(id);
-    if (!task.session || task.status === "cancelled" || task.status === "failed") throw new Error("Tarea no disponible");
+    if (!task.session || ["cancel_requested", "cancelled"].includes(task.status)) throw new Error("Tarea no disponible");
     const key = "supervisor:turn:" + id + ":" + v.turnId;
     const data = new TextEncoder().encode(v.prompt.trim());
     const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", data)),
       b => b.toString(16).padStart(2, "0")).join("");
-    const old = await this.ctx.storage.get<{ hash: string; operationId?: string }>(key);
-    if (old) {
-      if (old.hash !== hash) throw new Error("turnId reutilizado con otra instrucción");
-      return { taskId: id, session: task.session, operationId: old.operationId,
-        status: old.operationId ? "submitted" : "unknown", reused: true };
-    }
-    const handle = this.harness.session(task.session);
-    if (await handle.busy()) throw new Error("Sesión ocupada, consulta su operación anterior");
+    const operationId = supervisorTurnOperationId(id, v.turnId);
     const reserved = await this.ctx.storage.transaction(async tx => {
-      const prior = await tx.get<{ hash: string; operationId?: string }>(key);
+      const prior = await tx.get<{ hash: string; operationId: string }>(key);
       if (prior) return prior;
-      await tx.put(key, { hash });
-      return null;
+      const record = { hash, operationId };
+      await tx.put(key, record);
+      return record;
     });
-    if (reserved) {
-      if (reserved.hash !== hash) throw new Error("turnId ya reservado");
-      return { taskId: id, session: task.session, operationId: reserved.operationId,
-        status: reserved.operationId ? "submitted" : "unknown", reused: true };
-    }
+    if (reserved.hash !== hash) throw new Error("turnId reutilizado con otra instrucción");
+    const handle = this.harness.session(task.session);
     try {
-      const receipt = await handle.submit(v.prompt.trim(), { whenBusy: "followUp" });
-      await this.ctx.storage.put(key, { hash, operationId: receipt.operationId });
-      task.operationId = receipt.operationId;
+      // A steer can correct a running task; OpenCode deduplicates this receipt by operationId.
+      const receipt = await handle.submit(v.prompt.trim(), { operationId, whenBusy: "steer" });
+      task.operationId = operationId;
+      task.status = "running";
+      task.error = undefined;
+      task.updatedAt = Date.now();
       await this.ctx.storage.put(supervisorTaskKey(id), task);
-      return { taskId: id, session: task.session, operationId: receipt.operationId,
-        status: "submitted", reused: false };
+      return { taskId: id, session: task.session, operationId, status: "submitted",
+        accepted: receipt.accepted, reused: !receipt.accepted };
     } catch (error) {
-      // Keep reservation: a timeout may have reached OpenCode before failing.
-      return { taskId: id, session: task.session, status: "unknown", reused: false,
-        error: error instanceof Error ? error.message.slice(0,240) : "No confirmado" };
+      task.operationId = operationId;
+      task.status = "unknown";
+      task.error = error instanceof Error ? error.message.slice(0, 240) : "No confirmado";
+      task.updatedAt = Date.now();
+      await this.ctx.storage.put(supervisorTaskKey(id), task);
+      return { taskId: id, session: task.session, operationId, status: "unknown", reused: true,
+        error: task.error };
     }
   }
 
@@ -235,9 +383,46 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const status = await this.supervisedTaskStatus(id);
     const task = await this.supervisedRecord(id);
     if (!task.session) return { status };
-    const transcript = await this.supervisedTaskTranscript(id);
-    return { status, transcriptExcerpt: transcript.slice(-16_000),
+    const [transcript, progress] = await Promise.all([
+      this.supervisedTaskTranscript(id), this.remoteSupervisorProgress(id, 0)
+    ]);
+    return { status, progress, transcriptExcerpt: transcript.slice(-16_000),
       truncated: transcript.length > 16_000, reviewRequired: true };
+  }
+
+  async remoteSupervisorMcpServers(): Promise<unknown> {
+    this.assertStagingRemote();
+    const host = createDynamicMcpHost(() => this.personalConfig.getRemoteMcps());
+    return { targetWorker: "opencode-g1-staging", servers: await host.listServers() };
+  }
+
+  async remoteSupervisorMcpTools(server: string): Promise<unknown> {
+    this.assertStagingRemote();
+    const host = createDynamicMcpHost(() => this.personalConfig.getRemoteMcps());
+    return { targetWorker: "opencode-g1-staging", server, tools: await host.listTools(server) };
+  }
+
+  async remoteSupervisorMcpCall(input: { server: string; name: string; arguments?: Record<string, unknown> }): Promise<unknown> {
+    this.assertStagingRemote();
+    const host = createDynamicMcpHost(() => this.personalConfig.getRemoteMcps());
+    return { targetWorker: "opencode-g1-staging", server: input.server, tool: input.name,
+      result: await host.callTool(input) };
+  }
+
+  async remoteSupervisorDiagnostics(): Promise<unknown> {
+    this.assertStagingRemote();
+    return { targetWorker: "opencode-g1-staging", status: await this.remoteSupervisorStatus(),
+      incidents: await this.personalConfig.listIncidents() };
+  }
+
+  async remoteSupervisorAgentCheck(model: "cloudflare" | "economy" | "review", kind: "linux" | "repair" | "bun"): Promise<unknown> {
+    this.assertStagingRemote();
+    return this.startAgentCheck(model, kind);
+  }
+
+  async remoteSupervisorAgentCheckStatus(): Promise<unknown> {
+    this.assertStagingRemote();
+    return this.agentCheckStatus();
   }
 
   private async supervisedRecord(id: string): Promise<SupervisorTask> {
@@ -251,10 +436,22 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const job = await this.supervisedRecord(id);
     const base = { id: job.id, repository: job.repository, project: job.project,
       branch: job.branch, baseCommit: job.baseCommit, session: job.session, startedAt: job.createdAt,
-      operationId: job.operationId, model: job.model, error: job.error };
-    if (!job.session || job.status === "cancelled" || job.status === "failed")
-      return { ...base, status: job.status, reviewRequired: true };
+      updatedAt: job.updatedAt, operationId: job.operationId, model: job.model, error: job.error,
+      ...(job.forkedFrom ? { forkedFrom: job.forkedFrom } : {}) };
+    if (!job.session || ["cancelled", "failed", "preparing"].includes(job.status))
+      return { ...base, status: job.status, reviewRequired: true, passed: false, verified: false };
     const handle = this.harness.session(job.session);
+    const waitController = new AbortController();
+    const waitTimer = setTimeout(() => waitController.abort(), 120);
+    let operation: Awaited<ReturnType<typeof handle.wait>> | undefined;
+    let waitError: string | undefined;
+    try {
+      if (job.operationId) operation = await handle.wait(job.operationId, waitController.signal);
+    } catch (error) {
+      if (!waitController.signal.aborted) waitError = error instanceof Error ? error.message.slice(0, 200) : "No se pudo esperar la operación";
+    } finally {
+      clearTimeout(waitTimer);
+    }
     const [busy, history] = await Promise.all([handle.busy(), handle.history()]);
     let toolCalls = 0, completedTools = 0, failedTools = 0;
     for (const message of history) {
@@ -266,24 +463,67 @@ export class OpenCodeAgent extends DurableObject<Env> {
         if (part.state?.status === "error") failedTools++;
       }
     }
-    // A finished session is NOT evidence of accepted changes.
-    const status = busy ? "running" : history.some(x => x.type === "assistant") ? "finished" : "queued";
-    return { ...base, status, toolCalls, completedTools, failedTools, reviewRequired: true,
+    const status = job.operationId
+      ? classifySupervisorOperation(job.status, busy, operation)
+      : busy ? "running" : job.status;
+    if (status !== job.status) {
+      job.status = status;
+      if (operation?.status === "unanswered") job.error = operation.reason?.slice(0, 240);
+      else if (operation?.status === "done") job.error = undefined;
+      job.updatedAt = Date.now();
+      await this.ctx.storage.put(supervisorTaskKey(id), job);
+    }
+    return { ...base, updatedAt: job.updatedAt, status, toolCalls, completedTools, failedTools, reviewRequired: true,
+      operationReason: operation?.reason, operationAnswerAvailable: Boolean(operation?.text), waitError,
       passed: false, verified: false };
+  }
+
+  async remoteSupervisorProgress(id: string, after = 0): Promise<unknown> {
+    this.assertStagingRemote();
+    if (!Number.isSafeInteger(after) || after < 0) throw new Error("Cursor de eventos inválido");
+    const task = await this.supervisedRecord(id);
+    if (!task.session) return { taskId: id, events: [], nextAfter: after, status: task.status };
+    const events: Array<{ seq?: number; type: string }> = [];
+    let nextAfter = after;
+    let truncated = false;
+    for await (const value of this.harness.session(task.session).log({ after, follow: false })) {
+      const event = value as unknown as Record<string, unknown>;
+      const durable = event.durable && typeof event.durable === "object"
+        ? event.durable as Record<string, unknown> : {};
+      const data = event.data && typeof event.data === "object"
+        ? event.data as Record<string, unknown> : {};
+      const eventType = String(event.type ?? data.type ?? "event").slice(0, 100);
+      if (/reasoning/i.test(eventType)) continue;
+      const rawSeq = durable.seq ?? event.seq;
+      const seq = typeof rawSeq === "number" && Number.isSafeInteger(rawSeq) ? rawSeq : undefined;
+      if (seq !== undefined) nextAfter = Math.max(nextAfter, seq);
+      if (events.length >= 100) { truncated = true; break; }
+      events.push({ ...(seq !== undefined ? { seq } : {}), type: eventType });
+    }
+    return { taskId: id, session: task.session, status: task.status, events, nextAfter, truncated };
   }
 
   async cancelSupervisedTask(id: string): Promise<unknown> {
     this.assertStagingRemote();
     const job = await this.supervisedRecord(id);
-    if (job.status === "cancelled" || job.status === "failed")
+    if (["cancelled", "failed", "finished", "unanswered"].includes(job.status))
       return { id, status: job.status };
-    if (job.session) {
-      try { await this.harness.session(job.session).abort(); }
-      catch { /* Always record the cancellation request. */ }
+    if (!job.session || !job.operationId) {
+      job.status = "cancelled";
+      job.updatedAt = Date.now();
+      await this.ctx.storage.put(supervisorTaskKey(id), job);
+      return { id, status: "cancelled", confirmed: true, reason: "no OpenCode operation had started" };
     }
-    job.status = "cancelled";
+    job.status = "cancel_requested";
+    job.updatedAt = Date.now();
     await this.ctx.storage.put(supervisorTaskKey(id), job);
-    return { id, status: "cancelled" };
+    let abortAccepted = false;
+    let abortError: string | undefined;
+    try { abortAccepted = await this.harness.session(job.session).abort(job.operationId); }
+    catch (error) { abortError = error instanceof Error ? error.message.slice(0, 200) : "Abort failed"; }
+    const current = await this.supervisedTaskStatus(id) as { status?: string; operationReason?: string };
+    return { id, status: current.status ?? "cancel_requested", confirmed: current.status === "cancelled",
+      abortAccepted, abortError, operationReason: current.operationReason };
   }
 
   async supervisedTaskTranscript(id: string): Promise<string> {
@@ -771,6 +1011,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
       // Wrap the global fetch so it is called with the correct receiver in Workers.
       return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
         await this.personalConfig.getAllowedRepositories()).execute(input);
+    },
+    ensureSupervisorBranch: async (repo: string, branch: string) => {
+      const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
+        || await this.personalConfig.getGitHubKey();
+      if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
+      return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
+        await this.personalConfig.getAllowedRepositories()).ensureSupervisorBranch(repo, branch);
     }
   };
   async isOpenRouterConfigured(): Promise<boolean> {
@@ -1177,7 +1424,11 @@ export default {
         if (origin && origin !== url.origin) return supervisorResponse({ error: "Origen no permitido" }, 403);
         const host = env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE);
         if (url.pathname === SUPERVISOR_API_PREFIX + "/status" && request.method === "GET") {
-          return supervisorResponse({ status: "ready", capabilities: ["start", "status", "cancel", "review", "transcript"],
+          return supervisorResponse({ status: "ready", environment: "staging", worker: "opencode-g1-staging",
+            schema: "opencode.staging-control.v2", defaultModel: "economy",
+            capabilities: ["start", "status", "continue", "progress", "cancel", "review", "transcript",
+              "models", "repositories", "sessions", "inspect", "select_model", "mcp_discovery", "mcp_call",
+              "incidents", "agent_check"],
             promotion: "external-only", access: "Cloudflare Access + bearer" });
         }
         if (url.pathname === SUPERVISOR_API_PREFIX + "/tasks" && request.method === "POST") {

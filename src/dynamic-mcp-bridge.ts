@@ -227,5 +227,35 @@ Solo aparecen servidores habilitados. toolAllowlist se aplica también aquí. Lo
       }
     }
   };
-  return { description, functions, createState, dispose };
+  const direct = async (name: "servers" | "tools" | "call", input?: unknown) => {
+    const state = await createState();
+    const controller = new AbortController();
+    const deadline = Date.now() + 30_000;
+    const timer = setTimeout(() => controller.abort(new Error("MCP control call timed out")), 30_000);
+    const context = {
+      signal: controller.signal,
+      deadline,
+      access: "read" as const,
+      callId: "remote-control",
+      execution: { id: "remote-control", metadata: {} },
+      resolvePath: async (path: string) => path,
+      state: Promise.resolve(state)
+    } as unknown as DynamicMcpContext;
+    try {
+      const operation = functions[name] as unknown as
+        (args: readonly unknown[], ctx: WorkspaceModuleCallContext) => Promise<unknown>;
+      return await operation(input === undefined ? [] : [input], context);
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+      await dispose(state);
+    }
+  };
+  return {
+    description, functions, createState, dispose,
+    listServers: () => direct("servers"),
+    listTools: (server: string) => direct("tools", { server }),
+    callTool: (input: { server: string; name: string; arguments?: Record<string, unknown> }) =>
+      direct("call", input)
+  };
 }

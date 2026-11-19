@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  classifySupervisorOperation,
   SUPERVISOR_WORKSPACE, assertSupervisorBoundGitHubOperation,
   supervisorBaseCommit, supervisorBearerAllowed, supervisorBranch, supervisorFingerprint,
   supervisorProject, supervisorPrompt, supervisorResponse,
-  supervisorTaskKey, validateSupervisorStart
+  supervisorTaskKey, supervisorStartOperationId, supervisorTurnOperationId, validateSupervisorStart
 } from "./supervisor-control";
 
 const repos = ["aamvtrampa36-del/opencode-harness-example",
@@ -24,6 +25,15 @@ describe("OpenCode remote supervisor — fail closed", () => {
     expect(() => validateSupervisorStart({ ...input, production: true }, repos)).toThrow("desconocidos");
     expect(() => validateSupervisorStart(null, repos)).toThrow();
     expect(() => validateSupervisorStart(input, [])).toThrow("no autorizado");
+  });
+
+  test("accepts only catalog model selections and an exact OpenCode source session", () => {
+    expect(validateSupervisorStart({ ...input, model: "review", sourceSession: "sesAbc123" }, repos))
+      .toMatchObject({ model: "review", sourceSession: "sesAbc123" });
+    expect(() => validateSupervisorStart({ ...input, model: "openrouter:google/gemini-3.8-flash" }, repos))
+      .not.toThrow();
+    expect(() => validateSupervisorStart({ ...input, model: "unregistered/model" }, repos)).toThrow("catálogo");
+    expect(() => validateSupervisorStart({ ...input, sourceSession: "../ses" }, repos)).toThrow("sesión de origen");
   });
 
   test("binds task to exactly one project and review branch", () => {
@@ -76,12 +86,32 @@ describe("OpenCode remote supervisor — fail closed", () => {
     expect(await supervisorFingerprint(input)).toBe(current);
     expect(await supervisorFingerprint({ ...input, repository: repos[1] })).not.toBe(current);
     expect(await supervisorFingerprint({ ...input, prompt: input.prompt + " modificado" })).not.toBe(current);
+    expect(await supervisorFingerprint({ ...input, model: "review" })).not.toBe(current);
+    expect(await supervisorFingerprint({ ...input, sourceSession: "sesAbc123" })).not.toBe(current);
+    expect(supervisorStartOperationId(input.requestId)).toBe("rc-start-" + input.requestId);
+    expect(supervisorTurnOperationId(input.requestId, "b1234567890cdefa"))
+      .toBe("rc-turn-" + input.requestId + "-b1234567890cdefa");
+    expect(() => supervisorTurnOperationId(input.requestId, "bad")).toThrow("turno");
     const p = supervisorPrompt(input, supervisorBranch(input.requestId), supervisorProject(input.requestId),
       "a".repeat(40));
     expect(p).toContain(repos[0]);
     expect(p).toContain("opencode/supervised-");
     expect(p).toContain("PR borrador");
     expect(p).toContain("Prohibido fusionar");
+  });
+
+  test("reports cancellation only after OpenCode confirms interruption", () => {
+    expect(classifySupervisorOperation("cancel_requested", false,
+      { status: "unanswered", reason: "interrupted" })).toBe("cancelled");
+    expect(classifySupervisorOperation("running", false,
+      { status: "unanswered", reason: "interrupted" })).toBe("unanswered");
+    expect(classifySupervisorOperation("cancel_requested", true)).toBe("cancel_requested");
+    expect(classifySupervisorOperation("running", true)).toBe("running");
+    expect(classifySupervisorOperation("running", false, { status: "done" })).toBe("finished");
+    expect(classifySupervisorOperation("running", false,
+      { status: "unanswered", reason: "failed" })).toBe("failed");
+    expect(classifySupervisorOperation("running", false,
+      { status: "unanswered", reason: "not_found" })).toBe("unknown");
   });
 
   test("response has no-cache and privacy headers", () => {

@@ -133,6 +133,50 @@ export class GitHubBridge {
     return body;
   }
 
+  /**
+   * Idempotent branch reservation for the supervisor. The agent-facing branch
+   * action remains non-idempotent; this helper only accepts deterministic
+   * supervisor branch names and never reuses a branch at a different commit.
+   */
+  async ensureSupervisorBranch(repoInput: string, branchInput: string): Promise<{
+    repo: string; branch: string; source: string; sha: string; reused: boolean;
+  }> {
+    const repo = repoChecked(repoInput, this.allowed);
+    const branch = branchChecked(branchInput);
+    if (!/^opencode\/(?:staging|supervised)-[a-f0-9]{16}$/.test(branch)) {
+      throw new Error("Solo se aceptan ramas deterministas del supervisor");
+    }
+    const base = "/repos/" + repo;
+    const info = await this.api("GET", base);
+    const source = reviewedBase(repo, branch, info.default_branch);
+    const from = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(source));
+    const sha = from?.object?.sha;
+    if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) {
+      throw new Error("Source branch commit is unverifiable");
+    }
+    const ref = base + "/git/ref/heads/" + encodeURIComponent(branch);
+    const existing = await this.api("GET", ref, undefined, true);
+    if (existing) {
+      if (existing.object?.sha !== sha) {
+        throw new Error("La rama determinista ya existe con otra base; no se reutilizó");
+      }
+      return { repo, branch, source, sha, reused: true };
+    }
+    try {
+      const created = await this.api("POST", base + "/git/refs", {
+        ref: "refs/heads/" + branch, sha
+      });
+      if (created?.object?.sha !== sha) throw new Error("GitHub creó la rama en un commit inesperado");
+      return { repo, branch, source, sha, reused: false };
+    } catch (error) {
+      // A concurrent retry may have won the create race. Accept only the
+      // exact source commit reserved above; never overwrite or force-update.
+      const raced = await this.api("GET", ref, undefined, true);
+      if (raced?.object?.sha === sha) return { repo, branch, source, sha, reused: true };
+      throw error;
+    }
+  }
+
   async execute(input: GitHubAction): Promise<unknown> {
     const repo = repoChecked(input.repo, this.allowed);
     const base = "/repos/" + repo;

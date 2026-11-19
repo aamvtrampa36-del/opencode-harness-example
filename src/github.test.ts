@@ -98,6 +98,63 @@ describe("GitHub scoped permissions",()=>{
     await expect(api.execute({action:"branch",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:staged})).rejects.toThrow("OpenCode-only");
     expect(calls.every(x=>x.method==="GET")).toBe(true);
   });
+  test("reserves a deterministic supervisor branch idempotently and rejects a different head",async()=>{
+    const sourceSha="c".repeat(40);
+    let branchSha:string|undefined;
+    const requests:Array<{method:string;url:string}> = [];
+    const http=async(url:any,init:any={})=>{
+      const route=String(url).toLowerCase(),method=init.method||"GET";
+      requests.push({method,url:route});
+      if(route.endsWith("/repos/aamvtrampa36-del/opencode-harness-example")) {
+        return Response.json({full_name:"aamvtrampa36-del/opencode-harness-example",default_branch:"main"});
+      }
+      if(route.includes("/git/ref/heads/staging%2fopencode-g1-20261118")) {
+        return Response.json({object:{sha:sourceSha}});
+      }
+      if(route.includes("/git/ref/heads/opencode%2fstaging-a1234567890bcdef")) {
+        return branchSha ? Response.json({object:{sha:branchSha}}) : new Response("{}",{status:404});
+      }
+      if(route.endsWith("/git/refs") && method==="POST") {
+        branchSha=JSON.parse(String(init.body)).sha;
+        return Response.json({object:{sha:branchSha}},{status:201});
+      }
+      return Response.json({message:"Not Found"},{status:404});
+    };
+    const bridge=new GitHubBridge("dummy-test-key",http as typeof fetch);
+    const first=await bridge.ensureSupervisorBranch("aamvtrampa36-del/opencode-harness-example",
+      "opencode/staging-a1234567890bcdef");
+    const second=await bridge.ensureSupervisorBranch("aamvtrampa36-del/opencode-harness-example",
+      "opencode/staging-a1234567890bcdef");
+    expect(first).toMatchObject({source:"staging/opencode-g1-20261118",sha:sourceSha,reused:false});
+    expect(second).toMatchObject({source:"staging/opencode-g1-20261118",sha:sourceSha,reused:true});
+    expect(requests.filter(request=>request.method==="POST")).toHaveLength(1);
+    branchSha="d".repeat(40);
+    await expect(bridge.ensureSupervisorBranch("aamvtrampa36-del/opencode-harness-example",
+      "opencode/staging-a1234567890bcdef")).rejects.toThrow("otra base");
+    await expect(bridge.ensureSupervisorBranch("aamvtrampa36-del/opencode-harness-example",
+      "opencode/staging-a1234567890bcdef0")).rejects.toThrow("deterministas");
+  });
+  test("rejects a GitHub create receipt that points at a different commit", async () => {
+    const sourceSha = "c".repeat(40), createdSha = "d".repeat(40);
+    let branchSha: string | undefined;
+    const http = async (url: any, init: any = {}) => {
+      const route = String(url).toLowerCase(), method = init.method || "GET";
+      if (route.endsWith("/repos/aamvtrampa36-del/opencode-harness-example"))
+        return Response.json({ full_name: "aamvtrampa36-del/opencode-harness-example", default_branch: "main" });
+      if (route.includes("/git/ref/heads/staging%2fopencode-g1-20261118"))
+        return Response.json({ object: { sha: sourceSha } });
+      if (route.includes("/git/ref/heads/opencode%2fstaging-a1234567890bcdef"))
+        return branchSha ? Response.json({ object: { sha: branchSha } }) : new Response("{}", { status: 404 });
+      if (route.endsWith("/git/refs") && method === "POST") {
+        branchSha = createdSha;
+        return Response.json({ object: { sha: createdSha } }, { status: 201 });
+      }
+      return Response.json({ message: "Not Found" }, { status: 404 });
+    };
+    const bridge = new GitHubBridge("dummy-test-key", http as typeof fetch);
+    await expect(bridge.ensureSupervisorBranch("aamvtrampa36-del/opencode-harness-example",
+      "opencode/staging-a1234567890bcdef")).rejects.toThrow("commit inesperado");
+  });
   test("keeps case variants of the OpenCode repository on the Staging base",async()=>{
     calls.length=0;
     const r:any=await api.execute({action:"branch",

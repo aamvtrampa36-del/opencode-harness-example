@@ -117,4 +117,33 @@ describe("Dynamic Worker MCP bridge", () => {
     expect(calls).toBe(32);
     await host.dispose(state);
   });
+
+  test("direct control discovery and call share the existing allowlist and secret boundary", async () => {
+    let calls = 0;
+    let closes = 0;
+    const client = {
+      connect: async () => undefined,
+      close: async () => { closes++; },
+      listTools: async () => ({ tools: [
+        { name: "cdf_status", inputSchema: { type: "object", properties: {} } },
+        { name: "cdf_write", inputSchema: { type: "object", properties: {} } }
+      ] }),
+      callTool: async ({ name }: { name: string }) => {
+        calls++;
+        return { isError: false, content: [{ type: "text", text: `${name} token=${token}` }] };
+      }
+    } as unknown as Pick<Client, "connect" | "close" | "listTools" | "callTool">;
+    const host = createDynamicMcpHost(async () => [endpoint], async () => ({ client }));
+    const servers = await host.listServers();
+    expect(servers).toEqual([{ id: "cdf-workbench", auth: "oauth", restrictedTo: ["cdf_status"] }]);
+    const tools = await host.listTools("cdf-workbench") as { name: string }[];
+    expect(tools.map(item => item.name)).toEqual(["cdf_status"]);
+    await expect(host.callTool({ server: "cdf-workbench", name: "cdf_write", arguments: {} }))
+      .rejects.toThrow("no está en la lista permitida");
+    const result = await host.callTool({ server: "cdf-workbench", name: "cdf_status", arguments: {} });
+    expect(JSON.stringify(result)).toContain("[redacted]");
+    expect(JSON.stringify(result)).not.toContain(token);
+    expect(calls).toBe(1);
+    expect(closes).toBe(2);
+  });
 });

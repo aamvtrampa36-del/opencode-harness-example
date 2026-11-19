@@ -1,47 +1,38 @@
 # OpenCode Staging Control MCP
 
-This repository contains a remote, stateless MCP endpoint and a separate deterministic UI/E2E check for the Cloudflare Worker `opencode-g1-staging`.
+This repository contains a remote MCP endpoint and a separate deterministic Playwright E2E suite for `opencode-g1-staging`. The remote MCP does not need Playwright to run, and Playwright does not require an AI agent to control browser clicks.
 
 ## Fixed scope
 
-- The only service binding is `STAGING_HEALTH -> opencode-g1-staging`.
+- The only Service Binding is `STAGING_HEALTH -> opencode-g1-staging`.
 - The only Durable Object binding is `STAGING_SUPERVISOR -> OpenCodeAgent` in `opencode-g1-staging`.
-- The only supervisor Durable Object name is `opencode-supervisor-v1`.
-- New tasks are fixed to `aamvtrampa36-del/opencode-harness-example`; callers cannot provide a Worker URL, Durable Object name, or repository.
-- The connector has no production binding, production URL, production script name, or production credentials.
-- OpenCode self-development PRs use `staging/opencode-g1-20261118` as their fixed base. Supervised tasks may write only to their own `opencode/staging-<id>` branch; they cannot merge or deploy.
-- The frozen branch starts at `e730f9a13d75e0d6cff7819d486b9c62a6153c06`, the commit recorded by successful Cloudflare Build `a3de4fec-d590-4904-a1be-a6e55b575f99` that deployed Staging version `8135af81-65b1-4445-abb3-5013c58df97b`.
-- Cloudflare Access Managed OAuth protects the exact MCP workers.dev hostname. OAuth sign-in uses the Access application's existing identity policy; compatible MCP clients discover the authorization flow from the unauthenticated `401` challenge. The staging service-token policy remains enabled for CI and other non-interactive clients.
+- New tasks use the fixed `opencode-supervisor-v1` Durable Object by default. An exact UUID workspace and exact OpenCode session ID are required to fork an existing Staging session.
+- The connector has no Production URL or Production Worker binding. Production's supervisor flag is disabled and its Durable Object namespaces are separate.
+- Task work is isolated to a new session, task-specific Container project, pinned GitHub source commit, and review branch. OpenCode Staging self-development branches use `staging/opencode-g1-20261118` as base. A task may prepare a draft PR but cannot merge or deploy.
+- Cloudflare Access OAuth protects the exact MCP workers.dev hostname. GitHub Actions uses the existing Staging Access service-token secrets for non-interactive CI.
 
-The MCP Worker is independent of Playwright. It uses the existing OpenCode supervisor RPC methods and does not create a second agent runtime, Linux container, model connection, or GitHub integration.
+## Endpoint and tool contracts
 
-The managed Linux container starts with Node 24. When a shell command explicitly invokes `bun` or `bunx`, its isolated container installs and verifies the repository-pinned Bun `1.4.4` version on demand. The installation is kept by the existing container snapshot and does not edit repository files.
+The Streamable HTTP endpoint is `https://opencode-staging-control-mcp.cdf-cloud-mvp-20261019.workers.dev/mcp`.
 
-## MCP endpoint and tools
+The MCP exposes status, model/repository/session discovery, sanitized session inspection, configured MCP server/tool discovery and calls, diagnostics, isolated agent checks, OpenRouter checks, task start/status/progress/continue/model selection/cancel/transcript/review. The complete parameters, model inheritance rules, idempotency, recovery steps, diagnostic fallbacks, and rollback procedure are in [OPENCODE_REMOTE_CONTROL_RUNBOOK.md](OPENCODE_REMOTE_CONTROL_RUNBOOK.md).
 
-The endpoint is Streamable HTTP at `https://opencode-staging-control-mcp.cdf-cloud-mvp-20261019.workers.dev/mcp`.
-
-- `staging_status`: read the fixed Staging `/api/health` endpoint.
-- `staging_openrouter_check` / `staging_openrouter_check_status`: start and inspect an explicit OpenRouter (`z-ai/glm-5.3-flash`) plus Bun 1.4.4 and Linux proof check. OpenCode activates its credential plugin when the first prompt is submitted; the diagnostic pins the OpenRouter model, has no Workers AI fallback, and verifies the model, the exact `bun --version` output, a real Linux tool call, and the isolated proof file. It does not edit the supervised repository or GitHub. It consumes model inference and Linux CPU.
-- `staging_start_task`: start an idempotent supervised task with a fixed repository, 16-character lowercase hexadecimal request ID, and bounded prompt. This creates a Staging branch and can consume model/CPU resources.
-- `staging_task_status`: inspect an existing task.
-- `staging_cancel_task`: request cancellation.
-- `staging_review_task`: run the existing GitHub review for the task's locked branch. It does not approve, merge, or promote changes.
-- `staging_task_transcript`: return the latest 20 messages with internal reasoning omitted and recognized credentials redacted.
-
-All task identifiers are validated before the Staging Durable Object is called. MCP output is capped and redacted. The handler only serves `/mcp` and remains disabled unless `MCP_ENABLED=true`.
+The default task model is Cloudflare `economy`. OpenRouter remains optional and is selected only when configured. MCP calls to other enabled servers reuse existing host-held credentials and tool allowlists; tokens are not returned to ChatGPT. An OpenRouter check or agent task can consume inference and Container resources.
 
 ## Reproducible checks
 
 ```sh
 bun install --frozen-lockfile
 bun run typecheck
+bun test
 bun run test:staging:control:unit
 bunx wrangler deploy --dry-run --config wrangler.mcp-staging.jsonc
 ```
 
-`.github/workflows/opencode-staging-control-e2e.yml` runs unit/build validation, UI E2E, and MCP E2E as independent jobs. The UI job runs the existing Playwright mobile suite with all model/task inputs unset. The MCP job installs production dependencies only, verifies Playwright is absent, then connects through an MCP client to enumerate tools, read Staging health, and make a read-only RPC query for a random nonexistent task ID. That final probe verifies the fixed Staging Durable Object binding without creating a task. Each remote job uploads its own evidence artifact. No AI agent drives the browser.
+`.github/workflows/opencode-staging-control-e2e.yml` runs unit/build checks, an isolated mobile Playwright job, and a remote MCP job. The MCP job installs production dependencies only and verifies Playwright is absent. Its default smoke checks Access OAuth discovery, the full MCP tool catalog, fixed Staging identity, model/repository/session/diagnostics/MCP discovery, rejection of invalid workspaces, and rejection of an unknown task. It does not consume model quota.
 
-For an explicit intensive run, dispatch this workflow with `run_openrouter_check=true`. The MCP job then calls the fixed OpenRouter diagnostic, polls its result, and stores evidence for the actual provider preset, Bun 1.4.4 output, Linux tool call, and verified disposable proof file. The default workflow run does not consume model quota.
+Manual workflow dispatch can separately enable real OpenRouter + Bun/Linux inference, isolated red-to-green repair, a delegated engineering task, and client disconnect/reconnect recovery. Results are uploaded as JSON evidence; task transcripts are not uploaded. Required CI secrets are `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET`. The Playwright job uses the fixed Staging origin and runs independently of the agent.
 
-Required GitHub Actions secrets are the existing `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET`, scoped to the Staging Access application. The MCP E2E verifies OAuth discovery without credentials, then uses the service token for read-only health and supervisor checks. Interactive MCP clients use Cloudflare Access OAuth instead of copying service-token values. The visual test only accepts the known Staging origin (or localhost for a local run); the MCP E2E URL is a fixed Staging URL.
+## Operational boundary
+
+`staging_diagnostics` reads the persisted incident ledger. If the MCP is down, use Cloudflare Worker logs and deployment history or GitHub Actions logs as independent paths. Never change the Service Binding or Durable Object namespace to Production. Do not merge or deploy task-created branches as part of MCP E2E.
