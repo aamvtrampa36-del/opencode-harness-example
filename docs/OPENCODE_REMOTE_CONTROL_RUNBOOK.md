@@ -61,12 +61,12 @@ All workspace identifiers are UUIDs for Durable Objects in the Staging namespace
 - Local static and regression checks: `bun run typecheck`, `bun test`, and `bun run test:staging:control:unit`.
 - Remote protocol smoke: `bun run test:staging:control:mcp` with `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` supplied through the protected CI secrets. It checks OAuth discovery, the full tool catalog, Staging identity, model/repository/session/MCP discovery, invalid workspace rejection, and an unknown task negative case. Playwright is not installed in this job.
 - Mobile UI E2E: `bun run test:staging:mobile` runs the deterministic Playwright flow independently of an AI agent and saves a 393x852 screenshot.
-- Manual, cost-gated workflow dispatch can enable the OpenRouter check, isolated repair, delegated engineering task, and client disconnect/reconnect recovery. The MCP job uploads a JSON evidence summary; it does not upload conversation transcripts.
+- Manual, cost-gated workflow dispatch can enable the OpenRouter check, isolated repair, delegated engineering task, and client disconnect/reconnect recovery. A push to the hardening branch with `[remote-control-full-e2e]` in its commit message runs the three Cloudflare economy experiments after deployment. The MCP job uploads a JSON evidence summary; it does not upload conversation transcripts.
 
 The delegated task and recovery experiments use `economy` by default. OpenRouter is optional and its check may consume provider credit. All tasks use isolated Container projects and review branches; no E2E scenario merges or deploys a task-created PR.
 
 ## Deployment and rollback
 
-Build and review both Staging configs before deployment. The MCP Worker config must retain the Service Binding to `opencode-g1-staging` and the Durable Object binding with `script_name: opencode-g1-staging`. The application config is `wrangler.g1.jsonc`; never use Production's `wrangler.jsonc` for this task.
+Build and review both Staging configs before deployment. The application Worker is built through Cloudflare Workers Builds from `wrangler.g1.jsonc`; the MCP Worker has an independent build configuration using `wrangler.mcp-staging.jsonc`. Their build commands run checks before deployment. The MCP Worker config must retain the Service Binding to `opencode-g1-staging` and the Durable Object binding with `script_name: opencode-g1-staging`. Never use Production's `wrangler.jsonc` for this task.
 
 After a Staging-only deploy, check `staging_status`, verify the MCP tool list, and run the non-costly E2E smoke. For rollback, select the last known-good version of `opencode-staging-control-mcp` or `opencode-g1-staging` in Cloudflare Workers Deployments and restore that version. Verify Staging health and the remote-control smoke afterward. Do not roll back or edit `opencode-harness-example` (Production) as part of this runbook.

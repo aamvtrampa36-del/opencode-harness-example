@@ -2,7 +2,7 @@ name: OpenCode Staging remote control and UI E2E
 
 on:
   push:
-    branches: [feat/opencode-staging-mcp-final-20261118, staging/opencode-g1-20261118]
+    branches: [feat/opencode-staging-mcp-final-20261118, feat/remote-control-hardening-20261119, staging/opencode-g1-20261118]
   pull_request:
     branches: [main, staging/opencode-g1-20261118]
   workflow_dispatch:
@@ -124,9 +124,9 @@ jobs:
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           OPENCODE_STAGING_OPENROUTER_CHECK: ${{ inputs.run_openrouter_check }}
-          OPENCODE_STAGING_REPAIR_E2E: ${{ inputs.run_repair_check }}
-          OPENCODE_STAGING_DELEGATION_E2E: ${{ inputs.run_delegation_check }}
-          OPENCODE_STAGING_RECOVERY_E2E: ${{ inputs.run_recovery_check }}
+          OPENCODE_STAGING_REPAIR_E2E: ${{ inputs.run_repair_check == true || (github.event_name == 'push' && contains(github.event.head_commit.message, '[remote-control-full-e2e]')) }}
+          OPENCODE_STAGING_DELEGATION_E2E: ${{ inputs.run_delegation_check == true || (github.event_name == 'push' && contains(github.event.head_commit.message, '[remote-control-full-e2e]')) }}
+          OPENCODE_STAGING_RECOVERY_E2E: ${{ inputs.run_recovery_check == true || (github.event_name == 'push' && contains(github.event.head_commit.message, '[remote-control-full-e2e]')) }}
           RUNNER_TEMP: ${{ runner.temp }}
       - name: Upload MCP evidence
         if: always()
