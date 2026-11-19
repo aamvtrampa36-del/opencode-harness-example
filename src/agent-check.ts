@@ -144,6 +144,23 @@ export function isAgentCheckKind(value: unknown): value is AgentCheckKind {
   return typeof value === "string" && AGENT_CHECK_KINDS.some(kind => kind === value);
 }
 
+export type AgentCheckStorageKeys = { state: string; result: string };
+export const DEFAULT_AGENT_CHECK_STORAGE_KEYS: AgentCheckStorageKeys = {
+  state: "agent-check-v1",
+  result: "agent-check-result-v1"
+};
+export const OPENROUTER_BUN_CHECK_STORAGE_KEYS: AgentCheckStorageKeys = {
+  state: "agent-check-openrouter-bun-v1",
+  result: "agent-check-openrouter-bun-result-v1"
+};
+
+/** Keep the explicitly requested OpenRouter/Bun proof independent from generic checks. */
+export function agentCheckStorageKeys(scope?: "openrouter"): AgentCheckStorageKeys {
+  return scope === "openrouter"
+    ? OPENROUTER_BUN_CHECK_STORAGE_KEYS
+    : DEFAULT_AGENT_CHECK_STORAGE_KEYS;
+}
+
 /** Seed a known failing test before letting the model edit the isolated files. */
 export function repairSeedCommand(): string {
   const script = "const fs=require('node:fs');" +

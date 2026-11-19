@@ -32,7 +32,7 @@ import { assessG8LiveHistory, g8LivePrompt, G8_LIVE_CHECK_VERSION, type G8LiveCh
 import { G9_PROOF_VERSION, G9_REPO, G9_BRANCH, G9_PROJECT, G9_SOURCE, G9_TEST_PATH, G9_BROKEN, G9_FIXED, G9_TEST_SOURCE, assessG9History, g9AgentPrompt, assertG9BoundGitHubOperation, type G9ProofState } from "./g9-selfdev";
 import { assertScopedTool, requireSameScope, scopeStorageKey, validateProjectScope, type ProjectScope, type ScopedToolAction } from "./project-scope";
 import { remoteMcpPlugin } from "./mcp-plugin";
-import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
+import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST, agentCheckStorageKeys, DEFAULT_AGENT_CHECK_STORAGE_KEYS, OPENROUTER_BUN_CHECK_STORAGE_KEYS, type AgentCheckStorageKeys } from "./agent-check";
 import { inlinePreviewAssets } from "./preview-inline";
 import { BUN_RUNTIME_VERSION } from "./dev-runtime";
 import { classifyAgentFailure, observeLinux, type IncidentObservation } from "./incident-diagnostics";
@@ -420,9 +420,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return this.startAgentCheck(model, kind);
   }
 
-  async remoteSupervisorAgentCheckStatus(): Promise<unknown> {
+  async remoteSupervisorAgentCheckStatus(scope?: "openrouter"): Promise<unknown> {
     this.assertStagingRemote();
-    return this.agentCheckStatus();
+    return scope === "openrouter" ? this.openRouterAgentCheckStatus() : this.agentCheckStatus();
   }
 
   private async supervisedRecord(id: string): Promise<SupervisorTask> {
@@ -1032,23 +1032,32 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return { active: true };
   }
   /** Explicit owner-initiated real-model/tool test, never a recurring cron. */
-  async startAgentCheck(model: unknown = "cloudflare", kind: unknown = "repair"): Promise<{ status: string; session?: string; project?: string; model?: string; kind?: string; message?: string }> {
+  async startAgentCheck(model: unknown = "cloudflare", kind: unknown = "repair", scope?: "openrouter"): Promise<{ status: string; session?: string; project?: string; model?: string; kind?: string; providerID?: string; providerModel?: string; message?: string }> {
     if (!isAgentCheckModel(model)) {
       return { status: "rejected", message: "Solo se permiten modelos económicos en la autoprueba." };
     }
     if (!isAgentCheckKind(kind)) {
       return { status: "rejected", message: "Tipo de autoprueba desconocido." };
     }
+    if (scope === "openrouter" && (model !== "review" || kind !== "bun")) {
+      return { status: "rejected", message: "El chequeo OpenRouter requiere el preset review y la prueba Bun." };
+    }
     const preset = MODEL_PRESETS[model];
     if (preset.providerID === "openrouter" && !(await this.isOpenRouterConfigured())) {
       return { status: "rejected", message: "Conecta OpenRouter antes de probar este modelo. No se consumió la cuota." };
     }
+    const storageKeys = agentCheckStorageKeys(scope);
+    const identity = { model, kind, providerID: preset.providerID, providerModel: preset.id };
     const previous = await this.ctx.storage.get<{
-      session: string; project: string; token: string; startedAt: number; model?: string; kind?: string; error?: string
-    }>("agent-check-v1");
-    const outcome = await this.ctx.storage.get("agent-check-result-v1");
+      session: string; project: string; token: string; startedAt: number; model?: string; kind?: string;
+      providerID?: string; providerModel?: string; error?: string
+    }>(storageKeys.state);
+    const outcome = await this.ctx.storage.get(storageKeys.result);
     if (hasUnfinishedAgentCheck(previous, outcome)) {
-      return { status: "existing", session: previous!.session, project: previous!.project, model: previous!.model ?? "cloudflare", kind: previous!.kind ?? "linux" };
+      return { status: "existing", session: previous!.session, project: previous!.project,
+        model: previous!.model ?? "cloudflare", kind: previous!.kind ?? "linux",
+        providerID: previous!.providerID ?? preset.providerID,
+        providerModel: previous!.providerModel ?? preset.id };
     }
     // Staging-only development switch: retries are allowed without a daily counter.
     // Production keeps the existing quota unless its own environment opts in.
@@ -1059,13 +1068,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const token = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
     const project = "agent-check-" + token;
     const created = await this.harness.sessions.create();
-    const state = { session: created.id, project, token, model, kind, startedAt: Date.now() };
+    const state = { session: created.id, project, token, ...identity, startedAt: Date.now() };
     await this.bindSessionScope(created.id, { project });
     // Atomically replace the previous terminal proof only after creating a new session.
     // This keeps completed checks retryable without exposing stale pass results.
     await this.ctx.storage.transaction(async (tx) => {
-      await tx.put("agent-check-v1", state);
-      await tx.delete("agent-check-result-v1");
+      await tx.put(storageKeys.state, state);
+      await tx.delete(storageKeys.result);
     });
     try {
       if (kind === "repair") {
@@ -1106,13 +1115,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
         "Espera el exitCode real de la herramienta y describe la versión de Bun que imprimió. " +
         "No alteres ningún otro proyecto ni uses otras herramientas.";
       await handle.submit(kind === "repair" ? repairPrompt : kind === "bun" ? bunPrompt : prompt, { whenBusy: "followUp" });
-      return { status: "started", session: created.id, project, model, kind };
+      return { status: "started", session: created.id, project, ...identity };
     } catch (error) {
       const failed = {
         ...state, error: error instanceof Error ? error.message.slice(0, 250) : "No se pudo iniciar"
       };
-      await this.ctx.storage.put("agent-check-v1", failed);
-      return { status: "failed", message: failed.error, model, kind };
+      await this.ctx.storage.put(storageKeys.state, failed);
+      return { status: "failed", message: failed.error, ...identity };
     }
   }
 
@@ -1121,15 +1130,26 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
 
   async agentCheckStatus(): Promise<unknown> {
+    return this.agentCheckStatusFor(DEFAULT_AGENT_CHECK_STORAGE_KEYS);
+  }
+
+  async openRouterAgentCheckStatus(): Promise<unknown> {
+    return this.agentCheckStatusFor(OPENROUTER_BUN_CHECK_STORAGE_KEYS);
+  }
+
+  private async agentCheckStatusFor(storageKeys: AgentCheckStorageKeys): Promise<unknown> {
     const saved = await this.ctx.storage.get<{
-      status: string; toolCalls: number; fileVerified: boolean; project: string; model?: string; kind?: string; reason?: string
-    }>("agent-check-result-v1");
+      status: string; toolCalls: number; fileVerified: boolean; project: string; model?: string; kind?: string;
+      providerID?: string; providerModel?: string; reason?: string
+    }>(storageKeys.result);
     if (saved) return saved;
     const state = await this.ctx.storage.get<{
-      session: string; project: string; token: string; startedAt: number; model?: string; kind?: string; error?: string
-    }>("agent-check-v1");
+      session: string; project: string; token: string; startedAt: number; model?: string; kind?: string;
+      providerID?: string; providerModel?: string; error?: string
+    }>(storageKeys.state);
     if (!state) return { status: "not-started" };
-    if (state.error) return { status: "failed", reason: state.error, project: state.project, model: state.model, kind: state.kind };
+    if (state.error) return { status: "failed", reason: state.error, project: state.project,
+      model: state.model, kind: state.kind, providerID: state.providerID, providerModel: state.providerModel };
     const handle = this.harness.session(state.session);
     let running: boolean;
     let history: Awaited<ReturnType<typeof handle.history>>;
@@ -1141,8 +1161,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
         ? "El modelo elegido no está disponible en el registro activo de OpenCode. Prueba otro modelo."
         : "No se pudo recuperar la ejecución del agente; consulta los registros del servicio.";
       const failed = { status: "failed", reason, toolCalls: 0, fileVerified: false,
-        project: state.project, model: state.model, kind: state.kind };
-      await this.ctx.storage.put("agent-check-result-v1", failed);
+        project: state.project, model: state.model, kind: state.kind,
+        providerID: state.providerID, providerModel: state.providerModel };
+      await this.ctx.storage.put(storageKeys.result, failed);
       return failed;
     }
     const evidence = assessAgentToolEvidence(history, state.project, state.token);
@@ -1150,17 +1171,20 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (running) {
       if (Date.now() - state.startedAt < 6 * 60_000) {
         return { status: "running", toolCalls: evidence.requestedTools, project: state.project, model: state.model, kind: state.kind,
+          providerID: state.providerID, providerModel: state.providerModel,
           ...(state.kind === "bun" ? { bunVersion: evidence.bunVersion, runtimeVerified } : {}) };
       }
       try { await handle.abort(); } catch { /* Preserve timeout as a failure. */ }
       const timeout = { status: "failed", reason: "La autoprueba superó seis minutos y se detuvo para evitar consumo indefinido.",
-        toolCalls: evidence.requestedTools, fileVerified: false, project: state.project, model: state.model, kind: state.kind };
-      await this.ctx.storage.put("agent-check-result-v1", timeout);
+        toolCalls: evidence.requestedTools, fileVerified: false, project: state.project, model: state.model, kind: state.kind,
+        providerID: state.providerID, providerModel: state.providerModel };
+      await this.ctx.storage.put(storageKeys.result, timeout);
       return timeout;
     }
     if (!history.some(message => message.type === "assistant") &&
         Date.now() - state.startedAt < 5 * 60_000) {
-      return { status: "queued", toolCalls: 0, project: state.project, model: state.model, kind: state.kind };
+      return { status: "queued", toolCalls: 0, project: state.project, model: state.model, kind: state.kind,
+        providerID: state.providerID, providerModel: state.providerModel };
     }
     const toolSequenceVerified = state.kind === "repair"
       ? evidence.verifiedRepairSequence : evidence.correctLinuxResult;
@@ -1188,6 +1212,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       toolCalls: evidence.requestedTools,
       observedFailingTest: state.kind === "repair" ? evidence.observedFailingTest : undefined,
       fileVerified, project: state.project, model: state.model, kind: state.kind,
+      providerID: state.providerID, providerModel: state.providerModel,
       ...(state.kind === "bun" ? { bunVersion: evidence.bunVersion, runtimeVerified } : {}),
       ...(toolSequenceVerified && fileVerified && runtimeVerified ? {} : {
         reason: !runtimeVerified
@@ -1195,7 +1220,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           : explainAgentCheckFailure(evidence, state.kind === "repair" ? "repair" : "linux")
       })
     };
-    await this.ctx.storage.put("agent-check-result-v1", outcome);
+    await this.ctx.storage.put(storageKeys.result, outcome);
     if (outcome.status === "failed") {
       const code = evidence.requestedTools === 0 ? "MODEL_UNAVAILABLE"
         : evidence.finishedLinuxTools === 0 ? "TOOL_MISSING"

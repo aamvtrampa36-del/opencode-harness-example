@@ -18,6 +18,11 @@ describe("OpenCode staging MCP server", () => {
     let startCount = 0;
     let healthReads = 0;
     let largeDiagnostics = false;
+    let openRouterCheckResult: Record<string, unknown> = {
+      status: "passed", model: "review", kind: "bun", providerID: "openrouter",
+      providerModel: STAGING_OPENROUTER_MODEL, bunVersion: BUN_RUNTIME_VERSION,
+      runtimeVerified: true, toolCalls: 1, fileVerified: true
+    };
     const operations: string[] = [];
     const supervisor: StagingSupervisor = {
       async remoteSupervisorStatus() { return { ready: true, defaultModel: "economy" }; },
@@ -38,9 +43,14 @@ describe("OpenCode staging MCP server", () => {
           : [] };
       },
       async remoteSupervisorAgentCheck(model, kind) { operations.push(`agent-check:${model}:${kind}`); return { status: "started", model, kind }; },
-      async remoteSupervisorAgentCheckStatus() { operations.push("agent-check-status"); return { status: "passed" }; },
-      async startAgentCheck(model, kind) { operations.push(`agent-check:${model}:${kind}`); return { status: "started", model, kind }; },
-      async agentCheckStatus() { operations.push("agent-check-status"); return { status: "passed", model: "review", kind: "bun", bunVersion: BUN_RUNTIME_VERSION, runtimeVerified: true, toolCalls: 1, fileVerified: true }; },
+      async remoteSupervisorAgentCheckStatus(scope) {
+        operations.push(`agent-check-status:${scope ?? "default"}`);
+        return scope === "openrouter" ? openRouterCheckResult : { status: "passed", model: "economy", kind: "repair" };
+      },
+      async startAgentCheck(model, kind, scope) {
+        operations.push(`start-agent-check:${model}:${kind}:${scope ?? "default"}`);
+        return { status: "started", model, kind, providerID: "openrouter", providerModel: STAGING_OPENROUTER_MODEL };
+      },
       async startSupervisedTask(input) {
         started = input;
         startCount++;
@@ -129,7 +139,17 @@ describe("OpenCode staging MCP server", () => {
       expect(JSON.parse(textContent(modelCheckStatus))).toMatchObject({
         status: "passed", expectedProvider: "openrouter", expectedModel: STAGING_OPENROUTER_MODEL,
         expectedBunVersion: BUN_RUNTIME_VERSION, bunVersion: BUN_RUNTIME_VERSION,
-        modelVerified: true, runtimeVerified: true, toolCalls: 1, fileVerified: true, targetWorker: STAGING_WORKER
+        provider: "openrouter", providerID: "openrouter", providerModel: STAGING_OPENROUTER_MODEL,
+        modelVerified: true, runtimeVerified: true, toolProofVerified: true,
+        toolCalls: 1, fileVerified: true, targetWorker: STAGING_WORKER
+      });
+      openRouterCheckResult = { status: "passed", model: "economy", kind: "repair", providerID: "cloudflare" };
+      const staleOpenRouterCheck = JSON.parse(textContent(await client.callTool({
+        name: "staging_openrouter_check_status", arguments: {}
+      })));
+      expect(staleOpenRouterCheck).toMatchObject({
+        status: "failed", modelVerified: false, toolProofVerified: false,
+        provider: "cloudflare", targetWorker: STAGING_WORKER
       });
 
       const start = await client.callTool({
@@ -206,6 +226,9 @@ describe("OpenCode staging MCP server", () => {
       expect(operations).toContain("progress:a1234567890bcdef:0");
       expect(operations).toContain("continue");
       expect(operations).toContain("select:a1234567890bcdef:economy");
+      expect(operations).toContain("agent-check-status:default");
+      expect(operations).toContain("agent-check-status:openrouter");
+      expect(operations).toContain("start-agent-check:review:bun:openrouter");
     } finally {
       await client.close();
       await server.close();
@@ -238,7 +261,6 @@ describe("OpenCode staging MCP server", () => {
       async remoteSupervisorAgentCheck(model, kind) { return { status: "started", model, kind }; },
       async remoteSupervisorAgentCheckStatus() { return { status: "not-started" }; },
       async startAgentCheck(model, kind) { return { status: "started", model, kind }; },
-      async agentCheckStatus() { return { status: "not-started" }; },
       async startSupervisedTask() {
         return { id, status: "running", reused: true, branch: `opencode/staging-${id}` };
       },

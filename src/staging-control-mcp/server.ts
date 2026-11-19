@@ -25,12 +25,11 @@ export interface StagingSupervisor {
   remoteSupervisorMcpCall(input: { server: string; name: string; arguments?: Record<string, unknown> }): Promise<unknown>;
   remoteSupervisorDiagnostics(): Promise<unknown>;
   remoteSupervisorAgentCheck(model: "cloudflare" | "economy" | "review", kind: "linux" | "repair" | "bun"): Promise<unknown>;
-  remoteSupervisorAgentCheckStatus(): Promise<unknown>;
+  remoteSupervisorAgentCheckStatus(scope?: "openrouter"): Promise<unknown>;
   cancelSupervisedTask(id: string): Promise<unknown>;
   supervisedTaskReview(id: string): Promise<unknown>;
   supervisedTaskTranscript(id: string): Promise<string>;
-  startAgentCheck(model: "review", kind: "bun"): Promise<unknown>;
-  agentCheckStatus(): Promise<unknown>;
+  startAgentCheck(model: "review", kind: "bun", scope?: "openrouter"): Promise<unknown>;
 }
 
 export interface StagingControlBindings {
@@ -217,7 +216,7 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
     inputSchema: {}
   }, async () => {
     try {
-      const started = asRecord(await bindings.supervisor().startAgentCheck("review", "bun"));
+      const started = asRecord(await bindings.supervisor().startAgentCheck("review", "bun", "openrouter"));
       return result({
         ...started,
         requestedModel: STAGING_OPENROUTER_MODEL,
@@ -234,15 +233,28 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
     inputSchema: {}
   }, async () => {
     try {
-      const check = asRecord(await bindings.supervisor().agentCheckStatus());
+      const check = asRecord(await bindings.supervisor().remoteSupervisorAgentCheckStatus("openrouter"));
+      const modelVerified = check.model === "review" && check.kind === "bun" &&
+        check.providerID === "openrouter" && check.providerModel === STAGING_OPENROUTER_MODEL;
+      const runtimeVerified = check.kind === "bun" && check.bunVersion === BUN_RUNTIME_VERSION &&
+        check.runtimeVerified === true;
+      const toolProofVerified = check.status === "passed" && modelVerified && runtimeVerified &&
+        check.fileVerified === true && typeof check.toolCalls === "number" && check.toolCalls >= 1;
+      const status = check.status === "passed" && !toolProofVerified ? "failed" : check.status;
+      const reason = check.status === "passed" && !toolProofVerified
+        ? check.reason ?? "La prueba no acreditó el proveedor/modelo OpenRouter, Bun y la ejecución Linux esperados."
+        : check.reason;
       return result({
         ...check,
+        status,
+        ...(reason ? { reason } : {}),
+        provider: check.providerID,
+        modelVerified,
+        toolProofVerified,
         expectedModel: STAGING_OPENROUTER_MODEL,
         expectedProvider: "openrouter",
         expectedBunVersion: BUN_RUNTIME_VERSION,
-        modelVerified: check.model === "review",
-        runtimeVerified: check.status === "passed" && check.kind === "bun" &&
-          check.bunVersion === BUN_RUNTIME_VERSION && check.runtimeVerified === true,
+        runtimeVerified: runtimeVerified && check.status === "passed",
         targetWorker: STAGING_WORKER
       });
     } catch (error) {

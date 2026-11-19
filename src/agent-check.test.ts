@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST } from "./agent-check";
+import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST, agentCheckStorageKeys, DEFAULT_AGENT_CHECK_STORAGE_KEYS, OPENROUTER_BUN_CHECK_STORAGE_KEYS } from "./agent-check";
 import { BUN_RUNTIME_VERSION } from "./dev-runtime";
 
 const project = "agent-check-123";
@@ -73,6 +73,15 @@ describe("Agent verification repeat policy", () => {
     expect(hasUnfinishedAgentCheck({ error: undefined }, { status: "failed" })).toBe(false);
     expect(hasUnfinishedAgentCheck({ error: "Provider unavailable" }, null)).toBe(false);
     expect(hasUnfinishedAgentCheck(null, null)).toBe(false);
+  });
+});
+
+describe("Agent check result isolation", () => {
+  test("the OpenRouter Bun proof has independent durable state", () => {
+    expect(agentCheckStorageKeys("openrouter")).toEqual(OPENROUTER_BUN_CHECK_STORAGE_KEYS);
+    expect(agentCheckStorageKeys()).toEqual(DEFAULT_AGENT_CHECK_STORAGE_KEYS);
+    expect(OPENROUTER_BUN_CHECK_STORAGE_KEYS.state).not.toBe(DEFAULT_AGENT_CHECK_STORAGE_KEYS.state);
+    expect(OPENROUTER_BUN_CHECK_STORAGE_KEYS.result).not.toBe(DEFAULT_AGENT_CHECK_STORAGE_KEYS.result);
   });
 });
 
