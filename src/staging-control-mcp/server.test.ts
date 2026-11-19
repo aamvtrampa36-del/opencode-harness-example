@@ -165,6 +165,60 @@ describe("OpenCode staging MCP server", () => {
       await server.close();
     }
   });
+
+  test("rejects workspace without sourceSession and still starts the fixed exact fork", async () => {
+    const id = "c1234567890defab";
+    const prompt = "Inspecciona el fork exacto de staging";
+    let starts = 0;
+    let started: unknown;
+    const supervisor: StagingSupervisor = {
+      async startAgentCheck(model, kind) { return { status: "started", model, kind }; },
+      async agentCheckStatus() { return { status: "not-started" }; },
+      async startSupervisedTask(input) {
+        starts++;
+        started = input;
+        return { id, status: "running", branch: `opencode/staging-${id}` };
+      },
+      async supervisedTaskStatus(taskId) { return { id: taskId, status: "running" }; },
+      async cancelSupervisedTask(taskId) { return { id: taskId, status: "cancelled" }; },
+      async supervisedTaskReview(taskId) { return { id: taskId, reviewRequired: true, approved: false }; },
+      async supervisedTaskTranscript() { return JSON.stringify({ messages: [] }); }
+    };
+    const server = createStagingControlServer({
+      async readHealth() { return Response.json({ status: "ok" }); },
+      supervisor: () => supervisor
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "staging-control-workspace-guard-test", version: "1.0.0" });
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    try {
+      const rejected = await client.callTool({
+        name: "staging_start_task",
+        arguments: { requestId: id, prompt, workspace: "project-abc" } as never
+      });
+      expect((rejected as { isError?: boolean }).isError).toBe(true);
+      expect(textContent(rejected)).toContain("workspace");
+      expect(starts).toBe(0);
+
+      const accepted = await client.callTool({
+        name: "staging_start_task",
+        arguments: { requestId: id, prompt }
+      });
+      expect(JSON.parse(textContent(accepted))).toMatchObject({
+        targetWorker: STAGING_WORKER,
+        id,
+        status: "running",
+        branch: `opencode/staging-${id}`
+      });
+      expect(started).toEqual({ requestId: id, repository: STAGING_REPOSITORY, prompt });
+      expect(starts).toBe(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
 });
 
 function textContent(value: { content: Array<{ type: string; text?: string }> }): string {
