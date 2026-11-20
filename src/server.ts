@@ -15,6 +15,7 @@ import { Lifecycle } from "agents/lifecycle";
 import { createAI } from "agents/models/opencode";
 import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
+import { collectSupervisorDirectory, supervisorTaskCount } from "./supervisor-directory";
 import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
@@ -217,16 +218,19 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   /** Cross-Worker RPC: only the Staging namespace can call these methods. */
+  /** Remote status must never enumerate all SDK session objects in the shared DO. */
   async remoteSupervisorStatus(): Promise<unknown> {
     this.assertStagingRemote();
-    const sessions = await this.harness.sessions.list();
-    let supervised = 0;
-    for (const item of sessions) {
-      if (await this.ctx.storage.get<string>("supervisor:session:" + item.id)) supervised++;
-    }
+    const index = await this.ctx.storage.list<SupervisorTask>({
+      prefix: "supervisor:task:", limit: 101
+    });
+    const count = supervisorTaskCount(index, 100);
     return {
       environment: "staging", worker: "opencode-g1-staging", ready: true,
-      schema: "opencode.staging-control.v2", supervisedSessions: supervised,
+      schema: "opencode.staging-control.v2",
+      supervisedSessions: count.supervisedSessions,
+      supervisedCountComplete: count.countComplete,
+      ...(count.limited ? { supervisedCountAtLeast: count.supervisedSessions } : {}),
       defaultModel: "economy",
       capabilities: ["status", "models", "repositories", "sessions", "start", "inspect", "continue",
         "select_model", "progress", "cancel", "review", "mcp_discovery", "mcp_call", "incidents", "agent_check"]
@@ -274,18 +278,20 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return { targetWorker: "opencode-g1-staging", repositories: await this.personalConfig.getAllowedRepositories() };
   }
 
+  /**
+   * Consult only indexed supervised tasks, never OpenCodeHarness.sessions.list().
+   * Retains a bounded 100-session response, probes actual busy state in batches
+   * of four, and fails conservatively if any busy probe is inconclusive.
+   * Non-supervised conversations remain reachable through their own interface.
+   */
   async remoteSupervisorSessions(): Promise<unknown> {
     this.assertStagingRemote();
-    const sessions = await this.harness.sessions.list();
-    const result: Array<{ session: string; parent?: string; title?: string; taskId?: string; model?: string; status?: string; busy: boolean }> = [];
-    for (const item of sessions.slice(-100)) {
-      const id = await this.ctx.storage.get<string>("supervisor:session:" + item.id);
-      const task = id ? await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(id)) : undefined;
-      result.push({ session: item.id, ...(item.parent ? { parent: item.parent } : {}),
-        ...(item.title ? { title: item.title.slice(0, 160) } : {}), ...(id ? { taskId: id } : {}),
-        ...(task?.model ? { model: task.model } : {}), ...(task?.status ? { status: task.status } : {}), busy: item.busy });
-    }
-    return { environment: "staging", sessions: result, limited: sessions.length > 100 };
+    const index = await this.ctx.storage.list<SupervisorTask>({
+      prefix: "supervisor:task:", limit: 101
+    });
+    const result = await collectSupervisorDirectory(index,
+      session => this.harness.session(session).busy(), 100, 4);
+    return { environment: "staging", ...result };
   }
 
   async remoteSupervisorInspectSession(id: string): Promise<unknown> {
