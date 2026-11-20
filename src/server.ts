@@ -15,6 +15,7 @@ import { Lifecycle } from "agents/lifecycle";
 import { createAI } from "agents/models/opencode";
 import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
+import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
 import { createDynamicMcpHost } from "./dynamic-mcp-bridge";
@@ -452,16 +453,34 @@ export class OpenCodeAgent extends DurableObject<Env> {
     } finally {
       clearTimeout(waitTimer);
     }
-    const [busy, history] = await Promise.all([handle.busy(), handle.history()]);
-    let toolCalls = 0, completedTools = 0, failedTools = 0;
-    for (const message of history) {
-      if (message.type !== "assistant") continue;
-      for (const part of message.content ?? []) {
-        if (part.type !== "tool") continue;
-        toolCalls++;
-        if (part.state?.status === "completed") completedTools++;
-        if (part.state?.status === "error") failedTools++;
-      }
+    // Never materialize a complete tool transcript in the supervisor's
+    // memory-constrained Durable Object on every status poll. The durable
+    // OpenCode event log is incremental and its cursor survives DO restarts.
+    const busy = await handle.busy();
+    let toolCounts: SupervisorToolCounts | undefined;
+    let toolCountsComplete = false;
+    let toolCountsError: string | undefined;
+    try {
+      const metricsKey = "supervisor:tool-counts-v1:" + id;
+      const saved = await this.ctx.storage.get<SupervisorToolCounts>(metricsKey);
+      if (saved && !validSupervisorToolCounts(saved)) throw new Error("SUPERVISOR_METRICS_INVALID");
+      const prior = saved ?? EMPTY_SUPERVISOR_TOOL_COUNTS;
+      const scan = await foldSupervisorToolLog(handle.log({after: prior.cursor, follow: false}), prior, 256);
+      const committed = await this.ctx.storage.transaction(async tx => {
+        const current = await tx.get<SupervisorToolCounts>(metricsKey);
+        if (current && !validSupervisorToolCounts(current)) throw new Error("SUPERVISOR_METRICS_INVALID");
+        // Parallel readers must never double count the same durable events.
+        if (current && current.cursor > prior.cursor) return current;
+        if (current && current.cursor < prior.cursor) throw new Error("SUPERVISOR_METRICS_CURSOR_REGRESSION");
+        if (scan.metrics.cursor > prior.cursor) await tx.put(metricsKey, scan.metrics);
+        return scan.metrics;
+      });
+      toolCounts = committed;
+      toolCountsComplete = scan.complete && committed.cursor === scan.metrics.cursor;
+    } catch (error) {
+      // A status check must remain useful even if an incremental metrics read
+      // fails. Unknown counts are not zeros and must not yield a false PASS.
+      toolCountsError = error instanceof Error ? error.message.slice(0, 200) : "SUPERVISOR_METRICS_UNAVAILABLE";
     }
     const status = job.operationId
       ? classifySupervisorOperation(job.status, busy, operation)
@@ -473,7 +492,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       job.updatedAt = Date.now();
       await this.ctx.storage.put(supervisorTaskKey(id), job);
     }
-    return { ...base, updatedAt: job.updatedAt, status, toolCalls, completedTools, failedTools, reviewRequired: true,
+    return { ...base, updatedAt: job.updatedAt, status,
+      toolCalls: toolCounts?.toolCalls ?? null,
+      completedTools: toolCounts?.completedTools ?? null,
+      failedTools: toolCounts?.failedTools ?? null,
+      toolCountsComplete, toolCountsError, reviewRequired: true,
       operationReason: operation?.reason, operationAnswerAvailable: Boolean(operation?.text), waitError,
       passed: false, verified: false };
   }
