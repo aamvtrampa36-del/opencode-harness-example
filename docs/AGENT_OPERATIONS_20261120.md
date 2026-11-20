@@ -12,6 +12,8 @@ En la extensión documentada `docs/OPEN_CODE_EXTENSIONS_20261115.md`, `start_sub
 
 ## 2. Ruta de consulta a GitHub (consulta mínima suficiente)
 
+**Descubrimiento dentro de OpenCode:** cuando aún no conozcas el número de PR, utiliza `repo_pr_search({query:"F-27"})` sobre el repositorio inmutable de la sesión y recorre `possibleNextPage` cuando la cobertura lo exija. Esta herramienta devuelve candidatos de un índice autenticado, no estados definitivos; comprueba cada candidato con `repo_pr_info` y sus SHA. Rechaza operadores booleanos y calificadores suministrados por el modelo para no ampliar el alcance. Si no está desplegada o autorizada, indica la ausencia y usa el conector GitHub disponible sin inventar resultados.
+
 1. **Resolver identidad:** repositorio exacto, issue/PR numérico, `base`, `head`, SHA y última observación. Las búsquedas no sustituyen los identificadores.
 2. **Descubrir:** para una incidencia sin número de PR, buscar por repositorio y asunto (`repo:OWNER/REPO is:pr F-27`, por ejemplo), luego comprobar cada candidato. Conservar referencias `repo#number`; no inferir relación solo por nombres.
 3. **Leer metadatos primero:** `get_pr_info` o `gh pr view NUMBER --repo OWNER/REPO --json number,state,isDraft,baseRefName,headRefName,headRefOid,updatedAt,mergeable,statusCheckRollup` según la herramienta autorizada. El nombre de una acción no implica que el check se haya ejecutado.
