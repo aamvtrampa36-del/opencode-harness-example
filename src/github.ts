@@ -16,6 +16,11 @@ export const ALLOWED_REPOS = [
 export type GitHubAction =
   | { action: "repo"; repo: string }
   | { action: "read"; repo: string; path: string; ref?: string }
+  | { action: "pr_info"; repo: string; number: number }
+  | { action: "issue_info"; repo: string; number: number }
+  | { action: "pr_files"; repo: string; number: number; page?: number }
+  | { action: "pr_reviews"; repo: string; number: number; page?: number }
+  | { action: "pr_checks"; repo: string; sha: string }
   | { action: "branch"; repo: string; branch: string }
   | { action: "write"; repo: string; path: string; branch: string; content: string; message?: string }
   | { action: "pr"; repo: string; branch: string; title: string; body?: string }
@@ -59,6 +64,19 @@ function branchChecked(branch: unknown): string {
     throw new Error("Use an opencode/<name> review branch; production branches are read-only");
   }
   return branch;
+}
+/** Reject invalid pagination and object IDs before contacting private GitHub. */
+function positiveNumber(value: unknown, label: string, max = 1_000_000_000): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > max) {
+    throw new Error("Invalid GitHub " + label);
+  }
+  return value;
+}
+function shaChecked(value: unknown): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{40}$/i.test(value)) {
+    throw new Error("Invalid GitHub commit SHA");
+  }
+  return value.toLowerCase();
 }
 function pathChecked(path: unknown): string {
   if (typeof path !== "string" || path.length > 180 || !path ||
@@ -149,6 +167,80 @@ export class GitHubBridge {
         }
         if (file.size > MAX_FILE_BYTES) throw new Error("File is larger than 100KB");
         return { repo, path: input.path, sha: file.sha, ref: input.ref || "default", content: fromBase64(file.content) };
+      }
+      case "pr_info": {
+        const number = positiveNumber(input.number, "PR number");
+        const pr = await this.api("GET", base + "/pulls/" + number);
+        return {
+          repo, number, url: pr.html_url, title: pr.title, state: pr.state,
+          draft: Boolean(pr.draft), merged: Boolean(pr.merged_at),
+          base: pr.base?.ref, baseSha: pr.base?.sha,
+          head: pr.head?.ref, headSha: pr.head?.sha,
+          mergeable: pr.mergeable ?? null,
+          updatedAt: pr.updated_at
+        };
+      }
+      case "issue_info": {
+        const number = positiveNumber(input.number, "issue number");
+        const issue = await this.api("GET", base + "/issues/" + number);
+        return {
+          repo, number, url: issue.html_url, title: issue.title,
+          state: issue.state, stateReason: issue.state_reason ?? null,
+          isPullRequest: Boolean(issue.pull_request),
+          updatedAt: issue.updated_at, comments: issue.comments ?? 0
+        };
+      }
+      case "pr_files": {
+        const number = positiveNumber(input.number, "PR number");
+        const page = input.page === undefined ? 1 : positiveNumber(input.page, "page", 100);
+        const files = await this.api("GET", base + "/pulls/" + number +
+          "/files?per_page=100&page=" + page);
+        if (!Array.isArray(files)) throw new Error("Invalid GitHub PR files response");
+        return {
+          repo, number, page,
+          files: files.map((f: any) => ({
+            path: f.filename, status: f.status,
+            additions: f.additions, deletions: f.deletions,
+            sha: f.sha
+          })),
+          possibleNextPage: files.length === 100 ? page + 1 : null
+        };
+      }
+      case "pr_reviews": {
+        const number = positiveNumber(input.number, "PR number");
+        const page = input.page === undefined ? 1 : positiveNumber(input.page, "page", 100);
+        const reviews = await this.api("GET", base + "/pulls/" + number +
+          "/reviews?per_page=100&page=" + page);
+        if (!Array.isArray(reviews)) throw new Error("Invalid GitHub PR reviews response");
+        return {
+          repo, number, page,
+          reviews: reviews.map((r: any) => ({
+            id: r.id, state: r.state, author: r.user?.login,
+            commitSha: r.commit_id, submittedAt: r.submitted_at
+          })),
+          possibleNextPage: reviews.length === 100 ? page + 1 : null
+        };
+      }
+      case "pr_checks": {
+        const sha = shaChecked(input.sha);
+        const [checks, status] = await Promise.all([
+          this.api("GET", base + "/commits/" + sha + "/check-runs?per_page=100"),
+          this.api("GET", base + "/commits/" + sha + "/status")
+        ]);
+        if (!Array.isArray(checks?.check_runs) || !Array.isArray(status?.statuses)) {
+          throw new Error("Invalid GitHub checks response");
+        }
+        return {
+          repo, sha, combinedStatus: status.state,
+          checkRuns: checks.check_runs.map((r: any) => ({
+            name: r.name, status: r.status, conclusion: r.conclusion,
+            detailsUrl: r.html_url, completedAt: r.completed_at
+          })),
+          statuses: status.statuses.map((r: any) => ({
+            context: r.context, state: r.state, targetUrl: r.target_url
+          })),
+          checksMayBeTruncated: checks.total_count > checks.check_runs.length
+        };
       }
       case "branch": {
         const branch = branchChecked(input.branch);
