@@ -4,7 +4,7 @@
  * Linux, GitHub and workspace tools to avoid gaps between implementations.
  */
 const READ_ONLY_TOOLS = new Set(["read", "glob", "grep", "ls", "find", "stat"]);
-const READ_ONLY_GITHUB_ACTIONS = new Set(["repo", "read", "review"]);
+const READ_ONLY_GITHUB_ACTIONS = new Set(["repo", "read", "review", "pr_info", "issue_info", "pr_files", "pr_reviews", "pr_checks"]);
 
 export function assertAgentToolPermission(
   agent: string,
