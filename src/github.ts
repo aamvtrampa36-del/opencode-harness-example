@@ -144,7 +144,20 @@ export class GitHubBridge {
     const body = await response.json() as any;
     if (!response.ok) {
       const message = typeof body?.message === "string" ? body.message.slice(0, 250) : "API request failed";
-      throw new Error("GitHub API " + response.status + ": " + message);
+      // Stable distinctions for the agent. 404 on a private repository may
+      // mean hidden-by-GitHub access denial, not that the PR is absent.
+      const kind = response.status === 401 ? "GITHUB_AUTH_REQUIRED"
+        : response.status === 403 ? "GITHUB_PERMISSION_OR_RATE_LIMIT"
+        : response.status === 404 ? "GITHUB_NOT_ACCESSIBLE"
+        : response.status === 429 || response.status >= 500 ? "GITHUB_TRANSIENT"
+        : "GITHUB_API_ERROR";
+      // Respect Retry-After only as a hint for a future read-only retry.
+      // No implicit retry: an in-flight write might already be committed.
+      const retryHeader = response.headers.get("retry-after");
+      const retrySeconds = retryHeader && /^\d{1,5}$/.test(retryHeader)
+        ? Math.min(Number(retryHeader), 3600) : null;
+      throw new Error("GitHub API " + response.status + " [" + kind + "]: " + message +
+        (retrySeconds === null ? "" : " (retry-after " + retrySeconds + "s)"));
     }
     return body;
   }
