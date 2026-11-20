@@ -15,6 +15,10 @@ const fake = (async (url: any, init: any = {}) => {
     body={object:{sha:"7d1669cba0f3c8ee08626425aaf551c8d5bd4bf7"}};
   } else if (route.endsWith("/git/ref/heads/main")) {
     body={object:{sha:"a".repeat(40)}};
+  } else if (lowerRoute.includes("/git/ref/heads/opencode%2f")) {
+    body={object:{sha:"b".repeat(40)}};
+  } else if (route.includes("/pulls?state=open&base=")) {
+    body=[];
   } else if (route.endsWith("/git/refs")) {
     status=201;
     const create = JSON.parse(String(init.body));
