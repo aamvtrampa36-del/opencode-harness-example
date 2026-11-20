@@ -15,6 +15,7 @@ import { Lifecycle } from "agents/lifecycle";
 import { createAI } from "agents/models/opencode";
 import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
+import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
 import { tokenEconomizerAdapter } from "./token-economizer-adapter";
@@ -135,20 +136,38 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (!job.session || job.status === "cancelled" || job.status === "failed")
       return { ...base, status: job.status, reviewRequired: true };
     const handle = this.harness.session(job.session);
-    const [busy, history] = await Promise.all([handle.busy(), handle.history()]);
-    let toolCalls = 0, completedTools = 0, failedTools = 0;
-    for (const message of history) {
-      if (message.type !== "assistant") continue;
-      for (const part of message.content ?? []) {
-        if (part.type !== "tool") continue;
-        toolCalls++;
-        if (part.state?.status === "completed") completedTools++;
-        if (part.state?.status === "error") failedTools++;
-      }
+    // Staging-tested memory fix: status reads the durable event log in
+    // bounded pages instead of materializing the complete conversation.
+    const busy = await handle.busy();
+    let toolCounts: SupervisorToolCounts | undefined;
+    let toolCountsComplete = false;
+    let toolCountsError: string | undefined;
+    try {
+      const metricsKey = "supervisor:tool-counts-v1:" + id;
+      const saved = await this.ctx.storage.get<SupervisorToolCounts>(metricsKey);
+      if (saved && !validSupervisorToolCounts(saved)) throw new Error("SUPERVISOR_METRICS_INVALID");
+      const prior = saved ?? EMPTY_SUPERVISOR_TOOL_COUNTS;
+      const scan = await foldSupervisorToolLog(handle.log({after: prior.cursor, follow: false}), prior, 256);
+      const committed = await this.ctx.storage.transaction(async tx => {
+        const current = await tx.get<SupervisorToolCounts>(metricsKey);
+        if (current && !validSupervisorToolCounts(current)) throw new Error("SUPERVISOR_METRICS_INVALID");
+        if (current && current.cursor > prior.cursor) return current;
+        if (current && current.cursor < prior.cursor) throw new Error("SUPERVISOR_METRICS_CURSOR_REGRESSION");
+        if (scan.metrics.cursor > prior.cursor) await tx.put(metricsKey, scan.metrics);
+        return scan.metrics;
+      });
+      toolCounts = committed;
+      toolCountsComplete = scan.complete && committed.cursor === scan.metrics.cursor;
+    } catch (error) {
+      toolCountsError = error instanceof Error ? error.message.slice(0, 200) : "SUPERVISOR_METRICS_UNAVAILABLE";
     }
     // A finished session is NOT evidence of accepted changes.
-    const status = busy ? "running" : history.some(x => x.type === "assistant") ? "finished" : "queued";
-    return { ...base, status, toolCalls, completedTools, failedTools, reviewRequired: true,
+    const status = busy ? "running" : job.status === "preparing" ? "queued" : "finished";
+    return { ...base, status,
+      toolCalls: toolCounts?.toolCalls ?? null,
+      completedTools: toolCounts?.completedTools ?? null,
+      failedTools: toolCounts?.failedTools ?? null,
+      toolCountsComplete, toolCountsError, reviewRequired: true,
       passed: false, verified: false };
   }
 
