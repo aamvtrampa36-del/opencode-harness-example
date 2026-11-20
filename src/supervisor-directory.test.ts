@@ -36,7 +36,7 @@ describe("bounded supervisor session directory (no SDK full session listing)",()
  test("never mistakes index size for exact total when a sentinel exists",()=>{
    expect(supervisorTaskCount(map([task("a".repeat(16)),task("b".repeat(16))]),100))
      .toEqual({supervisedSessions:2,countComplete:true,limited:false});
-   expect(supervisorTaskCount(map(Array.from({length:101},(_,i)=>task(i.toString(16).padStart(16,"0"))),100))
+   expect(supervisorTaskCount(map(Array.from({length:101},(_,i)=>task(i.toString(16).padStart(16,"0")))),100))
      .toEqual({supervisedSessions:100,countComplete:false,limited:true});
  });
  test("malformed storage entries fail closed rather than hiding a busy session",async()=>{
