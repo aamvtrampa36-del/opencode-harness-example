@@ -16,6 +16,11 @@ export const ALLOWED_REPOS = [
 export type GitHubAction =
   | { action: "repo"; repo: string }
   | { action: "read"; repo: string; path: string; ref?: string }
+  | { action: "pr_info"; repo: string; number: number }
+  | { action: "issue_info"; repo: string; number: number }
+  | { action: "pr_files"; repo: string; number: number; page?: number }
+  | { action: "pr_reviews"; repo: string; number: number; page?: number }
+  | { action: "pr_checks"; repo: string; sha: string }
   | { action: "branch"; repo: string; branch: string }
   | { action: "write"; repo: string; path: string; branch: string; content: string; message?: string }
   | { action: "pr"; repo: string; branch: string; title: string; body?: string }
@@ -61,6 +66,19 @@ function branchChecked(branch: unknown): string {
     throw new Error("Use an opencode/<name> review branch; production branches are read-only");
   }
   return branch;
+}
+/** Reject invalid pagination and object IDs before contacting private GitHub. */
+function positiveNumber(value: unknown, label: string, max = 1_000_000_000): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > max) {
+    throw new Error("Invalid GitHub " + label);
+  }
+  return value;
+}
+function shaChecked(value: unknown): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{40}$/i.test(value)) {
+    throw new Error("Invalid GitHub commit SHA");
+  }
+  return value.toLowerCase();
 }
 function pathChecked(path: unknown): string {
   if (typeof path !== "string" || path.length > 180 || !path ||
@@ -128,7 +146,20 @@ export class GitHubBridge {
     const body = await response.json() as any;
     if (!response.ok) {
       const message = typeof body?.message === "string" ? body.message.slice(0, 250) : "API request failed";
-      throw new Error("GitHub API " + response.status + ": " + message);
+      // Stable distinctions for the agent. 404 on a private repository may
+      // mean hidden-by-GitHub access denial, not that the PR is absent.
+      const kind = response.status === 401 ? "GITHUB_AUTH_REQUIRED"
+        : response.status === 403 ? "GITHUB_PERMISSION_OR_RATE_LIMIT"
+        : response.status === 404 ? "GITHUB_NOT_ACCESSIBLE"
+        : response.status === 429 || response.status >= 500 ? "GITHUB_TRANSIENT"
+        : "GITHUB_API_ERROR";
+      // Respect Retry-After only as a hint for a future read-only retry.
+      // No implicit retry: an in-flight write might already be committed.
+      const retryHeader = response.headers.get("retry-after");
+      const retrySeconds = retryHeader && /^\d{1,5}$/.test(retryHeader)
+        ? Math.min(Number(retryHeader), 3600) : null;
+      throw new Error("GitHub API " + response.status + " [" + kind + "]: " + message +
+        (retrySeconds === null ? "" : " (retry-after " + retrySeconds + "s)"));
     }
     return body;
   }
@@ -196,6 +227,104 @@ export class GitHubBridge {
         if (file.size > MAX_FILE_BYTES) throw new Error("File is larger than 100KB");
         return { repo, path: input.path, sha: file.sha, ref: input.ref || "default", content: fromBase64(file.content) };
       }
+      case "pr_info": {
+        const number = positiveNumber(input.number, "PR number");
+        const pr = await this.api("GET", base + "/pulls/" + number);
+        return {
+          repo, number, url: pr.html_url, title: pr.title, state: pr.state,
+          draft: Boolean(pr.draft), merged: Boolean(pr.merged_at),
+          base: pr.base?.ref, baseSha: pr.base?.sha,
+          head: pr.head?.ref, headSha: pr.head?.sha,
+          mergeable: pr.mergeable ?? null,
+          updatedAt: pr.updated_at
+        };
+      }
+      case "issue_info": {
+        const number = positiveNumber(input.number, "issue number");
+        const issue = await this.api("GET", base + "/issues/" + number);
+        return {
+          repo, number, url: issue.html_url, title: issue.title,
+          state: issue.state, stateReason: issue.state_reason ?? null,
+          isPullRequest: Boolean(issue.pull_request),
+          updatedAt: issue.updated_at, comments: issue.comments ?? 0
+        };
+      }
+      case "pr_files": {
+        const number = positiveNumber(input.number, "PR number");
+        const page = input.page === undefined ? 1 : positiveNumber(input.page, "page", 100);
+        const files = await this.api("GET", base + "/pulls/" + number +
+          "/files?per_page=100&page=" + page);
+        if (!Array.isArray(files)) throw new Error("Invalid GitHub PR files response");
+        return {
+          repo, number, page,
+          files: files.map((f: any) => ({
+            path: f.filename, status: f.status,
+            additions: f.additions, deletions: f.deletions,
+            sha: f.sha
+          })),
+          possibleNextPage: files.length === 100 ? page + 1 : null
+        };
+      }
+      case "pr_reviews": {
+        const number = positiveNumber(input.number, "PR number");
+        const page = input.page === undefined ? 1 : positiveNumber(input.page, "page", 100);
+        const reviews = await this.api("GET", base + "/pulls/" + number +
+          "/reviews?per_page=100&page=" + page);
+        if (!Array.isArray(reviews)) throw new Error("Invalid GitHub PR reviews response");
+        return {
+          repo, number, page,
+          reviews: reviews.map((r: any) => ({
+            id: r.id, state: r.state, author: r.user?.login,
+            commitSha: r.commit_id, submittedAt: r.submitted_at
+          })),
+          possibleNextPage: reviews.length === 100 ? page + 1 : null
+        };
+      }
+      case "pr_checks": {
+        const sha = shaChecked(input.sha);
+        // Fine-grained GitHub tokens often grant commit statuses but not Checks.
+        // Keep the two independent evidence sources separate instead of
+        // failing the entire read because one optional source returned 403.
+        const [checksResult, statusResult] = await Promise.allSettled([
+          this.api("GET", base + "/commits/" + sha + "/check-runs?per_page=100"),
+          this.api("GET", base + "/commits/" + sha + "/status")
+        ]);
+        if (checksResult.status === "rejected" && statusResult.status === "rejected") {
+          throw statusResult.reason;
+        }
+        const checks = checksResult.status === "fulfilled" ? checksResult.value : null;
+        const status = statusResult.status === "fulfilled" ? statusResult.value : null;
+        if (checks !== null && !Array.isArray(checks?.check_runs)) {
+          throw new Error("Invalid GitHub check-runs response");
+        }
+        if (status !== null && !Array.isArray(status?.statuses)) {
+          throw new Error("Invalid GitHub commit-status response");
+        }
+        const reasonClass = (reason: unknown): string => {
+          const message = reason instanceof Error ? reason.message : String(reason);
+          return /\[(GITHUB_[A-Z_]+)\]/.exec(message)?.[1] ?? "GITHUB_READ_FAILED";
+        };
+        return {
+          repo, sha, combinedStatus: status?.state ?? null,
+          checkRuns: (checks?.check_runs ?? []).map((r: any) => ({
+            name: r.name, status: r.status, conclusion: r.conclusion,
+            detailsUrl: r.html_url, completedAt: r.completed_at
+          })),
+          statuses: (status?.statuses ?? []).map((r: any) => ({
+            context: r.context, state: r.state, targetUrl: r.target_url
+          })),
+          checksMayBeTruncated: checks === null ? null : checks.total_count > checks.check_runs.length,
+          partial: checks === null || status === null,
+          sources: {
+            checkRuns: checks === null
+              ? { available: false, errorClass: reasonClass((checksResult as PromiseRejectedResult).reason) }
+              : { available: true },
+            commitStatuses: status === null
+              ? { available: false, errorClass: reasonClass((statusResult as PromiseRejectedResult).reason) }
+              : { available: true }
+          }
+        };
+      }
       case "branch": {
         const branch = branchChecked(input.branch);
         const info = await this.api("GET", base);
@@ -215,6 +344,15 @@ export class GitHubBridge {
         assertNonCanonicalWrite(repo, input.path);
         if (typeof input.content !== "string") throw new Error("File content must be plain text");
         const current = await this.api("GET", base + "/contents/" + safePath + "?ref=" + encodeURIComponent(branch), undefined, true);
+        // An interrupted PUT can commit remotely even when its response is lost.
+        // Reconcile the exact content before retrying to avoid duplicate commits.
+        // This never bypasses the branch, repository or protected-path checks.
+        if (current?.type === "file" && current.encoding === "base64" &&
+            typeof current.content === "string" && current.size <= MAX_FILE_BYTES &&
+            fromBase64(current.content) === input.content) {
+          return { repo, branch, path: input.path, commitSha: null,
+            fileSha: current.sha, unchanged: true, reconciled: true };
+        }
         const result = await this.api("PUT", base + "/contents/" + safePath, {
           message: (input.message || "chore: update from OpenCode").slice(0, 150),
           content: toBase64(input.content),
