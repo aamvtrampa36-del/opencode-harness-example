@@ -431,6 +431,74 @@ export class GitHubBridge {
         }
         const info = await this.api("GET", base);
         const source = reviewedBase(repo, branch, info.default_branch);
+        // Automatic fail-closed preflight at the *actual agent PR creation*
+        // boundary, not merely advisory instructions in AGENTS.md. GitHub's
+        // native branch rules remain responsible for enforcing external merges.
+        const getHead = async (ref: string): Promise<string> => {
+          const raw = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(ref));
+          const sha = raw?.object?.sha;
+          if (typeof sha !== "string" || !/^[a-f0-9]{40}$/i.test(sha))
+            throw new Error("PR_PREFLIGHT_INCOMPLETE: unverifiable branch SHA");
+          return sha.toLowerCase();
+        };
+        const [baseSha, headSha] = await Promise.all([getHead(source), getHead(branch)]);
+        const comparison = await this.api("GET", base + "/compare/" +
+          encodeURIComponent(source) + "..." + encodeURIComponent(branch));
+        if (!Array.isArray(comparison?.files) || comparison.files.length === 0 ||
+            comparison.files.length >= 300 ||
+            !Number.isSafeInteger(comparison.total_commits) ||
+            comparison.total_commits > 250 ||
+            !Number.isSafeInteger(comparison.ahead_by) || comparison.ahead_by < 1) {
+          throw new Error("PR_PREFLIGHT_INCOMPLETE: base comparison missing or truncated");
+        }
+        const pathsOf = (items: any[]): Set<string> => {
+          const paths = new Set<string>();
+          for (const file of items) {
+            if (!file || typeof file.filename !== "string" || !file.filename.trim())
+              throw new Error("PR_PREFLIGHT_INCOMPLETE: malformed changed filename");
+            paths.add(file.filename);
+            if (file.status === "renamed") {
+              if (typeof file.previous_filename !== "string" || !file.previous_filename.trim())
+                throw new Error("PR_PREFLIGHT_INCOMPLETE: renamed file missing prior path");
+              paths.add(file.previous_filename);
+            }
+          }
+          return paths;
+        };
+        const ourPaths = pathsOf(comparison.files);
+        const existing = await this.api("GET", base + "/pulls?state=open&base=" +
+          encodeURIComponent(source) + "&per_page=100&page=1");
+        if (!Array.isArray(existing) || existing.length >= 100)
+          throw new Error("PR_PREFLIGHT_INCOMPLETE: open PR list missing or truncated");
+        for (const item of existing) {
+          if (!Number.isSafeInteger(item?.number) || item.number < 1 ||
+              item?.base?.ref !== source || typeof item?.head?.ref !== "string")
+            throw new Error("PR_PREFLIGHT_INCOMPLETE: untrusted PR identity");
+          if (item.head.ref === branch)
+            throw new Error("PR_ALREADY_OPEN: retrieve the existing PR instead of duplicating");
+        }
+        // Only a bounded batch of GitHub diffs enters memory at any time.
+        for (let index = 0; index < existing.length; index += 5) {
+          const batch = existing.slice(index, index + 5);
+          const inspected = await Promise.all(batch.map(async (item: any) => {
+            const files = await this.api("GET", base + "/pulls/" + item.number +
+              "/files?per_page=100&page=1");
+            if (!Array.isArray(files) || files.length >= 100)
+              throw new Error("PR_PREFLIGHT_INCOMPLETE: competitor changed files truncated");
+            const competitors = pathsOf(files);
+            return { number: item.number,
+              collision: [...ourPaths].filter(path => competitors.has(path)).sort() };
+          }));
+          const conflict = inspected.find(item => item.collision.length);
+          if (conflict) {
+            throw new Error("PR_WRITE_SCOPE_CONFLICT: PR #" + conflict.number +
+              " overlaps " + conflict.collision.slice(0, 5).join(", ").slice(0, 330));
+          }
+        }
+        // A concurrent push changing either tip invalidates this review.
+        const [baseShaNow, headShaNow] = await Promise.all([getHead(source), getHead(branch)]);
+        if (baseShaNow !== baseSha || headShaNow !== headSha)
+          throw new Error("PR_PREFLIGHT_STALE: branch moved during collision preflight");
         const created = await this.api("POST", base + "/pulls", {
           title: input.title, body: (input.body || "").slice(0, 5000),
           head: branch, base: source, draft: true
