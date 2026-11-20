@@ -16,6 +16,7 @@ export const ALLOWED_REPOS = [
 export type GitHubAction =
   | { action: "repo"; repo: string }
   | { action: "read"; repo: string; path: string; ref?: string }
+  | { action: "pr_search"; repo: string; query: string; page?: number }
   | { action: "pr_info"; repo: string; number: number }
   | { action: "issue_info"; repo: string; number: number }
   | { action: "pr_files"; repo: string; number: number; page?: number }
@@ -180,6 +181,44 @@ export class GitHubBridge {
         }
         if (file.size > MAX_FILE_BYTES) throw new Error("File is larger than 100KB");
         return { repo, path: input.path, sha: file.sha, ref: input.ref || "default", content: fromBase64(file.content) };
+      }
+      case "pr_search": {
+        if (typeof input.query !== "string") throw new Error("Invalid PR discovery query");
+        const query = input.query.trim().replace(/\s+/g, " ");
+        if (query.length < 2 || query.length > 100 ||
+            !/^[\p{L}\p{N} _./#-]+$/u.test(query) ||
+            /(?:^|\s)(?:OR|AND|NOT)(?:\s|$)/i.test(query)) {
+          throw new Error("Invalid PR discovery query");
+        }
+        const page = input.page === undefined ? 1 : positiveNumber(input.page, "page", 10);
+        const limit = 20;
+        // Always scope on the server; never trust a model-provided repository.
+        const scoped = "repo:" + repo + " is:pr " + query;
+        const results = await this.api("GET", "/search/issues?q=" +
+          encodeURIComponent(scoped) + "&per_page=" + limit + "&page=" + page);
+        if (!Array.isArray(results?.items) ||
+            !Number.isSafeInteger(results.total_count) || results.total_count < 0) {
+          throw new Error("Invalid GitHub search response");
+        }
+        const expected = "/repos/" + repo.toLowerCase();
+        const matches = results.items.map((item: any) => {
+          if (typeof item?.repository_url !== "string") {
+            throw new Error("GitHub PR search missing repository provenance");
+          }
+          const source = new URL(item.repository_url);
+          if (source.hostname !== "api.github.com" ||
+              source.pathname.toLowerCase() !== expected ||
+              !Number.isSafeInteger(item.number) || !item.pull_request) {
+            throw new Error("GitHub PR search returned out-of-scope result");
+          }
+          return {number: item.number, title: item.title, url: item.html_url,
+            state: item.state, updatedAt: item.updated_at};
+        });
+        return {repo, query, page, matches, totalCount: results.total_count,
+          incomplete: Boolean(results.incomplete_results),
+          possibleNextPage: page < 10 && page * limit < results.total_count &&
+            matches.length === limit ? page + 1 : null,
+          source: "SEARCH_INDEX_VERIFY_WITH_PR_INFO"};
       }
       case "pr_info": {
         const number = positiveNumber(input.number, "PR number");
