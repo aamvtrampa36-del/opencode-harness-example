@@ -39,3 +39,7 @@ Este repositorio ejecuta un **OpenCode Workerd embebido y experimental**, no la 
 ## Informe de cada intervención
 
 Explica qué observaste, qué cambiaste, cuáles verificaciones ejecutaste realmente y qué quedó sin demostrar. La reducción de complejidad debe conservar capacidades y recuperación; no basta con contar menos archivos.
+
+## Guía operativa multiagente (referencia bajo demanda)
+
+Para descubrir PR, verificar HEAD/CI, coordinar ramas, transferir tareas o comparar métodos MCP modernos, leer [docs/AGENT_OPERATIONS_20261120.md](docs/AGENT_OPERATIONS_20261120.md) **solo si la tarea lo requiere**. Un handoff JSON puede validarse estructuralmente con `node scripts/validate-agent-handoff.mjs archivo.json`; esto no verifica pruebas remotas ni concede permisos.
