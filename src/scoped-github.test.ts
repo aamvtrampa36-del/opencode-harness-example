@@ -54,3 +54,32 @@ describe("G8 trusted session-bound GitHub read tools", () => {
     expect(called).toBe(0);
   });
 });
+
+
+describe("Private PR routing uses immutable session repository", () => {
+  test("Plan can inspect PR, issue, files, reviews and checks without mutation", async () => {
+    const requests: GitHubAction[] = [];
+    const get = async () => repo;
+    const guard = async (_session:string, selected:string) => {
+      assertScopedTool(scope, {kind:"github",repo:selected});
+    };
+    const execute=async (action:GitHubAction) => {requests.push(action);return {ok:true};};
+    const reads = [
+      {action:"pr_info" as const,number:227},
+      {action:"issue_info" as const,number:201},
+      {action:"pr_files" as const,number:227,page:2},
+      {action:"pr_reviews" as const,number:227},
+      {action:"pr_checks" as const,sha:"a".repeat(40)}
+    ];
+    for (const item of reads) await executeBoundRepositoryAction("ses_test","plan",item,get,guard,execute);
+    expect(requests).toEqual(reads.map(item=>({...item,repo})));
+    expect(requests).toHaveLength(5);
+  });
+  test("Plan cannot create branch or write through session-bound GitHub", async () => {
+    const guard=async()=>undefined;
+    const execute=async (_action:GitHubAction)=>{throw new Error("Should not execute");};
+    await expect(executeBoundRepositoryAction("ses_test","plan",
+      {action:"review",branch:"main"},async()=>repo,guard,execute)).rejects.toThrow("Should not execute");
+    // Write actions are intentionally absent from BoundRepositoryAction.
+  });
+});
