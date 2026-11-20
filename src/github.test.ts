@@ -267,3 +267,40 @@ describe("GitHub write idempotency after ambiguous transport failure", () => {
     expect(puts).toBe(1);
   });
 });
+
+
+describe("GitHub commit evidence with limited token permissions", () => {
+  const repo="aamvtrampa36-del/cdf-cloud-engine",sha="b".repeat(40);
+  test("returns commit statuses while marking inaccessible check-runs as partial", async () => {
+    const calls:string[]=[];
+    const fake=(async (url: unknown) => {
+      const path=String(url);calls.push(path);
+      if(path.includes("/check-runs?")) return new Response(JSON.stringify({
+        message:"Resource not accessible by personal access token"
+      }),{status:403});
+      if(path.endsWith("/status")) return new Response(JSON.stringify({
+        state:"success",statuses:[{context:"legacy-build",state:"success",target_url:"https://github.com/example/check"}]
+      }),{status:200});
+      return new Response(JSON.stringify({message:"Unexpected"}),{status:404});
+    }) as typeof fetch;
+    const bridge=new GitHubBridge("unit-token",fake);
+    const result:any=await bridge.execute({action:"pr_checks",repo,sha});
+    expect(result.partial).toBe(true);
+    expect(result.combinedStatus).toBe("success");
+    expect(result.checkRuns).toEqual([]);
+    expect(result.sources.checkRuns).toEqual({
+      available:false,errorClass:"GITHUB_PERMISSION_OR_RATE_LIMIT"
+    });
+    expect(result.sources.commitStatuses.available).toBe(true);
+    expect(result.statuses[0].context).toBe("legacy-build");
+    expect(calls).toHaveLength(2);
+  });
+  test("does not invent CI evidence if both sources deny access", async () => {
+    const fake=(async () => new Response(JSON.stringify({
+      message:"Resource not accessible by personal access token"
+    }),{status:403})) as typeof fetch;
+    const bridge=new GitHubBridge("unit-token",fake);
+    await expect(bridge.execute({action:"pr_checks",repo,sha}))
+      .rejects.toThrow("GITHUB_PERMISSION_OR_RATE_LIMIT");
+  });
+});
