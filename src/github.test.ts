@@ -137,3 +137,155 @@ describe("GitHub scoped permissions",()=>{
     expect(calls.at(-1)?.body.draft).toBe(true);
   });
 });
+
+
+describe("Authenticated read-only GitHub PR and issue triage", () => {
+  const routes: string[] = [];
+  const mock = (async (url: unknown, init: RequestInit = {}) => {
+    const pathname = new URL(String(url)).pathname;
+    const u = new URL(String(url));
+    routes.push(u.pathname + u.search);
+    const payload: Record<string, unknown> = {
+      "/pulls/227": {
+        number:227, title:"Synthetic PR", state:"open", draft:true, merged_at:null,
+        base:{ref:"main",sha:"a".repeat(40)},head:{ref:"opencode/test",sha:"b".repeat(40)},
+        html_url:"https://github.com/example/repo/pull/227",mergeable:false,updated_at:"2026-11-20"
+      },
+      "/issues/201": { title:"Synthetic incident", state:"open", state_reason:null,
+        pull_request:null, html_url:"https://github.com/example/repo/issues/201",
+        updated_at:"2026-11-20", comments:3 },
+      "/pulls/227/files": [{filename:"src/file.ts",status:"modified",additions:2,deletions:1,sha:"c".repeat(40)}],
+      "/pulls/227/reviews": [{id:2,state:"CHANGES_REQUESTED",user:{login:"reviewer"},
+        commit_id:"b".repeat(40),submitted_at:"2026-11-20"}],
+      ["/commits/"+"b".repeat(40)+"/check-runs"]: {total_count:1,check_runs:[
+        {name:"test",status:"completed",conclusion:"success",html_url:"https://github.com/example/check",completed_at:"2026-11-20"}]},
+      ["/commits/"+"b".repeat(40)+"/status"]: {state:"success",statuses:[]}
+    };
+    const suffix=pathname.replace("/repos/aamvtrampa36-del/cdf-cloud-engine","");
+    const body=payload[suffix];
+    const code=body?200:404;
+    return new Response(JSON.stringify(body||{message:"Not Found"}), {
+      status:code,headers:{"Content-Type":"application/json"}
+    });
+  }) as typeof fetch;
+  const bridge = new GitHubBridge("unit-test-token",mock);
+  test("PR and issue metadata prove draft, merge and current SHA without anonymous fetch", async () => {
+    routes.length=0;
+    const pr:any=await bridge.execute({action:"pr_info",repo:"aamvtrampa36-del/cdf-cloud-engine",number:227});
+    const issue:any=await bridge.execute({action:"issue_info",repo:"aamvtrampa36-del/cdf-cloud-engine",number:201});
+    expect(pr).toMatchObject({number:227,state:"open",draft:true,merged:false,base:"main",headSha:"b".repeat(40)});
+    expect(issue).toMatchObject({number:201,state:"open",isPullRequest:false});
+    expect(routes).toHaveLength(2);
+  });
+  test("bounded file lists, reviews and exact-SHA checks are read-only", async () => {
+    routes.length=0;
+    const repo="aamvtrampa36-del/cdf-cloud-engine";
+    const files:any=await bridge.execute({action:"pr_files",repo,number:227});
+    const reviews:any=await bridge.execute({action:"pr_reviews",repo,number:227,page:1});
+    const checks:any=await bridge.execute({action:"pr_checks",repo,sha:"b".repeat(40)});
+    expect(files.files).toHaveLength(1);
+    expect(files.possibleNextPage).toBeNull();
+    expect(reviews.reviews[0]).toMatchObject({state:"CHANGES_REQUESTED"});
+    expect(checks).toMatchObject({sha:"b".repeat(40),combinedStatus:"success"});
+    expect(checks.checkRuns[0].conclusion).toBe("success");
+    expect(routes).toHaveLength(4);
+  });
+  test("malformed numbers, pages, SHA and unapproved repos never contact GitHub", async () => {
+    routes.length=0;
+    const repo="aamvtrampa36-del/cdf-cloud-engine";
+    await expect(bridge.execute({action:"pr_info",repo,number:0})).rejects.toThrow("number");
+    await expect(bridge.execute({action:"issue_info",repo,number:-1})).rejects.toThrow("number");
+    await expect(bridge.execute({action:"pr_files",repo,number:227,page:0})).rejects.toThrow("page");
+    await expect(bridge.execute({action:"pr_checks",repo,sha:"../main"})).rejects.toThrow("SHA");
+    await expect(bridge.execute({action:"pr_info",repo:"other/repo",number:227})).rejects.toThrow("authorized");
+    expect(routes).toHaveLength(0);
+  });
+  test("GitHub HTTP 404 stays explicit, never interpreted as absence in the corpus", async () => {
+    routes.length=0;
+    await expect(bridge.execute({action:"pr_info",repo:"aamvtrampa36-del/cdf-cloud-engine",number:999}))
+      .rejects.toThrow("GitHub API 404");
+    expect(routes).toHaveLength(1);
+  });
+});
+
+
+describe("GitHub private read error classes and safe retry boundaries", () => {
+  const repo="aamvtrampa36-del/cdf-cloud-engine";
+  for (const [status,kind] of [
+    [401,"GITHUB_AUTH_REQUIRED"],
+    [403,"GITHUB_PERMISSION_OR_RATE_LIMIT"],
+    [404,"GITHUB_NOT_ACCESSIBLE"],
+    [429,"GITHUB_TRANSIENT"],
+    [503,"GITHUB_TRANSIENT"]
+  ] as const) {
+    test("classifies HTTP " + status + " with no automatic retries", async () => {
+      let calls=0;
+      const fake=(async (_url: unknown, init: RequestInit) => {
+        calls++;
+        expect(init.method).toBe("GET");
+        expect(new Headers(init.headers).get("Authorization")).toBe("Bearer unit-only");
+        return new Response(JSON.stringify({message:"Synthetic unavailable"}), {
+          status,headers:{"Content-Type":"application/json","Retry-After":"3"}
+        });
+      }) as typeof fetch;
+      const bridge=new GitHubBridge("unit-only",fake);
+      await expect(bridge.execute({action:"pr_info",repo,number:227}))
+        .rejects.toThrow("GitHub API " + status + " [" + kind + "]");
+      expect(calls).toBe(1);
+    });
+  }
+  test("do not convert HTTP 404 private access failure into a null PR", async () => {
+    const bridge=new GitHubBridge("unit-only",(async () =>
+      new Response(JSON.stringify({message:"Not Found"}), {status:404})) as typeof fetch);
+    await expect(bridge.execute({action:"pr_info",repo,number:227}))
+      .rejects.toThrow("GITHUB_NOT_ACCESSIBLE");
+  });
+});
+
+
+describe("GitHub write idempotency after ambiguous transport failure", () => {
+  test("a committed write with lost response is reconciled without a second PUT", async () => {
+    const repo="aamvtrampa36-del/cdf-cloud-engine";
+    const content="synthetic-value=verified\\n";
+    let puts=0, reads=0, committed=false;
+    const mock=(async (url: unknown, init: RequestInit={}) => {
+      const u=String(url),method=init.method||"GET";
+      if (method==="GET" && u.includes("/contents/docs/ambiguous.md?ref=opencode%2Ftest-recovery")) {
+        reads++;
+        if (!committed) return new Response(JSON.stringify({message:"Not Found"}),{status:404});
+        return new Response(JSON.stringify({
+          type:"file",encoding:"base64",content:btoa(content),size:content.length,sha:"b".repeat(40)
+        }),{status:200});
+      }
+      if (method==="PUT" && u.endsWith("/contents/docs/ambiguous.md")) {
+        puts++;committed=true;
+        return new Response(JSON.stringify({message:"Synthetic gateway response lost"}),{status:503});
+      }
+      return new Response(JSON.stringify({message:"Unexpected request"}),{status:404});
+    }) as typeof fetch;
+    const bridge=new GitHubBridge("test-token-only",mock);
+    const input={action:"write" as const,repo,path:"docs/ambiguous.md",branch:"opencode/test-recovery",content};
+    await expect(bridge.execute(input)).rejects.toThrow("GITHUB_TRANSIENT");
+    const second:any=await bridge.execute(input);
+    expect(second).toMatchObject({repo,branch:"opencode/test-recovery",unchanged:true,reconciled:true,fileSha:"b".repeat(40)});
+    expect(second.commitSha).toBeNull();
+    expect(puts).toBe(1);
+    expect(reads).toBe(2);
+  });
+  test("a genuine content change still performs a guarded write", async () => {
+    let puts=0;
+    const mock=(async (_url: unknown,init: RequestInit={}) => {
+      if(init.method==="PUT") {puts++;return new Response(JSON.stringify({
+        commit:{sha:"c".repeat(40)},content:{sha:"d".repeat(40)}
+      }),{status:200});}
+      return new Response(JSON.stringify({
+        type:"file",encoding:"base64",content:btoa("original"),size:8,sha:"e".repeat(40)
+      }),{status:200});
+    }) as typeof fetch;
+    const bridge=new GitHubBridge("test-token-only",mock);
+    const result:any=await bridge.execute({action:"write",repo:"aamvtrampa36-del/cdf-cloud-engine",
+      path:"docs/changed.md",branch:"opencode/test-recovery",content:"different"});
+    expect(result.commitSha).toBe("c".repeat(40));
+    expect(puts).toBe(1);
+  });
+});
