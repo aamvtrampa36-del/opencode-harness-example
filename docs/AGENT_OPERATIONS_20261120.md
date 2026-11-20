@@ -88,3 +88,9 @@ Pruebas mínimas: búsqueda de PR sin número → recuperación de metadata → 
 Una prueba local de estructura, CI en verde, una respuesta de modelo o un estado de salud por separado no constituyen `COMPLETE PASS`. Diferenciar `LOCAL_PASS`, `CI_PASS`, `LIVE_PASS`, `RELEASE_ACCEPTED` y `NOT_VERIFIED`, con alcance, fecha, versión y recibo.
 
 **Fuentes de este repositorio:** `AGENTS.md`, `README.md`, `docs/OPEN_CODE_EXTENSIONS_20261115.md`, `docs/SUPERVISOR_REMOTE_CONTROL_STAGING_20261111.md`. Para comportamiento nuevo, verificar en el runtime antes de convertir documentación en contrato.
+
+## Seguridad de estado y concurrencia implementada
+
+Desde las reparaciones de noviembre de 2026, el estado del supervisor obtiene los conteos de herramientas desde el log de eventos persistente usando un cursor, procesando un máximo de 256 eventos por consulta. No debe cargar el historial completo en cada petición de estado. Los conteos incompletos se marcan y los errores dejan el valor desconocido, nunca un falso PASS. Ante reinicios por memoria, consultar [incidencia #90](https://github.com/aamvtrampa36-del/opencode-harness-example/issues/90) y correlacionar con la versión realmente desplegada.
+
+El puente GitHub impide que **un agente cree una PR** cuando el diff real de su rama pisa rutas de PR abiertas con la misma base, incluidas rutas anteriores de archivos renombrados. En ausencia de pruebas completas (paginación, SHA actual, identidad), falla de forma explícita antes de escribir. Esta validación no bloquea por sí sola fusiones directas desde GitHub ni carreras simultáneas entre peticiones de creación: esas situaciones requieren reglas de rama y verificaciones obligatorias de GitHub. No atribuirle funciones de bloqueo distribuido que no implementa.
