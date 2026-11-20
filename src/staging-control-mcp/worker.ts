@@ -20,7 +20,14 @@ const handler = createMcpHandler(() => {
       method: "GET",
       headers: { Accept: "application/json", "Cache-Control": "no-store" }
     })),
-    supervisor: () => controlEnv.STAGING_SUPERVISOR.getByName(SUPERVISOR_OBJECT) as unknown as StagingSupervisor
+    supervisor: workspace => {
+      const name = workspace ?? SUPERVISOR_OBJECT;
+      if (name !== SUPERVISOR_OBJECT &&
+          !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(name)) {
+        throw new Error("Solo se admite el workspace UUID exacto de Staging");
+      }
+      return controlEnv.STAGING_SUPERVISOR.getByName(name) as unknown as StagingSupervisor;
+    }
   };
   return createStagingControlServer(bindings);
 }, { route: "/mcp" });

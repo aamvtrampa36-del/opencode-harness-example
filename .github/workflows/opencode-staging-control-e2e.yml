@@ -2,13 +2,28 @@ name: OpenCode Staging remote control and UI E2E
 
 on:
   push:
-    branches: [feat/opencode-staging-mcp-final-20261118, staging/opencode-g1-20261118]
+    branches: [feat/opencode-staging-mcp-final-20261118, feat/remote-control-hardening-20261119, staging/opencode-g1-20261118]
   pull_request:
     branches: [main, staging/opencode-g1-20261118]
   workflow_dispatch:
     inputs:
       run_openrouter_check:
         description: "Ejecutar una inferencia real en Staging con OpenRouter y probar Bun/Linux (consume cuota de IA)"
+        type: boolean
+        required: false
+        default: false
+      run_repair_check:
+        description: "Ejecutar reparación autónoma red-to-green en un Container desechable con Cloudflare economy"
+        type: boolean
+        required: false
+        default: false
+      run_delegation_check:
+        description: "Delegar una tarea de ingeniería que crea una rama y PR borrador de evidencia"
+        type: boolean
+        required: false
+        default: false
+      run_recovery_check:
+        description: "Desconectar/reconectar cliente, reintentar idempotente y continuar una sesión real"
         type: boolean
         required: false
         default: false
@@ -80,10 +95,10 @@ jobs:
           retention-days: 7
 
   staging-mcp-e2e:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[remote-control-full-e2e]')) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
     needs: unit-and-build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 55
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -109,6 +124,9 @@ jobs:
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           OPENCODE_STAGING_OPENROUTER_CHECK: ${{ inputs.run_openrouter_check }}
+          OPENCODE_STAGING_REPAIR_E2E: ${{ inputs.run_repair_check == true || (github.event_name == 'push' && contains(github.event.head_commit.message, '[remote-control-full-e2e]')) }}
+          OPENCODE_STAGING_DELEGATION_E2E: ${{ inputs.run_delegation_check == true || (github.event_name == 'push' && contains(github.event.head_commit.message, '[remote-control-full-e2e]')) }}
+          OPENCODE_STAGING_RECOVERY_E2E: ${{ inputs.run_recovery_check == true || (github.event_name == 'push' && contains(github.event.head_commit.message, '[remote-control-full-e2e]')) }}
           RUNNER_TEMP: ${{ runner.temp }}
       - name: Upload MCP evidence
         if: always()

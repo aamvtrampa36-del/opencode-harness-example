@@ -14,15 +14,49 @@ import {
 describe("OpenCode staging MCP server", () => {
   test("serves only fixed staging tools and binds task creation to the staging repository", async () => {
     let started: unknown;
+    let requestedWorkspace: string | undefined;
+    let startCount = 0;
     let healthReads = 0;
+    let largeDiagnostics = false;
+    let openRouterCheckResult: Record<string, unknown> = {
+      status: "passed", model: "review", kind: "bun", providerID: "openrouter",
+      providerModel: STAGING_OPENROUTER_MODEL, bunVersion: BUN_RUNTIME_VERSION,
+      runtimeVerified: true, toolCalls: 1, fileVerified: true
+    };
     const operations: string[] = [];
     const supervisor: StagingSupervisor = {
-      async startAgentCheck(model, kind) { operations.push(`agent-check:${model}:${kind}`); return { status: "started", model, kind }; },
-      async agentCheckStatus() { operations.push("agent-check-status"); return { status: "passed", model: "review", kind: "bun", bunVersion: BUN_RUNTIME_VERSION, runtimeVerified: true, toolCalls: 1, fileVerified: true }; },
+      async remoteSupervisorStatus() { return { ready: true, defaultModel: "economy" }; },
+      async remoteSupervisorProgress(id, after = 0) { operations.push(`progress:${id}:${after}`); return { events: [], nextAfter: after }; },
+      async remoteSupervisorContinue(input) { operations.push("continue"); return { status: "submitted", ...(input as object) }; },
+      async remoteSupervisorSelectModel(id, model) { operations.push(`select:${id}:${model}`); return { id, model }; },
+      async remoteSupervisorModels() { operations.push("models"); return { models: [{ selection: "economy" }] }; },
+      async remoteSupervisorRepositories() { operations.push("repositories"); return { repositories: [STAGING_REPOSITORY] }; },
+      async remoteSupervisorSessions() { operations.push("sessions"); return { sessions: [] }; },
+      async remoteSupervisorInspectSession(id) { operations.push(`session-inspect:${id}`); return { session: id, transcriptExcerpt: "safe" }; },
+      async remoteSupervisorMcpServers() { operations.push("mcp-servers"); return { servers: [{ id: "test-mcp" }] }; },
+      async remoteSupervisorMcpTools(server) { operations.push(`mcp-tools:${server}`); return { tools: [{ name: "read" }] }; },
+      async remoteSupervisorMcpCall(input) { operations.push(`mcp-call:${input.server}.${input.name}`); return { result: { isError: false } }; },
+      async remoteSupervisorDiagnostics() {
+        operations.push("diagnostics");
+        return { targetWorker: STAGING_WORKER, incidents: largeDiagnostics
+          ? Array.from({ length: 120 }, (_, index) => ({ id: index, message: "diagnostic detail ".repeat(60) }))
+          : [] };
+      },
+      async remoteSupervisorAgentCheck(model, kind) { operations.push(`agent-check:${model}:${kind}`); return { status: "started", model, kind }; },
+      async remoteSupervisorAgentCheckStatus(scope) {
+        operations.push(`agent-check-status:${scope ?? "default"}`);
+        return scope === "openrouter" ? openRouterCheckResult : { status: "passed", model: "economy", kind: "repair" };
+      },
+      async startAgentCheck(model, kind, scope) {
+        operations.push(`start-agent-check:${model}:${kind}:${scope ?? "default"}`);
+        return { status: "started", model, kind, providerID: "openrouter", providerModel: STAGING_OPENROUTER_MODEL };
+      },
       async startSupervisedTask(input) {
         started = input;
+        startCount++;
         operations.push("start");
-        return { id: "a1234567890bcdef", status: "running", branch: "opencode/staging-a1234567890bcdef" };
+        return { id: "a1234567890bcdef", status: "running", reused: false,
+          branch: "opencode/staging-a1234567890bcdef" };
       },
       async supervisedTaskStatus(id) { operations.push("status:" + id); return { id, status: "running", session: "sesAbc123" }; },
       async cancelSupervisedTask(id) { operations.push("cancel:" + id); return { id, status: "cancelled" }; },
@@ -40,7 +74,10 @@ describe("OpenCode staging MCP server", () => {
         healthReads++;
         return Response.json({ status: "ok", runtime: "workerd" });
       },
-      supervisor: () => supervisor
+      supervisor: workspace => {
+        if (workspace) requestedWorkspace = workspace;
+        return supervisor;
+      }
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "staging-control-unit-test", version: "1.0.0" });
@@ -50,14 +87,48 @@ describe("OpenCode staging MCP server", () => {
     try {
       const { tools } = await client.listTools();
       expect(tools.map(tool => tool.name).sort()).toEqual([
-        "staging_cancel_task", "staging_openrouter_check", "staging_openrouter_check_status",
-        "staging_review_task", "staging_start_task",
-        "staging_status", "staging_task_status", "staging_task_transcript"
+        "staging_agent_check", "staging_agent_check_status", "staging_cancel_task",
+        "staging_diagnostics", "staging_mcp_call", "staging_mcp_servers", "staging_mcp_tools",
+        "staging_models", "staging_openrouter_check", "staging_openrouter_check_status",
+        "staging_repositories", "staging_review_task", "staging_session_inspect", "staging_sessions",
+        "staging_start_task", "staging_status", "staging_task_continue", "staging_task_progress", "staging_task_select_model",
+        "staging_task_status", "staging_task_transcript"
       ]);
 
       const status = await client.callTool({ name: "staging_status", arguments: {} });
-      expect(JSON.parse(textContent(status))).toMatchObject({ targetWorker: STAGING_WORKER, status: "ok" });
+      expect(JSON.parse(textContent(status))).toMatchObject({ targetWorker: STAGING_WORKER, status: "ok",
+        supervisor: { ready: true, defaultModel: "economy" } });
       expect(healthReads).toBe(1);
+
+      expect(JSON.parse(textContent(await client.callTool({ name: "staging_models", arguments: {} })))
+        .models[0].selection).toBe("economy");
+      expect(JSON.parse(textContent(await client.callTool({ name: "staging_repositories", arguments: {} })))
+        .repositories).toEqual([STAGING_REPOSITORY]);
+      expect(JSON.parse(textContent(await client.callTool({ name: "staging_sessions", arguments: {} })))
+        .sessions).toEqual([]);
+      expect(JSON.parse(textContent(await client.callTool({ name: "staging_session_inspect", arguments: {
+        session: "sesAbc123"
+      } }))).transcriptExcerpt).toBe("safe");
+      expect(JSON.parse(textContent(await client.callTool({ name: "staging_mcp_servers", arguments: {} })))
+        .servers[0].id).toBe("test-mcp");
+      expect(JSON.parse(textContent(await client.callTool({ name: "staging_mcp_tools", arguments: { server: "test-mcp" } })))
+        .tools[0].name).toBe("read");
+      expect(JSON.parse(textContent(await client.callTool({ name: "staging_mcp_call", arguments: {
+        server: "test-mcp", name: "read", arguments: { path: "README.md" }
+      } }))).result.isError).toBe(false);
+      expect(JSON.parse(textContent(await client.callTool({ name: "staging_diagnostics", arguments: {} })))
+        .incidents).toEqual([]);
+      largeDiagnostics = true;
+      const largeDiagnosticPayload = JSON.parse(textContent(
+        await client.callTool({ name: "staging_diagnostics", arguments: {} })
+      ));
+      expect(largeDiagnosticPayload.targetWorker).toBe(STAGING_WORKER);
+      expect(largeDiagnosticPayload._responseTruncated).toBe(true);
+      expect(Array.isArray(largeDiagnosticPayload.incidents)).toBe(true);
+      expect(JSON.parse(textContent(await client.callTool({ name: "staging_agent_check", arguments: {} })))
+        .model).toBe("economy");
+      expect(JSON.parse(textContent(await client.callTool({ name: "staging_agent_check_status", arguments: {} })))
+        .status).toBe("passed");
 
       const modelCheck = await client.callTool({ name: "staging_openrouter_check", arguments: {} });
       expect(JSON.parse(textContent(modelCheck))).toMatchObject({
@@ -68,7 +139,17 @@ describe("OpenCode staging MCP server", () => {
       expect(JSON.parse(textContent(modelCheckStatus))).toMatchObject({
         status: "passed", expectedProvider: "openrouter", expectedModel: STAGING_OPENROUTER_MODEL,
         expectedBunVersion: BUN_RUNTIME_VERSION, bunVersion: BUN_RUNTIME_VERSION,
-        modelVerified: true, runtimeVerified: true, toolCalls: 1, fileVerified: true, targetWorker: STAGING_WORKER
+        provider: "openrouter", providerID: "openrouter", providerModel: STAGING_OPENROUTER_MODEL,
+        modelVerified: true, runtimeVerified: true, toolProofVerified: true,
+        toolCalls: 1, fileVerified: true, targetWorker: STAGING_WORKER
+      });
+      openRouterCheckResult = { status: "passed", model: "economy", kind: "repair", providerID: "cloudflare" };
+      const staleOpenRouterCheck = JSON.parse(textContent(await client.callTool({
+        name: "staging_openrouter_check_status", arguments: {}
+      })));
+      expect(staleOpenRouterCheck).toMatchObject({
+        status: "failed", modelVerified: false, toolProofVerified: false,
+        provider: "cloudflare", targetWorker: STAGING_WORKER
       });
 
       const start = await client.callTool({
@@ -78,7 +159,7 @@ describe("OpenCode staging MCP server", () => {
       expect(JSON.parse(textContent(start))).toMatchObject({
         targetWorker: STAGING_WORKER,
         id: "a1234567890bcdef",
-        status: "running"
+        status: "running", reused: false
       });
       expect(started).toEqual({
         requestId: "a1234567890bcdef",
@@ -86,8 +167,42 @@ describe("OpenCode staging MCP server", () => {
         prompt: "Inspecciona el modo staging y corrige una prueba"
       });
 
+      const workspace = "7bd8f26f-b2b8-4e4d-9abc-0678294c33ab";
+      const fork = await client.callTool({ name: "staging_start_task", arguments: {
+        requestId: "c1234567890bcdef", prompt: "Continúa desde la conversación indicada con una rama aislada",
+        repository: STAGING_REPOSITORY, model: "economy", workspace, sourceSession: "sesAbc123"
+      } });
+      expect(JSON.parse(textContent(fork))).toMatchObject({ workspace, targetWorker: STAGING_WORKER });
+      expect(requestedWorkspace).toBe(workspace);
+      expect(started).toEqual({ requestId: "c1234567890bcdef", repository: STAGING_REPOSITORY,
+        prompt: "Continúa desde la conversación indicada con una rama aislada", model: "economy",
+        sourceSession: "sesAbc123" });
+      const startsBeforeInvalidFork = startCount;
+      const invalidFork = await client.callTool({ name: "staging_start_task", arguments: {
+        requestId: "d1234567890bcdef", prompt: "Intenta hacer fork sin aportar un workspace válido",
+        sourceSession: "sesAbc123"
+      } });
+      expect(invalidFork.isError).toBe(true);
+      expect(startCount).toBe(startsBeforeInvalidFork);
+      const workspaceWithoutFork = await client.callTool({ name: "staging_start_task", arguments: {
+        requestId: "e1234567890bcdef", prompt: "No reutilices el workspace sin una sesión de origen",
+        workspace
+      } });
+      expect(workspaceWithoutFork.isError).toBe(true);
+      expect(startCount).toBe(startsBeforeInvalidFork);
+
       const taskStatus = await client.callTool({ name: "staging_task_status", arguments: { id: "a1234567890bcdef" } });
       expect(JSON.parse(textContent(taskStatus))).toMatchObject({ targetWorker: STAGING_WORKER, status: "running" });
+      const progress = await client.callTool({ name: "staging_task_progress", arguments: { id: "a1234567890bcdef", after: 0 } });
+      expect(JSON.parse(textContent(progress))).toMatchObject({ targetWorker: STAGING_WORKER, events: [], nextAfter: 0 });
+      const continued = await client.callTool({ name: "staging_task_continue", arguments: {
+        id: "a1234567890bcdef", turnId: "b1234567890cdefa", prompt: "Corrige el rumbo y repite la verificación"
+      } });
+      expect(JSON.parse(textContent(continued))).toMatchObject({ targetWorker: STAGING_WORKER, status: "submitted" });
+      const selected = await client.callTool({ name: "staging_task_select_model", arguments: {
+        id: "a1234567890bcdef", model: "economy"
+      } });
+      expect(JSON.parse(textContent(selected))).toMatchObject({ targetWorker: STAGING_WORKER, model: "economy" });
       const cancellation = await client.callTool({ name: "staging_cancel_task", arguments: { id: "a1234567890bcdef" } });
       expect(JSON.parse(textContent(cancellation))).toMatchObject({ targetWorker: STAGING_WORKER, status: "cancelled" });
       const review = await client.callTool({ name: "staging_review_task", arguments: { id: "a1234567890bcdef" } });
@@ -101,11 +216,19 @@ describe("OpenCode staging MCP server", () => {
       expect(transcriptText).toContain("[REDACTADO]");
       expect(transcriptText).not.toContain("ghp_abcdefghijklmnopqrstuvwx");
       expect(transcriptText).not.toContain("oculto");
-      expect(operations).toEqual([
-        "agent-check:review:bun", "agent-check-status", "start", "status:a1234567890bcdef",
-        "cancel:a1234567890bcdef", "review:a1234567890bcdef",
-        "status:a1234567890bcdef"
-      ]);
+      expect(operations).toContain("start");
+      expect(operations).toContain("status:a1234567890bcdef");
+      expect(operations).toContain("cancel:a1234567890bcdef");
+      expect(operations).toContain("review:a1234567890bcdef");
+      expect(operations).toContain("models");
+      expect(operations).toContain("session-inspect:sesAbc123");
+      expect(operations).toContain("mcp-call:test-mcp.read");
+      expect(operations).toContain("progress:a1234567890bcdef:0");
+      expect(operations).toContain("continue");
+      expect(operations).toContain("select:a1234567890bcdef:economy");
+      expect(operations).toContain("agent-check-status:default");
+      expect(operations).toContain("agent-check-status:openrouter");
+      expect(operations).toContain("start-agent-check:review:bun:openrouter");
     } finally {
       await client.close();
       await server.close();
@@ -123,8 +246,21 @@ describe("OpenCode staging MCP server", () => {
     const id = "b1234567890cdefa";
     let statusReads = 0;
     const supervisor: StagingSupervisor = {
+      async remoteSupervisorStatus() { return { ready: true }; },
+      async remoteSupervisorProgress() { return { events: [] }; },
+      async remoteSupervisorContinue() { return { status: "submitted" }; },
+      async remoteSupervisorSelectModel(taskId, model) { return { id: taskId, model }; },
+      async remoteSupervisorModels() { return { models: [] }; },
+      async remoteSupervisorRepositories() { return { repositories: [] }; },
+      async remoteSupervisorSessions() { return { sessions: [] }; },
+      async remoteSupervisorInspectSession(id) { return { session: id }; },
+      async remoteSupervisorMcpServers() { return { servers: [] }; },
+      async remoteSupervisorMcpTools() { return { tools: [] }; },
+      async remoteSupervisorMcpCall() { return { result: {} }; },
+      async remoteSupervisorDiagnostics() { return { incidents: [] }; },
+      async remoteSupervisorAgentCheck(model, kind) { return { status: "started", model, kind }; },
+      async remoteSupervisorAgentCheckStatus() { return { status: "not-started" }; },
       async startAgentCheck(model, kind) { return { status: "started", model, kind }; },
-      async agentCheckStatus() { return { status: "not-started" }; },
       async startSupervisedTask() {
         return { id, status: "running", reused: true, branch: `opencode/staging-${id}` };
       },

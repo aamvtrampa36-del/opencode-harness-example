@@ -1,4 +1,5 @@
 import { normalizeOwnedRepository, OPENCODE_STAGING_BASE } from "./github";
+import { isModelSelection, type ModelSelectionID } from "./model-presets";
 
 /**
  * The remote MCP authenticates at Cloudflare Access. Every Durable Object
@@ -14,8 +15,10 @@ export type SupervisorStart = {
   requestId: string;
   repository: string;
   prompt: string;
-  /** Native Workers AI only: never route a supervised test to an unapproved premium model. */
-  model?: "economy" | "cloudflare";
+  /** Selected from the models registered with this OpenCode instance. */
+  model?: ModelSelectionID;
+  /** Optional exact OpenCode session to fork. Its conversation is inherited, its files are not. */
+  sourceSession?: string;
 };
 
 export type SupervisorTask = {
@@ -26,13 +29,34 @@ export type SupervisorTask = {
   fingerprint: string;
   session?: string;
   createdAt: number;
-  status: "preparing" | "running" | "failed" | "cancelled";
+  status: "preparing" | "running" | "finished" | "unanswered" | "failed" |
+    "cancel_requested" | "cancelled" | "unknown";
   /** Immutable source commit used to seed this task's isolated Linux project. */
   baseCommit?: string;
-  model?: "economy" | "cloudflare";
+  model?: ModelSelectionID;
   operationId?: string;
   error?: string;
+  updatedAt?: number;
+  lastEventSeq?: number;
+  forkedFrom?: string;
 };
+
+export function classifySupervisorOperation(
+  stored: SupervisorTask["status"], busy: boolean,
+  operation?: { status: "done" | "unanswered"; reason?: string }
+): SupervisorTask["status"] {
+  if (operation?.status === "done") return "finished";
+  if (operation?.status === "unanswered") {
+    if (operation.reason === "interrupted" && stored === "cancel_requested") return "cancelled";
+    if (operation.reason === "failed") return "failed";
+    if (operation.reason === "not_found") return "unknown";
+    return "unanswered";
+  }
+  if (busy) return stored === "cancel_requested" ? "cancel_requested" : "running";
+  if (stored === "preparing") return "preparing";
+  if (["running", "unknown", "cancel_requested"].includes(stored)) return "unknown";
+  return stored;
+}
 
 export function validateSupervisorStart(raw: unknown, approved: readonly string[]): SupervisorStart {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Solicitud inválida");
@@ -47,19 +71,36 @@ export function validateSupervisorStart(raw: unknown, approved: readonly string[
   }
   if (typeof input.prompt !== "string" || input.prompt.trim().length < 12 ||
       input.prompt.length > 5_000) throw new Error("Tarea de 12 a 5000 caracteres requerida");
-  if (input.model !== undefined && input.model !== "economy" && input.model !== "cloudflare") {
-    throw new Error("Modelo no autorizado para el supervisor");
+  if (input.model !== undefined && !isModelSelection(input.model)) {
+    throw new Error("Modelo no disponible en el catálogo del supervisor");
   }
-  if (Object.keys(input).some(key => !["requestId", "repository", "prompt", "model"].includes(key))) {
+  if (input.sourceSession !== undefined &&
+      (typeof input.sourceSession !== "string" || !/^ses[A-Za-z0-9_]{1,64}$/.test(input.sourceSession))) {
+    throw new Error("La sesión de origen debe ser un ID OpenCode válido");
+  }
+  if (Object.keys(input).some(key => !["requestId", "repository", "prompt", "model", "sourceSession"].includes(key))) {
     throw new Error("Parámetros del supervisor desconocidos");
   }
   return { requestId: input.requestId, repository, prompt: input.prompt.trim(),
-    ...(input.model ? { model: input.model as "economy" | "cloudflare" } : {}) };
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.sourceSession ? { sourceSession: input.sourceSession } : {}) };
 }
 
 export function supervisorTaskKey(id: string): string {
   if (!TASK_ID.test(id)) throw new Error("Identificador de tarea inválido");
   return "supervisor:task:" + id;
+}
+
+/** Stable OpenCode inbox keys make client/Worker retries return one receipt. */
+export function supervisorStartOperationId(id: string): string {
+  supervisorTaskKey(id);
+  return "rc-start-" + id;
+}
+
+export function supervisorTurnOperationId(id: string, turnId: string): string {
+  supervisorTaskKey(id);
+  if (!TASK_ID.test(turnId)) throw new Error("Identificador de turno inválido");
+  return "rc-turn-" + id + "-" + turnId;
 }
 
 export function supervisorBranch(id: string, repository?: string): string {
@@ -105,7 +146,8 @@ export function assertSupervisorBoundGitHubOperation(
 
 export async function supervisorFingerprint(value: SupervisorStart): Promise<string> {
   const bytes = new TextEncoder().encode(
-    value.repository.toLowerCase() + "\n" + value.prompt + "\n" + (value.model ?? "economy")
+    value.repository.toLowerCase() + "\n" + value.prompt + "\n" + (value.model ?? "economy") +
+    "\n" + (value.sourceSession ?? "")
   );
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
@@ -143,6 +185,10 @@ export function supervisorPrompt(task: SupervisorStart, branch: string, project:
   const selfDevelopment = task.repository.toLowerCase() === "aamvtrampa36-del/opencode-harness-example";
   return "Tarea de desarrollo supervisada y REVERSIBLE. Repositorio autorizado: " +
     task.repository + ". Proyecto Linux exclusivo: " + project + ". Rama precreada: " + branch +
+    (task.sourceSession
+      ? ". Esta sesión es un fork explícito de " + task.sourceSession +
+        "; usa su contexto de conversación, pero no alteres su sesión padre. El Container se importa limpio desde el SHA fijado: no contiene archivos locales sin guardar del proyecto de origen."
+      : "") +
     (selfDevelopment
       ? ". BASE REAL: " + OPENCODE_STAGING_BASE + "; SHA verificado: " + baseCommit +
         ". El Container Linux se importará desde ese SHA exacto y no contiene .git. No uses git status, fetch ni checkout en el Container. Lee archivos locales desde esa base; usa repo_read con ref " + branch +
