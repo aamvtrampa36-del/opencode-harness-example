@@ -15,6 +15,10 @@ const fake = (async (url: any, init: any = {}) => {
     body={object:{sha:"7d1669cba0f3c8ee08626425aaf551c8d5bd4bf7"}};
   } else if (route.endsWith("/git/ref/heads/main")) {
     body={object:{sha:"a".repeat(40)}};
+  } else if (lowerRoute.includes("/git/ref/heads/opencode%2f")) {
+    body={object:{sha:"b".repeat(40)}};
+  } else if (route.includes("/pulls?state=open&base=")) {
+    body=[];
   } else if (route.endsWith("/git/refs")) {
     status=201;
     const create = JSON.parse(String(init.body));
@@ -201,5 +205,378 @@ describe("GitHub scoped permissions",()=>{
     expect(pr.draft).toBe(true);
     expect(calls.at(-1)?.body.base).toBe("main");
     expect(calls.at(-1)?.body.draft).toBe(true);
+  });
+});
+
+describe("Authenticated read-only GitHub PR and issue triage", () => {
+  const routes: string[] = [];
+  const mock = (async (url: unknown, init: RequestInit = {}) => {
+    const pathname = new URL(String(url)).pathname;
+    const u = new URL(String(url));
+    routes.push(u.pathname + u.search);
+    const payload: Record<string, unknown> = {
+      "/pulls/227": {
+        number:227, title:"Synthetic PR", state:"open", draft:true, merged_at:null,
+        base:{ref:"main",sha:"a".repeat(40)},head:{ref:"opencode/test",sha:"b".repeat(40)},
+        html_url:"https://github.com/example/repo/pull/227",mergeable:false,updated_at:"2026-11-20"
+      },
+      "/issues/201": { title:"Synthetic incident", state:"open", state_reason:null,
+        pull_request:null, html_url:"https://github.com/example/repo/issues/201",
+        updated_at:"2026-11-20", comments:3 },
+      "/pulls/227/files": [{filename:"src/file.ts",status:"modified",additions:2,deletions:1,sha:"c".repeat(40)}],
+      "/pulls/227/reviews": [{id:2,state:"CHANGES_REQUESTED",user:{login:"reviewer"},
+        commit_id:"b".repeat(40),submitted_at:"2026-11-20"}],
+      ["/commits/"+"b".repeat(40)+"/check-runs"]: {total_count:1,check_runs:[
+        {name:"test",status:"completed",conclusion:"success",html_url:"https://github.com/example/check",completed_at:"2026-11-20"}]},
+      ["/commits/"+"b".repeat(40)+"/status"]: {state:"success",statuses:[]}
+    };
+    const suffix=pathname.replace("/repos/aamvtrampa36-del/cdf-cloud-engine","");
+    const body=payload[suffix];
+    const code=body?200:404;
+    return new Response(JSON.stringify(body||{message:"Not Found"}), {
+      status:code,headers:{"Content-Type":"application/json"}
+    });
+  }) as typeof fetch;
+  const bridge = new GitHubBridge("unit-test-token",mock);
+  test("PR and issue metadata prove draft, merge and current SHA without anonymous fetch", async () => {
+    routes.length=0;
+    const pr:any=await bridge.execute({action:"pr_info",repo:"aamvtrampa36-del/cdf-cloud-engine",number:227});
+    const issue:any=await bridge.execute({action:"issue_info",repo:"aamvtrampa36-del/cdf-cloud-engine",number:201});
+    expect(pr).toMatchObject({number:227,state:"open",draft:true,merged:false,base:"main",headSha:"b".repeat(40)});
+    expect(issue).toMatchObject({number:201,state:"open",isPullRequest:false});
+    expect(routes).toHaveLength(2);
+  });
+  test("bounded file lists, reviews and exact-SHA checks are read-only", async () => {
+    routes.length=0;
+    const repo="aamvtrampa36-del/cdf-cloud-engine";
+    const files:any=await bridge.execute({action:"pr_files",repo,number:227});
+    const reviews:any=await bridge.execute({action:"pr_reviews",repo,number:227,page:1});
+    const checks:any=await bridge.execute({action:"pr_checks",repo,sha:"b".repeat(40)});
+    expect(files.files).toHaveLength(1);
+    expect(files.possibleNextPage).toBeNull();
+    expect(reviews.reviews[0]).toMatchObject({state:"CHANGES_REQUESTED"});
+    expect(checks).toMatchObject({sha:"b".repeat(40),combinedStatus:"success"});
+    expect(checks.checkRuns[0].conclusion).toBe("success");
+    expect(routes).toHaveLength(4);
+  });
+  test("malformed numbers, pages, SHA and unapproved repos never contact GitHub", async () => {
+    routes.length=0;
+    const repo="aamvtrampa36-del/cdf-cloud-engine";
+    await expect(bridge.execute({action:"pr_info",repo,number:0})).rejects.toThrow("number");
+    await expect(bridge.execute({action:"issue_info",repo,number:-1})).rejects.toThrow("number");
+    await expect(bridge.execute({action:"pr_files",repo,number:227,page:0})).rejects.toThrow("page");
+    await expect(bridge.execute({action:"pr_checks",repo,sha:"../main"})).rejects.toThrow("SHA");
+    await expect(bridge.execute({action:"pr_info",repo:"other/repo",number:227})).rejects.toThrow("authorized");
+    expect(routes).toHaveLength(0);
+  });
+  test("GitHub HTTP 404 stays explicit, never interpreted as absence in the corpus", async () => {
+    routes.length=0;
+    await expect(bridge.execute({action:"pr_info",repo:"aamvtrampa36-del/cdf-cloud-engine",number:999}))
+      .rejects.toThrow("GitHub API 404");
+    expect(routes).toHaveLength(1);
+  });
+});
+
+
+describe("GitHub private read error classes and safe retry boundaries", () => {
+  const repo="aamvtrampa36-del/cdf-cloud-engine";
+  for (const [status,kind] of [
+    [401,"GITHUB_AUTH_REQUIRED"],
+    [403,"GITHUB_PERMISSION_OR_RATE_LIMIT"],
+    [404,"GITHUB_NOT_ACCESSIBLE"],
+    [429,"GITHUB_TRANSIENT"],
+    [503,"GITHUB_TRANSIENT"]
+  ] as const) {
+    test("classifies HTTP " + status + " with no automatic retries", async () => {
+      let calls=0;
+      const fake=(async (_url: unknown, init: RequestInit) => {
+        calls++;
+        expect(init.method).toBe("GET");
+        expect(new Headers(init.headers).get("Authorization")).toBe("Bearer unit-only");
+        return new Response(JSON.stringify({message:"Synthetic unavailable"}), {
+          status,headers:{"Content-Type":"application/json","Retry-After":"3"}
+        });
+      }) as typeof fetch;
+      const bridge=new GitHubBridge("unit-only",fake);
+      await expect(bridge.execute({action:"pr_info",repo,number:227}))
+        .rejects.toThrow("GitHub API " + status + " [" + kind + "]");
+      expect(calls).toBe(1);
+    });
+  }
+  test("do not convert HTTP 404 private access failure into a null PR", async () => {
+    const bridge=new GitHubBridge("unit-only",(async () =>
+      new Response(JSON.stringify({message:"Not Found"}), {status:404})) as typeof fetch);
+    await expect(bridge.execute({action:"pr_info",repo,number:227}))
+      .rejects.toThrow("GITHUB_NOT_ACCESSIBLE");
+  });
+});
+
+describe("GitHub write idempotency after ambiguous transport failure", () => {
+  test("a committed write with lost response is reconciled without a second PUT", async () => {
+    const repo="aamvtrampa36-del/cdf-cloud-engine";
+    const content="synthetic-value=verified\\n";
+    let puts=0, reads=0, committed=false;
+    const mock=(async (url: unknown, init: RequestInit={}) => {
+      const u=String(url),method=init.method||"GET";
+      if (method==="GET" && u.includes("/contents/docs/ambiguous.md?ref=opencode%2Ftest-recovery")) {
+        reads++;
+        if (!committed) return new Response(JSON.stringify({message:"Not Found"}),{status:404});
+        return new Response(JSON.stringify({
+          type:"file",encoding:"base64",content:btoa(content),size:content.length,sha:"b".repeat(40)
+        }),{status:200});
+      }
+      if (method==="PUT" && u.endsWith("/contents/docs/ambiguous.md")) {
+        puts++;committed=true;
+        return new Response(JSON.stringify({message:"Synthetic gateway response lost"}),{status:503});
+      }
+      return new Response(JSON.stringify({message:"Unexpected request"}),{status:404});
+    }) as typeof fetch;
+    const bridge=new GitHubBridge("test-token-only",mock);
+    const input={action:"write" as const,repo,path:"docs/ambiguous.md",branch:"opencode/test-recovery",content};
+    await expect(bridge.execute(input)).rejects.toThrow("GITHUB_TRANSIENT");
+    const second:any=await bridge.execute(input);
+    expect(second).toMatchObject({repo,branch:"opencode/test-recovery",unchanged:true,reconciled:true,fileSha:"b".repeat(40)});
+    expect(second.commitSha).toBeNull();
+    expect(puts).toBe(1);
+    expect(reads).toBe(2);
+  });
+  test("a genuine content change still performs a guarded write", async () => {
+    let puts=0;
+    const mock=(async (_url: unknown,init: RequestInit={}) => {
+      if(init.method==="PUT") {puts++;return new Response(JSON.stringify({
+        commit:{sha:"c".repeat(40)},content:{sha:"d".repeat(40)}
+      }),{status:200});}
+      return new Response(JSON.stringify({
+        type:"file",encoding:"base64",content:btoa("original"),size:8,sha:"e".repeat(40)
+      }),{status:200});
+    }) as typeof fetch;
+    const bridge=new GitHubBridge("test-token-only",mock);
+    const result:any=await bridge.execute({action:"write",repo:"aamvtrampa36-del/cdf-cloud-engine",
+      path:"docs/changed.md",branch:"opencode/test-recovery",content:"different"});
+    expect(result.commitSha).toBe("c".repeat(40));
+    expect(puts).toBe(1);
+  });
+});
+
+
+describe("GitHub commit evidence with limited token permissions", () => {
+  const repo="aamvtrampa36-del/cdf-cloud-engine",sha="b".repeat(40);
+  test("returns commit statuses while marking inaccessible check-runs as partial", async () => {
+    const calls:string[]=[];
+    const fake=(async (url: unknown) => {
+      const path=String(url);calls.push(path);
+      if(path.includes("/check-runs?")) return new Response(JSON.stringify({
+        message:"Resource not accessible by personal access token"
+      }),{status:403});
+      if(path.endsWith("/status")) return new Response(JSON.stringify({
+        state:"success",statuses:[{context:"legacy-build",state:"success",target_url:"https://github.com/example/check"}]
+      }),{status:200});
+      return new Response(JSON.stringify({message:"Unexpected"}),{status:404});
+    }) as typeof fetch;
+    const bridge=new GitHubBridge("unit-token",fake);
+    const result:any=await bridge.execute({action:"pr_checks",repo,sha});
+    expect(result.partial).toBe(true);
+    expect(result.combinedStatus).toBe("success");
+    expect(result.checkRuns).toEqual([]);
+    expect(result.sources.checkRuns).toEqual({
+      available:false,errorClass:"GITHUB_PERMISSION_OR_RATE_LIMIT"
+    });
+    expect(result.sources.commitStatuses.available).toBe(true);
+    expect(result.statuses[0].context).toBe("legacy-build");
+    expect(calls).toHaveLength(2);
+  });
+  test("does not invent CI evidence if both sources deny access", async () => {
+    const fake=(async () => new Response(JSON.stringify({
+      message:"Resource not accessible by personal access token"
+    }),{status:403})) as typeof fetch;
+    const bridge=new GitHubBridge("unit-token",fake);
+    await expect(bridge.execute({action:"pr_checks",repo,sha}))
+      .rejects.toThrow("GITHUB_PERMISSION_OR_RATE_LIMIT");
+  });
+});
+
+
+describe("GitHub bounded exact replacement", () => {
+  test("updates a 121 KB file from an exact branch head without full-file input", async () => {
+    const repo = "aamvtrampa36-del/opencode-harness-example";
+    const branch = "opencode/staging-a1234567890bcdef";
+    const head = "d".repeat(40);
+    const baseTree = "e".repeat(40);
+    const sourceTree = "4".repeat(40);
+    const blobSha = "f".repeat(40);
+    const treeSha = "1".repeat(40);
+    const commitSha = "2".repeat(40);
+    const anchor = "const staleReceipt = true;\n";
+    const source = "x".repeat(121_000) + "\n" + anchor + "tail\n";
+    const expectedContent = source.replace(anchor, "const staleReceipt = false;\n");
+    const requests: Array<{ method: string; route: string; body?: any }> = [];
+    const http = (async (url: any, init: any = {}) => {
+      const route = String(url).toLowerCase();
+      const method = String(init.method || "GET").toUpperCase();
+      const body = init.body ? JSON.parse(String(init.body)) : undefined;
+      requests.push({ method, route, body });
+      if (method === "GET" && route.endsWith("/git/ref/heads/" + encodeURIComponent(branch).toLowerCase())) {
+        return Response.json({ object: { sha: head } });
+      }
+      if (method === "GET" && route.includes("/contents/src/server.ts?ref=" + head)) {
+        return Response.json({
+          type: "file", encoding: "base64", content: btoa(source), size: source.length, sha: "3".repeat(40)
+        });
+      }
+      if (method === "GET" && route.endsWith("/git/commits/" + head)) {
+        return Response.json({ commit: { tree: { sha: baseTree } } });
+      }
+      if (method === "GET" && route.endsWith("/git/trees/" + baseTree)) {
+        return Response.json({ tree: [{ path: "src", mode: "040000", type: "tree", sha: sourceTree }] });
+      }
+      if (method === "GET" && route.endsWith("/git/trees/" + sourceTree)) {
+        return Response.json({ tree: [{ path: "server.ts", mode: "100755", type: "blob", sha: "3".repeat(40) }] });
+      }
+      if (method === "POST" && route.endsWith("/git/blobs")) {
+        return Response.json({ sha: blobSha }, { status: 201 });
+      }
+      if (method === "POST" && route.endsWith("/git/trees")) {
+        return Response.json({ sha: treeSha }, { status: 201 });
+      }
+      if (method === "POST" && route.endsWith("/git/commits")) {
+        return Response.json({ sha: commitSha }, { status: 201 });
+      }
+      if (method === "PATCH" && route.endsWith("/git/refs/heads/" + encodeURIComponent(branch).toLowerCase())) {
+        return Response.json({ object: { sha: commitSha } });
+      }
+      return Response.json({ message: "Not Found" }, { status: 404 });
+    }) as typeof fetch;
+    const bridge = new GitHubBridge("dummy-test-key", http);
+
+    const result = await bridge.execute({
+      action: "write", repo, path: "src/server.ts", branch, expectedHead: head,
+      oldText: anchor, newText: "const staleReceipt = false;\n", message: "fix: patch large source"
+    } as any);
+
+    expect(result).toMatchObject({ repo, branch, path: "src/server.ts", commitSha, expectedHead: head });
+    const blobRequest = requests.find(item => item.method === "POST" && item.route.endsWith("/git/blobs"));
+    expect(blobRequest?.body).toEqual({ content: expectedContent, encoding: "utf-8" });
+    const treeRequest = requests.find(item => item.method === "POST" && item.route.endsWith("/git/trees"));
+    expect(treeRequest?.body).toEqual({
+      base_tree: baseTree,
+      tree: [{ path: "src/server.ts", mode: "100755", type: "blob", sha: blobSha }]
+    });
+    const commitRequest = requests.find(item => item.method === "POST" && item.route.endsWith("/git/commits"));
+    expect(commitRequest?.body.parents).toEqual([head]);
+    const refRequest = requests.find(item => item.method === "PATCH");
+    expect(refRequest?.body).toEqual({ sha: commitSha, force: false });
+  });
+});
+
+describe("GitHub bounded replacement guards", () => {
+  const repo = "aamvtrampa36-del/opencode-harness-example";
+  const branch = "opencode/staging-a1234567890bcdef";
+  const head = "d".repeat(40);
+
+  function fixture(source: string, branchHead = head) {
+    const requests: Array<{ method: string; route: string }> = [];
+    const http = (async (url: any, init: any = {}) => {
+      const route = String(url).toLowerCase();
+      const method = String(init.method || "GET").toUpperCase();
+      requests.push({ method, route });
+      if (method === "GET" && route.endsWith("/git/ref/heads/" + encodeURIComponent(branch).toLowerCase())) {
+        return Response.json({ object: { sha: branchHead } });
+      }
+      if (method === "GET" && route.includes("/contents/src/server.ts?ref=" + head)) {
+        return Response.json({
+          type: "file", encoding: "base64", content: btoa(source),
+          size: new TextEncoder().encode(source).byteLength, sha: "3".repeat(40)
+        });
+      }
+      return Response.json({ message: "Not Found" }, { status: 404 });
+    }) as typeof fetch;
+    return { bridge: new GitHubBridge("dummy-test-key", http), requests };
+  }
+
+  test("rejects an old branch HEAD before reading or writing the file", async () => {
+    const state = fixture("const old = true;\n", "a".repeat(40));
+    await expect(state.bridge.execute({
+      action: "write", repo, path: "src/server.ts", branch, expectedHead: head,
+      oldText: "const old = true;\n", newText: "const old = false;\n"
+    })).rejects.toThrow("HEAD changed");
+    expect(state.requests).toHaveLength(1);
+    expect(state.requests[0]?.method).toBe("GET");
+  });
+
+  test("rejects absent or ambiguous anchors before creating Git objects", async () => {
+    for (const [source, expectedError] of [
+      ["const other = true;\n", "anchor was not found"],
+      ["const old = true;\nconst old = true;\n", "match exactly once"]
+    ] as const) {
+      const state = fixture(source);
+      await expect(state.bridge.execute({
+        action: "write", repo, path: "src/server.ts", branch, expectedHead: head,
+        oldText: "const old = true;\n", newText: "const old = false;\n"
+      })).rejects.toThrow(expectedError);
+      expect(state.requests.every(item => item.method === "GET")).toBe(true);
+    }
+  });
+
+  test("bounds the replacement file and both supplied fragments", async () => {
+    const bigFile = fixture("x".repeat(128_001));
+    await expect(bigFile.bridge.execute({
+      action: "write", repo, path: "src/server.ts", branch, expectedHead: head,
+      oldText: "x", newText: "y"
+    })).rejects.toThrow("128000 bytes");
+    expect(bigFile.requests.every(item => item.method === "GET")).toBe(true);
+
+    const oversizedFragment = fixture("x");
+    await expect(oversizedFragment.bridge.execute({
+      action: "write", repo, path: "src/server.ts", branch, expectedHead: head,
+      oldText: "x".repeat(8_193), newText: "y"
+    })).rejects.toThrow("8192 bytes");
+    expect(oversizedFragment.requests).toHaveLength(0);
+  });
+
+  test("limits replacements to the OpenCode Staging branch and protects deployment paths", async () => {
+    const state = fixture("const old = true;\n");
+    await expect(state.bridge.execute({
+      action: "write", repo: "aamvtrampa36-del/cdf-cloud-engine",
+      path: "docs/test.md", branch: "opencode/new-feature", expectedHead: head,
+      oldText: "const old = true;\n", newText: "const old = false;\n"
+    })).rejects.toThrow("OpenCode Staging review branches");
+    await expect(state.bridge.execute({
+      action: "write", repo, path: "wrangler.g1.jsonc", branch, expectedHead: head,
+      oldText: "const old = true;\n", newText: "const old = false;\n"
+    })).rejects.toThrow("Protected");
+    expect(state.requests).toHaveLength(0);
+
+    for (const path of ["src/.env.local", "config/.dev.vars.production", "wrangler.stage.toml", "config/wrangler.prod.jsonc"]) {
+      const protectedState = fixture("const old = true;\n");
+      await expect(protectedState.bridge.execute({
+        action: "write", repo, path, branch, expectedHead: head,
+        oldText: "const old = true;\n", newText: "const old = false;\n"
+      })).rejects.toThrow("Protected");
+      expect(protectedState.requests).toHaveLength(0);
+    }
+  });
+
+  test("rejects incomplete or mixed full-write and replacement inputs", async () => {
+    const incomplete = fixture("x");
+    await expect(incomplete.bridge.execute({
+      action: "write", repo, path: "src/server.ts", branch, oldText: "x", newText: "y"
+    } as any)).rejects.toThrow("Choose full content or a complete bounded replacement");
+    expect(incomplete.requests).toHaveLength(0);
+
+    const mixed = fixture("x");
+    await expect(mixed.bridge.execute({
+      action: "write", repo, path: "src/server.ts", branch, content: "y",
+      expectedHead: head, oldText: "x", newText: "y"
+    } as any)).rejects.toThrow("Choose full content or a complete bounded replacement");
+    expect(mixed.requests).toHaveLength(0);
+  });
+
+  test("keeps full-content writes capped at 100 KB", async () => {
+    calls.length = 0;
+    await expect(api.execute({
+      action: "write", repo: "aamvtrampa36-del/cdf-cloud-engine", path: "docs/test.md",
+      branch: "opencode/new-feature", content: "x".repeat(100_001)
+    })).rejects.toThrow("exceeds 100KB");
+    expect(calls.some(item => item.method === "PUT")).toBe(false);
   });
 });

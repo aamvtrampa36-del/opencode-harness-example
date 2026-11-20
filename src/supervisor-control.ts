@@ -41,21 +41,32 @@ export type SupervisorTask = {
   forkedFrom?: string;
 };
 
+/** A legacy active session without an operation ID cannot be retried safely. */
+export function isUntrackedLegacySupervisorOperation(
+  task: Pick<SupervisorTask, "status" | "session" | "operationId">
+): boolean {
+  return Boolean(task.session) && !task.operationId &&
+    (task.status === "running" || task.status === "unknown");
+}
+
 export function classifySupervisorOperation(
-  stored: SupervisorTask["status"], busy: boolean,
+  stored: SupervisorTask["status"] | Pick<SupervisorTask, "status" | "operationId">, busy: boolean,
   operation?: { status: "done" | "unanswered"; reason?: string }
 ): SupervisorTask["status"] {
-  if (operation?.status === "done") return "finished";
-  if (operation?.status === "unanswered") {
-    if (operation.reason === "interrupted" && stored === "cancel_requested") return "cancelled";
-    if (operation.reason === "failed") return "failed";
-    if (operation.reason === "not_found") return "unknown";
+  const task = typeof stored === "string" ? undefined : stored;
+  const status = task?.status ?? stored as SupervisorTask["status"];
+  const receipt = task && !task.operationId ? undefined : operation;
+  if (receipt?.status === "done") return "finished";
+  if (receipt?.status === "unanswered") {
+    if (receipt.reason === "interrupted" && status === "cancel_requested") return "cancelled";
+    if (receipt.reason === "failed") return "failed";
+    if (receipt.reason === "not_found") return "unknown";
     return "unanswered";
   }
-  if (busy) return stored === "cancel_requested" ? "cancel_requested" : "running";
-  if (stored === "preparing") return "preparing";
-  if (["running", "unknown", "cancel_requested"].includes(stored)) return "unknown";
-  return stored;
+  if (busy) return status === "cancel_requested" ? "cancel_requested" : "running";
+  if (status === "preparing") return "preparing";
+  if (["running", "unknown", "cancel_requested"].includes(status)) return "unknown";
+  return status;
 }
 
 export function validateSupervisorStart(raw: unknown, approved: readonly string[]): SupervisorStart {

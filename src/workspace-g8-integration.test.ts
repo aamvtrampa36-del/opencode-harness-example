@@ -10,6 +10,35 @@ import { assertScopedTool } from "./project-scope";
  * No model calls, no network and no writes are needed for this regression test.
  */
 describe("G8 Review tool registration through the actual OpenCode plugin", () => {
+  test("GitHub tool exposes and forwards bounded exact replacement inputs", async () => {
+    const toolSpecs = new Map<string, any>();
+    const repo = "aamvtrampa36-del/opencode-harness-example";
+    const received: GitHubAction[] = [];
+    const plugin = workspacePlugin({} as Workspace, {}, undefined, {
+      execute: async (action) => { received.push(action); return { mode: "replacement" }; }
+    });
+    await plugin.setup({
+      agent: { transform: async () => undefined },
+      tool: { transform: async (cb: (editor: any) => unknown) => cb({
+        remove: () => undefined,
+        add: (spec: any) => toolSpecs.set(spec.name, spec)
+      }) }
+    } as any);
+
+    const github = toolSpecs.get("github");
+    expect(github.input.additionalProperties).toBe(false);
+    for (const field of ["expectedHead", "oldText", "newText"]) {
+      expect(github.input.properties).toHaveProperty(field);
+    }
+    const input = {
+      action: "write", repo, path: "src/server.ts", branch: "opencode/staging-a1234567890bcdef",
+      expectedHead: "a".repeat(40), oldText: "const old = true;", newText: "const old = false;"
+    };
+    const result = await github.execute(input, { sessionID: "ses_test", agent: "build" });
+    expect(received).toEqual([input]);
+    expect(JSON.parse(result.content)).toEqual({ mode: "replacement" });
+  });
+
   test("subagents default to the inherited model and identify explicit decision delegation", async () => {
     const toolSpecs = new Map<string, any>();
     const kinds: string[] = [];
