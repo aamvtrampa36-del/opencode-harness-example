@@ -25,7 +25,7 @@ export function validateHandoff(h) {
   need(REPO.test(h.repository ?? ""), "repository must be owner/name");
   need(isText(h.branch) && /^[A-Za-z0-9._/-]+$/.test(h.branch) &&
     !h.branch.includes("..") && !h.branch.startsWith("refs/") &&
-    !h.branch.startsWith("/") && !h.branch.endsWith("/"), "branch must be a valid scoped ref name");
+    !h.branch.startsWith("/") && !h.branch.endsWith("/") && !["main", "master"].includes(h.branch), "branch must be a valid scoped ref name");
   need(SHA.test(h.head_sha ?? ""), "head_sha must be exact 40-hex commit SHA");
   need(isText(h.owner), "owner required");
   need(isText(h.objective) && h.objective.length >= 12, "objective must describe the task");
@@ -51,8 +51,8 @@ export function validateHandoff(h) {
     need(Array.isArray(h.evidence) && h.evidence.length > 0, "review/complete require evidence");
   }
   if (h.status === "COMPLETE_VERIFIED") {
-    need(Array.isArray(h.checks) && h.checks.some((v) => v.status === "pass"), "complete requires a passed check");
-    need(Array.isArray(h.checks) && h.checks.every((v) => v.status === "pass"), "complete must have no unchecked or failed checks");
+    need(Array.isArray(h.checks) && h.checks.some((v) => v?.status === "pass"), "complete requires a passed check");
+    need(Array.isArray(h.checks) && h.checks.every((v) => v?.status === "pass"), "complete must have no unchecked or failed checks");
   }
   return errors;
 }
