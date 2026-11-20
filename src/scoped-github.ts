@@ -4,6 +4,11 @@ import type { GitHubAction } from "./github";
 export type BoundRepositoryAction =
   | { action: "repo" }
   | { action: "read"; path: string; ref?: string }
+  | { action: "pr_info"; number: number }
+  | { action: "issue_info"; number: number }
+  | { action: "pr_files"; number: number; page?: number }
+  | { action: "pr_reviews"; number: number; page?: number }
+  | { action: "pr_checks"; sha: string }
   | { action: "review"; branch: string };
 
 /** G8: resolve the repository ONLY from the server-side immutable session
