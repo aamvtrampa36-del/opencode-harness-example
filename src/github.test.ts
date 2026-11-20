@@ -203,3 +203,179 @@ describe("GitHub scoped permissions",()=>{
     expect(calls.at(-1)?.body.draft).toBe(true);
   });
 });
+
+describe("GitHub bounded exact replacement", () => {
+  test("updates a 121 KB file from an exact branch head without full-file input", async () => {
+    const repo = "aamvtrampa36-del/opencode-harness-example";
+    const branch = "opencode/staging-a1234567890bcdef";
+    const head = "d".repeat(40);
+    const baseTree = "e".repeat(40);
+    const sourceTree = "4".repeat(40);
+    const blobSha = "f".repeat(40);
+    const treeSha = "1".repeat(40);
+    const commitSha = "2".repeat(40);
+    const anchor = "const staleReceipt = true;\n";
+    const source = "x".repeat(121_000) + "\n" + anchor + "tail\n";
+    const expectedContent = source.replace(anchor, "const staleReceipt = false;\n");
+    const requests: Array<{ method: string; route: string; body?: any }> = [];
+    const http = (async (url: any, init: any = {}) => {
+      const route = String(url).toLowerCase();
+      const method = String(init.method || "GET").toUpperCase();
+      const body = init.body ? JSON.parse(String(init.body)) : undefined;
+      requests.push({ method, route, body });
+      if (method === "GET" && route.endsWith("/git/ref/heads/" + encodeURIComponent(branch).toLowerCase())) {
+        return Response.json({ object: { sha: head } });
+      }
+      if (method === "GET" && route.includes("/contents/src/server.ts?ref=" + head)) {
+        return Response.json({
+          type: "file", encoding: "base64", content: btoa(source), size: source.length, sha: "3".repeat(40)
+        });
+      }
+      if (method === "GET" && route.endsWith("/git/commits/" + head)) {
+        return Response.json({ commit: { tree: { sha: baseTree } } });
+      }
+      if (method === "GET" && route.endsWith("/git/trees/" + baseTree)) {
+        return Response.json({ tree: [{ path: "src", mode: "040000", type: "tree", sha: sourceTree }] });
+      }
+      if (method === "GET" && route.endsWith("/git/trees/" + sourceTree)) {
+        return Response.json({ tree: [{ path: "server.ts", mode: "100755", type: "blob", sha: "3".repeat(40) }] });
+      }
+      if (method === "POST" && route.endsWith("/git/blobs")) {
+        return Response.json({ sha: blobSha }, { status: 201 });
+      }
+      if (method === "POST" && route.endsWith("/git/trees")) {
+        return Response.json({ sha: treeSha }, { status: 201 });
+      }
+      if (method === "POST" && route.endsWith("/git/commits")) {
+        return Response.json({ sha: commitSha }, { status: 201 });
+      }
+      if (method === "PATCH" && route.endsWith("/git/refs/heads/" + encodeURIComponent(branch).toLowerCase())) {
+        return Response.json({ object: { sha: commitSha } });
+      }
+      return Response.json({ message: "Not Found" }, { status: 404 });
+    }) as typeof fetch;
+    const bridge = new GitHubBridge("dummy-test-key", http);
+
+    const result = await bridge.execute({
+      action: "write", repo, path: "src/server.ts", branch, expectedHead: head,
+      oldText: anchor, newText: "const staleReceipt = false;\n", message: "fix: patch large source"
+    } as any);
+
+    expect(result).toMatchObject({ repo, branch, path: "src/server.ts", commitSha, expectedHead: head });
+    const blobRequest = requests.find(item => item.method === "POST" && item.route.endsWith("/git/blobs"));
+    expect(blobRequest?.body).toEqual({ content: expectedContent, encoding: "utf-8" });
+    const treeRequest = requests.find(item => item.method === "POST" && item.route.endsWith("/git/trees"));
+    expect(treeRequest?.body).toEqual({
+      base_tree: baseTree,
+      tree: [{ path: "src/server.ts", mode: "100755", type: "blob", sha: blobSha }]
+    });
+    const commitRequest = requests.find(item => item.method === "POST" && item.route.endsWith("/git/commits"));
+    expect(commitRequest?.body.parents).toEqual([head]);
+    const refRequest = requests.find(item => item.method === "PATCH");
+    expect(refRequest?.body).toEqual({ sha: commitSha, force: false });
+  });
+});
+
+describe("GitHub bounded replacement guards", () => {
+  const repo = "aamvtrampa36-del/opencode-harness-example";
+  const branch = "opencode/staging-a1234567890bcdef";
+  const head = "d".repeat(40);
+
+  function fixture(source: string, branchHead = head) {
+    const requests: Array<{ method: string; route: string }> = [];
+    const http = (async (url: any, init: any = {}) => {
+      const route = String(url).toLowerCase();
+      const method = String(init.method || "GET").toUpperCase();
+      requests.push({ method, route });
+      if (method === "GET" && route.endsWith("/git/ref/heads/" + encodeURIComponent(branch).toLowerCase())) {
+        return Response.json({ object: { sha: branchHead } });
+      }
+      if (method === "GET" && route.includes("/contents/src/server.ts?ref=" + head)) {
+        return Response.json({
+          type: "file", encoding: "base64", content: btoa(source),
+          size: new TextEncoder().encode(source).byteLength, sha: "3".repeat(40)
+        });
+      }
+      return Response.json({ message: "Not Found" }, { status: 404 });
+    }) as typeof fetch;
+    return { bridge: new GitHubBridge("dummy-test-key", http), requests };
+  }
+
+  test("rejects an old branch HEAD before reading or writing the file", async () => {
+    const state = fixture("const old = true;\n", "a".repeat(40));
+    await expect(state.bridge.execute({
+      action: "write", repo, path: "src/server.ts", branch, expectedHead: head,
+      oldText: "const old = true;\n", newText: "const old = false;\n"
+    })).rejects.toThrow("HEAD changed");
+    expect(state.requests).toHaveLength(1);
+    expect(state.requests[0]?.method).toBe("GET");
+  });
+
+  test("rejects absent or ambiguous anchors before creating Git objects", async () => {
+    for (const [source, expectedError] of [
+      ["const other = true;\n", "anchor was not found"],
+      ["const old = true;\nconst old = true;\n", "match exactly once"]
+    ] as const) {
+      const state = fixture(source);
+      await expect(state.bridge.execute({
+        action: "write", repo, path: "src/server.ts", branch, expectedHead: head,
+        oldText: "const old = true;\n", newText: "const old = false;\n"
+      })).rejects.toThrow(expectedError);
+      expect(state.requests.every(item => item.method === "GET")).toBe(true);
+    }
+  });
+
+  test("bounds the replacement file and both supplied fragments", async () => {
+    const bigFile = fixture("x".repeat(128_001));
+    await expect(bigFile.bridge.execute({
+      action: "write", repo, path: "src/server.ts", branch, expectedHead: head,
+      oldText: "x", newText: "y"
+    })).rejects.toThrow("128000 bytes");
+    expect(bigFile.requests.every(item => item.method === "GET")).toBe(true);
+
+    const oversizedFragment = fixture("x");
+    await expect(oversizedFragment.bridge.execute({
+      action: "write", repo, path: "src/server.ts", branch, expectedHead: head,
+      oldText: "x".repeat(8_193), newText: "y"
+    })).rejects.toThrow("8192 bytes");
+    expect(oversizedFragment.requests).toHaveLength(0);
+  });
+
+  test("limits replacements to the OpenCode Staging branch and protects deployment paths", async () => {
+    const state = fixture("const old = true;\n");
+    await expect(state.bridge.execute({
+      action: "write", repo: "aamvtrampa36-del/cdf-cloud-engine",
+      path: "docs/test.md", branch: "opencode/new-feature", expectedHead: head,
+      oldText: "const old = true;\n", newText: "const old = false;\n"
+    })).rejects.toThrow("OpenCode Staging review branches");
+    await expect(state.bridge.execute({
+      action: "write", repo, path: "wrangler.g1.jsonc", branch, expectedHead: head,
+      oldText: "const old = true;\n", newText: "const old = false;\n"
+    })).rejects.toThrow("Protected");
+    expect(state.requests).toHaveLength(0);
+  });
+
+  test("rejects incomplete or mixed full-write and replacement inputs", async () => {
+    const incomplete = fixture("x");
+    await expect(incomplete.bridge.execute({
+      action: "write", repo, path: "src/server.ts", branch, oldText: "x", newText: "y"
+    } as any)).rejects.toThrow("Choose full content or a complete bounded replacement");
+    expect(incomplete.requests).toHaveLength(0);
+
+    const mixed = fixture("x");
+    await expect(mixed.bridge.execute({
+      action: "write", repo, path: "src/server.ts", branch, content: "y",
+      expectedHead: head, oldText: "x", newText: "y"
+    } as any)).rejects.toThrow("Choose full content or a complete bounded replacement");
+    expect(mixed.requests).toHaveLength(0);
+  });
+
+  test("keeps full-content writes capped at 100 KB", async () => {
+    calls.length = 0;
+    await expect(api.execute({
+      action: "write", repo: "aamvtrampa36-del/cdf-cloud-engine", path: "docs/test.md",
+      branch: "opencode/new-feature", content: "x".repeat(100_001)
+    })).rejects.toThrow("exceeds 100KB");
+    expect(calls.some(item => item.method === "PUT")).toBe(false);
+  });
+});

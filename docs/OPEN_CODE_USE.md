@@ -37,7 +37,7 @@ La conexión OpenRouter es nativa de OpenCode y **no utiliza el plugin OpenRoute
 3. En OpenCode abre **Configurar → GitHub** y pega el token en el campo privado; solo se acepta el propietario autorizado.
 4. La herramienta **github** puede leer archivos, crear ramas `opencode/*`, escribir archivos de texto y preparar pull requests en borrador sin compartir el token con Linux.
 
-La herramienta no puede fusionar PR, borrar repositorios ni escribir directamente a `main` o `master`. Solo admite tres repositorios autorizados, con rutas de archivos validadas y 100 KB de límite por archivo.
+La herramienta no puede fusionar PR, borrar repositorios ni escribir directamente a `main` o `master`. Solo admite tres repositorios autorizados, con rutas de archivos validadas y 100 KB para escrituras completas; los reemplazos exactos admiten objetivos de hasta 128 KB con el SHA actual de la rama.
 
 ## Evidencias de pruebas reales
 
