@@ -24,11 +24,15 @@ export type GitHubAction =
   | { action: "pr_checks"; repo: string; sha: string }
   | { action: "branch"; repo: string; branch: string }
   | { action: "write"; repo: string; path: string; branch: string; content: string; message?: string }
+  | { action: "write"; repo: string; path: string; branch: string; expectedHead: string;
+      oldText: string; newText: string; message?: string }
   | { action: "pr"; repo: string; branch: string; title: string; body?: string }
   | { action: "review"; repo: string; branch: string };
 
 const BRANCH_RE = /^opencode\/[a-z0-9][a-z0-9._-]{0,59}$/;
 const MAX_FILE_BYTES = 100_000;
+const MAX_REPLACEMENT_FILE_BYTES = 128_000;
+const MAX_REPLACEMENT_TEXT_BYTES = 8_192;
 
 const OWNER = "aamvtrampa36-del";
 const OPENCODE_REPO = OWNER + "/opencode-harness-example";
@@ -96,7 +100,7 @@ function assertNonCanonicalWrite(repo: string, path: string): void {
   if (lower.startsWith(".github/workflows/") ||
       /^(?:canon|canonical|oficial|official|narrativa|narrative|prosa|chapters|capitulos|biblia|biblias|published|production)(?:\/|$)/.test(lower) ||
       /(?:^|\/)(?:canon|canonical|oficial|official|narrativa|narrative|capitulos|chapters|biblias)(?:\/|$)/.test(lower) ||
-      /(?:^|\/)(?:\.env|\.dev\.vars|wrangler\.toml|wrangler\.jsonc?)(?:$|\/)/.test(lower)) {
+      /(?:^|\/)(?:\.env(?:\.[^/]+)?|\.dev\.vars(?:\.[^/]+)?|wrangler(?:\.[a-z0-9_-]+)?\.(?:toml|jsonc?))(?:$|\/)/.test(lower)) {
     throw new Error("Protected official/production path cannot be edited from OpenCode");
   }
   // Both CDF repositories contain operational and editorial data. G8 smoke
@@ -207,6 +211,115 @@ export class GitHubBridge {
       if (raced?.object?.sha === sha) return { repo, branch, source, sha, reused: true };
       throw error;
     }
+  }
+
+  private async replaceExact(
+    repo: string,
+    path: string,
+    safePath: string,
+    branch: string,
+    expectedHead: string,
+    oldText: string,
+    newText: string,
+    message?: string
+  ): Promise<unknown> {
+    if (repo.toLowerCase() !== OPENCODE_REPO.toLowerCase() || !STAGING_REVIEW.test(branch)) {
+      throw new Error("Bounded replacement is limited to OpenCode Staging review branches");
+    }
+    if (!/^[0-9a-f]{40}$/.test(expectedHead)) {
+      throw new Error("Expected branch HEAD must be a full Git commit SHA");
+    }
+    if (typeof oldText !== "string" || !oldText || oldText.length > MAX_REPLACEMENT_TEXT_BYTES ||
+        typeof newText !== "string" || newText.length > MAX_REPLACEMENT_TEXT_BYTES ||
+        new TextEncoder().encode(oldText).byteLength > MAX_REPLACEMENT_TEXT_BYTES ||
+        new TextEncoder().encode(newText).byteLength > MAX_REPLACEMENT_TEXT_BYTES) {
+      throw new Error("Old text must be non-empty, and each fragment must be at most 8192 bytes");
+    }
+
+    const base = "/repos/" + repo;
+    const ref = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(branch));
+    if (ref.object?.sha !== expectedHead) {
+      throw new Error("GitHub branch HEAD changed; review the current branch before replacing text");
+    }
+    const file = await this.api("GET",
+      base + "/contents/" + safePath + "?ref=" + encodeURIComponent(expectedHead));
+    if (file.type !== "file" || file.encoding !== "base64" || typeof file.content !== "string" ||
+        !Number.isSafeInteger(file.size) || file.size > MAX_REPLACEMENT_FILE_BYTES) {
+      throw new Error("Replacement target must be a text file no larger than 128000 bytes");
+    }
+    let source: string;
+    let sourceBytes: Uint8Array;
+    try {
+      const binary = atob(file.content.replace(/\s/g, ""));
+      sourceBytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+      source = new TextDecoder("utf-8", { fatal: true }).decode(sourceBytes);
+    } catch {
+      throw new Error("Replacement target must be valid UTF-8 text");
+    }
+    if (sourceBytes.byteLength > MAX_REPLACEMENT_FILE_BYTES) {
+      throw new Error("Replacement target must be a text file no larger than 128000 bytes");
+    }
+    const first = source.indexOf(oldText);
+    if (first < 0) throw new Error("Replacement anchor was not found");
+    if (source.indexOf(oldText, first + oldText.length) >= 0) {
+      throw new Error("Replacement anchor must match exactly once");
+    }
+    const updated = source.slice(0, first) + newText + source.slice(first + oldText.length);
+    if (new TextEncoder().encode(updated).byteLength > MAX_REPLACEMENT_FILE_BYTES) {
+      throw new Error("Updated replacement target would exceed 128000 bytes");
+    }
+
+    const parent = await this.api("GET", base + "/git/commits/" + expectedHead);
+    const baseTree = parent.commit?.tree?.sha;
+    if (typeof baseTree !== "string" || !/^[0-9a-f]{40}$/.test(baseTree)) {
+      throw new Error("GitHub could not verify the expected commit tree");
+    }
+    let fileTree = baseTree;
+    let mode: "100644" | "100755" | undefined;
+    const segments = path.split("/");
+    for (let index = 0; index < segments.length; index++) {
+      const tree = await this.api("GET", base + "/git/trees/" + fileTree);
+      if (!Array.isArray(tree.tree)) throw new Error("GitHub could not verify the replacement target path");
+      const entry = tree.tree.find((item: any) => item.path === segments[index]);
+      if (!entry) throw new Error("Replacement target is not present in the expected commit tree");
+      if (index === segments.length - 1) {
+        if (entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755")) {
+          throw new Error("Replacement target must be a regular file");
+        }
+        mode = entry.mode;
+      } else {
+        if (entry.type !== "tree" || typeof entry.sha !== "string" || !/^[0-9a-f]{40}$/.test(entry.sha)) {
+          throw new Error("GitHub could not verify the replacement target path");
+        }
+        fileTree = entry.sha;
+      }
+    }
+    if (!mode) throw new Error("GitHub could not verify the replacement target mode");
+    const blob = await this.api("POST", base + "/git/blobs", { content: updated, encoding: "utf-8" });
+    if (typeof blob.sha !== "string" || !/^[0-9a-f]{40}$/.test(blob.sha)) {
+      throw new Error("GitHub did not return a valid replacement blob");
+    }
+    const tree = await this.api("POST", base + "/git/trees", {
+      base_tree: baseTree,
+      tree: [{ path, mode, type: "blob", sha: blob.sha }]
+    });
+    if (typeof tree.sha !== "string" || !/^[0-9a-f]{40}$/.test(tree.sha)) {
+      throw new Error("GitHub did not return a valid replacement tree");
+    }
+    const commit = await this.api("POST", base + "/git/commits", {
+      message: (message || "fix: replace text from OpenCode").slice(0, 150),
+      tree: tree.sha,
+      parents: [expectedHead]
+    });
+    if (typeof commit.sha !== "string" || !/^[0-9a-f]{40}$/.test(commit.sha)) {
+      throw new Error("GitHub did not return a valid replacement commit");
+    }
+    const updatedRef = await this.api("PATCH",
+      base + "/git/refs/heads/" + encodeURIComponent(branch), { sha: commit.sha, force: false });
+    if (updatedRef.object?.sha !== commit.sha) {
+      throw new Error("GitHub did not confirm the replacement branch HEAD");
+    }
+    return { repo, branch, path, commitSha: commit.sha, fileSha: blob.sha, expectedHead, mode: "replacement" };
   }
 
   async execute(input: GitHubAction): Promise<unknown> {
@@ -382,6 +495,13 @@ export class GitHubBridge {
         const branch = branchChecked(input.branch);
         const safePath = pathChecked(input.path);
         assertNonCanonicalWrite(repo, input.path);
+        if ("expectedHead" in input || "oldText" in input || "newText" in input) {
+          if (!("expectedHead" in input) || !("oldText" in input) || !("newText" in input) || "content" in input) {
+            throw new Error("Choose full content or a complete bounded replacement, not both");
+          }
+          return this.replaceExact(repo, input.path, safePath, branch,
+            input.expectedHead, input.oldText, input.newText, input.message);
+        }
         if (typeof input.content !== "string") throw new Error("File content must be plain text");
         const current = await this.api("GET", base + "/contents/" + safePath + "?ref=" + encodeURIComponent(branch), undefined, true);
         // An interrupted PUT can commit remotely even when its response is lost.

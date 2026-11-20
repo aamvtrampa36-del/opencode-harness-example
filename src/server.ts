@@ -50,7 +50,7 @@ import {
   assertSupervisorBoundGitHubOperation, supervisorBearerAllowed,
   supervisorBaseCommit, supervisorBranch, supervisorFingerprint, supervisorProject,
   supervisorPrompt, supervisorResponse, supervisorTaskKey, supervisorStartOperationId,
-  supervisorTurnOperationId, classifySupervisorOperation,
+  supervisorTurnOperationId, classifySupervisorOperation, isUntrackedLegacySupervisorOperation,
   validateSupervisorStart, type SupervisorTask
 } from "./supervisor-control";
 
@@ -73,6 +73,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
     let old = await this.ctx.storage.get<SupervisorTask>(key);
     let reused = Boolean(old);
     if (old && old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
+    if (old && isUntrackedLegacySupervisorOperation(old)) {
+      let busy: boolean | undefined;
+      try { busy = await this.harness.session(old.session!).busy(); }
+      catch { busy = undefined; }
+      const legacy = { ...old,
+        status: busy ? "running" as const : "unknown" as const,
+        error: busy === undefined ? "LEGACY_BUSY_STATE_UNVERIFIED" : "LEGACY_OPERATION_ID_MISSING",
+        updatedAt: Date.now()
+      };
+      await this.ctx.storage.put(key, legacy);
+      return this.supervisorTaskReceipt(legacy, true);
+    }
     if (old && ["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(old.status)) {
       return this.supervisorTaskReceipt(old, true);
     }
@@ -488,9 +500,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       // fails. Unknown counts are not zeros and must not yield a false PASS.
       toolCountsError = error instanceof Error ? error.message.slice(0, 200) : "SUPERVISOR_METRICS_UNAVAILABLE";
     }
-    const status = job.operationId
-      ? classifySupervisorOperation(job.status, busy, operation)
-      : busy ? "running" : job.status;
+    const status = classifySupervisorOperation(job, busy, operation);
     if (status !== job.status) {
       job.status = status;
       if (operation?.status === "unanswered") job.error = operation.reason?.slice(0, 240);
