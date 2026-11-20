@@ -236,23 +236,47 @@ export class GitHubBridge {
       }
       case "pr_checks": {
         const sha = shaChecked(input.sha);
-        const [checks, status] = await Promise.all([
+        // Fine-grained GitHub tokens often grant commit statuses but not Checks.
+        // Keep the two independent evidence sources separate instead of
+        // failing the entire read because one optional source returned 403.
+        const [checksResult, statusResult] = await Promise.allSettled([
           this.api("GET", base + "/commits/" + sha + "/check-runs?per_page=100"),
           this.api("GET", base + "/commits/" + sha + "/status")
         ]);
-        if (!Array.isArray(checks?.check_runs) || !Array.isArray(status?.statuses)) {
-          throw new Error("Invalid GitHub checks response");
+        if (checksResult.status === "rejected" && statusResult.status === "rejected") {
+          throw statusResult.reason;
         }
+        const checks = checksResult.status === "fulfilled" ? checksResult.value : null;
+        const status = statusResult.status === "fulfilled" ? statusResult.value : null;
+        if (checks !== null && !Array.isArray(checks?.check_runs)) {
+          throw new Error("Invalid GitHub check-runs response");
+        }
+        if (status !== null && !Array.isArray(status?.statuses)) {
+          throw new Error("Invalid GitHub commit-status response");
+        }
+        const reasonClass = (reason: unknown): string => {
+          const message = reason instanceof Error ? reason.message : String(reason);
+          return /\[(GITHUB_[A-Z_]+)\]/.exec(message)?.[1] ?? "GITHUB_READ_FAILED";
+        };
         return {
-          repo, sha, combinedStatus: status.state,
-          checkRuns: checks.check_runs.map((r: any) => ({
+          repo, sha, combinedStatus: status?.state ?? null,
+          checkRuns: (checks?.check_runs ?? []).map((r: any) => ({
             name: r.name, status: r.status, conclusion: r.conclusion,
             detailsUrl: r.html_url, completedAt: r.completed_at
           })),
-          statuses: status.statuses.map((r: any) => ({
+          statuses: (status?.statuses ?? []).map((r: any) => ({
             context: r.context, state: r.state, targetUrl: r.target_url
           })),
-          checksMayBeTruncated: checks.total_count > checks.check_runs.length
+          checksMayBeTruncated: checks === null ? null : checks.total_count > checks.check_runs.length,
+          partial: checks === null || status === null,
+          sources: {
+            checkRuns: checks === null
+              ? { available: false, errorClass: reasonClass((checksResult as PromiseRejectedResult).reason) }
+              : { available: true },
+            commitStatuses: status === null
+              ? { available: false, errorClass: reasonClass((statusResult as PromiseRejectedResult).reason) }
+              : { available: true }
+          }
         };
       }
       case "branch": {
