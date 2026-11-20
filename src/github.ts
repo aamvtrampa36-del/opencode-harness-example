@@ -274,6 +274,15 @@ export class GitHubBridge {
         assertNonCanonicalWrite(repo, input.path);
         if (typeof input.content !== "string") throw new Error("File content must be plain text");
         const current = await this.api("GET", base + "/contents/" + safePath + "?ref=" + encodeURIComponent(branch), undefined, true);
+        // An interrupted PUT can commit remotely even when its response is lost.
+        // Reconcile the exact content before retrying to avoid duplicate commits.
+        // This never bypasses the branch, repository or protected-path checks.
+        if (current?.type === "file" && current.encoding === "base64" &&
+            typeof current.content === "string" && current.size <= MAX_FILE_BYTES &&
+            fromBase64(current.content) === input.content) {
+          return { repo, branch, path: input.path, commitSha: null,
+            fileSha: current.sha, unchanged: true, reconciled: true };
+        }
         const result = await this.api("PUT", base + "/contents/" + safePath, {
           message: (input.message || "chore: update from OpenCode").slice(0, 150),
           content: toBase64(input.content),
