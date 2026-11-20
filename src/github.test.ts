@@ -207,3 +207,37 @@ describe("Authenticated read-only GitHub PR and issue triage", () => {
     expect(routes).toHaveLength(1);
   });
 });
+
+
+describe("GitHub private read error classes and safe retry boundaries", () => {
+  const repo="aamvtrampa36-del/cdf-cloud-engine";
+  for (const [status,kind] of [
+    [401,"GITHUB_AUTH_REQUIRED"],
+    [403,"GITHUB_PERMISSION_OR_RATE_LIMIT"],
+    [404,"GITHUB_NOT_ACCESSIBLE"],
+    [429,"GITHUB_TRANSIENT"],
+    [503,"GITHUB_TRANSIENT"]
+  ] as const) {
+    test("classifies HTTP " + status + " with no automatic retries", async () => {
+      let calls=0;
+      const fake=(async (_url: unknown, init: RequestInit) => {
+        calls++;
+        expect(init.method).toBe("GET");
+        expect(new Headers(init.headers).get("Authorization")).toBe("Bearer unit-only");
+        return new Response(JSON.stringify({message:"Synthetic unavailable"}), {
+          status,headers:{"Content-Type":"application/json","Retry-After":"3"}
+        });
+      }) as typeof fetch;
+      const bridge=new GitHubBridge("unit-only",fake);
+      await expect(bridge.execute({action:"pr_info",repo,number:227}))
+        .rejects.toThrow("GitHub API " + status + " [" + kind + "]");
+      expect(calls).toBe(1);
+    });
+  }
+  test("do not convert HTTP 404 private access failure into a null PR", async () => {
+    const bridge=new GitHubBridge("unit-only",(async () =>
+      new Response(JSON.stringify({message:"Not Found"}), {status:404})) as typeof fetch);
+    await expect(bridge.execute({action:"pr_info",repo,number:227}))
+      .rejects.toThrow("GITHUB_NOT_ACCESSIBLE");
+  });
+});
