@@ -57,6 +57,44 @@ export function validateHandoff(h) {
   return errors;
 }
 
+
+/**
+ * Advisory conflict scan over explicit task claims. Directory write scopes must
+ * end in "/". This is a preflight guard, NOT a distributed lock or Git diff.
+ * Consumers must still compare branch heads and actual PR changes.
+ */
+export function findHandoffConflicts(handoffs) {
+  if (!Array.isArray(handoffs) || handoffs.length < 2) {
+    throw new Error("At least two handoffs are required");
+  }
+  for (const [i, h] of handoffs.entries()) {
+    const errors = validateHandoff(h);
+    if (errors.length) throw new Error(`Invalid handoff #${i + 1}: ${errors.join("; ")}`);
+  }
+  const conflicts = [];
+  const intersects = (a, b) => a === b ||
+    (a.endsWith("/") && b.startsWith(a)) ||
+    (b.endsWith("/") && a.startsWith(b));
+  for (let i = 0; i < handoffs.length; i++) {
+    for (let j = i + 1; j < handoffs.length; j++) {
+      const a = handoffs[i], b = handoffs[j];
+      if (a.repository !== b.repository) continue;
+      const reasons = [];
+      if (a.task_id === b.task_id) reasons.push("DUPLICATE_TASK_ID");
+      if (a.branch === b.branch) reasons.push("SHARED_BRANCH");
+      const overlapping = [...new Set(a.write_scope.flatMap(x =>
+        b.write_scope.filter(y => intersects(x, y)).map(y => `${x} <> ${y}`)
+      ))].sort();
+      if (overlapping.length) reasons.push("OVERLAPPING_WRITE_SCOPE");
+      if (reasons.length) conflicts.push({
+        left: a.task_id, right: b.task_id, repository: a.repository,
+        reasons, overlapping
+      });
+    }
+  }
+  return conflicts;
+}
+
 function selftest() {
   const sample = {
     schema:"agent.handoff.v1", task_id:"synthetic-read-only", repository:"owner/repo",
@@ -82,8 +120,24 @@ function selftest() {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   if (process.argv[2] === "--selftest") {
     selftest();
+  } else if (process.argv[2] === "--conflicts") {
+    if (process.argv.length < 5) {
+      console.error("Usage: node scripts/validate-agent-handoff.mjs --conflicts task1.json task2.json [task3.json ...]");
+      process.exitCode = 2;
+    } else {
+      try {
+        const handoffs = process.argv.slice(3).map((p) => JSON.parse(readFileSync(p, "utf8")));
+        const conflicts = findHandoffConflicts(handoffs);
+        console.log(JSON.stringify({status: conflicts.length ? "CONFLICTS_FOUND" : "NO_DECLARED_CONFLICTS",
+          conflicts, disclaimer: "advisory preflight; not a lock or PR diff"}, null, 2));
+        if (conflicts.length) process.exitCode = 1;
+      } catch (error) {
+        console.error("Invalid conflict input:", error.message);
+        process.exitCode = 1;
+      }
+    }
   } else if (process.argv.length !== 3) {
-    console.error("Usage: node scripts/validate-agent-handoff.mjs --selftest | handoff.json");
+    console.error("Usage: node scripts/validate-agent-handoff.mjs --selftest | --conflicts task1.json task2.json | handoff.json");
     process.exitCode = 2;
   } else {
     try {
