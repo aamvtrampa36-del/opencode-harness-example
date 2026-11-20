@@ -1,0 +1,25 @@
+{
+  "schema": "agent.handoff.v1",
+  "task_id": "bde20112604a83c5",
+  "repository": "aamvtrampa36-del/opencode-harness-example",
+  "branch": "opencode/staging-bde20112604a83c5",
+  "head_sha": "cd810b133d71d251b6a417cf13330b0ef849595b",
+  "owner": "opencode-producer",
+  "objective": "Entregar contexto sintético al segundo agente",
+  "status": "BLOCKED",
+  "write_scope": [
+    "docs/opencode-agent-lab/handoff-bde20112604a83c5.json"
+  ],
+  "depends_on": [],
+  "evidence": [],
+  "checks": [
+    {
+      "name": "consumer-readback",
+      "status": "not_run"
+    }
+  ],
+  "next_action": "El consumidor debe recuperar por repo_read esta rama, verificar SYN-HANDOFF-20261120-ALPHA y registrar resultado",
+  "updated_at": "2026-11-20T21:00:55Z",
+  "canary": "SYN-HANDOFF-20261120-ALPHA",
+  "editorial_authority": "NONE"
+}
