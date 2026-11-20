@@ -1,0 +1,8 @@
+{
+  "schema": "agent-handoff-consumer.v1",
+  "source_branch": "opencode/staging-bde20112604a83c5",
+  "source_blob_sha": "08b39abeaec73dc126bda6d594d3b6250157f1a2",
+  "canary": "SYN-HANDOFF-20261120-ALPHA",
+  "validated": true,
+  "editorial_authority": "NONE"
+}
