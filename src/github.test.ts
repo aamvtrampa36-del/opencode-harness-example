@@ -220,3 +220,50 @@ describe("GitHub private read error classes and safe retry boundaries", () => {
       .rejects.toThrow("GITHUB_NOT_ACCESSIBLE");
   });
 });
+
+describe("GitHub write idempotency after ambiguous transport failure", () => {
+  test("a committed write with lost response is reconciled without a second PUT", async () => {
+    const repo="aamvtrampa36-del/cdf-cloud-engine";
+    const content="synthetic-value=verified\\n";
+    let puts=0, reads=0, committed=false;
+    const mock=(async (url: unknown, init: RequestInit={}) => {
+      const u=String(url),method=init.method||"GET";
+      if (method==="GET" && u.includes("/contents/docs/ambiguous.md?ref=opencode%2Ftest-recovery")) {
+        reads++;
+        if (!committed) return new Response(JSON.stringify({message:"Not Found"}),{status:404});
+        return new Response(JSON.stringify({
+          type:"file",encoding:"base64",content:btoa(content),size:content.length,sha:"b".repeat(40)
+        }),{status:200});
+      }
+      if (method==="PUT" && u.endsWith("/contents/docs/ambiguous.md")) {
+        puts++;committed=true;
+        return new Response(JSON.stringify({message:"Synthetic gateway response lost"}),{status:503});
+      }
+      return new Response(JSON.stringify({message:"Unexpected request"}),{status:404});
+    }) as typeof fetch;
+    const bridge=new GitHubBridge("test-token-only",mock);
+    const input={action:"write" as const,repo,path:"docs/ambiguous.md",branch:"opencode/test-recovery",content};
+    await expect(bridge.execute(input)).rejects.toThrow("GITHUB_TRANSIENT");
+    const second:any=await bridge.execute(input);
+    expect(second).toMatchObject({repo,branch:"opencode/test-recovery",unchanged:true,reconciled:true,fileSha:"b".repeat(40)});
+    expect(second.commitSha).toBeNull();
+    expect(puts).toBe(1);
+    expect(reads).toBe(2);
+  });
+  test("a genuine content change still performs a guarded write", async () => {
+    let puts=0;
+    const mock=(async (_url: unknown,init: RequestInit={}) => {
+      if(init.method==="PUT") {puts++;return new Response(JSON.stringify({
+        commit:{sha:"c".repeat(40)},content:{sha:"d".repeat(40)}
+      }),{status:200});}
+      return new Response(JSON.stringify({
+        type:"file",encoding:"base64",content:btoa("original"),size:8,sha:"e".repeat(40)
+      }),{status:200});
+    }) as typeof fetch;
+    const bridge=new GitHubBridge("test-token-only",mock);
+    const result:any=await bridge.execute({action:"write",repo:"aamvtrampa36-del/cdf-cloud-engine",
+      path:"docs/changed.md",branch:"opencode/test-recovery",content:"different"});
+    expect(result.commitSha).toBe("c".repeat(40));
+    expect(puts).toBe(1);
+  });
+});
