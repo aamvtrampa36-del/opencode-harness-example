@@ -4,6 +4,7 @@ import type { GitHubAction } from "./github";
 export type BoundRepositoryAction =
   | { action: "repo" }
   | { action: "read"; path: string; ref?: string }
+  | { action: "pr_search"; query: string; page?: number }
   | { action: "pr_info"; number: number }
   | { action: "issue_info"; number: number }
   | { action: "pr_files"; number: number; page?: number }
