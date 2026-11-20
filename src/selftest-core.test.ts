@@ -166,9 +166,7 @@ describe("selftest CLI independent acceptance gates (real subprocess)", () => {
     expect(String(result.stderr)).toContain("does not match the actual Git HEAD");
   });
   test("cannot claim reused artifacts without a matching prior receipt", () => {
-    const head = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
-    expect(head.status).toBe(0);
-    const result = run("--commit", head.stdout.trim(), "--reuse-dist");
+    const result = run("--allow-uncommitted", "--reuse-dist");
     expect(result.status).toBe(2);
     expect(String(result.stderr)).toContain("--reuse-dist requires --resume");
   });

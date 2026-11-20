@@ -3,8 +3,9 @@ import {
   classifySupervisorOperation,
   SUPERVISOR_WORKSPACE, assertSupervisorBoundGitHubOperation,
   supervisorBaseCommit, supervisorBearerAllowed, supervisorBranch, supervisorFingerprint,
-  supervisorProject, supervisorPrompt, supervisorResponse,
-  supervisorTaskKey, supervisorStartOperationId, supervisorTurnOperationId, validateSupervisorStart
+  supervisorProject, supervisorPrompt, supervisorResponse, supervisorTaskStatusReceipt,
+  supervisorTaskKey, supervisorStartOperationId, supervisorTurnOperationId, validateSupervisorStart,
+  type SupervisorTask
 } from "./supervisor-control";
 
 const repos = ["aamvtrampa36-del/opencode-harness-example",
@@ -16,6 +17,23 @@ const input = {
 };
 
 describe("OpenCode remote supervisor — fail closed", () => {
+  test("status receipt reflects an error cleared after the operation finishes", () => {
+    const task: SupervisorTask = {
+      id: input.requestId,
+      repository: input.repository,
+      project: supervisorProject(input.requestId),
+      branch: supervisorBranch(input.requestId, input.repository),
+      fingerprint: "fingerprint",
+      createdAt: 1,
+      status: "unknown",
+      error: "No se pudo confirmar el envío"
+    };
+    const completed = { ...task, status: "finished" as const, error: undefined };
+    const receipt = supervisorTaskStatusReceipt(completed);
+    expect(receipt).toMatchObject({ status: "finished" });
+    expect(receipt.error).toBeUndefined();
+  });
+
   test("requires owner-approved repository, immutable task ID and bounded prompt", () => {
     expect(validateSupervisorStart(input, repos)).toEqual(input);
     expect(() => validateSupervisorStart({ ...input, repository: "aamvtrampa36-del/not-approved" }, repos)).toThrow("no autorizado");

@@ -58,6 +58,17 @@ export function classifySupervisorOperation(
   return stored;
 }
 
+/** Build status data from the current durable task, after any state reconciliation. */
+export function supervisorTaskStatusReceipt(task: SupervisorTask) {
+  return {
+    id: task.id, repository: task.repository, project: task.project,
+    branch: task.branch, baseCommit: task.baseCommit, session: task.session,
+    startedAt: task.createdAt, updatedAt: task.updatedAt, operationId: task.operationId,
+    model: task.model, error: task.error, status: task.status,
+    ...(task.forkedFrom ? { forkedFrom: task.forkedFrom } : {})
+  };
+}
+
 export function validateSupervisorStart(raw: unknown, approved: readonly string[]): SupervisorStart {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Solicitud inválida");
   const input = raw as Record<string, unknown>;
