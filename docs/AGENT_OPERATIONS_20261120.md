@@ -70,6 +70,8 @@ Estados admitidos: `ACTIVE`, `BLOCKED`, `READY_FOR_REVIEW`, `COMPLETE_VERIFIED`.
 
 ## 6. Innovaciones verificadas externamente, **no adoptadas automáticamente**
 
+La matriz de descubrimientos, compatibilidad, decisión y pruebas exigidas está en [AGENT_TECH_RADAR_20261120.md](AGENT_TECH_RADAR_20261120.md). No requiere leerla para tareas ordinarias.
+
 - OpenCode documenta Skills con descubrimiento bajo demanda y nuevas funciones de subagentes/worktrees. Estas corresponden al producto original: comprobar la compatibilidad con la versión embebida y el conjunto de herramientas del harness antes de migrar. https://opencode.ai/docs/skills/ , https://opencode.ai/docs/tools/
 - MCP especificación **2026-07-28** añadió descubrimiento `server/discover`, catálogo cacheable y encabezados de ruta `Mcp-Method`/`Mcp-Name`. Compatibilidad de cliente/servidor, negociación y auth necesitan pruebas separadas antes de alterar Gateway. https://modelcontextprotocol.io/specification/2026-07-28/ ; https://blog.modelcontextprotocol.io/posts/2026-07-28/
 - GitHub recomienda consultas condicionadas, filtradas y seriales bajo límites secundarios. https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api
