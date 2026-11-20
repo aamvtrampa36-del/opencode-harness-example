@@ -48,7 +48,7 @@ import {
   assertSupervisorBoundGitHubOperation, supervisorBearerAllowed,
   supervisorBaseCommit, supervisorBranch, supervisorFingerprint, supervisorProject,
   supervisorPrompt, supervisorResponse, supervisorTaskKey, supervisorStartOperationId,
-  supervisorTurnOperationId, classifySupervisorOperation,
+  supervisorTurnOperationId, classifySupervisorOperation, supervisorTaskStatusReceipt,
   validateSupervisorStart, type SupervisorTask
 } from "./supervisor-control";
 
@@ -434,12 +434,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async supervisedTaskStatus(id: string): Promise<unknown> {
     this.assertStagingRemote();
     const job = await this.supervisedRecord(id);
-    const base = { id: job.id, repository: job.repository, project: job.project,
-      branch: job.branch, baseCommit: job.baseCommit, session: job.session, startedAt: job.createdAt,
-      updatedAt: job.updatedAt, operationId: job.operationId, model: job.model, error: job.error,
-      ...(job.forkedFrom ? { forkedFrom: job.forkedFrom } : {}) };
     if (!job.session || ["cancelled", "failed", "preparing"].includes(job.status))
-      return { ...base, status: job.status, reviewRequired: true, passed: false, verified: false };
+      return { ...supervisorTaskStatusReceipt(job), reviewRequired: true, passed: false, verified: false };
     const handle = this.harness.session(job.session);
     const waitController = new AbortController();
     const waitTimer = setTimeout(() => waitController.abort(), 120);
@@ -473,7 +469,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       job.updatedAt = Date.now();
       await this.ctx.storage.put(supervisorTaskKey(id), job);
     }
-    return { ...base, updatedAt: job.updatedAt, status, toolCalls, completedTools, failedTools, reviewRequired: true,
+    return { ...supervisorTaskStatusReceipt(job), toolCalls, completedTools, failedTools, reviewRequired: true,
       operationReason: operation?.reason, operationAnswerAvailable: Boolean(operation?.text), waitError,
       passed: false, verified: false };
   }
