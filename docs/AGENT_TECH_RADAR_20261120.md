@@ -26,6 +26,6 @@
 
 ### Caso prioritario
 
-El mejor candidato inmediato **ya implementado parcialmente** es la recuperación enfocada de PR y el handoff con procedencia. Validar ese camino entre dos agentes antes de desplegar gestores de memoria compartida, embeddings o coordinación distribuida.
+El mejor candidato inmediato **ya implementado parcialmente** es la recuperación enfocada de PR, el handoff con procedencia y su preflight de conflictos de scopes declarados. El validador no sustituye un servicio de locks ni garantiza exclusión mutua. Validar ese camino entre dos agentes antes de desplegar gestores de memoria compartida, embeddings o coordinación distribuida.
 
 Las cifras de ahorro siguen **NOT_MEASURED**. La actualización documental y el validador de JSON no son una prueba de reducción de coste ni de coordinación efectiva entre escritores concurrentes.
