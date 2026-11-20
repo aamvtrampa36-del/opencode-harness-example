@@ -184,6 +184,7 @@ export class GitHubBridge {
       }
       case "pr_search": {
         if (typeof input.query !== "string") throw new Error("Invalid PR discovery query");
+        if (/[\r\n\t]/.test(input.query)) throw new Error("Invalid PR discovery query");
         const query = input.query.trim().replace(/\s+/g, " ");
         if (query.length < 2 || query.length > 100 ||
             !/^[\p{L}\p{N} _./#-]+$/u.test(query) ||
