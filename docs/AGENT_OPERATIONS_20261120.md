@@ -57,6 +57,8 @@ Ejemplo **sintético** (SHA y nombres inventados deliberadamente; jamás interpr
 }
 ```
 
+**Preflight de dos o más agentes:** `node scripts/validate-agent-handoff.mjs --conflicts task1.json task2.json` detecta, por repositorio, ramas compartidas, IDs de tarea duplicados y solapamientos **declarados** de archivos o directorios. Para declarar un directorio usa barra final (por ejemplo `src/`). El resultado `NO_DECLARED_CONFLICTS` **no** es autorización de escritura ni garantía de ausencia de conflictos: comparar además los diffs de Git, la base SHA, dependencias y permisos actuales.
+
 Estados admitidos: `ACTIVE`, `BLOCKED`, `READY_FOR_REVIEW`, `COMPLETE_VERIFIED`. El último exige evidencia y checks observados; aún así, el revisor debe verificar las fuentes. Nunca registrar contenido narrativo, credenciales ni resultados sensibles en el handoff.
 
 ## 5. Elección de herramienta y contexto
