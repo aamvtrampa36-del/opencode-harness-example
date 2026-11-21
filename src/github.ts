@@ -36,7 +36,7 @@ const MAX_REPLACEMENT_TEXT_BYTES = 8_192;
 
 const OWNER = "aamvtrampa36-del";
 const OPENCODE_REPO = OWNER + "/opencode-harness-example";
-export const OPENCODE_STAGING_BASE = "staging/opencode-g1-20261118";
+export const OPENCODE_STAGING_BASE = "staging/opencode-g1-rpc-safe-20261120";
 const STAGING_REVIEW = /^opencode\/staging-[a-f0-9]{16}$/;
 /** New OpenCode-only staging tasks are forked from a fixed, reviewed staging ref.
  * Legacy supervised branches and all other repositories stay on default main. */

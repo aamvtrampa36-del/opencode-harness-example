@@ -50,6 +50,22 @@ async function statusOf(stored: SupervisorTask, operation: unknown, busy = false
   return { response, saved };
 }
 
+async function cancelOf(stored: SupervisorTask) {
+  const { storage, rows } = memoryStorage({ [supervisorTaskKey(stored.id)]: { ...stored } });
+  const agent = Object.create(OpenCodeAgent.prototype) as Record<string, unknown>;
+  agent.env = { OPENCODE_SUPERVISOR_ENABLED: "true" };
+  agent.ctx = { storage };
+  let abortCalls = 0;
+  agent.harness = {
+    session: () => ({ abort: async () => { abortCalls++; return true; } })
+  };
+  const response = await (agent as unknown as {
+    cancelSupervisedTask(id: string): Promise<Record<string, unknown>>;
+  }).cancelSupervisedTask(stored.id);
+  const saved = rows.get(supervisorTaskKey(stored.id)) as SupervisorTask;
+  return { response, saved, abortCalls };
+}
+
 describe("supervisedTaskStatus returns the reconciled task error", () => {
   test("a done operation clears a stale error from the returned receipt", async () => {
     const { response, saved } = await statusOf(task({ error: "stale failure" }), { status: "done", text: "ok" });
@@ -84,5 +100,16 @@ describe("supervisedTaskStatus returns the reconciled task error", () => {
       { status: "done", text: "ok" });
     expect(response.status).toBe("finished");
     expect(response.error).toBeUndefined();
+  });
+});
+
+describe("cancelSupervisedTask reports unconfirmed legacy cancellation", () => {
+  test("a session without an operation id is left unknown, not falsely cancelled", async () => {
+    const { response, saved, abortCalls } = await cancelOf(task({ operationId: undefined }));
+    expect(response.status).toBe("unknown");
+    expect(response.confirmed).toBe(false);
+    expect(response.reason).toBe("OpenCode operation id missing");
+    expect(saved.status).toBe("unknown");
+    expect(abortCalls).toBe(0);
   });
 });

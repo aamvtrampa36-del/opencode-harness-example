@@ -549,11 +549,20 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const job = await this.supervisedRecord(id);
     if (["cancelled", "failed", "finished", "unanswered"].includes(job.status))
       return { id, status: job.status };
-    if (!job.session || !job.operationId) {
+    if (!job.session) {
       job.status = "cancelled";
       job.updatedAt = Date.now();
       await this.ctx.storage.put(supervisorTaskKey(id), job);
-      return { id, status: "cancelled", confirmed: true, reason: "no OpenCode operation had started" };
+      return { id, status: "cancelled", confirmed: true, reason: "no OpenCode session had started" };
+    }
+    if (!job.operationId) {
+      // A legacy session may still be running; without its operation id we
+      // cannot ask OpenCode to abort it or claim cancellation was confirmed.
+      job.status = "unknown";
+      job.error = "OpenCode operation id missing";
+      job.updatedAt = Date.now();
+      await this.ctx.storage.put(supervisorTaskKey(id), job);
+      return { id, status: "unknown", confirmed: false, reason: job.error };
     }
     job.status = "cancel_requested";
     job.updatedAt = Date.now();

@@ -11,7 +11,7 @@ const fake = (async (url: any, init: any = {}) => {
   if (lowerRoute.endsWith("/repos/aamvtrampa36-del/cdf-cloud-engine") ||
       lowerRoute.endsWith("/repos/aamvtrampa36-del/opencode-harness-example")) {
     body={full_name:route.split("/repos/")[1],default_branch:"main",private:true};
-  } else if (lowerRoute.includes("/git/ref/heads/staging%2fopencode-g1-20261118")) {
+  } else if (lowerRoute.includes("/git/ref/heads/staging%2fopencode-g1-rpc-safe-20261120")) {
     body={object:{sha:"7d1669cba0f3c8ee08626425aaf551c8d5bd4bf7"}};
   } else if (route.endsWith("/git/ref/heads/main")) {
     body={object:{sha:"a".repeat(40)}};
@@ -30,7 +30,7 @@ const fake = (async (url: any, init: any = {}) => {
     status=404;body={message:"Not Found"};
   } else if (route.endsWith("/contents/docs/test.md")) {
     body={commit:{sha:"newcommit"},content:{sha:"filehash"}};
-  } else if (route.includes("/compare/staging%2Fopencode-g1-20261118...opencode%2Fstaging-a1234567890bcdef") ||
+  } else if (route.includes("/compare/staging%2Fopencode-g1-rpc-safe-20261120...opencode%2Fstaging-a1234567890bcdef") ||
              route.includes("/compare/main...opencode%2Fnew-feature")) {
     body={ahead_by:1,behind_by:0,total_commits:1,files:[{
       filename:"docs/test.md",status:"added",additions:1,deletions:0
@@ -88,11 +88,11 @@ describe("GitHub scoped permissions",()=>{
   test("pins OpenCode self-development to Staging and reviews against that base",async()=>{
     calls.length=0;
     const staged="opencode/staging-a1234567890bcdef";
-    const source="staging/opencode-g1-20261118";
+    const source="staging/opencode-g1-rpc-safe-20261120";
     const r:any=await api.execute({action:"branch",repo:"aamvtrampa36-del/opencode-harness-example",branch:staged});
     expect(r.source).toBe(source);
     expect(r.sha).toBe("7d1669cba0f3c8ee08626425aaf551c8d5bd4bf7");
-    expect(calls.some(x=>x.url.includes("git/ref/heads/staging%2Fopencode-g1-20261118"))).toBe(true);
+    expect(calls.some(x=>x.url.includes("git/ref/heads/staging%2Fopencode-g1-rpc-safe-20261120"))).toBe(true);
     const review:any=await api.execute({action:"review",repo:"aamvtrampa36-del/opencode-harness-example",branch:staged});
     expect(review.base).toBe(source);
     const pr:any=await api.execute({action:"pr",repo:"aamvtrampa36-del/opencode-harness-example",branch:staged,title:"Staging fix"});
@@ -112,7 +112,7 @@ describe("GitHub scoped permissions",()=>{
       if(route.endsWith("/repos/aamvtrampa36-del/opencode-harness-example")) {
         return Response.json({full_name:"aamvtrampa36-del/opencode-harness-example",default_branch:"main"});
       }
-      if(route.includes("/git/ref/heads/staging%2fopencode-g1-20261118")) {
+      if(route.includes("/git/ref/heads/staging%2fopencode-g1-rpc-safe-20261120")) {
         return Response.json({object:{sha:sourceSha}});
       }
       if(route.includes("/git/ref/heads/opencode%2fstaging-a1234567890bcdef")) {
@@ -129,8 +129,8 @@ describe("GitHub scoped permissions",()=>{
       "opencode/staging-a1234567890bcdef");
     const second=await bridge.ensureSupervisorBranch("aamvtrampa36-del/opencode-harness-example",
       "opencode/staging-a1234567890bcdef");
-    expect(first).toMatchObject({source:"staging/opencode-g1-20261118",sha:sourceSha,reused:false});
-    expect(second).toMatchObject({source:"staging/opencode-g1-20261118",sha:sourceSha,reused:true});
+    expect(first).toMatchObject({source:"staging/opencode-g1-rpc-safe-20261120",sha:sourceSha,reused:false});
+    expect(second).toMatchObject({source:"staging/opencode-g1-rpc-safe-20261120",sha:sourceSha,reused:true});
     expect(requests.filter(request=>request.method==="POST")).toHaveLength(1);
     branchSha="d".repeat(40);
     await expect(bridge.ensureSupervisorBranch("aamvtrampa36-del/opencode-harness-example",
@@ -145,7 +145,7 @@ describe("GitHub scoped permissions",()=>{
       const route = String(url).toLowerCase(), method = init.method || "GET";
       if (route.endsWith("/repos/aamvtrampa36-del/opencode-harness-example"))
         return Response.json({ full_name: "aamvtrampa36-del/opencode-harness-example", default_branch: "main" });
-      if (route.includes("/git/ref/heads/staging%2fopencode-g1-20261118"))
+      if (route.includes("/git/ref/heads/staging%2fopencode-g1-rpc-safe-20261120"))
         return Response.json({ object: { sha: sourceSha } });
       if (route.includes("/git/ref/heads/opencode%2fstaging-a1234567890bcdef"))
         return branchSha ? Response.json({ object: { sha: branchSha } }) : new Response("{}", { status: 404 });
@@ -164,8 +164,8 @@ describe("GitHub scoped permissions",()=>{
     const r:any=await api.execute({action:"branch",
       repo:"aamvtrampa36-del/OpenCode-Harness-Example",
       branch:"opencode/staging-a1234567890bcdef"});
-    expect(r.source).toBe("staging/opencode-g1-20261118");
-    expect(calls.some(x=>x.url.includes("git/ref/heads/staging%2Fopencode-g1-20261118"))).toBe(true);
+    expect(r.source).toBe("staging/opencode-g1-rpc-safe-20261120");
+    expect(calls.some(x=>x.url.includes("git/ref/heads/staging%2Fopencode-g1-rpc-safe-20261120"))).toBe(true);
   });
   test("reads UTF-8 repository files from the default branch without a required ref",async()=>{
     calls.length=0;

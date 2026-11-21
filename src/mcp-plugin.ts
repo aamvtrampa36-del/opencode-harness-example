@@ -15,10 +15,18 @@ export function remoteMcpPlugin(
       let current = await loadConfigs();
       let previous = new Set<string>();
       if (ctx.session) {
-        await ctx.session.hook("context", async ({ tools }) => {
+        await ctx.session.hook("context", async ({ agent, tools }) => {
           for (const endpoint of current) {
-            if (!endpoint.toolAllowlist) continue;
             const prefix = "personal-" + endpoint.id + "_";
+            if (!endpoint.toolAllowlist) {
+              // Unrestricted remote MCP servers can expose writes. Plan and
+              // Review must not receive them unless the owner configured an
+              // explicit endpoint allowlist.
+              if (agent === "plan") {
+                for (const name of Object.keys(tools)) if (name.startsWith(prefix)) delete tools[name];
+              }
+              continue;
+            }
             const allowed = new Set(endpoint.toolAllowlist);
             for (const name of Object.keys(tools)) {
               if (name.startsWith(prefix) && !allowed.has(name.slice(prefix.length))) delete tools[name];

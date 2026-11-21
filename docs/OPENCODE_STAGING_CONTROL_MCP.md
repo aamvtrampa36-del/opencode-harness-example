@@ -8,7 +8,7 @@ This repository contains a remote MCP endpoint and a separate deterministic Play
 - The only Durable Object binding is `STAGING_SUPERVISOR -> OpenCodeAgent` in `opencode-g1-staging`.
 - New tasks use the fixed `opencode-supervisor-v1` Durable Object by default. An exact UUID workspace and exact OpenCode session ID are required to fork an existing Staging session.
 - The connector has no Production URL or Production Worker binding. Production's supervisor flag is disabled and its Durable Object namespaces are separate.
-- Task work is isolated to a new session, task-specific Container project, pinned GitHub source commit, and review branch. OpenCode Staging self-development branches use `staging/opencode-g1-20261118` as base. A task may prepare a draft PR but cannot merge or deploy.
+- Task work is isolated to a new session, task-specific Container project, pinned GitHub source commit, and review branch. OpenCode Staging self-development branches use the GitHub branch observed by Workers Builds, currently `staging/opencode-g1-rpc-safe-20261120`. Keep this aligned when the deployed Staging base changes. A task may prepare a draft PR but cannot merge or deploy.
 - Cloudflare Access OAuth protects the exact MCP workers.dev hostname. GitHub Actions uses the existing Staging Access service-token secrets for non-interactive CI.
 
 ## Endpoint and tool contracts

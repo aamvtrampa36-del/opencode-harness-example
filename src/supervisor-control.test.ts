@@ -52,11 +52,11 @@ describe("OpenCode remote supervisor — fail closed", () => {
       input, supervisorBranch(input.requestId, repos[0]), supervisorProject(input.requestId), base
     );
     expect(stagingPrompt).toContain("No leas ni presentes main como Staging");
-    expect(stagingPrompt).toContain("staging/opencode-g1-20261118");
+    expect(stagingPrompt).toContain("staging/opencode-g1-rpc-safe-20261120");
     expect(stagingPrompt).toContain(base);
     expect(stagingPrompt).toContain("no contiene .git");
     expect(stagingPrompt).not.toContain("usa git fetch");
-    expect(supervisorBaseCommit({source:"staging/opencode-g1-20261118",sha:base}, repos[0])).toBe(base);
+    expect(supervisorBaseCommit({source:"staging/opencode-g1-rpc-safe-20261120",sha:base}, repos[0])).toBe(base);
     expect(() => supervisorBaseCommit({source:"main",sha:base}, repos[0])).toThrow("partir de Staging");
     expect(() => supervisorBaseCommit({source:"main",sha:"bad"}, repos[1])).toThrow("SHA de base");
     expect(stagingPrompt).not.toContain("staging-supervisor-control-20261111");
