@@ -70,3 +70,15 @@ The delegated task and recovery experiments use `economy` by default. OpenRouter
 Build and review both Staging configs before deployment. The application Worker is built through Cloudflare Workers Builds from `wrangler.g1.jsonc`; the MCP Worker has an independent build configuration using `wrangler.mcp-staging.jsonc`. Their build commands run checks before deployment. The MCP Worker config must retain the Service Binding to `opencode-g1-staging` and the Durable Object binding with `script_name: opencode-g1-staging`. Never use Production's `wrangler.jsonc` for this task.
 
 After a Staging-only deploy, check `staging_status`, verify the MCP tool list, and run the non-costly E2E smoke. For rollback, select the last known-good version of `opencode-staging-control-mcp` or `opencode-g1-staging` in Cloudflare Workers Deployments and restore that version. Verify Staging health and the remote-control smoke afterward. Do not roll back or edit `opencode-harness-example` (Production) as part of this runbook.
+
+## Memory-bounded status polling (incident #90)
+
+Supervisor task status uses the durable OpenCode event log with a persisted per-task sequence cursor, **not** `session.history()`. Each poll processes at most 256 durable events and returns the partial-progress flag `toolCountsComplete`; if the log cannot be read, counters are unknown (`null`, `toolCountsError`) rather than fabricated zeros. A follow-up status poll advances the cursor. Full transcript export is an explicit, separate operation and is not a safe health probe for a very large session.
+
+Live staging issue: [#90](https://github.com/aamvtrampa36-del/opencode-harness-example/issues/90). Bounded polling prevents this specific unbounded materialization, but does not establish that the historical 2026-11-20 isolate memory reset had exactly this cause. Preserve evidence and observe after deployment.
+
+## Automatic PR conflict preflight (agent-scoped)
+
+Before an OpenCode agent creates a draft PR through GitHubBridge `action: "pr"`, the bridge now reads **actual GitHub Compare changed paths** and **all open PR file lists for the same base branch**. Duplicate branch, overlapping current or prior renamed paths, untrustworthy/truncated results, and moved base/head SHA all reject **before** the GitHub PR POST. This is enforced in code, not optional handoff advice. Review branches remain isolated and cannot merge using GitHubBridge.
+
+Limit: this is a preflight for **agent-created PRs**, not a distributed lock. Two truly simultaneous PR creates may race; direct GitHub UI/API merges do not pass this bridge. Protect the target branch through GitHub rulesets with required CI/checks and human review before claiming organization-wide merge prevention. No expansion of CDF editorial permissions is implied.

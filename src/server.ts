@@ -15,6 +15,8 @@ import { Lifecycle } from "agents/lifecycle";
 import { createAI } from "agents/models/opencode";
 import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
+import { collectSupervisorDirectory, supervisorTaskCount } from "./supervisor-directory";
+import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
 import { createDynamicMcpHost } from "./dynamic-mcp-bridge";
@@ -48,7 +50,7 @@ import {
   assertSupervisorBoundGitHubOperation, supervisorBearerAllowed,
   supervisorBaseCommit, supervisorBranch, supervisorFingerprint, supervisorProject,
   supervisorPrompt, supervisorResponse, supervisorTaskKey, supervisorStartOperationId,
-  supervisorTurnOperationId, classifySupervisorOperation,
+  supervisorTurnOperationId, classifySupervisorOperation, isUntrackedLegacySupervisorOperation,
   validateSupervisorStart, type SupervisorTask
 } from "./supervisor-control";
 
@@ -71,6 +73,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
     let old = await this.ctx.storage.get<SupervisorTask>(key);
     let reused = Boolean(old);
     if (old && old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
+    if (old && isUntrackedLegacySupervisorOperation(old)) {
+      let busy: boolean | undefined;
+      try { busy = await this.harness.session(old.session!).busy(); }
+      catch { busy = undefined; }
+      const legacy = { ...old,
+        status: busy ? "running" as const : "unknown" as const,
+        error: busy === undefined ? "LEGACY_BUSY_STATE_UNVERIFIED" : "LEGACY_OPERATION_ID_MISSING",
+        updatedAt: Date.now()
+      };
+      await this.ctx.storage.put(key, legacy);
+      return this.supervisorTaskReceipt(legacy, true);
+    }
     if (old && ["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(old.status)) {
       return this.supervisorTaskReceipt(old, true);
     }
@@ -216,16 +230,19 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   /** Cross-Worker RPC: only the Staging namespace can call these methods. */
+  /** Remote status must never enumerate all SDK session objects in the shared DO. */
   async remoteSupervisorStatus(): Promise<unknown> {
     this.assertStagingRemote();
-    const sessions = await this.harness.sessions.list();
-    let supervised = 0;
-    for (const item of sessions) {
-      if (await this.ctx.storage.get<string>("supervisor:session:" + item.id)) supervised++;
-    }
+    const index = await this.ctx.storage.list<SupervisorTask>({
+      prefix: "supervisor:task:", limit: 101
+    });
+    const count = supervisorTaskCount(index, 100);
     return {
       environment: "staging", worker: "opencode-g1-staging", ready: true,
-      schema: "opencode.staging-control.v2", supervisedSessions: supervised,
+      schema: "opencode.staging-control.v2",
+      supervisedSessions: count.supervisedSessions,
+      supervisedCountComplete: count.countComplete,
+      ...(count.limited ? { supervisedCountAtLeast: count.supervisedSessions } : {}),
       defaultModel: "economy",
       capabilities: ["status", "models", "repositories", "sessions", "start", "inspect", "continue",
         "select_model", "progress", "cancel", "review", "mcp_discovery", "mcp_call", "incidents", "agent_check"]
@@ -273,18 +290,20 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return { targetWorker: "opencode-g1-staging", repositories: await this.personalConfig.getAllowedRepositories() };
   }
 
+  /**
+   * Consult only indexed supervised tasks, never OpenCodeHarness.sessions.list().
+   * Retains a bounded 100-session response, probes actual busy state in batches
+   * of four, and fails conservatively if any busy probe is inconclusive.
+   * Non-supervised conversations remain reachable through their own interface.
+   */
   async remoteSupervisorSessions(): Promise<unknown> {
     this.assertStagingRemote();
-    const sessions = await this.harness.sessions.list();
-    const result: Array<{ session: string; parent?: string; title?: string; taskId?: string; model?: string; status?: string; busy: boolean }> = [];
-    for (const item of sessions.slice(-100)) {
-      const id = await this.ctx.storage.get<string>("supervisor:session:" + item.id);
-      const task = id ? await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(id)) : undefined;
-      result.push({ session: item.id, ...(item.parent ? { parent: item.parent } : {}),
-        ...(item.title ? { title: item.title.slice(0, 160) } : {}), ...(id ? { taskId: id } : {}),
-        ...(task?.model ? { model: task.model } : {}), ...(task?.status ? { status: task.status } : {}), busy: item.busy });
-    }
-    return { environment: "staging", sessions: result, limited: sessions.length > 100 };
+    const index = await this.ctx.storage.list<SupervisorTask>({
+      prefix: "supervisor:task:", limit: 101
+    });
+    const result = await collectSupervisorDirectory(index,
+      session => this.harness.session(session).busy(), 100, 4);
+    return { environment: "staging", ...result };
   }
 
   async remoteSupervisorInspectSession(id: string): Promise<unknown> {
@@ -452,20 +471,36 @@ export class OpenCodeAgent extends DurableObject<Env> {
     } finally {
       clearTimeout(waitTimer);
     }
-    const [busy, history] = await Promise.all([handle.busy(), handle.history()]);
-    let toolCalls = 0, completedTools = 0, failedTools = 0;
-    for (const message of history) {
-      if (message.type !== "assistant") continue;
-      for (const part of message.content ?? []) {
-        if (part.type !== "tool") continue;
-        toolCalls++;
-        if (part.state?.status === "completed") completedTools++;
-        if (part.state?.status === "error") failedTools++;
-      }
+    // Never materialize a complete tool transcript in the supervisor's
+    // memory-constrained Durable Object on every status poll. The durable
+    // OpenCode event log is incremental and its cursor survives DO restarts.
+    const busy = await handle.busy();
+    let toolCounts: SupervisorToolCounts | undefined;
+    let toolCountsComplete = false;
+    let toolCountsError: string | undefined;
+    try {
+      const metricsKey = "supervisor:tool-counts-v1:" + id;
+      const saved = await this.ctx.storage.get<SupervisorToolCounts>(metricsKey);
+      if (saved && !validSupervisorToolCounts(saved)) throw new Error("SUPERVISOR_METRICS_INVALID");
+      const prior = saved ?? EMPTY_SUPERVISOR_TOOL_COUNTS;
+      const scan = await foldSupervisorToolLog(handle.log({after: prior.cursor, follow: false}), prior, 256);
+      const committed = await this.ctx.storage.transaction(async tx => {
+        const current = await tx.get<SupervisorToolCounts>(metricsKey);
+        if (current && !validSupervisorToolCounts(current)) throw new Error("SUPERVISOR_METRICS_INVALID");
+        // Parallel readers must never double count the same durable events.
+        if (current && current.cursor > prior.cursor) return current;
+        if (current && current.cursor < prior.cursor) throw new Error("SUPERVISOR_METRICS_CURSOR_REGRESSION");
+        if (scan.metrics.cursor > prior.cursor) await tx.put(metricsKey, scan.metrics);
+        return scan.metrics;
+      });
+      toolCounts = committed;
+      toolCountsComplete = scan.complete && committed.cursor === scan.metrics.cursor;
+    } catch (error) {
+      // A status check must remain useful even if an incremental metrics read
+      // fails. Unknown counts are not zeros and must not yield a false PASS.
+      toolCountsError = error instanceof Error ? error.message.slice(0, 200) : "SUPERVISOR_METRICS_UNAVAILABLE";
     }
-    const status = job.operationId
-      ? classifySupervisorOperation(job.status, busy, operation)
-      : busy ? "running" : job.status;
+    const status = classifySupervisorOperation(job, busy, operation);
     if (status !== job.status) {
       job.status = status;
       if (operation?.status === "unanswered") job.error = operation.reason?.slice(0, 240);
@@ -473,7 +508,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       job.updatedAt = Date.now();
       await this.ctx.storage.put(supervisorTaskKey(id), job);
     }
-    return { ...base, updatedAt: job.updatedAt, status, toolCalls, completedTools, failedTools, reviewRequired: true,
+    return { ...base, updatedAt: job.updatedAt, status,
+      toolCalls: toolCounts?.toolCalls ?? null,
+      completedTools: toolCounts?.completedTools ?? null,
+      failedTools: toolCounts?.failedTools ?? null,
+      toolCountsComplete, toolCountsError, reviewRequired: true,
       operationReason: operation?.reason, operationAnswerAvailable: Boolean(operation?.text), waitError,
       passed: false, verified: false };
   }
