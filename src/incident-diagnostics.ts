@@ -156,8 +156,12 @@ export function aggregateIncident(
   records: readonly IncidentRecord[], raw: unknown, now: Date = new Date()
 ): IncidentRecord[] {
   const event = cleanObservation(raw);
-  const id = [event.code, event.source, event.project ?? "-", event.tool ?? "-",
-    event.exitCode ?? "-", event.httpStatus ?? "-", event.taskId ?? "-"].join(":");
+  // Legacy six-segment fingerprints predate taskId. Keep that exact id when the
+  // observation has no taskId so historical rows are updated instead of duplicated;
+  // append a seventh segment only when an explicit taskId separates two tasks.
+  const base = [event.code, event.source, event.project ?? "-", event.tool ?? "-",
+    event.exitCode ?? "-", event.httpStatus ?? "-"];
+  const id = [...base, ...(event.taskId ? [event.taskId] : [])].join(":");
   const old = records.find(record => record.id === id);
   const count = Math.min((old?.count ?? 0) + 1, 1_000_000);
   const { cause, action } = DESCRIPTIONS[event.code];
