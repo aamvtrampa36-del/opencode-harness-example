@@ -2,6 +2,7 @@ import type { AgentMode } from "./protocol";
 import { readSessionMode, saveSessionMode } from "./session-mode";
 import { readSessionSpecialization, saveSessionSpecialization } from "./session-specialization";
 import { isInternalReminder } from "./message-display";
+import { ToolFileAttachments } from "./tool-file-attachments";
 import { repositoryProjectSlug } from "./project-container";
 import { SettingsPanel } from "./settings-panel";
 import { MODEL_PRESETS, isModelSelection, resolveModelSelection, type ModelSelectionID } from "./model-presets";
@@ -166,7 +167,6 @@ function toolOutput(part: ToolPart): string {
 function ToolCard({ part }: { part: ToolPart }) {
   const { status } = part.state;
   const output = toolOutput(part);
-  const files = status === "completed" ? (part.state.content ?? []).filter(content => content.type === "file") : [];
   const failed = status === "error";
   const done = status === "completed";
   return (
@@ -210,10 +210,7 @@ function ToolCard({ part }: { part: ToolPart }) {
         ) : null}
       </div>
     </details>
-    {files.map((file, index) => file.mime.startsWith("image/") ? (
-      <img key={index} src={file.uri} alt={file.name ?? "Imagen generada"}
-        className="mt-2 max-h-[65dvh] max-w-full rounded-xl border border-kumo-line object-contain" />
-    ) : null)}
+    {status === "completed" ? <ToolFileAttachments content={part.state.content} /> : null}
     </div>
   );
 }
