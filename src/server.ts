@@ -501,14 +501,16 @@ export class OpenCodeAgent extends DurableObject<Env> {
       toolCountsError = error instanceof Error ? error.message.slice(0, 200) : "SUPERVISOR_METRICS_UNAVAILABLE";
     }
     const status = classifySupervisorOperation(job, busy, operation);
-    if (status !== job.status) {
+    const nextError = operation?.status === "unanswered"
+      ? operation.reason?.slice(0, 240)
+      : operation?.status === "done" ? undefined : job.error;
+    if (status !== job.status || nextError !== job.error) {
       job.status = status;
-      if (operation?.status === "unanswered") job.error = operation.reason?.slice(0, 240);
-      else if (operation?.status === "done") job.error = undefined;
+      job.error = nextError;
       job.updatedAt = Date.now();
       await this.ctx.storage.put(supervisorTaskKey(id), job);
     }
-    return { ...base, updatedAt: job.updatedAt, status,
+    return { ...base, updatedAt: job.updatedAt, status, error: job.error,
       toolCalls: toolCounts?.toolCalls ?? null,
       completedTools: toolCounts?.completedTools ?? null,
       failedTools: toolCounts?.failedTools ?? null,
