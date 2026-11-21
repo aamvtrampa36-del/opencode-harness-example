@@ -424,7 +424,8 @@ describe("GitHub bounded exact replacement", () => {
         });
       }
       if (method === "GET" && route.endsWith("/git/commits/" + head)) {
-        return Response.json({ commit: { tree: { sha: baseTree } } });
+        // Match the GitHub REST Git Data API response shape.
+        return Response.json({ sha: head, tree: { sha: baseTree } });
       }
       if (method === "GET" && route.endsWith("/git/trees/" + baseTree)) {
         return Response.json({ tree: [{ path: "src", mode: "040000", type: "tree", sha: sourceTree }] });
@@ -466,6 +467,42 @@ describe("GitHub bounded exact replacement", () => {
     const refRequest = requests.find(item => item.method === "PATCH");
     expect(refRequest?.body).toEqual({ sha: commitSha, force: false });
   });
+
+  test("regression: rejects a nested tree payload before any Git writes", async () => {
+    const repo = "aamvtrampa36-del/opencode-harness-example";
+    const branch = "opencode/staging-a1234567890bcdef";
+    const head = "d".repeat(40);
+    const source = "export const receipt = 'stale';\n";
+    const writes: string[] = [];
+    const http = (async (url: any, init: any = {}) => {
+      const route = String(url).toLowerCase();
+      const method = String(init.method || "GET").toUpperCase();
+      if (method !== "GET") writes.push(method);
+      if (method === "GET" && route.endsWith("/git/ref/heads/" + encodeURIComponent(branch).toLowerCase())) {
+        return Response.json({ object: { sha: head } });
+      }
+      if (method === "GET" && route.includes("/contents/src/receipt.ts?ref=" + head)) {
+        return Response.json({
+          type: "file", encoding: "base64", content: btoa(source),
+          size: source.length, sha: "3".repeat(40)
+        });
+      }
+      if (method === "GET" && route.endsWith("/git/commits/" + head)) {
+        // An obsolete/non-REST shape must fail closed.
+        return Response.json({ sha: head, commit: { tree: { sha: "e".repeat(40) } } });
+      }
+      return Response.json({ message: "Not Found" }, { status: 404 });
+    }) as typeof fetch;
+    const bridge = new GitHubBridge("dummy-test-key", http);
+
+    await expect(bridge.execute({
+      action: "write", repo, path: "src/receipt.ts", branch, expectedHead: head,
+      oldText: "export const receipt = 'stale';\n",
+      newText: "export const receipt = 'fresh';\n"
+    })).rejects.toThrow("GitHub could not verify the expected commit tree");
+    expect(writes).toEqual([]);
+  });
+
 });
 
 describe("GitHub bounded replacement guards", () => {
