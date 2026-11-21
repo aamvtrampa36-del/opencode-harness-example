@@ -3,6 +3,10 @@ import { z } from "zod";
 import { renderConversationMarkdown } from "../session-export";
 import { MODEL_PRESETS } from "../model-presets";
 import { BUN_RUNTIME_VERSION } from "../dev-runtime";
+import {
+  buildIncidentDiagnostics, DIAGNOSTICS_DEFAULT_LIMIT,
+  type IncidentRecord
+} from "../incident-diagnostics";
 
 export const STAGING_WORKER = "opencode-g1-staging";
 export const STAGING_REPOSITORY = "aamvtrampa36-del/opencode-harness-example";
@@ -194,9 +198,42 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
     callTask(() => bindings.supervisor().remoteSupervisorMcpCall({ server, name, arguments: toolArguments ?? {} })));
 
   server.registerTool("staging_diagnostics", {
-    description: "Consulta salud e incidentes estructurados de Staging. Para logs, CPU, latencia y fallos del Worker usa también Cloudflare Observability como vía independiente.",
-    inputSchema: {}
-  }, async () => callTask(() => bindings.supervisor().remoteSupervisorDiagnostics()));
+    description: "Consulta salud e incidentes estructurados de Staging. Devuelve una proyección acotada con summary y hasMore (no es paginación), y cada incidente incluye taskId cuando pudo correlacionarse. Para logs, CPU, latencia y fallos del Worker usa también Cloudflare Observability como vía independiente.",
+    inputSchema: {
+      limit: z.number().int().min(1).max(64).default(DIAGNOSTICS_DEFAULT_LIMIT)
+        .describe("Máximo de incidentes devueltos (1-64). Acota la respuesta; no pagina ni cambia los totales del summary")
+    }
+  }, async ({ limit }) => {
+    try {
+      const raw = asRecord(await bindings.supervisor().remoteSupervisorDiagnostics());
+      const records: IncidentRecord[] = Array.isArray(raw.incidents)
+        ? raw.incidents.filter((item): item is IncidentRecord =>
+            Boolean(item) && typeof item === "object" && !Array.isArray(item))
+        : [];
+      const view = buildIncidentDiagnostics(records, limit);
+      return result({
+        ...raw,
+        incidents: view.incidents,
+        summary: view.summary,
+        hasMore: view.hasMore,
+        omitted: view.omitted,
+        order: view.order,
+        correlation: {
+          field: "taskId",
+          equalsRequestId: true,
+          derivation: "ledger taskId when present, else the deterministic supervised project name supervised-<requestId>",
+          note: "taskId es el mismo valor hexadecimal de 16 caracteres que staging_start_task devolvió como requestId. Se toma del registro cuando existe y, si no, del proyecto determinista supervised-<requestId>. null significa que el incidente no pudo correlacionarse con una tarea supervisada.",
+          next: [
+            "staging_task_status { id: <taskId> }",
+            "staging_task_transcript { id: <taskId> }",
+            "staging_task_progress { id: <taskId>, after: 0 }"
+          ]
+        }
+      }, 64_000);
+    } catch (error) {
+      return failed(error);
+    }
+  });
 
   server.registerTool("staging_agent_check", {
     description: "Inicia una autoprueba real aislada de OpenCode: reparación red-to-green, Linux o Bun. Default económico; no modifica el repositorio ni GitHub.",
