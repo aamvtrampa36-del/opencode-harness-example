@@ -270,7 +270,8 @@ export class GitHubBridge {
     }
 
     const parent = await this.api("GET", base + "/git/commits/" + expectedHead);
-    const baseTree = parent.commit?.tree?.sha;
+    // GitHub REST GET /git/commits/{sha} returns tree at the root.
+    const baseTree = parent?.tree?.sha;
     if (typeof baseTree !== "string" || !/^[0-9a-f]{40}$/.test(baseTree)) {
       throw new Error("GitHub could not verify the expected commit tree");
     }
