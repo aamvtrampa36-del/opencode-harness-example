@@ -3,11 +3,17 @@ import { z } from "zod";
 import { renderConversationMarkdown } from "../session-export";
 import { MODEL_PRESETS } from "../model-presets";
 import { BUN_RUNTIME_VERSION } from "../dev-runtime";
+import {
+  buildIncidentDiagnostics, DIAGNOSTICS_DEFAULT_LIMIT,
+  type IncidentRecord
+} from "../incident-diagnostics";
 
 export const STAGING_WORKER = "opencode-g1-staging";
 export const STAGING_REPOSITORY = "aamvtrampa36-del/opencode-harness-example";
 export const SUPERVISOR_OBJECT = "opencode-supervisor-v1";
 export const STAGING_OPENROUTER_MODEL = MODEL_PRESETS.review.id;
+
+const WORKSPACE_HINT = "Omite workspace para el supervisor fijo; usa el UUID exacto solo para un workspace personalizado.";
 
 export interface StagingSupervisor {
   remoteSupervisorStatus(): Promise<unknown>;
@@ -38,7 +44,10 @@ export interface StagingControlBindings {
 }
 
 const taskIdSchema = z.string().regex(/^[a-f0-9]{16}$/);
-const workspaceSchema = z.string().regex(/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i).optional();
+const workspaceSchema = z.string()
+  .regex(/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i)
+  .describe(WORKSPACE_HINT)
+  .optional();
 const sessionIdSchema = z.string().regex(/^ses[A-Za-z0-9_]{1,64}$/);
 
 function redactString(value: string): string {
@@ -194,9 +203,42 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
     callTask(() => bindings.supervisor().remoteSupervisorMcpCall({ server, name, arguments: toolArguments ?? {} })));
 
   server.registerTool("staging_diagnostics", {
-    description: "Consulta salud e incidentes estructurados de Staging. Para logs, CPU, latencia y fallos del Worker usa también Cloudflare Observability como vía independiente.",
-    inputSchema: {}
-  }, async () => callTask(() => bindings.supervisor().remoteSupervisorDiagnostics()));
+    description: "Consulta salud e incidentes estructurados de Staging. Devuelve una proyección acotada con summary y hasMore (no es paginación), y cada incidente incluye taskId cuando pudo correlacionarse. Para logs, CPU, latencia y fallos del Worker usa también Cloudflare Observability como vía independiente.",
+    inputSchema: {
+      limit: z.number().int().min(1).max(64).default(DIAGNOSTICS_DEFAULT_LIMIT)
+        .describe("Máximo de incidentes devueltos (1-64). Acota la respuesta; no pagina ni cambia los totales del summary")
+    }
+  }, async ({ limit }) => {
+    try {
+      const raw = asRecord(await bindings.supervisor().remoteSupervisorDiagnostics());
+      const records: IncidentRecord[] = Array.isArray(raw.incidents)
+        ? raw.incidents.filter((item): item is IncidentRecord =>
+            Boolean(item) && typeof item === "object" && !Array.isArray(item))
+        : [];
+      const view = buildIncidentDiagnostics(records, limit);
+      return result({
+        ...raw,
+        incidents: view.incidents,
+        summary: view.summary,
+        hasMore: view.hasMore,
+        omitted: view.omitted,
+        order: view.order,
+        correlation: {
+          field: "taskId",
+          equalsRequestId: true,
+          derivation: "ledger taskId when present, else the deterministic supervised project name supervised-<requestId>",
+          note: "taskId es el mismo valor hexadecimal de 16 caracteres que staging_start_task devolvió como requestId. Se toma del registro cuando existe y, si no, del proyecto determinista supervised-<requestId>. null significa que el incidente no pudo correlacionarse con una tarea supervisada.",
+          next: [
+            "staging_task_status { id: <taskId> }",
+            "staging_task_transcript { id: <taskId> }",
+            "staging_task_progress { id: <taskId>, after: 0 }"
+          ]
+        }
+      }, 64_000);
+    } catch (error) {
+      return failed(error);
+    }
+  });
 
   server.registerTool("staging_agent_check", {
     description: "Inicia una autoprueba real aislada de OpenCode: reparación red-to-green, Linux o Bun. Default económico; no modifica el repositorio ni GitHub.",
@@ -263,13 +305,13 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
   });
 
   server.registerTool("staging_start_task", {
-    description: "Inicia una tarea real de OpenCode en Staging. Por defecto usa Cloudflare económico y una sesión aislada. Puede seleccionar un repositorio/modelo autorizados o hacer fork de una sesión solo si se proporcionan el workspace UUID y el session ID exactos. Un fork hereda la conversación; el Container parte limpio del commit de GitHub fijado. requestId hace idempotentes los reintentos. No fusiona ni despliega.",
+    description: "Inicia una tarea real de OpenCode en Staging. Por defecto usa Cloudflare económico y una sesión aislada. Puede seleccionar un repositorio/modelo autorizados o hacer fork de una sesión solo si se proporcionan el UUID exacto de un workspace personalizado y el session ID exactos. La respuesta omite workspace para el supervisor fijo y conserva el UUID en un fork explícito. Un fork hereda la conversación; el Container parte limpio del commit de GitHub fijado. requestId hace idempotentes los reintentos. No fusiona ni despliega.",
     inputSchema: {
       requestId: z.string().regex(/^[a-f0-9]{16}$/).describe("ID único idempotente, exactamente 16 caracteres hexadecimales en minúscula"),
       prompt: z.string().min(12).max(5000).describe("Objetivo de ingeniería, entre 12 y 5000 caracteres"),
       repository: z.string().min(3).max(120).optional().describe("Repositorio del propietario ya autorizado en OpenCode Settings"),
       model: z.string().min(1).max(160).optional().describe("Selección del catálogo OpenCode; por defecto economy"),
-      workspace: workspaceSchema.describe("UUID exacto del Durable Object que contiene la sesión de origen"),
+      workspace: workspaceSchema.describe("UUID exacto de un workspace personalizado que contiene la sesión de origen; omítelo para el supervisor fijo"),
       sourceSession: sessionIdSchema.optional().describe("Session ID exacto para crear un fork; requiere workspace")
     }
   }, async ({ requestId, prompt, repository, model, workspace, sourceSession }) => {
@@ -281,30 +323,33 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
         requestId, repository: repository ?? STAGING_REPOSITORY, prompt,
         ...(model ? { model } : {}), ...(sourceSession ? { sourceSession } : {})
       }));
-      const taskWorkspace = workspace ?? SUPERVISOR_OBJECT;
-      if (task.reused === true && typeof task.id === "string") {
-        const current = asRecord(await supervisor.supervisedTaskStatus(task.id));
-        return result({ ...task, ...current, reused: true, workspace: taskWorkspace, targetWorker: STAGING_WORKER });
-      }
-      return result({ ...task, workspace: taskWorkspace, targetWorker: STAGING_WORKER });
+      const current = task.reused === true && typeof task.id === "string"
+        ? asRecord(await supervisor.supervisedTaskStatus(task.id))
+        : undefined;
+      const payload: Record<string, unknown> = current
+        ? { ...task, ...current, reused: true }
+        : { ...task };
+      if (workspace) payload.workspace = workspace;
+      else delete payload.workspace;
+      return result({ ...payload, targetWorker: STAGING_WORKER });
     } catch (error) {
       return failed(error);
     }
   });
 
   server.registerTool("staging_task_status", {
-    description: "Consulta una tarea supervisada de Staging por su ID hexadecimal de 16 caracteres.",
+    description: `Consulta una tarea supervisada de Staging por su ID hexadecimal de 16 caracteres. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema.describe("ID de tarea hexadecimal de 16 caracteres"), workspace: workspaceSchema }
   }, async ({ id, workspace }) => callTask(() => bindings.supervisor(workspace).supervisedTaskStatus(id)));
 
   server.registerTool("staging_task_progress", {
-    description: "Lee eventos duraderos de progreso desde un cursor. Solo devuelve secuencia y tipo de evento; no incluye razonamiento interno.",
+    description: `Lee eventos duraderos de progreso desde un cursor. Solo devuelve secuencia y tipo de evento; no incluye razonamiento interno. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema, workspace: workspaceSchema, after: z.number().int().min(0).default(0) }
   }, async ({ id, workspace, after }) =>
     callTask(() => bindings.supervisor(workspace).remoteSupervisorProgress(id, after)));
 
   server.registerTool("staging_task_continue", {
-    description: "Envía una nueva instrucción para continuar o corregir una tarea. turnId hace idempotentes los reintentos; una instrucción sobre una tarea activa se aplica como steer.",
+    description: `Envía una nueva instrucción para continuar o corregir una tarea. turnId hace idempotentes los reintentos; una instrucción sobre una tarea activa se aplica como steer. ${WORKSPACE_HINT}`,
     inputSchema: {
       id: taskIdSchema, workspace: workspaceSchema,
       turnId: z.string().regex(/^[a-f0-9]{16}$/), prompt: z.string().min(12).max(5000)
@@ -313,23 +358,23 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
     callTask(() => bindings.supervisor(workspace).remoteSupervisorContinue({ id, turnId, prompt })));
 
   server.registerTool("staging_task_select_model", {
-    description: "Selecciona un modelo del catálogo para los siguientes turnos de una tarea inactiva. El proveedor debe estar configurado en Staging.",
+    description: `Selecciona un modelo del catálogo para los siguientes turnos de una tarea inactiva. El proveedor debe estar configurado en Staging. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema, workspace: workspaceSchema, model: z.string().min(1).max(160) }
   }, async ({ id, workspace, model }) =>
     callTask(() => bindings.supervisor(workspace).remoteSupervisorSelectModel(id, model)));
 
   server.registerTool("staging_cancel_task", {
-    description: "Solicita la cancelación de una tarea supervisada de Staging por su ID.",
+    description: `Solicita la cancelación de una tarea supervisada de Staging por su ID. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema.describe("ID de tarea hexadecimal de 16 caracteres"), workspace: workspaceSchema }
   }, async ({ id, workspace }) => callTask(() => bindings.supervisor(workspace).cancelSupervisedTask(id)));
 
   server.registerTool("staging_review_task", {
-    description: "Ejecuta la revisión GitHub existente para la rama bloqueada de una tarea de Staging. No aprueba ni fusiona cambios.",
+    description: `Ejecuta la revisión GitHub existente para la rama bloqueada de una tarea de Staging. No aprueba ni fusiona cambios. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema.describe("ID de tarea hexadecimal de 16 caracteres"), workspace: workspaceSchema }
   }, async ({ id, workspace }) => callTask(() => bindings.supervisor(workspace).supervisedTaskReview(id), 16_000));
 
   server.registerTool("staging_task_transcript", {
-    description: "Lee los últimos 20 mensajes de una tarea de Staging, sin razonamiento interno y con claves/tokens redactados.",
+    description: `Lee los últimos 20 mensajes de una tarea de Staging, sin razonamiento interno y con claves/tokens redactados. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema.describe("ID de tarea hexadecimal de 16 caracteres"), workspace: workspaceSchema }
   }, async ({ id, workspace }) => {
     try {

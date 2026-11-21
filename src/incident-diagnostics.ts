@@ -16,6 +16,8 @@ export type IncidentObservation = {
   tool?: "linux" | "inspect_linux" | "other";
   exitCode?: number;
   httpStatus?: number;
+  /** Same 16-hex value as the supervisor requestId/task id, when known. */
+  taskId?: string;
 };
 export type IncidentRecord = {
   id: string;
@@ -25,6 +27,8 @@ export type IncidentRecord = {
   tool?: IncidentObservation["tool"];
   exitCode?: number;
   httpStatus?: number;
+  /** Same 16-hex value as the supervisor requestId/task id, when known. */
+  taskId?: string;
   count: number;
   firstAt: string;
   lastAt: string;
@@ -32,6 +36,30 @@ export type IncidentRecord = {
   status: "open" | "repeated" | "blocked";
   action: string;
   automaticRetryAllowed: boolean;
+};
+
+/** Diagnostics output states correlation explicitly: null means no task id was observed. */
+export type IncidentDiagnosticItem = Omit<IncidentRecord, "taskId"> & { taskId: string | null };
+
+export type IncidentDiagnosticsSummary = {
+  total: number;
+  shown: number;
+  omitted: number;
+  hasMore: boolean;
+  open: number;
+  repeated: number;
+  blocked: number;
+  taskCorrelated: number;
+  uncorrelated: number;
+  byCode: Record<string, number>;
+};
+
+export type IncidentDiagnosticsView = {
+  incidents: IncidentDiagnosticItem[];
+  summary: IncidentDiagnosticsSummary;
+  hasMore: boolean;
+  omitted: number;
+  order: string;
 };
 
 const DESCRIPTIONS: Record<IncidentCode, { cause: string; action: string; transient: boolean }> = {
@@ -48,6 +76,29 @@ const DESCRIPTIONS: Record<IncidentCode, { cause: string; action: string; transi
 const MAX_RECORDS = 64;
 const MAX_AUTO_RETRIES = 2;
 const VALID_PROJECT = /^[a-z][a-z0-9-]{0,39}$/;
+export const VALID_TASK_ID = /^[a-f0-9]{16}$/;
+export const DIAGNOSTICS_DEFAULT_LIMIT = 20;
+export const DIAGNOSTICS_ORDER = "blocked > repeated > open > unknown; then lastAt desc; then count desc";
+
+/** Supervised tasks bind their Container project as `supervised-<requestId>`. */
+const SUPERVISED_PROJECT = /^supervised-([a-f0-9]{16})$/;
+
+/** Returns the supervisor task id encoded in a supervised project name, or null. */
+export function taskIdFromProject(project: unknown): string | null {
+  if (typeof project !== "string") return null;
+  const match = SUPERVISED_PROJECT.exec(project);
+  return match ? match[1] : null;
+}
+
+/**
+ * The ledger taskId wins when present; otherwise the deterministic supervised
+ * project name supplies the same requestId. No id is invented for other projects.
+ */
+export function correlateTaskId(record: Pick<IncidentRecord, "taskId" | "project">): string | null {
+  return typeof record.taskId === "string" && VALID_TASK_ID.test(record.taskId)
+    ? record.taskId
+    : taskIdFromProject(record.project);
+}
 
 /** Classify failures based on machine evidence, not an AI success statement. */
 export function observeLinux(input: {
@@ -89,8 +140,10 @@ export function cleanObservation(input: unknown): IncidentObservation {
     && data.exitCode >= 0 && data.exitCode <= 255 ? data.exitCode : undefined;
   const httpStatus = typeof data.httpStatus === "number" && Number.isInteger(data.httpStatus)
     && data.httpStatus >= 400 && data.httpStatus <= 599 ? data.httpStatus : undefined;
+  const taskId = typeof data.taskId === "string" && VALID_TASK_ID.test(data.taskId) ? data.taskId : undefined;
   return { code, source, ...(project ? { project } : {}), ...(tool ? { tool } : {}),
-    ...(exitCode === undefined ? {} : { exitCode }), ...(httpStatus === undefined ? {} : { httpStatus }) };
+    ...(exitCode === undefined ? {} : { exitCode }), ...(httpStatus === undefined ? {} : { httpStatus }),
+    ...(taskId ? { taskId } : {}) };
 }
 
 export function retryDecision(code: IncidentCode, occurrences: number): boolean {
@@ -103,8 +156,12 @@ export function aggregateIncident(
   records: readonly IncidentRecord[], raw: unknown, now: Date = new Date()
 ): IncidentRecord[] {
   const event = cleanObservation(raw);
-  const id = [event.code, event.source, event.project ?? "-", event.tool ?? "-",
-    event.exitCode ?? "-", event.httpStatus ?? "-"].join(":");
+  // Legacy six-segment fingerprints predate taskId. Keep that exact id when the
+  // observation has no taskId so historical rows are updated instead of duplicated;
+  // append a seventh segment only when an explicit taskId separates two tasks.
+  const base = [event.code, event.source, event.project ?? "-", event.tool ?? "-",
+    event.exitCode ?? "-", event.httpStatus ?? "-"];
+  const id = [...base, ...(event.taskId ? [event.taskId] : [])].join(":");
   const old = records.find(record => record.id === id);
   const count = Math.min((old?.count ?? 0) + 1, 1_000_000);
   const { cause, action } = DESCRIPTIONS[event.code];
@@ -115,6 +172,7 @@ export function aggregateIncident(
     ...(event.tool ? { tool: event.tool } : {}),
     ...(event.exitCode !== undefined ? { exitCode: event.exitCode } : {}),
     ...(event.httpStatus !== undefined ? { httpStatus: event.httpStatus } : {}),
+    ...(event.taskId ? { taskId: event.taskId } : {}),
     count, firstAt: old?.firstAt ?? now.toISOString(), lastAt: now.toISOString(),
     suspectedCause: cause,
     status: count > MAX_AUTO_RETRIES ? "blocked" : count > 1 ? "repeated" : "open",
@@ -123,4 +181,61 @@ export function aggregateIncident(
   };
   return [result, ...records.filter(row => row.id !== id)]
     .slice(0, MAX_RECORDS);
+}
+
+function statusRank(status: unknown): number {
+  return status === "blocked" ? 0 : status === "repeated" ? 1 : status === "open" ? 2 : 3;
+}
+
+function lastAtRank(value: unknown): number {
+  const parsed = typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Builds the default diagnostics response. The ledger contract has no cursor,
+ * so this is a bounded projection with an explicit summary and hasMore flag,
+ * not pagination. Counts always describe the whole ledger.
+ */
+export function buildIncidentDiagnostics(
+  records: readonly IncidentRecord[], limit: number = DIAGNOSTICS_DEFAULT_LIMIT
+): IncidentDiagnosticsView {
+  const boundedLimit = Number.isSafeInteger(limit)
+    ? Math.min(Math.max(limit, 1), MAX_RECORDS)
+    : DIAGNOSTICS_DEFAULT_LIMIT;
+  const ordered = [...records].sort((a, b) =>
+    statusRank(a.status) - statusRank(b.status) ||
+    lastAtRank(b.lastAt) - lastAtRank(a.lastAt) ||
+    (b.count ?? 0) - (a.count ?? 0) ||
+    String(a.id).localeCompare(String(b.id)));
+  const selected = ordered.slice(0, boundedLimit);
+  const correlated = new Map<IncidentRecord, string | null>();
+  for (const record of records) correlated.set(record, correlateTaskId(record));
+  const byCode: Record<string, number> = {};
+  for (const record of records) {
+    const code = typeof record.code === "string" ? record.code : "UNKNOWN";
+    byCode[code] = (byCode[code] ?? 0) + 1;
+  }
+  const summary: IncidentDiagnosticsSummary = {
+    total: records.length,
+    shown: selected.length,
+    omitted: Math.max(0, records.length - selected.length),
+    hasMore: records.length > selected.length,
+    open: records.filter(record => record.status === "open").length,
+    repeated: records.filter(record => record.status === "repeated").length,
+    blocked: records.filter(record => record.status === "blocked").length,
+    taskCorrelated: records.filter(record => correlated.get(record) != null).length,
+    uncorrelated: records.filter(record => correlated.get(record) == null).length,
+    byCode
+  };
+  return {
+    incidents: selected.map(record => ({
+      ...record,
+      taskId: correlated.get(record) ?? null
+    })),
+    summary,
+    hasMore: summary.hasMore,
+    omitted: summary.omitted,
+    order: DIAGNOSTICS_ORDER
+  };
 }

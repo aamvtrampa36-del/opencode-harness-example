@@ -25,7 +25,7 @@ The MCP endpoint is protected by Cloudflare Access OAuth. Clients must authentic
 | `staging_mcp_servers` | none | List enabled MCP servers already configured in OpenCode |
 | `staging_mcp_tools` | `server` | Discover the selected server's allowed tools and input schemas |
 | `staging_mcp_call` | `server`, `name`, optional JSON `arguments` | Call an existing allowed MCP tool; its own permissions still apply |
-| `staging_diagnostics` | none | Read Staging health and the persisted incident ledger |
+| `staging_diagnostics` | optional `limit` (1-64, default 20) | Read Staging health and a bounded incident projection with summary and `taskId` correlation |
 | `staging_agent_check` | optional `model`, `kind` | Run an isolated real Linux, Bun, or red-to-green repair check |
 | `staging_agent_check_status` | none | Read independent tool/file/runtime evidence from the last check |
 | `staging_openrouter_check` | none | Spend one OpenRouter inference to verify provider, Bun, and Linux |
@@ -52,7 +52,11 @@ All workspace identifiers are UUIDs for Durable Objects in the Staging namespace
 
 ## Diagnostics and limits
 
-`staging_diagnostics` reads the incident ledger persisted by the OpenCode Worker. Cloudflare Workers logs and deployment/version history are the independent path for Worker errors, latency, and runtime observations. GitHub Actions logs and artifacts are the independent path for build, unit, Playwright, and MCP E2E failures. If Remote Control fails, inspect those sources directly through Cloudflare or GitHub; they do not call the MCP endpoint.
+`staging_diagnostics` reads the incident ledger persisted by the OpenCode Worker. The response is a bounded projection, not pagination: `limit` (1-64, default 20) caps how many incidents are returned, while `summary` always counts the whole ledger (`total`, `shown`, `omitted`, `open`, `repeated`, `blocked`, `taskCorrelated`, `uncorrelated`, `byCode`). `hasMore` and `omitted` state explicitly whether anything was left out. Incidents are ordered `blocked > repeated > open > unknown`, then by `lastAt` descending, then by `count` descending.
+
+Each incident includes an explicit `taskId`: either the 16-character hexadecimal supervisor task id or `null` when no supervised task could be correlated. That `taskId` is exactly the `requestId` returned by `staging_start_task`; it comes from the ledger record when present and otherwise from the deterministic supervised project name `supervised-<requestId>`. To follow one incident, call `staging_task_status` with `{ id: <taskId> }`, then `staging_task_transcript` or `staging_task_progress` with the same exact id. Do not guess an id or substitute a session id; `null` means the evidence does not identify a supervised task.
+
+Cloudflare Workers logs and deployment/version history are the independent path for Worker errors, latency, and runtime observations. GitHub Actions logs and artifacts are the independent path for build, unit, Playwright, and MCP E2E failures. If Remote Control fails, inspect those sources directly through Cloudflare or GitHub; they do not call the MCP endpoint.
 
 `staging_sessions` does not enumerate all Durable Objects. To inspect a normal UI session, the operator must supply its exact workspace UUID and session ID. Transcript and session excerpts are bounded and sanitized, but they may still contain user conversation content; share them only with the authorized owner.
 

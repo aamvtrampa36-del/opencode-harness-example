@@ -18,6 +18,24 @@ describe("OpenCode staging MCP server", () => {
     let startCount = 0;
     let healthReads = 0;
     let largeDiagnostics = false;
+    let defaultSupervisorCalls = 0;
+    let customSupervisorCalls = 0;
+    let derivedDiagnostics = false;
+    const diagnosticBase = Date.parse("2026-11-10T12:00:00Z");
+    const diagnosticRecords = Array.from({ length: 30 }, (_, index) => {
+      const count = index % 4 + 1;
+      const taskId = index % 3 === 0 ? index.toString(16).padStart(16, "0") : undefined;
+      return {
+        id: "SHELL_FAILED:linux:project-" + index + ":linux:1:-:-" + (taskId ?? "-"),
+        code: "SHELL_FAILED", source: "linux", project: "project-" + index, tool: "linux", exitCode: 1,
+        ...(taskId ? { taskId } : {}), count,
+        firstAt: new Date(diagnosticBase).toISOString(),
+        lastAt: new Date(diagnosticBase + index * 60_000).toISOString(),
+        suspectedCause: "Comando Linux terminó con error", action: "Examinar exitCode",
+        status: count > 2 ? "blocked" : count > 1 ? "repeated" : "open",
+        automaticRetryAllowed: false
+      };
+    });
     let openRouterCheckResult: Record<string, unknown> = {
       status: "passed", model: "review", kind: "bun", providerID: "openrouter",
       providerModel: STAGING_OPENROUTER_MODEL, bunVersion: BUN_RUNTIME_VERSION,
@@ -38,9 +56,18 @@ describe("OpenCode staging MCP server", () => {
       async remoteSupervisorMcpCall(input) { operations.push(`mcp-call:${input.server}.${input.name}`); return { result: { isError: false } }; },
       async remoteSupervisorDiagnostics() {
         operations.push("diagnostics");
-        return { targetWorker: STAGING_WORKER, incidents: largeDiagnostics
-          ? Array.from({ length: 120 }, (_, index) => ({ id: index, message: "diagnostic detail ".repeat(60) }))
-          : [] };
+        if (derivedDiagnostics) {
+          const taskId = "0123456789abcdef";
+          return { targetWorker: STAGING_WORKER, incidents: [{
+            id: "SHELL_FAILED:linux:supervised-" + taskId + ":linux:1:-:-",
+            code: "SHELL_FAILED", source: "linux", project: "supervised-" + taskId,
+            tool: "linux", exitCode: 1, count: 1,
+            firstAt: new Date(diagnosticBase).toISOString(), lastAt: new Date(diagnosticBase).toISOString(),
+            suspectedCause: "Comando Linux terminó con error", action: "Examinar exitCode",
+            status: "open", automaticRetryAllowed: false
+          }] };
+        }
+        return { targetWorker: STAGING_WORKER, incidents: largeDiagnostics ? diagnosticRecords : [] };
       },
       async remoteSupervisorAgentCheck(model, kind) { operations.push(`agent-check:${model}:${kind}`); return { status: "started", model, kind }; },
       async remoteSupervisorAgentCheckStatus(scope) {
@@ -75,7 +102,12 @@ describe("OpenCode staging MCP server", () => {
         return Response.json({ status: "ok", runtime: "workerd" });
       },
       supervisor: workspace => {
-        if (workspace) requestedWorkspace = workspace;
+        if (workspace) {
+          requestedWorkspace = workspace;
+          customSupervisorCalls++;
+        } else {
+          defaultSupervisorCalls++;
+        }
         return supervisor;
       }
     });
@@ -94,6 +126,9 @@ describe("OpenCode staging MCP server", () => {
         "staging_start_task", "staging_status", "staging_task_continue", "staging_task_progress", "staging_task_select_model",
         "staging_task_status", "staging_task_transcript"
       ]);
+      const taskStatusTool = tools.find(tool => tool.name === "staging_task_status");
+      expect(taskStatusTool?.description).toContain("Omite workspace");
+      expect(taskStatusTool?.description).toContain("UUID exacto");
 
       const status = await client.callTool({ name: "staging_status", arguments: {} });
       expect(JSON.parse(textContent(status))).toMatchObject({ targetWorker: STAGING_WORKER, status: "ok",
@@ -123,8 +158,50 @@ describe("OpenCode staging MCP server", () => {
         await client.callTool({ name: "staging_diagnostics", arguments: {} })
       ));
       expect(largeDiagnosticPayload.targetWorker).toBe(STAGING_WORKER);
-      expect(largeDiagnosticPayload._responseTruncated).toBe(true);
-      expect(Array.isArray(largeDiagnosticPayload.incidents)).toBe(true);
+      expect(largeDiagnosticPayload._responseTruncated).toBeUndefined();
+      expect(largeDiagnosticPayload.incidents).toHaveLength(20);
+      expect(largeDiagnosticPayload.summary).toMatchObject({
+        total: 30, shown: 20, omitted: 10, hasMore: true, taskCorrelated: 10, uncorrelated: 20
+      });
+      expect(largeDiagnosticPayload.hasMore).toBe(true);
+      expect(largeDiagnosticPayload.omitted).toBe(10);
+      expect(largeDiagnosticPayload.order).toContain("blocked > repeated > open");
+      expect(largeDiagnosticPayload.correlation).toMatchObject({ field: "taskId", equalsRequestId: true });
+      expect(largeDiagnosticPayload.incidents.every((item: { taskId: string | null }) =>
+        item.taskId === null || /^[a-f0-9]{16}$/.test(item.taskId))).toBe(true);
+      const correlatedIncident = largeDiagnosticPayload.incidents.find(
+        (item: { taskId: string | null }) => typeof item.taskId === "string"
+      );
+      expect(correlatedIncident).toBeTruthy();
+      const correlatedStatus = await client.callTool({
+        name: "staging_task_status", arguments: { id: correlatedIncident.taskId }
+      });
+      expect(JSON.parse(textContent(correlatedStatus))).toMatchObject({
+        targetWorker: STAGING_WORKER, id: correlatedIncident.taskId
+      });
+      const limitedDiagnostics = JSON.parse(textContent(
+        await client.callTool({ name: "staging_diagnostics", arguments: { limit: 5 } })
+      ));
+      expect(limitedDiagnostics.incidents).toHaveLength(5);
+      expect(limitedDiagnostics.summary).toMatchObject({ total: 30, shown: 5, omitted: 25, hasMore: true });
+      expect(limitedDiagnostics.hasMore).toBe(true);
+      derivedDiagnostics = true;
+      const derivedPayload = JSON.parse(textContent(
+        await client.callTool({ name: "staging_diagnostics", arguments: {} })
+      ));
+      expect(derivedPayload.incidents).toHaveLength(1);
+      expect(derivedPayload.incidents[0].taskId).toBe("0123456789abcdef");
+      expect(derivedPayload.summary).toMatchObject({ total: 1, shown: 1, omitted: 0,
+        hasMore: false, taskCorrelated: 1, uncorrelated: 0 });
+      expect(derivedPayload.correlation).toMatchObject({ field: "taskId", equalsRequestId: true });
+      expect(derivedPayload.correlation.derivation).toContain("supervised-<requestId>");
+      const derivedStatus = await client.callTool({
+        name: "staging_task_status", arguments: { id: derivedPayload.incidents[0].taskId }
+      });
+      expect(JSON.parse(textContent(derivedStatus))).toMatchObject({
+        targetWorker: STAGING_WORKER, id: "0123456789abcdef"
+      });
+      derivedDiagnostics = false;
       expect(JSON.parse(textContent(await client.callTool({ name: "staging_agent_check", arguments: {} })))
         .model).toBe("economy");
       expect(JSON.parse(textContent(await client.callTool({ name: "staging_agent_check_status", arguments: {} })))
@@ -156,11 +233,15 @@ describe("OpenCode staging MCP server", () => {
         name: "staging_start_task",
         arguments: { requestId: "a1234567890bcdef", prompt: "Inspecciona el modo staging y corrige una prueba" }
       });
-      expect(JSON.parse(textContent(start))).toMatchObject({
+      const startPayload = JSON.parse(textContent(start));
+      expect(startPayload).toMatchObject({
         targetWorker: STAGING_WORKER,
         id: "a1234567890bcdef",
         status: "running", reused: false
       });
+      expect(startPayload).not.toHaveProperty("workspace");
+      expect(defaultSupervisorCalls).toBeGreaterThan(0);
+      expect(customSupervisorCalls).toBe(0);
       expect(started).toEqual({
         requestId: "a1234567890bcdef",
         repository: STAGING_REPOSITORY,
@@ -172,8 +253,11 @@ describe("OpenCode staging MCP server", () => {
         requestId: "c1234567890bcdef", prompt: "Continúa desde la conversación indicada con una rama aislada",
         repository: STAGING_REPOSITORY, model: "economy", workspace, sourceSession: "sesAbc123"
       } });
-      expect(JSON.parse(textContent(fork))).toMatchObject({ workspace, targetWorker: STAGING_WORKER });
+      const forkPayload = JSON.parse(textContent(fork));
+      expect(forkPayload).toMatchObject({ workspace, targetWorker: STAGING_WORKER });
+      expect(forkPayload.workspace).toBe(workspace);
       expect(requestedWorkspace).toBe(workspace);
+      expect(customSupervisorCalls).toBe(1);
       expect(started).toEqual({ requestId: "c1234567890bcdef", repository: STAGING_REPOSITORY,
         prompt: "Continúa desde la conversación indicada con una rama aislada", model: "economy",
         sourceSession: "sesAbc123" });
@@ -191,8 +275,11 @@ describe("OpenCode staging MCP server", () => {
       expect(workspaceWithoutFork.isError).toBe(true);
       expect(startCount).toBe(startsBeforeInvalidFork);
 
+      const defaultCallsBeforeTaskStatus = defaultSupervisorCalls;
       const taskStatus = await client.callTool({ name: "staging_task_status", arguments: { id: "a1234567890bcdef" } });
       expect(JSON.parse(textContent(taskStatus))).toMatchObject({ targetWorker: STAGING_WORKER, status: "running" });
+      expect(defaultSupervisorCalls).toBe(defaultCallsBeforeTaskStatus + 1);
+      expect(customSupervisorCalls).toBe(1);
       const progress = await client.callTool({ name: "staging_task_progress", arguments: { id: "a1234567890bcdef", after: 0 } });
       expect(JSON.parse(textContent(progress))).toMatchObject({ targetWorker: STAGING_WORKER, events: [], nextAfter: 0 });
       const continued = await client.callTool({ name: "staging_task_continue", arguments: {
@@ -262,12 +349,14 @@ describe("OpenCode staging MCP server", () => {
       async remoteSupervisorAgentCheckStatus() { return { status: "not-started" }; },
       async startAgentCheck(model, kind) { return { status: "started", model, kind }; },
       async startSupervisedTask() {
-        return { id, status: "running", reused: true, branch: `opencode/staging-${id}` };
+        return { id, status: "running", reused: true, branch: `opencode/staging-${id}`,
+          workspace: SUPERVISOR_OBJECT };
       },
       async supervisedTaskStatus(taskId) {
         statusReads++;
         expect(taskId).toBe(id);
-        return { id, status: "finished", session: "sesFinished", reviewRequired: true };
+        return { id, status: "finished", session: "sesFinished", reviewRequired: true,
+          workspace: SUPERVISOR_OBJECT };
       },
       async cancelSupervisedTask(taskId) { return { id: taskId, status: "cancelled" }; },
       async supervisedTaskReview(taskId) { return { id: taskId, reviewRequired: true, approved: false }; },
@@ -289,12 +378,15 @@ describe("OpenCode staging MCP server", () => {
         name: "staging_start_task",
         arguments: { requestId: id, prompt: "Repite la consulta de estado idempotente" }
       });
-      expect(JSON.parse(textContent(response))).toMatchObject({
+      const payload = JSON.parse(textContent(response));
+      expect(payload).toMatchObject({
         id,
         status: "finished",
         reused: true,
         targetWorker: STAGING_WORKER
       });
+      expect(payload).not.toHaveProperty("workspace");
+      expect(JSON.stringify(payload)).not.toContain(SUPERVISOR_OBJECT);
       expect(statusReads).toBe(1);
     } finally {
       await client.close();
