@@ -80,6 +80,26 @@ export const VALID_TASK_ID = /^[a-f0-9]{16}$/;
 export const DIAGNOSTICS_DEFAULT_LIMIT = 20;
 export const DIAGNOSTICS_ORDER = "blocked > repeated > open > unknown; then lastAt desc; then count desc";
 
+/** Supervised tasks bind their Container project as `supervised-<requestId>`. */
+const SUPERVISED_PROJECT = /^supervised-([a-f0-9]{16})$/;
+
+/** Returns the supervisor task id encoded in a supervised project name, or null. */
+export function taskIdFromProject(project: unknown): string | null {
+  if (typeof project !== "string") return null;
+  const match = SUPERVISED_PROJECT.exec(project);
+  return match ? match[1] : null;
+}
+
+/**
+ * The ledger taskId wins when present; otherwise the deterministic supervised
+ * project name supplies the same requestId. No id is invented for other projects.
+ */
+export function correlateTaskId(record: Pick<IncidentRecord, "taskId" | "project">): string | null {
+  return typeof record.taskId === "string" && VALID_TASK_ID.test(record.taskId)
+    ? record.taskId
+    : taskIdFromProject(record.project);
+}
+
 /** Classify failures based on machine evidence, not an AI success statement. */
 export function observeLinux(input: {
   project?: string; exitCode: number | null; stdout?: string; stderr?: string;
@@ -185,6 +205,8 @@ export function buildIncidentDiagnostics(
     (b.count ?? 0) - (a.count ?? 0) ||
     String(a.id).localeCompare(String(b.id)));
   const selected = ordered.slice(0, boundedLimit);
+  const correlated = new Map<IncidentRecord, string | null>();
+  for (const record of records) correlated.set(record, correlateTaskId(record));
   const byCode: Record<string, number> = {};
   for (const record of records) {
     const code = typeof record.code === "string" ? record.code : "UNKNOWN";
@@ -198,14 +220,14 @@ export function buildIncidentDiagnostics(
     open: records.filter(record => record.status === "open").length,
     repeated: records.filter(record => record.status === "repeated").length,
     blocked: records.filter(record => record.status === "blocked").length,
-    taskCorrelated: records.filter(record => typeof record.taskId === "string").length,
-    uncorrelated: records.filter(record => typeof record.taskId !== "string").length,
+    taskCorrelated: records.filter(record => correlated.get(record) != null).length,
+    uncorrelated: records.filter(record => correlated.get(record) == null).length,
     byCode
   };
   return {
     incidents: selected.map(record => ({
       ...record,
-      taskId: typeof record.taskId === "string" ? record.taskId : null
+      taskId: correlated.get(record) ?? null
     })),
     summary,
     hasMore: summary.hasMore,
