@@ -501,14 +501,16 @@ export class OpenCodeAgent extends DurableObject<Env> {
       toolCountsError = error instanceof Error ? error.message.slice(0, 200) : "SUPERVISOR_METRICS_UNAVAILABLE";
     }
     const status = classifySupervisorOperation(job, busy, operation);
-    if (status !== job.status) {
+    const nextError = operation?.status === "unanswered"
+      ? operation.reason?.slice(0, 240)
+      : operation?.status === "done" ? undefined : job.error;
+    if (status !== job.status || nextError !== job.error) {
       job.status = status;
-      if (operation?.status === "unanswered") job.error = operation.reason?.slice(0, 240);
-      else if (operation?.status === "done") job.error = undefined;
+      job.error = nextError;
       job.updatedAt = Date.now();
       await this.ctx.storage.put(supervisorTaskKey(id), job);
     }
-    return { ...base, updatedAt: job.updatedAt, status,
+    return { ...base, updatedAt: job.updatedAt, status, error: job.error,
       toolCalls: toolCounts?.toolCalls ?? null,
       completedTools: toolCounts?.completedTools ?? null,
       failedTools: toolCounts?.failedTools ?? null,
@@ -547,11 +549,20 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const job = await this.supervisedRecord(id);
     if (["cancelled", "failed", "finished", "unanswered"].includes(job.status))
       return { id, status: job.status };
-    if (!job.session || !job.operationId) {
+    if (!job.session) {
       job.status = "cancelled";
       job.updatedAt = Date.now();
       await this.ctx.storage.put(supervisorTaskKey(id), job);
-      return { id, status: "cancelled", confirmed: true, reason: "no OpenCode operation had started" };
+      return { id, status: "cancelled", confirmed: true, reason: "no OpenCode session had started" };
+    }
+    if (!job.operationId) {
+      // A legacy session may still be running; without its operation id we
+      // cannot ask OpenCode to abort it or claim cancellation was confirmed.
+      job.status = "unknown";
+      job.error = "OpenCode operation id missing";
+      job.updatedAt = Date.now();
+      await this.ctx.storage.put(supervisorTaskKey(id), job);
+      return { id, status: "unknown", confirmed: false, reason: job.error };
     }
     job.status = "cancel_requested";
     job.updatedAt = Date.now();

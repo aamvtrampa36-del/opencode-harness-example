@@ -12,6 +12,11 @@ describe("managed Linux Bun runtime", () => {
     expect(commandRequiresBun("node check.mjs || bun run verify")).toBe(true);
   });
 
+  test("detects Bun commands after shell command newlines", () => {
+    expect(commandRequiresBun("echo prep\nbun run test")).toBe(true);
+    expect(commandRequiresBun("echo prep\r\nbunx wrangler test")).toBe(true);
+  });
+
   test("does not install Bun when a command only mentions it as text", () => {
     expect(commandRequiresBun("printf 'bun --version'" )).toBe(false);
     expect(commandRequiresBun("node -e \"console.log('bun')\"")).toBe(false);
