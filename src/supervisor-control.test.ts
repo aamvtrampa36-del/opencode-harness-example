@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import * as SupervisorControl from "./supervisor-control";
 import {
   classifySupervisorOperation,
   SUPERVISOR_WORKSPACE, assertSupervisorBoundGitHubOperation,
@@ -112,6 +113,23 @@ describe("OpenCode remote supervisor — fail closed", () => {
       { status: "unanswered", reason: "failed" })).toBe("failed");
     expect(classifySupervisorOperation("running", false,
       { status: "unanswered", reason: "not_found" })).toBe("unknown");
+  });
+
+  test("legacy task records without an operation ID reconcile stale running after an idle probe", () => {
+    const legacy = { status: "running" } as any;
+    expect(classifySupervisorOperation(legacy, false)).toBe("unknown");
+    expect(classifySupervisorOperation(legacy, false, { status: "done" })).toBe("unknown");
+    expect(classifySupervisorOperation({ status: "running", operationId: "rc-turn-a" } as any,
+      false, { status: "done" })).toBe("finished");
+  });
+
+  test("legacy active sessions without an operation ID are never auto-resubmitted", () => {
+    const gate = (SupervisorControl as any).isUntrackedLegacySupervisorOperation;
+    expect(gate?.({ status: "running", session: "ses_legacy" })).toBe(true);
+    expect(gate?.({ status: "unknown", session: "ses_legacy" })).toBe(true);
+    expect(gate?.({ status: "running", session: "ses_legacy", operationId: "rc-start-legacy" })).toBe(false);
+    expect(gate?.({ status: "preparing", session: "ses_legacy" })).toBe(false);
+    expect(gate?.({ status: "running" })).toBe(false);
   });
 
   test("response has no-cache and privacy headers", () => {
