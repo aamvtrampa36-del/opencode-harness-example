@@ -261,7 +261,7 @@ export class GitHubBridge {
     }
     const first = source.indexOf(oldText);
     if (first < 0) throw new Error("Replacement anchor was not found");
-    if (source.indexOf(oldText, first + oldText.length) >= 0) {
+    if (source.indexOf(oldText, first + 1) >= 0) {
       throw new Error("Replacement anchor must match exactly once");
     }
     const updated = source.slice(0, first) + newText + source.slice(first + oldText.length);

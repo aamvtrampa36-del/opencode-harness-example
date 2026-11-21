@@ -517,6 +517,15 @@ describe("GitHub bounded replacement guards", () => {
     }
   });
 
+  test("rejects overlapping anchors before creating Git objects", async () => {
+    const state = fixture("ababa");
+    await expect(state.bridge.execute({
+      action: "write", repo, path: "src/server.ts", branch, expectedHead: head,
+      oldText: "aba", newText: "xyz"
+    })).rejects.toThrow("match exactly once");
+    expect(state.requests.length).toBeGreaterThan(0);
+    expect(state.requests.every(item => item.method === "GET")).toBe(true);
+  });
   test("bounds the replacement file and both supplied fragments", async () => {
     const bigFile = fixture("x".repeat(128_001));
     await expect(bigFile.bridge.execute({
