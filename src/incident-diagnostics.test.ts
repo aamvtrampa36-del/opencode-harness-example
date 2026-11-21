@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
-  aggregateIncident, cleanObservation, classifyAgentFailure,
-  observeLinux, retryDecision
+  aggregateIncident, buildIncidentDiagnostics, cleanObservation, classifyAgentFailure,
+  correlateTaskId, DIAGNOSTICS_DEFAULT_LIMIT, DIAGNOSTICS_ORDER, observeLinux, retryDecision,
+  taskIdFromProject, type IncidentRecord
 } from "./incident-diagnostics";
 
 describe("G7 passive incident registry", () => {
@@ -62,6 +63,62 @@ describe("G7 passive incident registry", () => {
     expect(incidents).toHaveLength(2);
     expect(incidents.every(item => item.count === 1)).toBe(true);
   });
+  test("correlates incidents to the supervisor task id without merging distinct tasks", () => {
+    const taskA = "a1234567890bcdef";
+    const taskB = "b1234567890bcdef";
+    let incidents = aggregateIncident([], { code:"SHELL_FAILED", source:"linux", project:"g7-test", tool:"linux", exitCode:1, taskId:taskA });
+    expect(incidents[0].taskId).toBe(taskA);
+    incidents = aggregateIncident(incidents, { code:"SHELL_FAILED", source:"linux", project:"g7-test", tool:"linux", exitCode:1, taskId:taskA });
+    expect(incidents).toHaveLength(1);
+    expect(incidents[0].count).toBe(2);
+    incidents = aggregateIncident(incidents, { code:"SHELL_FAILED", source:"linux", project:"g7-test", tool:"linux", exitCode:1, taskId:taskB });
+    expect(incidents).toHaveLength(2);
+    expect(new Set(incidents.map(item => item.taskId))).toEqual(new Set([taskA, taskB]));
+    expect(cleanObservation({ code:"SHELL_FAILED", source:"linux", taskId:"not-a-task" })).not.toHaveProperty("taskId");
+    expect(cleanObservation({ code:"SHELL_FAILED", source:"linux", taskId:"A1234567890BCDEF" })).not.toHaveProperty("taskId");
+    const correlated = buildIncidentDiagnostics(incidents);
+    expect(correlated.incidents.every(item => typeof item.taskId === "string")).toBe(true);
+    expect(correlated.summary.taskCorrelated).toBe(2);
+    expect(correlated.summary.uncorrelated).toBe(0);
+    const uncorrelated = buildIncidentDiagnostics(
+      aggregateIncident([], { code:"SHELL_FAILED", source:"linux", project:"g7-other", tool:"linux", exitCode:1 })
+    );
+    expect(uncorrelated.incidents[0].taskId).toBeNull();
+    expect(uncorrelated.summary.uncorrelated).toBe(1);
+  });
+  test("bounds diagnostics with an explicit summary, priority order and hasMore", () => {
+    const base = Date.parse("2026-11-10T12:00:00Z");
+    const records: IncidentRecord[] = Array.from({ length: 30 }, (_, index) => {
+      const count = index % 4 + 1;
+      const taskId = index % 3 === 0 ? index.toString(16).padStart(16, "0") : undefined;
+      return {
+        id: "SHELL_FAILED:linux:project-" + index + ":linux:1:-:-" + (taskId ?? "-"),
+        code: "SHELL_FAILED", source: "linux", project: "project-" + index, tool: "linux", exitCode: 1,
+        ...(taskId ? { taskId } : {}), count,
+        firstAt: new Date(base).toISOString(), lastAt: new Date(base + index * 60_000).toISOString(),
+        suspectedCause: "Comando Linux terminó con error", action: "Examinar exitCode",
+        status: count > 2 ? "blocked" : count > 1 ? "repeated" : "open",
+        automaticRetryAllowed: false
+      };
+    });
+    const view = buildIncidentDiagnostics(records);
+    expect(view.incidents).toHaveLength(DIAGNOSTICS_DEFAULT_LIMIT);
+    expect(view.summary).toMatchObject({ total: 30, shown: 20, omitted: 10, hasMore: true,
+      taskCorrelated: 10, uncorrelated: 20 });
+    expect(view.hasMore).toBe(true);
+    expect(view.omitted).toBe(10);
+    expect(view.order).toBe(DIAGNOSTICS_ORDER);
+    expect(view.summary.byCode.SHELL_FAILED).toBe(30);
+    const ranks = view.incidents.map(item => item.status === "blocked" ? 0 : item.status === "repeated" ? 1 : 2);
+    expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
+    expect(view.incidents[0]).toMatchObject({ status: "blocked", project: "project-27" });
+    expect(view.incidents.every(item => item.taskId === null || /^[a-f0-9]{16}$/.test(item.taskId))).toBe(true);
+    const limited = buildIncidentDiagnostics(records, 5);
+    expect(limited.incidents).toHaveLength(5);
+    expect(limited.summary).toMatchObject({ total: 30, shown: 5, omitted: 25, hasMore: true });
+    expect(buildIncidentDiagnostics(records, Number.NaN).incidents).toHaveLength(DIAGNOSTICS_DEFAULT_LIMIT);
+    expect(buildIncidentDiagnostics(records, 999).incidents).toHaveLength(30);
+  });
   test("bounds ledger size without dropping the most recent incident", () => {
     let records: ReturnType<typeof aggregateIncident> = [];
     for (let n=0; n<80; n++) {
@@ -69,5 +126,29 @@ describe("G7 passive incident registry", () => {
     }
     expect(records).toHaveLength(64);
     expect(records[0].project).toBe("project-79");
+  });
+
+  test("derives taskId from the deterministic supervised project and keeps an explicit id", () => {
+    const derived = "0123456789abcdef";
+    const explicit = "fedcba9876543210";
+    expect(taskIdFromProject("supervised-" + derived)).toBe(derived);
+    expect(taskIdFromProject("supervised-0123456789ABCDEF")).toBeNull();
+    expect(taskIdFromProject("g7-test")).toBeNull();
+    expect(taskIdFromProject(undefined)).toBeNull();
+    const base: IncidentRecord = {
+      id: "SHELL_FAILED:linux:supervised-" + derived + ":linux:1:-:-",
+      code: "SHELL_FAILED", source: "linux", project: "supervised-" + derived,
+      tool: "linux", exitCode: 1, count: 1,
+      firstAt: "2026-11-10T12:00:00.000Z", lastAt: "2026-11-10T12:00:00.000Z",
+      suspectedCause: "Comando Linux terminó con error", action: "Examinar exitCode",
+      status: "open", automaticRetryAllowed: false
+    };
+    const view = buildIncidentDiagnostics([base]);
+    expect(view.incidents[0].taskId).toBe(derived);
+    expect(view.summary).toMatchObject({ taskCorrelated: 1, uncorrelated: 0 });
+    const explicitView = buildIncidentDiagnostics([{ ...base, taskId: explicit }]);
+    expect(explicitView.incidents[0].taskId).toBe(explicit);
+    expect(correlateTaskId({ taskId: "not-a-task", project: "supervised-" + derived })).toBe(derived);
+    expect(correlateTaskId({ project: "g7-test" })).toBeNull();
   });
 });
