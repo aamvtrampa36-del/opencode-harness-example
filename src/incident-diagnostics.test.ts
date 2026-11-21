@@ -128,6 +128,32 @@ describe("G7 passive incident registry", () => {
     expect(records[0].project).toBe("project-79");
   });
 
+  test("keeps the legacy six-segment id when an observation has no taskId", () => {
+    const legacyId = "SHELL_FAILED:linux:supervised-0123456789abcdef:linux:2:-";
+    const historical: IncidentRecord = {
+      id: legacyId, code: "SHELL_FAILED", source: "linux",
+      project: "supervised-0123456789abcdef", tool: "linux", exitCode: 2, count: 1,
+      firstAt: "2026-11-10T12:00:00.000Z", lastAt: "2026-11-10T12:00:00.000Z",
+      suspectedCause: "Comando Linux terminó con error", action: "Examinar exitCode",
+      status: "open", automaticRetryAllowed: false
+    };
+    const observation = { code: "SHELL_FAILED", source: "linux",
+      project: "supervised-0123456789abcdef", tool: "linux", exitCode: 2 };
+    const once = aggregateIncident([historical], observation, new Date("2026-11-10T12:05:00Z"));
+    expect(once).toHaveLength(1);
+    expect(once[0]).toMatchObject({ id: legacyId, count: 2, status: "repeated" });
+    const twice = aggregateIncident(once, observation, new Date("2026-11-10T12:06:00Z"));
+    expect(twice).toHaveLength(1);
+    expect(twice[0]).toMatchObject({ id: legacyId, count: 3, status: "blocked" });
+    // An explicit taskId keeps its own seventh segment and never merges with legacy rows.
+    const withTask = aggregateIncident([historical], {
+      ...observation, taskId: "0123456789abcdef"
+    }, new Date("2026-11-10T12:07:00Z"));
+    expect(withTask).toHaveLength(2);
+    expect(withTask[0].id).toBe(legacyId + ":0123456789abcdef");
+    expect(withTask.find(row => row.id === legacyId)?.count).toBe(1);
+  });
+
   test("derives taskId from the deterministic supervised project and keeps an explicit id", () => {
     const derived = "0123456789abcdef";
     const explicit = "fedcba9876543210";
