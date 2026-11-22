@@ -160,9 +160,17 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const key = supervisorTaskKey(job.id);
     try {
       if (!job.baseCommit) {
-        // The deterministic branch reservation safely recovers after a lost GitHub response.
-        const branchResult = await this.githubRunner.ensureSupervisorBranch(job.repository, job.branch);
-        job.baseCommit = supervisorBaseCommit(branchResult, job.repository);
+        if (job.mode === "read_only") {
+          // Read-only tasks verify an immutable commit and tree without creating a branch.
+          const verified = await this.githubRunner.resolveReadOnlySource(
+            job.repository, start.sourceCommit, start.sourceTree);
+          job.baseCommit = verified.commit;
+          job.sourceTree = verified.tree;
+        } else {
+          // The deterministic branch reservation safely recovers after a lost GitHub response.
+          const branchResult = await this.githubRunner.ensureSupervisorBranch(job.repository, job.branch);
+          job.baseCommit = supervisorBaseCommit(branchResult, job.repository);
+        }
         job.updatedAt = Date.now();
         await this.ctx.storage.put(key, job);
       }
