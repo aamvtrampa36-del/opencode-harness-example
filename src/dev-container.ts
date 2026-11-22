@@ -300,12 +300,20 @@ export class DevContainer extends DurableObject<Env> {
    * owner's GitHub credential; the Container receives only archive bytes.
    * Never overwrites a project, even after an interrupted previous import.
    */
-  async prepareRepository(project: string, repository: string, sourceCommit?: string): Promise<{
-    project: string; repository: string; commit: string; files: number; sha256: string;
+  async prepareRepository(project: string, repository: string, sourceCommit?: string,
+    sourceTree?: string): Promise<{
+    project: string; repository: string; commit: string; tree?: string;
+    files: number; sha256: string;
   }> {
     const id = validateProject(project);
     if (sourceCommit !== undefined && !/^[a-f0-9]{40}$/.test(sourceCommit)) {
       throw new Error("Commit de origen inválido");
+    }
+    if (sourceTree !== undefined && !/^[a-f0-9]{40}$/.test(sourceTree)) {
+      throw new Error("Árbol de origen inválido");
+    }
+    if (sourceTree !== undefined && sourceCommit === undefined) {
+      throw new Error("sourceCommit es obligatorio cuando se fija sourceTree");
     }
     const previous = this.commandQueue;
     let release = () => {};
