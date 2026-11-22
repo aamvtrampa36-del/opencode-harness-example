@@ -362,6 +362,8 @@ export class DevContainer extends DurableObject<Env> {
       this.busy++;
       await this.ctx.storage.put("lastActivity", Date.now());
       try {
+        // Git tree verification runs before normal Linux commands bootstrap Git.
+        if (sourceTree) await this.ensureGitAvailable(container);
         const process = await container.exec(
           ["node", "--input-type=module", "-e", GITHUB_IMPORT_SOURCE, id,
             ...(sourceTree ? [sourceTree] : [])], { stdin: source.stream }
