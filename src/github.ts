@@ -213,6 +213,64 @@ export class GitHubBridge {
     }
   }
 
+  /**
+   * Read-only source identity check for supervised read_only tasks. Every
+   * request is a GET: no branch, ref, PR or review is created. When no pair is
+   * supplied, the reviewed Staging base (OpenCode) or default branch is
+   * resolved read-only and its Git tree is returned for the importer.
+   */
+  async resolveReadOnlySource(
+    repoInput: string, sourceCommit?: string, sourceTree?: string
+  ): Promise<{ repo: string; source: string; commit: string; tree: string }> {
+    const repo = repoChecked(repoInput, this.allowed);
+    if ((sourceCommit === undefined) !== (sourceTree === undefined)) {
+      throw new Error("sourceCommit y sourceTree deben fijarse juntos");
+    }
+    if (sourceCommit !== undefined && !/^[a-f0-9]{40}$/.test(sourceCommit)) {
+      throw new Error("Commit de origen inválido");
+    }
+    if (sourceTree !== undefined && !/^[a-f0-9]{40}$/.test(sourceTree)) {
+      throw new Error("Árbol de origen inválido");
+    }
+    const base = "/repos/" + repo;
+    const info = await this.api("GET", base);
+    if (info?.full_name?.toLowerCase() !== repo.toLowerCase()) {
+      throw new Error("GitHub devolvió datos de repositorio inválidos");
+    }
+    let source: string;
+    let commit: string;
+    if (sourceCommit !== undefined) {
+      source = "pinned";
+      commit = sourceCommit;
+    } else {
+      source = repo.toLowerCase() === OPENCODE_REPO.toLowerCase()
+        ? OPENCODE_STAGING_BASE : info.default_branch;
+      if (typeof source !== "string" || !source) {
+        throw new Error("No se pudo identificar la base de solo lectura");
+      }
+      const ref = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(source));
+      const sha = ref?.object?.sha;
+      if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) {
+        throw new Error("Source branch commit is unverifiable");
+      }
+      commit = sha.toLowerCase();
+    }
+    const record = await this.api("GET", base + "/commits/" + commit, undefined, true);
+    if (!record) throw new Error("El commit de origen no existe en el repositorio autorizado");
+    const sha = record?.sha;
+    const tree = record?.commit?.tree?.sha;
+    if (typeof sha !== "string" || !/^[a-f0-9]{40}$/.test(sha) || sha.toLowerCase() !== commit) {
+      throw new Error("GitHub no confirmó el commit de origen solicitado");
+    }
+    if (typeof tree !== "string" || !/^[a-f0-9]{40}$/.test(tree)) {
+      throw new Error("GitHub no devolvió un árbol verificable");
+    }
+    if (sourceTree !== undefined && tree.toLowerCase() !== sourceTree) {
+      throw new Error("El árbol de origen no coincide con el commit verificado");
+    }
+    return { repo, source, commit, tree: tree.toLowerCase() };
+  }
+
   private async replaceExact(
     repo: string,
     path: string,
