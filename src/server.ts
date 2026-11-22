@@ -51,7 +51,7 @@ import {
   supervisorBaseCommit, supervisorBranch, supervisorFingerprint, supervisorProject,
   supervisorPrompt, supervisorResponse, supervisorTaskKey, supervisorStartOperationId,
   supervisorTurnOperationId, classifySupervisorOperation, isUntrackedLegacySupervisorOperation,
-  validateSupervisorStart, type SupervisorTask
+  preflightReadOnlySource, validateSupervisorStart, type SupervisorTask
 } from "./supervisor-control";
 
 export const MODEL_ID = MODEL_PRESETS.cloudflare.id;
