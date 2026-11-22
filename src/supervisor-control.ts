@@ -13,6 +13,8 @@ export type SupervisorStart = {
   requestId: string;
   repository: string;
   prompt: string;
+  /** Native Workers AI only: never route a supervised test to an unapproved premium model. */
+  model?: "economy" | "cloudflare";
 };
 
 export type SupervisorTask = {
@@ -24,6 +26,8 @@ export type SupervisorTask = {
   session?: string;
   createdAt: number;
   status: "preparing" | "running" | "failed" | "cancelled";
+  model?: "economy" | "cloudflare";
+  operationId?: string;
   error?: string;
 };
 
@@ -40,10 +44,14 @@ export function validateSupervisorStart(raw: unknown, approved: readonly string[
   }
   if (typeof input.prompt !== "string" || input.prompt.trim().length < 12 ||
       input.prompt.length > 5_000) throw new Error("Tarea de 12 a 5000 caracteres requerida");
-  if (Object.keys(input).some(key => !["requestId", "repository", "prompt"].includes(key))) {
+  if (input.model !== undefined && input.model !== "economy" && input.model !== "cloudflare") {
+    throw new Error("Modelo no autorizado para el supervisor");
+  }
+  if (Object.keys(input).some(key => !["requestId", "repository", "prompt", "model"].includes(key))) {
     throw new Error("Parámetros del supervisor desconocidos");
   }
-  return { requestId: input.requestId, repository, prompt: input.prompt.trim() };
+  return { requestId: input.requestId, repository, prompt: input.prompt.trim(),
+    ...(input.model ? { model: input.model as "economy" | "cloudflare" } : {}) };
 }
 
 export function supervisorTaskKey(id: string): string {
@@ -78,7 +86,7 @@ export function assertSupervisorBoundGitHubOperation(
 
 export async function supervisorFingerprint(value: SupervisorStart): Promise<string> {
   const bytes = new TextEncoder().encode(
-    value.repository.toLowerCase() + "\n" + value.prompt
+    value.repository.toLowerCase() + "\n" + value.prompt + "\n" + (value.model ?? "economy")
   );
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
@@ -114,7 +122,7 @@ export function supervisorPrompt(task: SupervisorStart, branch: string, project:
   return "Tarea de desarrollo supervisada y REVERSIBLE. Repositorio autorizado: " +
     task.repository + ". Proyecto Linux exclusivo: " + project + ". Rama precreada: " + branch +
     (branch.startsWith("opencode/staging-")
-      ? ". BASE REAL: feat/staging-supervisor-control-20261111, NO main. La importación Linux inicial puede contener main: usa git fetch para recuperar el commit exacto de staging en un checkout aislado; verifica HEAD y usa github.read con ref de Staging si hace falta. No presentes los archivos de main como si fuesen Staging"
+      ? ". BASE REAL: opencode/staging-control-mcp-20261118, NO main. La importación Linux inicial puede contener main: usa git fetch para recuperar el commit exacto de staging en un checkout aislado; verifica HEAD y usa github.read con ref de Staging si hace falta. No presentes los archivos de main como si fuesen Staging"
       : "") +
     ". Tienes permiso para leer el código autorizado, ejecutar pruebas y escribir SOLO en esa rama " +
     "usando la herramienta github; prepara exclusivamente una PR borrador. " +

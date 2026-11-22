@@ -61,6 +61,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   private readonly mcpLifecycle: { reload?: () => Promise<void> } = {};
   /** Remote supervisor tasks use a single dedicated DO, never arbitrary user workspaces. */
   async startSupervisedTask(raw: unknown): Promise<unknown> {
+    this.assertStagingRemote();
     const start = validateSupervisorStart(raw, await this.personalConfig.getAllowedRepositories());
     const key = supervisorTaskKey(start.requestId);
     const fingerprint = await supervisorFingerprint(start);
@@ -68,12 +69,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (old) {
       if (old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
       return { id: old.id, repository: old.repository, branch: old.branch, project: old.project,
-        session: old.session, status: old.status, error: old.error, reused: true };
+        session: old.session, status: old.status, error: old.error,
+        operationId: old.operationId, model: old.model, reused: true };
     }
     const job: SupervisorTask = {
       id: start.requestId, repository: start.repository,
       project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId, start.repository),
-      fingerprint, createdAt: Date.now(), status: "preparing"
+      fingerprint, createdAt: Date.now(), status: "preparing", model: start.model ?? "economy"
     };
     // Atomic reservation prevents duplicate branches and duplicate model spending.
     const reserved = await this.ctx.storage.transaction(async tx => {
@@ -85,7 +87,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (reserved) {
       if (reserved.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
       return { id: reserved.id, repository: reserved.repository, branch: reserved.branch,
-        project: reserved.project, session: reserved.session, status: reserved.status, reused: true };
+        project: reserved.project, session: reserved.session, status: reserved.status,
+        operationId: reserved.operationId, model: reserved.model, reused: true };
     }
     try {
       // Fail before inference if private GitHub integration is unavailable.
@@ -98,29 +101,134 @@ export class OpenCodeAgent extends DurableObject<Env> {
       await this.ctx.storage.put(key, job);
       const handle = this.harness.session(created.id);
       await handle.setAgent("build");
-      // G9 passed a real agent tool loop using the private OpenRouter connection.
-      // Prefer that verified tool-capable route; do not infer a tool call from prose.
-      let selected: { providerID: string; id: string } | undefined;
-      if (await this.isOpenRouterConfigured()) {
-        try {
-          const registration = await this.refreshOpenRouter();
-          if (registration.active) selected = {
-            providerID: "openrouter", id: MODEL_PRESETS.review.id
-          };
-        } catch { /* Only then use the native Cloudflare fallback. */ }
-      }
-      await handle.setModel(selected ?? this.ai(MODEL_ID));
-      await handle.submit(supervisorPrompt(start, job.branch, job.project), { whenBusy: "followUp" });
+      // Supervisor execution is explicitly cost-bounded to native Workers AI.
+      // Never choose OpenRouter implicitly when starting a remote test.
+      await handle.setModel({ providerID: "cloudflare", id: MODEL_PRESETS[job.model!].id });
+      const receipt = await handle.submit(supervisorPrompt(start, job.branch, job.project), { whenBusy: "followUp" });
+      job.operationId = receipt.operationId;
       job.status = "running";
       await this.ctx.storage.put(key, job);
       return { id: job.id, session: created.id, project: job.project,
-        repository: job.repository, branch: job.branch, status: job.status, reused: false };
+        repository: job.repository, branch: job.branch, status: job.status,
+        operationId: job.operationId, model: job.model, reused: false };
     } catch (error) {
       job.status = "failed";
       job.error = error instanceof Error ? error.message.slice(0, 230) : "No se pudo iniciar la tarea";
       await this.ctx.storage.put(key, job);
       return { id: job.id, status: job.status, error: job.error, branch: job.branch };
     }
+  }
+
+  /** This guard is enforced at the DO boundary, not only by the MCP client. */
+  private assertStagingRemote(): void {
+    if ((this.env as Env & { OPENCODE_SUPERVISOR_ENABLED?: string }).OPENCODE_SUPERVISOR_ENABLED !== "true") {
+      throw new Error("REMOTE_STAGING_ONLY");
+    }
+  }
+
+  /** Cross-Worker RPC: only the supervisor DO, never arbitrary user sessions. */
+  async remoteSupervisorStatus(): Promise<unknown> {
+    this.assertStagingRemote();
+    const sessions = await this.harness.sessions.list();
+    let supervised = 0;
+    for (const item of sessions) {
+      if (await this.ctx.storage.get<string>("supervisor:session:" + item.id)) supervised++;
+    }
+    return {
+      environment: "staging", worker: "opencode-g1-staging", ready: true,
+      schema: "opencode.staging-control.v1", supervisedSessions: supervised,
+      models: [
+        { selection: "economy", providerID: "cloudflare", id: MODEL_PRESETS.economy.id },
+        { selection: "cloudflare", providerID: "cloudflare", id: MODEL_PRESETS.cloudflare.id }
+      ],
+      capabilities: ["status", "sessions", "start", "inspect", "continue", "select_model", "operation", "cancel", "review"]
+    };
+  }
+
+  async remoteSupervisorSessions(): Promise<unknown> {
+    this.assertStagingRemote();
+    const sessions = await this.harness.sessions.list();
+    const result: Array<{ session: string; taskId: string; model?: string }> = [];
+    for (const item of sessions.slice(-100)) {
+      const id = await this.ctx.storage.get<string>("supervisor:session:" + item.id);
+      if (!id) continue;
+      const task = await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(id));
+      result.push({ session: item.id, taskId: id, model: task?.model });
+    }
+    return { environment: "staging", sessions: result, limited: sessions.length > 100 };
+  }
+
+  async remoteSupervisorSelectModel(id: string, model: string): Promise<unknown> {
+    this.assertStagingRemote();
+    if (model !== "economy" && model !== "cloudflare") throw new Error("Modelo remoto no autorizado");
+    const task = await this.supervisedRecord(id);
+    if (!task.session || task.status === "cancelled" || task.status === "failed") throw new Error("Sesión no disponible");
+    const handle = this.harness.session(task.session);
+    if (await handle.busy()) throw new Error("La operación activa debe concluir antes del cambio");
+    await handle.setModel({ providerID: "cloudflare", id: MODEL_PRESETS[model].id });
+    task.model = model;
+    await this.ctx.storage.put(supervisorTaskKey(id), task);
+    return { environment: "staging", taskId: id, session: task.session,
+      model, providerID: "cloudflare", id: MODEL_PRESETS[model].id };
+  }
+
+  async remoteSupervisorContinue(raw: unknown): Promise<unknown> {
+    this.assertStagingRemote();
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Comando inválido");
+    const v = raw as Record<string, unknown>;
+    if (Object.keys(v).some(k => !["id", "turnId", "prompt"].includes(k))) throw new Error("Parámetros desconocidos");
+    const id = String(v.id ?? "");
+    supervisorTaskKey(id);
+    if (typeof v.turnId !== "string" || !/^[a-f0-9]{16}$/.test(v.turnId)) throw new Error("turnId inválido");
+    if (typeof v.prompt !== "string" || v.prompt.trim().length < 12 || v.prompt.length > 5000)
+      throw new Error("Instrucción inválida");
+    const task = await this.supervisedRecord(id);
+    if (!task.session || task.status === "cancelled" || task.status === "failed") throw new Error("Tarea no disponible");
+    const key = "supervisor:turn:" + id + ":" + v.turnId;
+    const data = new TextEncoder().encode(v.prompt.trim());
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", data)),
+      b => b.toString(16).padStart(2, "0")).join("");
+    const old = await this.ctx.storage.get<{ hash: string; operationId?: string }>(key);
+    if (old) {
+      if (old.hash !== hash) throw new Error("turnId reutilizado con otra instrucción");
+      return { taskId: id, session: task.session, operationId: old.operationId,
+        status: old.operationId ? "submitted" : "unknown", reused: true };
+    }
+    const handle = this.harness.session(task.session);
+    if (await handle.busy()) throw new Error("Sesión ocupada, consulta su operación anterior");
+    const reserved = await this.ctx.storage.transaction(async tx => {
+      const prior = await tx.get<{ hash: string; operationId?: string }>(key);
+      if (prior) return prior;
+      await tx.put(key, { hash });
+      return null;
+    });
+    if (reserved) {
+      if (reserved.hash !== hash) throw new Error("turnId ya reservado");
+      return { taskId: id, session: task.session, operationId: reserved.operationId,
+        status: reserved.operationId ? "submitted" : "unknown", reused: true };
+    }
+    try {
+      const receipt = await handle.submit(v.prompt.trim(), { whenBusy: "followUp" });
+      await this.ctx.storage.put(key, { hash, operationId: receipt.operationId });
+      task.operationId = receipt.operationId;
+      await this.ctx.storage.put(supervisorTaskKey(id), task);
+      return { taskId: id, session: task.session, operationId: receipt.operationId,
+        status: "submitted", reused: false };
+    } catch (error) {
+      // Keep reservation: a timeout may have reached OpenCode before failing.
+      return { taskId: id, session: task.session, status: "unknown", reused: false,
+        error: error instanceof Error ? error.message.slice(0,240) : "No confirmado" };
+    }
+  }
+
+  async remoteSupervisorInspect(id: string): Promise<unknown> {
+    this.assertStagingRemote();
+    const status = await this.supervisedTaskStatus(id);
+    const task = await this.supervisedRecord(id);
+    if (!task.session) return { status };
+    const transcript = await this.supervisedTaskTranscript(id);
+    return { status, transcriptExcerpt: transcript.slice(-16_000),
+      truncated: transcript.length > 16_000, reviewRequired: true };
   }
 
   private async supervisedRecord(id: string): Promise<SupervisorTask> {
@@ -130,9 +238,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async supervisedTaskStatus(id: string): Promise<unknown> {
+    this.assertStagingRemote();
     const job = await this.supervisedRecord(id);
     const base = { id: job.id, repository: job.repository, project: job.project,
-      branch: job.branch, session: job.session, startedAt: job.createdAt, error: job.error };
+      branch: job.branch, session: job.session, startedAt: job.createdAt,
+      operationId: job.operationId, model: job.model, error: job.error };
     if (!job.session || job.status === "cancelled" || job.status === "failed")
       return { ...base, status: job.status, reviewRequired: true };
     const handle = this.harness.session(job.session);
@@ -172,6 +282,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async cancelSupervisedTask(id: string): Promise<unknown> {
+    this.assertStagingRemote();
     const job = await this.supervisedRecord(id);
     if (job.status === "cancelled" || job.status === "failed")
       return { id, status: job.status };
@@ -185,12 +296,14 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async supervisedTaskTranscript(id: string): Promise<string> {
+    this.assertStagingRemote();
     const job = await this.supervisedRecord(id);
     if (!job.session) throw new Error("La tarea todavía no tiene sesión");
     return this.exportSessionData(job.session);
   }
 
   async supervisedTaskReview(id: string): Promise<unknown> {
+    this.assertStagingRemote();
     const job = await this.supervisedRecord(id);
     const result = await this.githubRunner.execute({
       action: "review", repo: job.repository, branch: job.branch
