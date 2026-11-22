@@ -372,11 +372,16 @@ export class DevContainer extends DurableObject<Env> {
             new TextDecoder().decode(result.stderr).slice(-350));
         }
         const receipt = JSON.parse(new TextDecoder().decode(result.stdout)) as {
-          target: string; files: number; sha256: string
+          target: string; files: number; sha256: string; tree?: string
         };
         if (receipt.target !== id || !Number.isSafeInteger(receipt.files) || receipt.files < 1 ||
             !/^[a-f0-9]{64}$/.test(receipt.sha256)) throw Error("Resultado de importación inválido");
+        if (sourceTree !== undefined &&
+            (source.tree !== sourceTree || receipt.tree !== sourceTree)) {
+          throw Error("La importación no confirmó el árbol de origen verificado");
+        }
         const record = { project: id, repository: source.repo, commit: source.commit,
+          ...(sourceTree ? { tree: sourceTree } : {}),
           files: receipt.files, sha256: receipt.sha256 };
         await this.ctx.storage.put("isolated-repository-v1", record);
         await this.ctx.storage.delete("repo-import-pending-v1");
