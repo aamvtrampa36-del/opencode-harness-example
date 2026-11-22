@@ -357,7 +357,7 @@ export class DevContainer extends DurableObject<Env> {
         ...(sourceTree ? { sourceTree } : {})
       });
       const token = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN || await settings.getGitHubKey();
-      const source = await githubSourceArchive(repository, token || "", allowed, fetch, sourceCommit);
+      const source = await githubSourceArchive(repository, token || "", allowed, fetch, sourceCommit, sourceTree);
       const container = await this.ensureRunning();
       this.busy++;
       await this.ctx.storage.put("lastActivity", Date.now());
