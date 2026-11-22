@@ -38,6 +38,7 @@ jobs:
       - name: Validate security and project invariants
         run: bun scripts/check-invariants.mjs
       - name: Live read_only SHA certification on deployed staging
+        if: contains(github.event.head_commit.message, '[read-only-live]')
         run: bun run test:staging:control:mcp
         env:
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
