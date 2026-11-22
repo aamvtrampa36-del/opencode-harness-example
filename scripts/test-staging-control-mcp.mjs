@@ -39,6 +39,7 @@ const runOpenRouterCheck = process.env.OPENCODE_STAGING_OPENROUTER_CHECK === "tr
 const runRepairCheck = process.env.OPENCODE_STAGING_REPAIR_E2E === "true";
 const runDelegationCheck = process.env.OPENCODE_STAGING_DELEGATION_E2E === "true";
 const runRecoveryCheck = process.env.OPENCODE_STAGING_RECOVERY_E2E === "true";
+const runReadOnlyCheck = process.env.OPENCODE_STAGING_READ_ONLY_E2E === "true";
 const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
   requestInit: {
     headers: {
@@ -305,6 +306,41 @@ try {
     }
   }
 
+  let readOnlyCheck;
+  if (runReadOnlyCheck) {
+    const requestId = randomUUID().replaceAll("-", "").slice(0, 16);
+    const repository = "aamvtrampa36-del/opencode-harness-example";
+    // Pinned to the independently CI-approved deployment SHA and its Git tree.
+    const sourceCommit = "fb123432439abb5ecc7506f34e55447c804c0eca";
+    const sourceTree = "73f6520ea6a785624d79813d4c431b2566a719c6";
+    const prompt = "Certificación funcional de importación Git por SHA en modo read_only. " +
+      "Usa la herramienta linux para ejecutar exactamente: ls -l src/supervisor-control.ts && echo SHA_CERTIFIED_LINUX_OK. " +
+      "Reporta el código de salida y el marcador exacto. No escribas archivos, no abras ramas ni PR, no modifiques GitHub.";
+    console.log("Starting read_only SHA runtime task: " + requestId);
+    const started = parseResult(await client.callTool({ name: "staging_start_task", arguments: {
+      requestId, prompt, repository, model: "economy", mode: "read_only", sourceCommit, sourceTree
+    } }), "read_only SHA task start");
+    assert.equal(started.mode, "read_only", "Runtime must preserve the read_only mode.");
+    assert.equal(started.branch, "", "read_only must not reserve a GitHub branch.");
+    assert.equal(started.baseCommit, sourceCommit, "Runtime must verify the exact source commit.");
+    assert.equal(started.sourceTree, sourceTree, "Runtime must certify the exact Git tree.");
+    assert.equal(started.reused, false);
+    const completed = await pollTask(client, requestId);
+    assert.equal(completed.status, "finished", "Read-only model execution must complete.");
+    assert.ok(completed.completedTools >= 1, "Runtime must execute at least one real tool.");
+    const transcript = await getTaskTranscript(client, requestId);
+    assert.match(transcript, /Herramienta: linux\\b/, "Transcript must prove a Linux tool call.");
+    assert.match(transcript, /SHA_CERTIFIED_LINUX_OK/, "Linux must observe the imported source.");
+    assert.doesNotMatch(transcript, /"action"\\s*:\\s*"(?:branch|write|pr|review)"/,
+      "Read-only task must not perform a GitHub write.");
+    readOnlyCheck = {
+      requestId, repository, sourceCommit, sourceTree, status: completed.status,
+      completedTools: completed.completedTools, branch: started.branch,
+      transcriptSha256: createHash("sha256").update(transcript).digest("hex"),
+      transcriptBytes: Buffer.byteLength(transcript)
+    };
+  }
+
   const evidence = {
     checkedAt: new Date().toISOString(),
     targetWorker: parsed.targetWorker,
@@ -325,6 +361,7 @@ try {
       ...(runRepairCheck ? ["real isolated Linux red-to-green repair using Cloudflare economy"] : []),
       ...(runDelegationCheck ? ["delegated Staging engineering task with GitHub repo_read, Linux tests and branch review"] : []),
       ...(runRecoveryCheck ? ["client disconnect/reconnect, idempotent task retry, continuation retry and transcript recovery"] : []),
+      ...(runReadOnlyCheck ? ["live read_only import of CI-approved commit and exact tree, verified by Linux"] : []),
       ...(runOpenRouterCheck ? ["tools/call staging_openrouter_check and poll status (OpenRouter + Bun + Linux proof)"] : [])
     ]
   };
@@ -332,6 +369,7 @@ try {
   if (repairCheck) evidence.repairCheck = repairCheck;
   if (delegationCheck) evidence.delegationCheck = delegationCheck;
   if (recoveryCheck) evidence.recoveryCheck = recoveryCheck;
+  if (readOnlyCheck) evidence.readOnlyCheck = readOnlyCheck;
   const outputPath = join(process.env.RUNNER_TEMP ?? "/tmp", "opencode-staging-control-mcp.json");
   await writeFile(outputPath, JSON.stringify(evidence, null, 2) + "\n", { mode: 0o600 });
   console.log(`OpenCode staging MCP E2E passed; evidence saved to ${outputPath}`);
