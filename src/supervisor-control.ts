@@ -229,8 +229,27 @@ export function supervisorResponse(data: unknown, status = 200): Response {
  * project using the supervisor route. Promotion is a separate trusted process.
  */
 export function supervisorPrompt(task: SupervisorStart, branch: string, project: string,
-  baseCommit: string): string {
+  baseCommit: string, sourceTree?: string): string {
   if (!/^[a-f0-9]{40}$/.test(baseCommit)) throw new Error("SHA base de la tarea inválido");
+  if (task.mode === "read_only") {
+    if (sourceTree !== undefined && !/^[a-f0-9]{40}$/.test(sourceTree)) {
+      throw new Error("Árbol base de la tarea inválido");
+    }
+    return "Tarea de desarrollo supervisada y REVERSIBLE en modo SOLO LECTURA. Repositorio autorizado: " +
+      task.repository + ". Proyecto Linux exclusivo: " + project +
+      ". SHA base verificado: " + baseCommit +
+      (sourceTree ? "; árbol Git verificado: " + sourceTree : "") +
+      ". Esta tarea no crea rama ni PR: no crees ramas, no escribas en GitHub, no abras PR ni solicites revisión. " +
+      "El Container se importará y verificará desde ese commit y árbol exactos antes de que puedas razonar o ejecutar; " +
+      "si la importación o el árbol no coinciden, la tarea falla sin inferencia. " +
+      "La copia importada no contiene .git: no uses git status, fetch ni checkout. " +
+      "Puedes leer el código autorizado y ejecutar pruebas locales. " +
+      "Prohibido fusionar, desplegar, modificar Producción, secretos, permisos o controles de seguridad. " +
+      "Explica comandos, resultados, pruebas fallidas y correctas con evidencia real. " +
+      "Nunca atribuyas a tu trabajo cambios hechos por el servidor o el supervisor. " +
+      "Si una operación requiere permisos adicionales, informa el bloqueo.\n\nENCARGO:\n" +
+      task.prompt;
+  }
   const selfDevelopment = task.repository.toLowerCase() === "aamvtrampa36-del/opencode-harness-example";
   return "Tarea de desarrollo supervisada y REVERSIBLE. Repositorio autorizado: " +
     task.repository + ". Proyecto Linux exclusivo: " + project + ". Rama precreada: " + branch +
