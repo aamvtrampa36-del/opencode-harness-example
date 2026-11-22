@@ -326,14 +326,15 @@ export class DevContainer extends DurableObject<Env> {
         throw Error("El repositorio ya no está autorizado");
       }
       const existing = await this.ctx.storage.get<{
-        project: string; repository: string; commit: string; files: number; sha256: string
+        project: string; repository: string; commit: string; tree?: string;
+        files: number; sha256: string
       }>("isolated-repository-v1");
       if (existing) {
         if (existing.project !== id || existing.repository.toLowerCase() !== repository.toLowerCase()) {
           throw Error("El entorno aislado ya pertenece a otro proyecto o repositorio");
         }
-        if (sourceCommit && existing.commit !== sourceCommit) {
-          throw Error("El proyecto ya está importado desde otro commit de origen");
+        if (sourceCommit && !sourceReceiptMatches(existing, sourceCommit, sourceTree)) {
+          throw Error("El proyecto ya está importado desde otro commit o árbol de origen");
         }
         await this.ctx.storage.delete("repo-import-pending-v1");
         await this.recordProject(id);
