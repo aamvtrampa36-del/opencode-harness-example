@@ -112,6 +112,9 @@ export function validateSupervisorStart(raw: unknown, approved: readonly string[
   if ((input.sourceCommit === undefined) !== (input.sourceTree === undefined)) {
     throw new Error("sourceCommit y sourceTree deben indicarse juntos");
   }
+  if (readOnly && (input.sourceCommit === undefined || input.sourceTree === undefined)) {
+    throw new Error("read_only requiere sourceCommit y sourceTree");
+  }
   if (!readOnly && (input.sourceCommit !== undefined || input.sourceTree !== undefined)) {
     throw new Error("sourceCommit y sourceTree solo se admiten en modo read_only");
   }
