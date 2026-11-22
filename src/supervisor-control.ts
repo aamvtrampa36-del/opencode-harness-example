@@ -195,7 +195,8 @@ export function assertSupervisorBoundGitHubOperation(
 export async function supervisorFingerprint(value: SupervisorStart): Promise<string> {
   const bytes = new TextEncoder().encode(
     value.repository.toLowerCase() + "\n" + value.prompt + "\n" + (value.model ?? "economy") +
-    "\n" + (value.sourceSession ?? "")
+    "\n" + (value.sourceSession ?? "") + "\n" + (value.mode ?? "") +
+    "\n" + (value.sourceCommit ?? "") + "\n" + (value.sourceTree ?? "")
   );
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
