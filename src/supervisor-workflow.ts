@@ -16,7 +16,8 @@ import {
 import type { SessionBackupDrillAgent } from "./session-sql-backup-do";
 
 type SupervisorWorkflowCommand =
-  | { action: "start"; requestId: string; repository: string; prompt: string }
+  | { action: "start"; requestId: string; repository: string; prompt: string;
+      mode?: "read_only"; sourceCommit?: string; sourceTree?: string }
   | { action: "status" | "cancel" | "review"; id: string }
   | { action: "recovery_drill" }
   | { action: "joint_prepare" }
