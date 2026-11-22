@@ -248,6 +248,25 @@ describe("OpenCode staging MCP server", () => {
         prompt: "Inspecciona el modo staging y corrige una prueba"
       });
 
+      const commit = "a".repeat(40), tree = "b".repeat(40);
+      const readOnly = await client.callTool({ name: "staging_start_task", arguments: {
+        requestId: "f1234567890bcdef", prompt: "Analiza el código sin escribir ni abrir una PR",
+        mode: "read_only", sourceCommit: commit, sourceTree: tree
+      } });
+      expect(readOnly.isError).toBe(false);
+      expect(started).toEqual({
+        requestId: "f1234567890bcdef", repository: STAGING_REPOSITORY,
+        prompt: "Analiza el código sin escribir ni abrir una PR", mode: "read_only",
+        sourceCommit: commit, sourceTree: tree
+      });
+      const startsBeforeMissingPins = startCount;
+      const missingPins = await client.callTool({ name: "staging_start_task", arguments: {
+        requestId: "0123456789abcdef", prompt: "Intenta solo lectura sin fijar commit ni árbol",
+        mode: "read_only"
+      } });
+      expect(missingPins.isError).toBe(true);
+      expect(startCount).toBe(startsBeforeMissingPins);
+
       const workspace = "7bd8f26f-b2b8-4e4d-9abc-0678294c33ab";
       const fork = await client.callTool({ name: "staging_start_task", arguments: {
         requestId: "c1234567890bcdef", prompt: "Continúa desde la conversación indicada con una rama aislada",
