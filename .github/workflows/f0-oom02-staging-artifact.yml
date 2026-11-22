@@ -102,60 +102,136 @@ jobs:
           ./node_modules/.bin/wrangler deploy --dry-run --config wrangler.g1.jsonc --outdir .f0-oom02/wrangler-dry-run
           test "$(find .f0-oom02/wrangler-dry-run -type f | wc -l)" -gt 0
 
-      - name: Assemble evidence package and verify per-file SHA-256
+      - name: Measure original trees, losslessly compress and verify SHA-256
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p .f0-oom02/package
-          cp -a dist .f0-oom02/package/dist
-          mkdir -p .f0-oom02/package/.wrangler
-          cp -a .wrangler/deploy .f0-oom02/package/.wrangler/deploy
-          cp -a .f0-oom02/wrangler-dry-run .f0-oom02/package/wrangler-dry-run
-          cp wrangler.g1.jsonc .f0-oom02/package/wrangler.g1.jsonc
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           import path from 'node:path';
           import crypto from 'node:crypto';
+          const groups = ['dist', '.wrangler/deploy', '.f0-oom02/wrangler-dry-run', 'wrangler.g1.jsonc'];
+          const sha = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const walk = root => {
+            const result = [];
+            function visit(file) {
+              const st = fs.lstatSync(file);
+              if (st.isSymbolicLink()) throw Error('ARTIFACT_SYMLINK_FORBIDDEN:' + file);
+              if (st.isDirectory()) for (const n of fs.readdirSync(file).sort()) visit(path.join(file, n));
+              else if (st.isFile()) result.push({path: file.split(path.sep).join('/'), bytes: st.size, sha256: sha(file)});
+              else throw Error('ARTIFACT_UNSUPPORTED_FILE:' + file);
+            }
+            visit(root);
+            return result;
+          };
+          const measured = groups.map(source => {
+            const files = walk(source);
+            const bytes = files.reduce((n,f) => n + f.bytes, 0);
+            console.log('TREE_BYTES source=' + source + ' files=' + files.length + ' bytes=' + bytes);
+            return { source, files: files.length, bytes };
+          });
+          const inventory = groups.flatMap(walk).sort((a,b) => a.path.localeCompare(b.path));
+          if (!inventory.length) throw Error('EMPTY_ARTIFACT_INPUT');
+          const uncompressedBytes = inventory.reduce((n,f) => n + f.bytes, 0);
+          console.log('UNCOMPRESSED_TOTAL_BYTES ' + uncompressedBytes);
+          const seen = new Map();
+          const identicalFilesRetained = [];
+          for (const f of inventory) {
+            const other = seen.get(f.sha256);
+            if (other && other.bytes === f.bytes) identicalFilesRetained.push({
+              matchingFile: other.path, retainedFile: f.path, bytes: f.bytes, sha256: f.sha256
+            });
+            else seen.set(f.sha256, f);
+          }
+          console.log('PROVEN_IDENTICAL_FILES_RETAINED ' + identicalFilesRetained.length);
+          fs.writeFileSync('.f0-oom02/measurement.json', JSON.stringify({
+            groups: measured, uncompressedBytes, inventory, identicalFilesRetained, omittedFiles: []
+          }));
+          NODE
+          # Preserve the complete original contents. No Vite/Wrangler bundle is
+          # discarded or assumed equivalent; gzip only changes representation.
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf - \
+            dist .wrangler/deploy .f0-oom02/wrangler-dry-run wrangler.g1.jsonc \
+            | gzip -n -9 > .f0-oom02/package/payload.tar.gz
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
           import { execFileSync } from 'node:child_process';
           const root = '.f0-oom02/package';
-          const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
-          const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(item => {
-            const p = path.join(dir, item.name);
-            if (item.isSymbolicLink()) throw Error('ARTIFACT_SYMLINK_FORBIDDEN:' + p);
-            return item.isDirectory() ? walk(p) : item.isFile() ? [p] : [];
-          });
-          const files = walk(root).sort();
-          const inventory = files.map(file => ({ path: path.relative(root, file).replaceAll('\\', '/'), bytes: fs.statSync(file).size, sha256: sha(fs.readFileSync(file)) }));
-          const total = inventory.reduce((sum, item) => sum + item.bytes, 0);
-          if (!inventory.length || total > 64 * 1024 * 1024) throw Error('ARTIFACT_SIZE_LIMIT_64_MIB');
-          const version = exe => execFileSync(exe, ['--version'], { encoding: 'utf8' }).trim();
+          const data = JSON.parse(fs.readFileSync('.f0-oom02/measurement.json', 'utf8'));
+          const sha = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const payload = root + '/payload.tar.gz';
+          const compressedBytes = fs.statSync(payload).size;
+          console.log('COMPRESSED_PAYLOAD_BYTES ' + compressedBytes);
+          if (!compressedBytes || compressedBytes > 64 * 1024 * 1024)
+            throw Error('ARTIFACT_SIZE_LIMIT_64_MIB: compressed=' + compressedBytes + ' raw=' + data.uncompressedBytes);
+          const version = exe => execFileSync(exe, ['--version'], {encoding:'utf8'}).trim();
           const manifest = {
-            schema: 'f0-oom02-staging-build-evidence-v1',
-            repository: process.env.GITHUB_REPOSITORY,
-            sourceSha: process.env.SOURCE_SHA,
-            sourceBranch: process.env.SOURCE_REF,
-            workflowRef: process.env.GITHUB_WORKFLOW_REF,
-            workflowRunId: process.env.GITHUB_RUN_ID,
-            workflowRunAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
-            actor: process.env.GITHUB_ACTOR,
-            createdAt: new Date().toISOString(),
-            configPath: process.env.STAGING_CONFIG,
-            configSha256: sha(fs.readFileSync(process.env.STAGING_CONFIG)),
-            effectiveConfigPath: fs.readFileSync('/tmp/f0-oom02-effective-path', 'utf8'),
-            workerName: 'opencode-g1-staging',
-            sourceEntrypoint: 'src/entrypoint.ts',
-            compatibilityDate: '2026-06-11',
-            migrationTag: 'v4',
-            bunVersion: version('bun'),
-            viteVersion: version('./node_modules/.bin/vite'),
-            wranglerVersion: version('./node_modules/.bin/wrangler'),
-            inventory
+            schema:'f0-oom02-staging-build-evidence-v2',
+            format:'lossless-tar-gzip', directlyDeployable:false,
+            preservation:'all-original-build-trees-retained',
+            repository:process.env.GITHUB_REPOSITORY,
+            sourceSha:process.env.SOURCE_SHA, sourceBranch:process.env.SOURCE_REF,
+            workflowRef:process.env.GITHUB_WORKFLOW_REF,
+            workflowRunId:process.env.GITHUB_RUN_ID,
+            workflowRunAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),
+            actor:process.env.GITHUB_ACTOR, createdAt:new Date().toISOString(),
+            configPath:process.env.STAGING_CONFIG,
+            configSha256:sha(process.env.STAGING_CONFIG),
+            effectiveConfigPath:fs.readFileSync('/tmp/f0-oom02-effective-path','utf8'),
+            workerName:'opencode-g1-staging', sourceEntrypoint:'src/entrypoint.ts',
+            compatibilityDate:'2026-06-11', migrationTag:'v4',
+            bunVersion:version('bun'), viteVersion:version('./node_modules/.bin/vite'),
+            wranglerVersion:version('./node_modules/.bin/wrangler'),
+            originalTreeSizes:data.groups,
+            uncompressedBytes:data.uncompressedBytes,
+            compressedBytes,
+            omittedFiles:data.omittedFiles,
+            identicalFilesRetained:data.identicalFilesRetained,
+            contentArchiveSha256:sha(payload),
+            inventory:data.inventory
           };
-          fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
-          fs.writeFileSync(path.join(root, 'SHA256SUMS'), inventory.map(x => `${x.sha256}  ${x.path}`).join('\n') + '\n');
-          console.log(`Verified ${inventory.length} files (${total} bytes) before upload`);
+          fs.writeFileSync(root+'/manifest.json',JSON.stringify(manifest,null,2)+'\n');
+          fs.writeFileSync(root+'/SHA256SUMS',[
+            sha(payload)+'  payload.tar.gz',
+            sha(root+'/manifest.json')+'  manifest.json'
+          ].join('\n')+'\n');
+          const packageBytes = ['payload.tar.gz','manifest.json','SHA256SUMS']
+            .reduce((n,f) => n + fs.statSync(root+'/'+f).size,0);
+          console.log('PACKAGE_BYTES '+packageBytes+' MAX_BYTES '+64*1024*1024);
+          // Leave 1 MiB headroom for the GitHub ZIP wrapper.
+          if (packageBytes > 63*1024*1024)
+            throw Error('ARTIFACT_SIZE_LIMIT_64_MIB: package='+packageBytes+' raw='+data.uncompressedBytes);
           NODE
           (cd .f0-oom02/package && sha256sum --check SHA256SUMS)
+          mkdir -p .f0-oom02/verify
+          tar -xzf .f0-oom02/package/payload.tar.gz -C .f0-oom02/verify \
+            --no-same-owner --no-same-permissions
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          const manifest = JSON.parse(fs.readFileSync('.f0-oom02/package/manifest.json','utf8'));
+          const root = '.f0-oom02/verify';
+          const walk = dir => fs.readdirSync(dir,{withFileTypes:true}).flatMap(f => {
+            const file = path.join(dir,f.name);
+            if (f.isSymbolicLink()) throw Error('ARCHIVE_SYMLINK_UNEXPECTED');
+            if (f.isDirectory()) return walk(file);
+            if (!f.isFile()) throw Error('ARCHIVE_UNSUPPORTED_FILE');
+            return [file];
+          });
+          const actual = walk(root).map(f => ({
+            path:path.relative(root,f).split(path.sep).join('/'),
+            bytes:fs.statSync(f).size,
+            sha256:crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex')
+          })).sort((a,b) => a.path.localeCompare(b.path));
+          const expected = [...manifest.inventory].sort((a,b) => a.path.localeCompare(b.path));
+          if (JSON.stringify(actual)!==JSON.stringify(expected)) throw Error('ARCHIVE_RESTORATION_HASH_MISMATCH');
+          if (manifest.omittedFiles.length!==0) throw Error('ARCHIVE_UNEXPECTED_OMISSIONS');
+          console.log('ARCHIVE_VERIFIED files='+actual.length+
+            ' rawBytes='+manifest.uncompressedBytes+' compressedBytes='+manifest.compressedBytes);
+          NODE
 
       - name: Upload evidence package (7 days, maximum 64 MiB payload)
         id: upload
