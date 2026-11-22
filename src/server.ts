@@ -1356,6 +1356,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     await registry.reserveIsolatedProject(project, scope?.repository);
     const dev = this.env.DEV.getByName(projectContainerName(project));
     let sourceCommit: string | undefined;
+    let sourceTree: string | undefined;
     if (sessionID) {
       const taskId = await this.ctx.storage.get<string>("supervisor:session:" + sessionID);
       if (taskId) {
