@@ -1367,6 +1367,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
           throw new Error("La fuente de la tarea supervisada no está fijada a su SHA base");
         }
         sourceCommit = task.baseCommit;
+        sourceTree = task.mode === "read_only" ? task.sourceTree : undefined;
+        if (task.mode === "read_only" && (!sourceTree || !/^[a-f0-9]{40}$/.test(sourceTree))) {
+          throw new Error("La tarea de solo lectura requiere un árbol de origen verificado");
+        }
       }
     }
     if (scope?.repository) await dev.prepareRepository(project, scope.repository, sourceCommit);
