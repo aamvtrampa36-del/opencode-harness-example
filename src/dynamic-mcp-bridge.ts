@@ -14,6 +14,7 @@ type McpConnection = { client: McpClient };
 type DynamicMcpState = {
   endpoints: RemoteMcpConfig[];
   connections: Map<string, Promise<McpConnection>>;
+  definitions: Map<string, Tool[]>;
   calls: number;
 };
 type DynamicMcpContext = WorkspaceModuleCallContext & { state: Promise<DynamicMcpState> };
@@ -122,10 +123,48 @@ async function clientFor(
   }
 }
 
+/** Explicitly read-only surface for generated JavaScript. The ordinary direct
+ * MCP integration retains its separately enforced authorization for writes. */
+const READ_TOOLS = new Set([
+  "cdf_status", "cdf_manifest", "cdf_planning_status", "cdf_workbench_context",
+  "cdf_story_context", "cdf_story_context_batch", "cdf_context_plan",
+  "cdf_context", "cdf_context_batch", "cdf_context_handle",
+  "cdf_documents", "cdf_document", "cdf_read_batch", "cdf_original",
+  "cdf_search", "cdf_library_search", "cdf_editorial_search", "cdf_narrative_search",
+  "cdf_history", "cdf_diff", "cdf_requirement_compile", "cdf_opportunity_explore",
+  "workbench_status", "workbench_catalog", "workbench_read",
+  "mirror_status", "mirror_context", "mirror_get_draft", "mirror_list_drafts", "mirror_audit_draft",
+  "opencode_status", "opencode_sessions", "opencode_inspect", "opencode_operation",
+  "opencode_review", "opencode_dynamic_status", "staging_status", "staging_task_status"
+]);
+const MUTATING_OR_MIXED_TOOLS = new Set([
+  "cdf_capsule", "cdf_operation", "cdf_prepare_from_capsule", "cdf_semantic_index",
+  "workbench_run_script", "workbench_run_dynamic", "workbench_dynamic_cdf_check",
+  "mirror_create_draft", "mirror_update_draft",
+  "opencode_submit", "opencode_continue", "opencode_select_model", "opencode_cancel",
+  "staging_start_task", "staging_cancel_task"
+]);
 function visibleTools(endpoint: RemoteMcpConfig, tools: Tool[]): Tool[] {
-  if (!endpoint.toolAllowlist) return tools;
-  const allowed = new Set(endpoint.toolAllowlist);
-  return tools.filter(tool => allowed.has(tool.name));
+  return tools.filter(tool => {
+    if (endpoint.toolAllowlist && !endpoint.toolAllowlist.includes(tool.name)) return false;
+    if (MUTATING_OR_MIXED_TOOLS.has(tool.name)) return false;
+    if (READ_TOOLS.has(tool.name)) return true;
+    // Unknown tools require BOTH explicit owner allowlisting and a read-only hint
+    // from the remote MCP server; a hint alone never grants dynamic execution.
+    return Boolean(endpoint.toolAllowlist &&
+      tool.annotations?.readOnlyHint === true && tool.annotations?.destructiveHint !== true);
+  });
+}
+
+async function readToolDefinitions(state: DynamicMcpState, endpoint: RemoteMcpConfig,
+                                   client: McpClient, context: WorkspaceModuleCallContext) {
+  const cached = state.definitions.get(endpoint.id);
+  if (cached) return cached;
+  const listed = await client.listTools({}, {
+    signal: context.signal, timeout: 30_000, cacheMode: "refresh"
+  });
+  state.definitions.set(endpoint.id, listed.tools);
+  return listed.tools;
 }
 
 /** Host-side factory is exported so its capability boundary can be tested without credentials. */
@@ -144,11 +183,12 @@ Ejemplo:
 \`const list = await tools({ server: "cdf-workbench" });\`
 \`const result = await call({ server: "cdf-workbench", name: "workbench_read", arguments: { path: "..." } });\`
 
-Solo aparecen servidores habilitados. toolAllowlist se aplica también aquí. Los tokens nunca se entregan al código; cada servidor vuelve a comprobar sus credenciales y ámbitos MCP. Una ejecución puede realizar hasta ${MAX_TOOL_CALLS} llamadas a herramientas. Las escrituras siguen pasando por las herramientas MCP existentes.`;
+Solo aparecen servidores habilitados. toolAllowlist se aplica también aquí. Los tokens nunca se entregan al código; cada servidor vuelve a comprobar sus credenciales y ámbitos MCP. Una ejecución puede realizar hasta ${MAX_TOOL_CALLS} llamadas a herramientas. La ejecución dinámica solo expone herramientas de lectura verificadas; para operaciones con efectos externos utiliza la herramienta MCP directa con autorización propia.`;
 
   const createState = async () => ({
     endpoints: await loadConfigs(),
     connections: new Map<string, Promise<McpConnection>>(),
+    definitions: new Map<string, Tool[]>(),
     calls: 0
   });
   const dispose = async (state: DynamicMcpState) => {
@@ -176,8 +216,8 @@ Solo aparecen servidores habilitados. toolAllowlist se aplica también aquí. Lo
       const endpoint = endpointFor(state, server);
       const client = await clientFor(state, endpoint, context, connect);
       try {
-        const listed = await client.listTools({}, { signal: context.signal, timeout: 30_000, cacheMode: "refresh" });
-        return visibleTools(endpoint, listed.tools).map(tool => ({
+        const definitions = await readToolDefinitions(state, endpoint, client, context);
+        return visibleTools(endpoint, definitions).map(tool => ({
           name: tool.name,
           ...(tool.description ? { description: tool.description.slice(0, 4_000) } : {}),
           inputSchema: tool.inputSchema
@@ -208,9 +248,13 @@ Solo aparecen servidores habilitados. toolAllowlist se aplica también aquí. Lo
       if (state.calls >= MAX_TOOL_CALLS) {
         throw new Error(`La ejecución alcanzó el máximo de ${MAX_TOOL_CALLS} llamadas MCP.`);
       }
-      state.calls++;
       const client = await clientFor(state, endpoint, context, connect);
       try {
+        const definitions = await readToolDefinitions(state, endpoint, client, context);
+        if (!visibleTools(endpoint, definitions).some(tool => tool.name === name)) {
+          throw new Error("DYNAMIC_MCP_READ_ONLY_TOOL_REQUIRED");
+        }
+        state.calls++;
         const result = await client.callTool({ name, arguments: toolArguments as Record<string, unknown> }, {
           signal: context.signal,
           timeout: Math.max(1, Math.min(30_000, context.deadline - Date.now()))

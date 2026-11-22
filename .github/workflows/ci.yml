@@ -35,5 +35,7 @@ jobs:
         run: bun run typecheck
       - name: Build both Worker and web client
         run: bun run build
+      - name: Validate Staging Worker bundle without deployment
+        run: bunx wrangler deploy --dry-run --config wrangler.g1.jsonc
       - name: Validate security and project invariants
         run: bun scripts/check-invariants.mjs
