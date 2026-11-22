@@ -20,7 +20,7 @@ import {
 } from "./external-backup-do";
 import { RESTORE_PROJECT_SOURCE } from "./restore-project";
 import { GITHUB_IMPORT_SOURCE } from "./github-import-source";
-import { githubSourceArchive } from "./github-import";
+import { githubSourceArchive, sourceReceiptMatches } from "./github-import";
 import { validateIsolatedRegistration, type IsolatedProject } from "./project-container";
 import { assertRecoverableContainer, SNAPSHOT_TTL_MS } from "./snapshot-policy";
 import { BUN_RUNTIME_VERSION, commandRequiresBun } from "./dev-runtime";
