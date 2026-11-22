@@ -798,7 +798,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         const task = await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(supervisedId));
         if (!task || task.session !== sessionID || task.status === "cancelled" || task.status === "failed")
           throw new Error("Supervisor: sesión no autorizada");
-        assertSupervisorBoundGitHubOperation(action.operation, action.branch, task.branch);
+        assertSupervisorBoundGitHubOperation(action.operation, action.branch, task.branch, task.mode);
       }
       // Retain the branch guard for both legacy and new isolated G9 sessions.
       for (const key of ["g9-selfdev-v1", "g9-native-e2e-v2"]) {
