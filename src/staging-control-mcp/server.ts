@@ -312,12 +312,21 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
       repository: z.string().min(3).max(120).optional().describe("Repositorio del propietario ya autorizado en OpenCode Settings"),
       model: z.string().min(1).max(160).optional().describe("Selección del catálogo OpenCode; por defecto economy"),
       workspace: workspaceSchema.describe("UUID exacto de un workspace personalizado que contiene la sesión de origen; omítelo para el supervisor fijo"),
-      sourceSession: sessionIdSchema.optional().describe("Session ID exacto para crear un fork; requiere workspace")
+      sourceSession: sessionIdSchema.optional().describe("Session ID exacto para crear un fork; requiere workspace"),
+      mode: z.literal("read_only").optional().describe("Solo lectura: no crea rama, PR ni revisión en GitHub"),
+      sourceCommit: z.string().regex(/^[a-f0-9]{40}$/).optional().describe("Commit exacto de 40 hex; requiere sourceTree"),
+      sourceTree: z.string().regex(/^[a-f0-9]{40}$/).optional().describe("Árbol Git exacto de 40 hex; requiere sourceCommit")
     }
-  }, async ({ requestId, prompt, repository, model, workspace, sourceSession }) => {
+  }, async ({ requestId, prompt, repository, model, workspace, sourceSession, mode, sourceCommit, sourceTree }) => {
     try {
       if (sourceSession && !workspace) throw new Error("Un fork requiere el UUID exacto del workspace");
       if (workspace && !sourceSession) throw new Error("El workspace solo se admite para hacer un fork explícito");
+      if ((sourceCommit === undefined) !== (sourceTree === undefined))
+        throw new Error("sourceCommit y sourceTree deben indicarse juntos");
+      if (mode === "read_only" && (sourceCommit === undefined || sourceTree === undefined))
+        throw new Error("read_only requiere sourceCommit y sourceTree");
+      if ((sourceCommit || sourceTree) && mode !== "read_only")
+        throw new Error("sourceCommit y sourceTree solo se admiten en modo read_only");
       const supervisor = bindings.supervisor(workspace);
       const task = asRecord(await supervisor.startSupervisedTask({
         requestId, repository: repository ?? STAGING_REPOSITORY, prompt,
