@@ -53,7 +53,7 @@ En el checkout local de opencode-harness-example se modificaron estos puntos:
 - src/workspace.ts incluye pautas para consultas acotadas, recuperación tras interrupciones, verificación de runtimes y rechazo de reintentos ciegos.
 - Se añadieron pruebas de la captura acotada, del texto de instrucciones y del nuevo límite.
 
-El checkout en que se aplicaron estos hunks estaba en la rama local fix/project-container-isolation-20261111, HEAD f716041. El árbol ya contenía cambios locales ajenos a esta corrección; se conservaron. No se mezclaron ni se atribuyeron esos otros cambios a este informe. Los cambios descritos no se enviaron a GitHub ni se desplegaron.
+El checkout en que se aplicaron estos hunks estaba en la rama local fix/project-container-isolation-20261111, HEAD f716041. El árbol ya contenía cambios locales ajenos a esta corrección; se conservaron. No se mezclaron ni se atribuyeron esos otros cambios a este informe. Los cambios de código descritos no se enviaron a GitHub ni se desplegaron.
 
 ## 4. Verificación local
 
