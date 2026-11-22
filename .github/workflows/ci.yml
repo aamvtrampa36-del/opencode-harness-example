@@ -37,3 +37,9 @@ jobs:
         run: bun run build
       - name: Validate security and project invariants
         run: bun scripts/check-invariants.mjs
+      - name: Live read_only SHA certification on deployed staging
+        run: bun run test:staging:control:mcp
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          OPENCODE_STAGING_READ_ONLY_E2E: "true"
