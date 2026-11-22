@@ -144,8 +144,10 @@ export function supervisorTurnOperationId(id: string, turnId: string): string {
   return "rc-turn-" + id + "-" + turnId;
 }
 
-export function supervisorBranch(id: string, repository?: string): string {
+export function supervisorBranch(id: string, repository?: string, mode?: "read_only"): string {
   supervisorTaskKey(id);
+  // Read-only tasks have no branch at all; they never write to GitHub.
+  if (mode === "read_only") return "";
   // Only OpenCode's own self-improvement branches derive from Staging.
   // Existing G9 and other repository tasks continue using the default branch.
   return (repository?.toLowerCase() === "aamvtrampa36-del/opencode-harness-example"
