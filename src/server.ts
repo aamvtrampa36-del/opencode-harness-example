@@ -130,6 +130,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return { id: task.id, repository: task.repository, branch: task.branch, project: task.project,
       baseCommit: task.baseCommit, session: task.session, status: task.status, error: task.error,
       operationId: task.operationId, model: task.model, ...(task.forkedFrom ? { forkedFrom: task.forkedFrom } : {}),
+      ...(task.mode ? { mode: task.mode } : {}), ...(task.sourceTree ? { sourceTree: task.sourceTree } : {}),
       reused };
   }
 
