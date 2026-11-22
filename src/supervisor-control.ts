@@ -38,6 +38,9 @@ export type SupervisorTask = {
     "cancel_requested" | "cancelled" | "unknown";
   /** Immutable source commit used to seed this task's isolated Linux project. */
   baseCommit?: string;
+  /** Exact Git tree verified for a read_only import; absent for normal tasks. */
+  sourceTree?: string;
+  mode?: "read_only";
   model?: ModelSelectionID;
   operationId?: string;
   error?: string;
