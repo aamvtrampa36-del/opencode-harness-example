@@ -1,0 +1,257 @@
+import { describe, expect, test } from "bun:test";
+import {
+  DynamicToolRegistry, catalogScope, sameJson, sourceSha256,
+  validateDynamicToolSource, type DynamicToolEntry
+} from "./dynamic-tool-registry";
+import type { Workspace } from "@cloudflare/computer";
+import { workspacePlugin } from "./workspace";
+
+class MemoryStore {
+  rows = new Map<string, unknown>();
+  async get<T>(key: string) { return this.rows.get(key) as T | undefined; }
+  async put<T>(key: string, value: T) { this.rows.set(key, value); }
+  async list<T>({ prefix }: { prefix: string }) {
+    return new Map([...this.rows.entries()]
+      .filter(([key]) => key.startsWith(prefix))) as Map<string, T>;
+  }
+}
+const code = "export default (input) => ({ count: input.values.length, ok: true })";
+const samples = [
+  { input: { values: [1, 2] }, expected: { ok: true, count: 2 } },
+  { input: { values: [] }, expected: { count: 0, ok: true } }
+];
+const run = async (_code: string, input: any) => ({ count: input.values.length, ok: true });
+
+describe("Project-scoped Dynamic Worker tool catalogue", () => {
+  test("source contract and structured JSON comparison", async () => {
+    expect(catalogScope("cdf-cloud-engine")).toBe("cdf-cloud-engine");
+    expect(() => catalogScope("../other")).toThrow("INVALID_DYNAMIC_TOOL_SCOPE");
+    expect(() => validateDynamicToolSource("export default (x) => fetch(x)"))
+      .toThrow("DYNAMIC_TOOL_UNSAFE_SOURCE");
+    expect(() => validateDynamicToolSource("import { call } from 'codemode:mcp'; export default () => call()"))
+      .toThrow("DYNAMIC_TOOL_UNSAFE_SOURCE");
+    expect(() => validateDynamicToolSource("export default input => input")).not.toThrow();
+    expect(sameJson({ b: 2, a: 1 }, { a: 1, b: 2 })).toBe(true);
+    expect((await sourceSha256(code)).length).toBe(64);
+  });
+
+  test("requires distinct tests, isolates project namespaces and rejects conflicting versions", async () => {
+    const storage = new MemoryStore();
+    const registry = new DynamicToolRegistry(storage);
+    await expect(registry.propose("one", "json-check", code, [samples[0]]))
+      .rejects.toThrow("DYNAMIC_TOOL_TESTS_REQUIRED");
+    await expect(registry.propose("one", "json-check", code, [samples[0], samples[0]]))
+      .rejects.toThrow("DUPLICATE_DYNAMIC_TOOL_TEST");
+    const candidate = await registry.propose("one", "json-check", code, samples);
+    expect(candidate.status).toBe("CANDIDATE");
+    expect((await registry.list("two")).length).toBe(0);
+    await expect(registry.inspect("two", "json-check")).rejects.toThrow("DYNAMIC_TOOL_NOT_FOUND");
+    await expect(registry.propose("one", "json-check", "export default () => ({})", samples))
+      .rejects.toThrow("DYNAMIC_TOOL_VERSION_CONFLICT");
+    expect((await registry.inspect("one", "json-check")).tests).toHaveLength(2);
+  });
+
+  test("fails closed until all cases pass, then activation permits reuse", async () => {
+    const registry = new DynamicToolRegistry(new MemoryStore());
+    await registry.propose("cdf", "json-check", code, samples, [
+      "https://developers.cloudflare.com/dynamic-workers/"
+    ]);
+    await expect(registry.activate("cdf", "json-check"))
+      .rejects.toThrow("DYNAMIC_TOOL_NOT_VERIFIED");
+    await expect(registry.run("cdf", "json-check", samples[0].input, run))
+      .rejects.toThrow("DYNAMIC_TOOL_NOT_ACTIVE");
+    const failed = await registry.verify("cdf", "json-check", async () => ({ nope: true }));
+    expect(failed.status).toBe("TESTED");
+    expect(failed.passed).toBe(false);
+    expect(failed.failures).toEqual(["CASE_0_MISMATCH", "CASE_1_MISMATCH"]);
+    const verified = await registry.verify("cdf", "json-check", run);
+    expect(verified.status).toBe("VERIFIED");
+    expect(verified.passed).toBe(true);
+    await registry.activate("cdf", "json-check");
+    const ran = await registry.run("cdf", "json-check", samples[0].input, run);
+    expect(ran.result).toEqual({ count: 2, ok: true });
+    expect((await registry.list("cdf"))[0].runs).toBe(1);
+    await registry.deactivate("cdf", "json-check");
+    await expect(registry.run("cdf", "json-check", samples[0].input, run))
+      .rejects.toThrow("DYNAMIC_TOOL_NOT_ACTIVE");
+  });
+
+  test("a revoked candidate cannot be promoted by a concurrent verification", async () => {
+    const registry = new DynamicToolRegistry(new MemoryStore());
+    await registry.propose("cdf", "json-check", code, samples);
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const startedPromise = new Promise<void>(r => started = r);
+    const hold = new Promise<void>(r => release = r);
+    const verifying = registry.verify("cdf", "json-check", async (_source, input: any) => {
+      started();
+      await hold;
+      return { count: input.values.length, ok: true };
+    });
+    await startedPromise;
+    await registry.deactivate("cdf", "json-check");
+    release();
+    await expect(verifying).rejects.toThrow("DYNAMIC_TOOL_CHANGED_DURING_VERIFICATION");
+    expect((await registry.list("cdf"))[0].status).toBe("DEPRECATED");
+    await expect(registry.activate("cdf", "json-check")).rejects.toThrow("DYNAMIC_TOOL_NOT_VERIFIED");
+  });
+
+  test("revocation during an active execution discards its result and leaves no stale metrics", async () => {
+    const registry = new DynamicToolRegistry(new MemoryStore());
+    await registry.propose("cdf", "json-check", code, samples);
+    await registry.verify("cdf", "json-check", run);
+    await registry.activate("cdf", "json-check");
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const startedPromise = new Promise<void>(r => started = r);
+    const hold = new Promise<void>(r => release = r);
+    const pending = registry.run("cdf", "json-check", samples[0].input, async (_source, input) => {
+      started();
+      await hold;
+      return run(code, input);
+    });
+    await startedPromise;
+    await registry.deactivate("cdf", "json-check");
+    release();
+    await expect(pending).rejects.toThrow("DYNAMIC_TOOL_REVOKED_DURING_RUN");
+    const [entry] = await registry.list("cdf");
+    expect(entry.status).toBe("DEPRECATED");
+    expect(entry.runs).toBe(0);
+  });
+
+  test("same source cannot silently reuse approval with different test cases", async () => {
+    const registry = new DynamicToolRegistry(new MemoryStore());
+    await registry.propose("cdf", "json-check", code, samples);
+    await registry.verify("cdf", "json-check", run);
+    await registry.activate("cdf", "json-check");
+    await expect(registry.propose("cdf", "json-check", code, [
+      { input: { values: [7] }, expected: { count: 1, ok: true } },
+      samples[1]
+    ])).rejects.toThrow("DYNAMIC_TOOL_DEFINITION_CONFLICT");
+    expect((await registry.list("cdf"))[0].status).toBe("ACTIVE");
+  });
+
+  test("code-execution errors do not promote, and no input or result over limit is accepted", async () => {
+    const registry = new DynamicToolRegistry(new MemoryStore());
+    await registry.propose("cdf", "json-check", code, samples);
+    const outcome = await registry.verify("cdf", "json-check", async () => { throw Error("failure"); });
+    expect(outcome.passed).toBe(false);
+    expect(outcome.failures).toEqual(["CASE_0_EXECUTION_ERROR", "CASE_1_EXECUTION_ERROR"]);
+    await expect(registry.propose("cdf", "another", code, [
+      { input: { huge: "x".repeat(40000) }, expected: 1 }, samples[0]
+    ])).rejects.toThrow("DYNAMIC_TOOL_JSON_LIMIT");
+  });
+});
+
+describe("OpenCode plugin integrates catalogue with isolated Dynamic Worker backend", () => {
+  test("runs only in pure-tools, scopes records by selected project, blocks plan mutations", async () => {
+    const storage = new MemoryStore();
+    const registry = new DynamicToolRegistry(storage);
+    let usedBackend = "";
+    const ws = {
+      runtime: {
+        backends: () => [
+          { id: "codemode", callable: true, description: "shared" },
+          { id: "dynamic-mcp", callable: true, description: "remote" },
+          { id: "pure-tools", callable: true, description: "pure" }
+        ],
+        exec: async (_source: string, options: { backend: string; input: any }) => {
+          usedBackend = options.backend;
+          return {
+            result: async () => ({
+              exitCode: 0, value: { count: options.input.values.length, ok: true },
+              stdout: "", stderr: ""
+            })
+          };
+        }
+      }
+    } as unknown as Workspace;
+    const available = new Map<string, any>();
+    const plugin = workspacePlugin(
+      ws, {}, undefined, undefined, undefined, undefined,
+      async () => "cdf-cloud-engine", undefined, undefined, undefined, registry
+    );
+    await plugin.setup({
+      agent: { transform: async () => undefined },
+      tool: { transform: async (cb: (editor: any) => unknown) => cb({
+        remove: () => undefined,
+        add: (spec: any) => available.set(spec.name, spec)
+      }) }
+    } as any);
+    const t = available.get("dynamic_tool");
+    expect(t).toBeDefined();
+    const ctx = { sessionID: "ses_project", agent: "build" };
+    const propose = await t.execute({
+      action: "propose", id: "json-check", source: code, tests: samples
+    }, ctx);
+    expect(JSON.parse(propose.content).status).toBe("CANDIDATE");
+    await expect(t.execute({ action: "verify", id: "json-check" },
+      { ...ctx, agent: "plan" })).rejects.toThrow("Planificación");
+    const verified = await t.execute({ action: "verify", id: "json-check" }, ctx);
+    expect(JSON.parse(verified.content).passed).toBe(true);
+    expect(usedBackend).toBe("pure-tools");
+    await t.execute({ action: "activate", id: "json-check" }, ctx);
+    const result = await t.execute({ action: "run", id: "json-check", value: samples[0].input }, ctx);
+    expect(JSON.parse(result.content).result).toEqual({ count: 2, ok: true });
+    expect((await registry.list("unscoped"))).toHaveLength(0);
+    // The project-bound catalogue is shared only within its explicit project.
+    expect((await registry.list("cdf-cloud-engine"))).toHaveLength(1);
+  });
+  test("different unbound sessions cannot list or execute each other's candidates", async () => {
+    const registry = new DynamicToolRegistry(new MemoryStore());
+    const tools = new Map<string, any>();
+    const ws = { runtime: {
+      backends: () => [
+        { id: "codemode", callable: true, description: "shared" },
+        { id: "dynamic-mcp", callable: true, description: "remote" },
+        { id: "pure-tools", callable: true, description: "isolated" }
+      ],
+      exec: async (_src: string, options: { input: { values: unknown[] } }) =>
+        ({ result: async () => ({ exitCode: 0, value: { count: options.input.values.length, ok: true } }) })
+    }} as unknown as Workspace;
+    const p = workspacePlugin(ws, {}, undefined, undefined, undefined, undefined,
+      async () => "", undefined, undefined, undefined, registry);
+    await p.setup({ agent: { transform: async () => undefined },
+      tool: { transform: async (callback: (editor: any) => unknown) => callback({
+        remove: () => undefined, add: (tool: any) => tools.set(tool.name, tool)
+      }) }} as any);
+    const dynamic = tools.get("dynamic_tool");
+    const one = { sessionID: "ses_a", agent: "build" };
+    const two = { sessionID: "ses_b", agent: "build" };
+    await dynamic.execute({ action: "propose", id: "json-check", source: code, tests: samples }, one);
+    expect(JSON.parse((await dynamic.execute({ action: "list" }, one)).content)).toHaveLength(1);
+    expect(JSON.parse((await dynamic.execute({ action: "list" }, two)).content)).toHaveLength(0);
+    await expect(dynamic.execute({ action: "inspect", id: "json-check" }, two))
+      .rejects.toThrow("DYNAMIC_TOOL_NOT_FOUND");
+    await expect(dynamic.execute({ action: "run", id: "json-check", value: samples[0].input }, two))
+      .rejects.toThrow("DYNAMIC_TOOL_NOT_FOUND");
+    await expect(dynamic.execute({ action: "propose", id: "json-check", source: code, tests: samples },
+      { ...one, agent: "plan" })).rejects.toThrow("Planificación");
+  });
+
+  test("execution reports nonzero exit as failure instead of treating it as a successful JSON result", async () => {
+    const registry = new DynamicToolRegistry(new MemoryStore());
+    const available = new Map<string, any>();
+    const ws = { runtime: {
+      backends: () => [
+        { id: "codemode", callable: true, description: "shared" },
+        { id: "dynamic-mcp", callable: true, description: "remote" },
+        { id: "pure-tools", callable: true, description: "isolated" }
+      ],
+      exec: async () => ({ result: async () => ({ exitCode: 4, value: { error: true } }) })
+    }} as unknown as Workspace;
+    const plugin = workspacePlugin(ws, {}, undefined, undefined, undefined, undefined,
+      async () => "project-foo", undefined, undefined, undefined, registry);
+    await plugin.setup({ agent: { transform: async () => undefined },
+      tool: { transform: async (callback: (editor: any) => unknown) => callback({
+        remove: () => undefined, add: (tool: any) => available.set(tool.name, tool)
+      }) }} as any);
+    const t = available.get("dynamic_tool"), ctx = { sessionID: "ses_1", agent: "build" };
+    await t.execute({ action: "propose", id: "json-check", source: code, tests: samples }, ctx);
+    const outcome = JSON.parse((await t.execute({ action: "verify", id: "json-check" }, ctx)).content);
+    expect(outcome.passed).toBe(false);
+    expect(outcome.failures).toEqual(["CASE_0_EXECUTION_ERROR", "CASE_1_EXECUTION_ERROR"]);
+    expect((await registry.list("project-foo"))[0].status).toBe("TESTED");
+  });
+
+});
