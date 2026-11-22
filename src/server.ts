@@ -600,6 +600,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async supervisedTaskReview(id: string): Promise<unknown> {
     this.assertStagingRemote();
     const job = await this.supervisedRecord(id);
+    if (job.mode === "read_only") {
+      throw new Error("La tarea de solo lectura no tiene rama que revisar");
+    }
     const result = await this.githubRunner.execute({
       action: "review", repo: job.repository, branch: job.branch
     });
