@@ -469,7 +469,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const base = { id: job.id, repository: job.repository, project: job.project,
       branch: job.branch, baseCommit: job.baseCommit, session: job.session, startedAt: job.createdAt,
       updatedAt: job.updatedAt, operationId: job.operationId, model: job.model, error: job.error,
-      ...(job.forkedFrom ? { forkedFrom: job.forkedFrom } : {}) };
+      ...(job.forkedFrom ? { forkedFrom: job.forkedFrom } : {}),
+      ...(job.mode ? { mode: job.mode } : {}), ...(job.sourceTree ? { sourceTree: job.sourceTree } : {}) };
     if (!job.session || ["cancelled", "failed", "preparing"].includes(job.status))
       return { ...base, status: job.status, reviewRequired: true, passed: false, verified: false };
     const handle = this.harness.session(job.session);
