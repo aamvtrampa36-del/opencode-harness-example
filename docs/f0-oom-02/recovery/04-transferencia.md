@@ -56,6 +56,12 @@ La API de Cloudflare describe **Workers Scripts Write** (o permisos superiores, 
 - **Reversión:** cerrar PR draft o revertir los commits de rama `ops/f0-oom02-transfer-20261122`. No se altera Prod, main, Staging runtime, DO, Container ni datos; ninguna reversión Cloudflare es necesaria.
 - **PASS T04 restringido:** ambos paquetes originales descargados, hashes verificados y **dos** dry-runs de empaquetado con JS byte-identical en el nuevo CI. **T06** determinará autenticación real, carga, publicación y rollback bajo lote separado. Issue #90 sigue abierta; el hito F0-OOM-02 no está completado.
 
-## 6. Registro de CI de T04
+## 6. CI real de T04 — PASS (sin subida)
 
-**Pendiente de agregar resultado y run/HEAD tras abrir la PR draft y observar el CI automático.** Nunca equiparar una PR creada con el PASS del workflow ni con un despliegue.
+- **Workflow:** [run 45066101348](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45066101348), job `137342463538`.
+- **SHA exactamente probado:** `98186a08f5d636780a8038276fb77e6ec645d718`, rama `ops/f0-oom02-transfer-20261122`, base `f0dc29a568390d97eee22eed4536e2ea2765f523`. Ejecutado el **22-11-2026 20:22–20:23 UTC**.
+- **Conclusión GitHub Actions:** `completed/success`. Todos los pasos terminaron `success`; logs leídos. Descarga real con `github.token` de lectura desde GitHub Actions por los dos IDs exactos, `INTEGRITY_VERIFIED_NO_UPLOAD`, Bun `1.4.4`, Wrangler `4.158.0`.
+- **Verificaciones de CLI reales:** `wrangler versions upload --dry-run --no-bundle` en principal y MCP terminaron con exit code 0; el paso posterior comprobó **`MAIN_PREBUILT_BYTES_PASS 228/228`** y **`MCP_PREBUILT_BYTES_PASS 1/1`**. Ningún módulo JavaScript fue recompilado de forma divergente. El recibo de logs y resumen del run conservan ambos ZIP SHA-256.
+- **Sin cambios Cloudflare:** no se pasó token Cloudflare ni se invocó publicación; tampoco se subieron artifacts GitHub nuevos. Las versiones Staging anteriores permanecen como referencia y no se ha demostrado todavía una carga autenticada.
+- **Resultado del alcance T04:** `PASS — PREPARACIÓN BINARIA REPRODUCIBLE`. No significa `T06 PASS` ni `F0-OOM-02 PASS`. **Bloqueante para T06:** credencial y alcance Actions→Cloudflare no verificados, reconciliación T02/T03/T05 y rollback. Tras esta edición documental, el HEAD de la rama avanzará sin cambiar el verificador ni el workflow ya probados.
+
