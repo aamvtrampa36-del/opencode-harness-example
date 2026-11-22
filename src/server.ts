@@ -1373,7 +1373,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         }
       }
     }
-    if (scope?.repository) await dev.prepareRepository(project, scope.repository, sourceCommit);
+    if (scope?.repository) await dev.prepareRepository(project, scope.repository, sourceCommit, sourceTree);
     return dev;
   }
 
