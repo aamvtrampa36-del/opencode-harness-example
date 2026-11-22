@@ -1,0 +1,185 @@
+name: F0-OOM-02 Staging artifact evidence (no deploy)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [staging/opencode-g1-rpc-safe-20261120]
+    paths:
+      - .github/workflows/f0-oom02-staging-artifact.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: f0-oom02-artifact-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  stage-artifact:
+    if: ${{ github.event.pull_request.head.ref == 'ops/f0-oom02-staging-build-evidence-20261122' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SOURCE_SHA: 19bba24d81be5b0673acbf2a56b500aed4fa0b66
+      SOURCE_REF: fix/f0-oom02-supervisor-transcript-containment-20261122
+      BASE_SHA: 11161dd6f2c4b5237a2da59d7275ff693e0afdbe
+      STAGING_CONFIG: wrangler.g1.jsonc
+      CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: wrangler.g1.jsonc
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - name: Checkout exact candidate commit, never the PR merge ref
+        uses: actions/checkout@v4
+        with:
+          ref: 19bba24d81be5b0673acbf2a56b500aed4fa0b66
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify source and immutable staging base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          actual_base="$(git ls-remote https://github.com/aamvtrampa36-del/opencode-harness-example.git refs/heads/staging/opencode-g1-rpc-safe-20261120 | cut -f1)"
+          test "$actual_base" = "$BASE_SHA"
+          test -f "$STAGING_CONFIG"
+          test ! -e .env
+          test ! -e .env.production
+
+      - name: Setup Bun 1.4.4
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Install exact locked dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Vite explicitly for Staging
+        run: bun run build
+
+      - name: Verify effective Wrangler configuration and isolate production
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8'));
+          const readJsonc = file => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\s*\/\/.*$/gm, ''));
+          const input = readJsonc(process.env.STAGING_CONFIG);
+          const production = readJsonc('wrangler.jsonc');
+          if (input.name !== 'opencode-g1-staging' || input.main !== 'src/entrypoint.ts') throw Error('STAGING_INPUT_MISMATCH');
+          if (production.name === input.name || production.main === input.main) throw Error('PRODUCTION_CONFIGURATION_SELECTED');
+          if (input.compatibility_date !== '2026-06-11') throw Error('STAGING_COMPATIBILITY_MISMATCH');
+          if (input.migrations?.at(-1)?.tag !== 'v4') throw Error('STAGING_DO_MIGRATION_MISMATCH');
+          const classes = new Set(input.durable_objects?.bindings?.map(b => `${b.name}:${b.class_name}`));
+          for (const name of ['OpenCodeAgent:OpenCodeAgent','DEV:DevContainer','SETTINGS:PersonalSettings','SESSION_BK:SessionBackupDrillAgent']) {
+            if (!classes.has(name)) throw Error('STAGING_BINDING_MISSING:' + name);
+          }
+          if (!input.containers?.some(c => c.class_name === 'DevContainer') || !input.workflows?.some(w => w.binding === 'SUPERVISOR_WORKFLOW') || !input.r2_buckets?.some(b => b.binding === 'RECOVERY_R2')) throw Error('STAGING_RESOURCE_MISSING');
+          const pointerFile = '.wrangler/deploy/config.json';
+          if (!fs.existsSync(pointerFile)) throw Error('VITE_DEPLOY_POINTER_MISSING');
+          const pointer = readJson(pointerFile);
+          if (typeof pointer.configPath !== 'string') throw Error('VITE_DEPLOY_CONFIG_PATH_MISSING');
+          const effectiveFile = path.resolve(path.dirname(pointerFile), pointer.configPath);
+          if (!fs.existsSync(effectiveFile)) throw Error('VITE_EFFECTIVE_CONFIG_MISSING');
+          const effective = readJson(effectiveFile);
+          if (effective.name !== input.name) throw Error('VITE_SELECTED_WRONG_WORKER');
+          if (effective.compatibility_date !== input.compatibility_date) throw Error('VITE_COMPATIBILITY_MISMATCH');
+          if (effective.migrations?.at(-1)?.tag !== 'v4') throw Error('VITE_DO_MIGRATION_MISMATCH');
+          const effectiveClasses = new Set(effective.durable_objects?.bindings?.map(b => b.name + ':' + b.class_name));
+          for (const name of classes) if (!effectiveClasses.has(name)) throw Error('VITE_DO_BINDING_MISSING:' + name);
+          if (!effective.main || !fs.existsSync(path.resolve(path.dirname(effectiveFile), effective.main))) throw Error('VITE_BUNDLE_NOT_FOUND');
+          if (!fs.existsSync('dist/client') || fs.readdirSync('dist/client').length === 0) throw Error('STAGING_ASSETS_MISSING');
+          fs.writeFileSync('/tmp/f0-oom02-effective-path', path.relative(process.cwd(), effectiveFile));
+          console.log('Verified source configuration and effective Vite output: ' + effectiveFile);
+          NODE
+
+      - name: Wrangler offline dry-run for Staging only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .f0-oom02/wrangler-dry-run
+          ./node_modules/.bin/wrangler deploy --dry-run --config wrangler.g1.jsonc --outdir .f0-oom02/wrangler-dry-run
+          test "$(find .f0-oom02/wrangler-dry-run -type f | wc -l)" -gt 0
+
+      - name: Assemble evidence package and verify per-file SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .f0-oom02/package
+          cp -a dist .f0-oom02/package/dist
+          mkdir -p .f0-oom02/package/.wrangler
+          cp -a .wrangler/deploy .f0-oom02/package/.wrangler/deploy
+          cp -a .f0-oom02/wrangler-dry-run .f0-oom02/package/wrangler-dry-run
+          cp wrangler.g1.jsonc .f0-oom02/package/wrangler.g1.jsonc
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          import { execFileSync } from 'node:child_process';
+          const root = '.f0-oom02/package';
+          const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+          const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).flatMap(item => {
+            const p = path.join(dir, item.name);
+            if (item.isSymbolicLink()) throw Error('ARTIFACT_SYMLINK_FORBIDDEN:' + p);
+            return item.isDirectory() ? walk(p) : item.isFile() ? [p] : [];
+          });
+          const files = walk(root).sort();
+          const inventory = files.map(file => ({ path: path.relative(root, file).replaceAll('\\', '/'), bytes: fs.statSync(file).size, sha256: sha(fs.readFileSync(file)) }));
+          const total = inventory.reduce((sum, item) => sum + item.bytes, 0);
+          if (!inventory.length || total > 64 * 1024 * 1024) throw Error('ARTIFACT_SIZE_LIMIT_64_MIB');
+          const version = exe => execFileSync(exe, ['--version'], { encoding: 'utf8' }).trim();
+          const manifest = {
+            schema: 'f0-oom02-staging-build-evidence-v1',
+            repository: process.env.GITHUB_REPOSITORY,
+            sourceSha: process.env.SOURCE_SHA,
+            sourceBranch: process.env.SOURCE_REF,
+            workflowRef: process.env.GITHUB_WORKFLOW_REF,
+            workflowRunId: process.env.GITHUB_RUN_ID,
+            workflowRunAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+            actor: process.env.GITHUB_ACTOR,
+            createdAt: new Date().toISOString(),
+            configPath: process.env.STAGING_CONFIG,
+            configSha256: sha(fs.readFileSync(process.env.STAGING_CONFIG)),
+            effectiveConfigPath: fs.readFileSync('/tmp/f0-oom02-effective-path', 'utf8'),
+            workerName: 'opencode-g1-staging',
+            sourceEntrypoint: 'src/entrypoint.ts',
+            compatibilityDate: '2026-06-11',
+            migrationTag: 'v4',
+            bunVersion: version('bun'),
+            viteVersion: version('./node_modules/.bin/vite'),
+            wranglerVersion: version('./node_modules/.bin/wrangler'),
+            inventory
+          };
+          fs.writeFileSync(path.join(root, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+          fs.writeFileSync(path.join(root, 'SHA256SUMS'), inventory.map(x => `${x.sha256}  ${x.path}`).join('\n') + '\n');
+          console.log(`Verified ${inventory.length} files (${total} bytes) before upload`);
+          NODE
+          (cd .f0-oom02/package && sha256sum --check SHA256SUMS)
+
+      - name: Upload evidence package (7 days, maximum 64 MiB payload)
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: f0-oom02-staging-${{ env.SOURCE_SHA }}
+          path: .f0-oom02/package/
+          retention-days: 7
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 6
+
+      - name: Record GitHub artifact identity separately from file checksums
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Source SHA: $SOURCE_SHA"
+            echo "Staging worker: opencode-g1-staging"
+            echo "GitHub artifact ID: $ARTIFACT_ID"
+            echo "GitHub artifact digest: $ARTIFACT_DIGEST"
+            echo "Artifact URL: $ARTIFACT_URL"
+            echo "Manifest and SHA256SUMS are inside the archive. This package is not yet approved as directly deployable."
+          } >> "$GITHUB_STEP_SUMMARY"
