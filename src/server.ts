@@ -100,7 +100,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
       id: start.requestId, repository: start.repository,
       project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId, start.repository, start.mode),
       fingerprint, createdAt: old?.createdAt ?? Date.now(), status: "preparing",
-      model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
+      model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {}),
+      ...(start.mode ? { mode: start.mode } : {}),
+      ...(start.sourceTree ? { sourceTree: start.sourceTree } : {})
     };
     if (!old) {
       // Atomic reservation prevents duplicate branches and duplicate model spending.
