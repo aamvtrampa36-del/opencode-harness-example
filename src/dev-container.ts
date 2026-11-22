@@ -353,7 +353,8 @@ export class DevContainer extends DurableObject<Env> {
         throw Error("El Container ya fue utilizado; no se importará sobre su contenido");
       }
       if (!pending) await this.ctx.storage.put("repo-import-pending-v1", {
-        project: id, repository, ...(sourceCommit ? { sourceCommit } : {})
+        project: id, repository, ...(sourceCommit ? { sourceCommit } : {}),
+        ...(sourceTree ? { sourceTree } : {})
       });
       const token = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN || await settings.getGitHubKey();
       const source = await githubSourceArchive(repository, token || "", allowed, fetch, sourceCommit);
