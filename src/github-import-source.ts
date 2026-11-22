@@ -4,6 +4,7 @@
  * The destination is published only after all files pass a readback digest.
  */
 export const GITHUB_IMPORT_SOURCE = String.raw`
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile, mkdir, mkdtemp, rename, rm, lstat, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
