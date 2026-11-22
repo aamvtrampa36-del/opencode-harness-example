@@ -272,3 +272,12 @@ export function supervisorPrompt(task: SupervisorStart, branch: string, project:
     "Si una operación requiere permisos adicionales, informa el bloqueo.\n\nENCARGO:\n" +
     task.prompt;
 }
+
+/** A read_only task must import and verify its exact source tree before any
+ * model setup or inference. Normal tasks keep their existing lazy import. */
+export async function preflightReadOnlySource(
+  mode: SupervisorTask["mode"] | undefined,
+  importSource: () => Promise<unknown>
+): Promise<void> {
+  if (mode === "read_only") await importSource();
+}
