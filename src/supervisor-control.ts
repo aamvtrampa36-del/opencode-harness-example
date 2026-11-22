@@ -97,12 +97,34 @@ export function validateSupervisorStart(raw: unknown, approved: readonly string[
       (typeof input.sourceSession !== "string" || !/^ses[A-Za-z0-9_]{1,64}$/.test(input.sourceSession))) {
     throw new Error("La sesión de origen debe ser un ID OpenCode válido");
   }
-  if (Object.keys(input).some(key => !["requestId", "repository", "prompt", "model", "sourceSession"].includes(key))) {
+  if (input.mode !== undefined && input.mode !== "read_only") {
+    throw new Error("Modo del supervisor inválido");
+  }
+  const readOnly = input.mode === "read_only";
+  if (input.sourceCommit !== undefined &&
+      (typeof input.sourceCommit !== "string" || !/^[a-f0-9]{40}$/.test(input.sourceCommit))) {
+    throw new Error("sourceCommit debe ser un SHA de 40 caracteres hexadecimales en minúscula");
+  }
+  if (input.sourceTree !== undefined &&
+      (typeof input.sourceTree !== "string" || !/^[a-f0-9]{40}$/.test(input.sourceTree))) {
+    throw new Error("sourceTree debe ser un SHA de 40 caracteres hexadecimales en minúscula");
+  }
+  if ((input.sourceCommit === undefined) !== (input.sourceTree === undefined)) {
+    throw new Error("sourceCommit y sourceTree deben indicarse juntos");
+  }
+  if (!readOnly && (input.sourceCommit !== undefined || input.sourceTree !== undefined)) {
+    throw new Error("sourceCommit y sourceTree solo se admiten en modo read_only");
+  }
+  if (Object.keys(input).some(key => !["requestId", "repository", "prompt", "model", "sourceSession",
+    "mode", "sourceCommit", "sourceTree"].includes(key))) {
     throw new Error("Parámetros del supervisor desconocidos");
   }
   return { requestId: input.requestId, repository, prompt: input.prompt.trim(),
     ...(input.model ? { model: input.model } : {}),
-    ...(input.sourceSession ? { sourceSession: input.sourceSession } : {}) };
+    ...(input.sourceSession ? { sourceSession: input.sourceSession } : {}),
+    ...(input.mode ? { mode: input.mode } : {}),
+    ...(input.sourceCommit ? { sourceCommit: input.sourceCommit } : {}),
+    ...(input.sourceTree ? { sourceTree: input.sourceTree } : {}) };
 }
 
 export function supervisorTaskKey(id: string): string {
