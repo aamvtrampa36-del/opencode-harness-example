@@ -1,0 +1,144 @@
+name: F0-OOM-02 T04 prepare original binaries (NEVER DEPLOY)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [ops/f0-oom02-staging-build-evidence-20261122]
+    paths:
+      - .github/workflows/f0-oom02-staging-transfer.yml
+      - scripts/f0-oom02-transfer-verify.py
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: f0-oom02-t04-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  verify-transfer:
+    if: >-
+      ${{ github.event.pull_request.head.ref == 'ops/f0-oom02-transfer-20261122' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.base.ref == 'ops/f0-oom02-staging-build-evidence-20261122' &&
+          github.event.pull_request.base.sha == 'f0dc29a568390d97eee22eed4536e2ea2765f523' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+      CLOUDFLARE_API_TOKEN: ''
+      CLOUDFLARE_ACCOUNT_ID: ''
+    steps:
+      - name: Checkout approved T04 head (never merge/ref from main)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify isolated branch and pinned SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '${{ github.event.pull_request.head.sha }}'
+          test '${{ github.event.pull_request.base.sha }}' = 'f0dc29a568390d97eee22eed4536e2ea2765f523'
+          test -f scripts/f0-oom02-transfer-verify.py
+          test ! -e .env
+          test ! -e .env.production
+
+      - name: Fetch exactly TWO original GitHub Actions artifact IDs, READ ONLY
+        env:
+          GH_READ_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .f0-oom02-t04/downloads
+          for spec in '14760462966 main' '14760378207 mcp'; do
+            read -r id name <<< "$spec"
+            curl --fail --silent --show-error --location --retry 0 --max-time 120 \
+              --proto '=https' --proto-redir '=https' \
+              -H "Authorization: Bearer ${GH_READ_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/aamvtrampa36-del/opencode-harness-example/actions/artifacts/${id}/zip" \
+              --output ".f0-oom02-t04/downloads/${name}.zip"
+          done
+          echo 'GitHub ZIP files downloaded: no Cloudflare call.'
+
+      - name: Verify original SHA-256 and prepare existing prebuilt bytes offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/f0-oom02-transfer-verify.py \
+            --main-zip .f0-oom02-t04/downloads/main.zip \
+            --mcp-zip .f0-oom02-t04/downloads/mcp.zip \
+            --output .f0-oom02-t04/prepared
+
+      - name: Setup Bun 1.4.4
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Install frozen tooling, verify Wrangler 4.158.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          test "$(bun --version)" = '1.4.4'
+          ./node_modules/.bin/wrangler --version | grep -Fq '4.158.0'
+
+      - name: Main prebuilt Worker DRY RUN only - no token, no upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .f0-oom02-t04/main-dry-run
+          ./node_modules/.bin/wrangler versions upload --dry-run --no-bundle \
+            --config .f0-oom02-t04/prepared/main/dist/opencode_g1_staging/wrangler.json \
+            --outdir "$PWD/.f0-oom02-t04/main-dry-run"
+
+      - name: MCP prebuilt Worker DRY RUN only - no token, no upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .f0-oom02-t04/mcp-dry-run
+          ./node_modules/.bin/wrangler versions upload --dry-run --no-bundle \
+            --config .f0-oom02-t04/prepared/mcp/wrangler.prebuilt-mcp.json \
+            --outdir "$PWD/.f0-oom02-t04/mcp-dry-run"
+
+      - name: Require complete JS hash equality after BOTH Wrangler dry runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from hashlib import sha256
+          from collections import Counter
+          root=Path('.f0-oom02-t04')
+          def js_hashes(folder):
+              return Counter(sha256(p.read_bytes()).hexdigest() for p in folder.rglob('*.js') if p.is_file())
+          before=js_hashes(root/'prepared/prebuilt-files/prebuilt-main')
+          after=js_hashes(root/'main-dry-run')
+          assert sum(before.values()) == 228, 'MAIN_PREBUILT_MODULE_COUNT_CHANGED'
+          assert before == after, 'MAIN_WRANGLER_DRYRUN_REBUILT_MODULES'
+          mcp=js_hashes(root/'mcp-dry-run')
+          assert mcp==Counter({'4b9323d8df60605132521bb0075045e7d75445f0dc898a8ec358ade5ce836a50':1}), 'MCP_WRANGLER_DRYRUN_REBUILT_MODULE'
+          print('MAIN_PREBUILT_BYTES_PASS 228/228')
+          print('MCP_PREBUILT_BYTES_PASS 1/1')
+          PY
+
+      - name: Auditable receipt - no publication or new artifact upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '## F0-OOM-02/T04: transfer preparation verified, NO CLOUDFARE UPLOAD'
+            echo ''
+            echo '- Source SHA: `19bba24d81be5b0673acbf2a56b500aed4fa0b66`'
+            echo '- Main artifact: `14760462966`, ZIP SHA256 `707afab14232ea867eed4de187069f2514bbc8c4ceacce50a6a538a619d84a59`'
+            echo '- MCP artifact: `14760378207`, ZIP SHA256 `4c268d686cb0bdb60ef790da20525e287627fcc1df128b511a1974e2cf41563d`'
+            echo '- 543 main files + 4 MCP files verified, 228/228 JS main and 1/1 JS MCP hashes unchanged'
+            echo '- Wrangler 4.158.0 --dry-run --no-bundle: PASS for both'
+            echo '- No Cloudflare version, deployment, secret, upload or activation created'
+            echo '- Cloudflare Actions credential presence/scope NOT VERIFIED; T06 must check it.'
+          } >> "$GITHUB_STEP_SUMMARY"
