@@ -360,6 +360,23 @@ try {
       repository: "aamvtrampa36-del/not-authorized", mode: "read_only", sourceCommit, sourceTree
     } });
     assert.equal(unauthorized.isError, true, "Unauthorized repository must be rejected.");
+    const negativeCases = [
+      { label: "wrong-tree", commit: sourceCommit, tree: "f".repeat(40) },
+      { label: "unknown-commit", commit: "0".repeat(40), tree: sourceTree }
+    ];
+    for (const negative of negativeCases) {
+      const negativeId = randomUUID().replaceAll("-", "").slice(0, 16);
+      const accepted = parseResult(await client.callTool({ name: "staging_start_task", arguments: {
+        requestId: negativeId, prompt, repository, mode: "read_only", model: "economy",
+        sourceCommit: negative.commit, sourceTree: negative.tree
+      } }), negative.label + " reservation");
+      assert.equal(accepted.id, negativeId);
+      assert.equal(accepted.branch, "");
+      const denied = await pollTask(client, negativeId);
+      assert.equal(denied.status, "failed", negative.label + " must fail before inference.");
+      assert.equal(denied.session, undefined, negative.label + " must not open a session.");
+      assert.equal(denied.operationId, undefined, negative.label + " must not submit inference.");
+    }
     readOnlyCheck = {
       requestId, repository, sourceCommit, sourceTree, status: completed.status,
       completedTools: completed.completedTools, branch: started.branch,
