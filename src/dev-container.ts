@@ -363,7 +363,8 @@ export class DevContainer extends DurableObject<Env> {
       await this.ctx.storage.put("lastActivity", Date.now());
       try {
         const process = await container.exec(
-          ["node", "--input-type=module", "-e", GITHUB_IMPORT_SOURCE, id], { stdin: source.stream }
+          ["node", "--input-type=module", "-e", GITHUB_IMPORT_SOURCE, id,
+            ...(sourceTree ? [sourceTree] : [])], { stdin: source.stream }
         );
         const result = await process.output();
         if (result.exitCode !== 0) {
