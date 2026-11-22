@@ -32,6 +32,8 @@ describe("supervised read_only contract", () => {
     }
     expect(() => validateSupervisorStart({ ...readOnly, sourceTree: undefined }, [repo])).toThrow("sourceTree");
     expect(() => validateSupervisorStart({ ...readOnly, sourceCommit: undefined }, [repo])).toThrow("sourceCommit");
+    expect(() => validateSupervisorStart({ ...base, mode: "read_only" }, [repo]))
+      .toThrow("read_only requiere sourceCommit y sourceTree");
     expect(() => validateSupervisorStart({ ...base, sourceCommit: commit, sourceTree: tree }, [repo]))
       .toThrow("read_only");
     expect(() => validateSupervisorStart({ ...readOnly, mode: "develop" }, [repo])).toThrow();
