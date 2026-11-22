@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { GitHubBridge } from "./github";
 import { githubSourceArchive, sourceReceiptMatches } from "./github-import";
 import {
-  assertSupervisorBoundGitHubOperation, preflightReadOnlySource,
+  assertSupervisorBoundGitHubOperation, deferSupervisorStart, preflightReadOnlySource,
   supervisorBranch, supervisorFingerprint, supervisorPrompt,
   validateSupervisorStart
 } from "./supervisor-control";
@@ -199,5 +199,37 @@ describe("source archive pins commit and tree", () => {
     expect(sourceReceiptMatches({ commit, tree }, commit, "e".repeat(40))).toBe(false);
     expect(sourceReceiptMatches({ commit }, commit, tree)).toBe(false);
     expect(sourceReceiptMatches({ commit }, commit, undefined)).toBe(true);
+  });
+});
+
+describe("read_only asynchronous start", () => {
+  test("returns immediately while slow source preparation continues in the background", async () => {
+    let release!: () => void;
+    const slowImport = new Promise<void>(resolve => { release = resolve; });
+    const scheduled: Promise<void>[] = [];
+    let entered = false;
+    let completed = false;
+    deferSupervisorStart(work => { scheduled.push(work); }, async () => {
+      entered = true;
+      await slowImport;
+      completed = true;
+    }, async () => { throw Error("Unexpected background failure"); });
+    expect(scheduled).toHaveLength(1);
+    expect(completed).toBe(false);
+    await Promise.resolve();
+    expect(entered).toBe(true);
+    release();
+    await Promise.all(scheduled);
+    expect(completed).toBe(true);
+  });
+
+  test("captures an asynchronous start failure rather than rejecting the background lifetime", async () => {
+    const scheduled: Promise<void>[] = [];
+    const errors: string[] = [];
+    deferSupervisorStart(work => { scheduled.push(work); },
+      async () => { throw Error("source tree invalid"); },
+      async error => { errors.push((error as Error).message); });
+    await Promise.all(scheduled);
+    expect(errors).toEqual(["source tree invalid"]);
   });
 });
