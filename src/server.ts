@@ -1085,6 +1085,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
       return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
         await this.personalConfig.getAllowedRepositories()).ensureSupervisorBranch(repo, branch);
+    },
+    resolveReadOnlySource: async (repo: string, sourceCommit?: string, sourceTree?: string) => {
+      const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
+        || await this.personalConfig.getGitHubKey();
+      if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
+      return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
+        await this.personalConfig.getAllowedRepositories()).resolveReadOnlySource(repo, sourceCommit, sourceTree);
     }
   };
   async isOpenRouterConfigured(): Promise<boolean> {
