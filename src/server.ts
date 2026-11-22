@@ -191,6 +191,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
         await this.ctx.storage.put(key, job);
       }
       await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
+      // A read_only import/tree mismatch must fail before any model setup or inference.
+      await preflightReadOnlySource(job.mode, () => this.isolatedProject(job.project, job.session));
       const handle = this.harness.session(job.session!);
       if (!job.operationId) {
         await handle.setAgent("build");
