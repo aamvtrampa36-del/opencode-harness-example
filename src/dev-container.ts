@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { MAX_SHELL_OUTPUT, validateCommand, validateProject } from "./dev-guard";
+import { captureBoundedOutput } from "./bounded-process-output";
 import { PREVIEW_SOURCE, PREVIEW_PORT } from "./preview-server";
 import { INSPECT_SOURCE, validateInspectionPath } from "./linux-inspect";
 import { chunkBackup, joinBackup, sha256Hex, MAX_ARCHIVE_BYTES, type StoredBackup } from "./durable-backup";
@@ -436,17 +437,20 @@ export class DevContainer extends DurableObject<Env> {
         "timeout --signal=TERM 180s bash -lc \"$1\""
       ].join(" && ");
       const process = await container.exec(["bash", "-lc", wrapper, "opencode", command]);
-      const output = await process.output();
-      const decoder = new TextDecoder();
-      const stdout = decoder.decode(output.stdout);
-      const stderr = decoder.decode(output.stderr);
+      // Drain both pipes while the process runs. output() accumulates unbounded
+      // stdout/stderr *before* a later slice, which can exhaust the DO isolate.
+      const [stdout, stderr, exitCode] = await Promise.all([
+        captureBoundedOutput(process.stdout, MAX_SHELL_OUTPUT),
+        captureBoundedOutput(process.stderr, MAX_SHELL_OUTPUT),
+        process.exitCode
+      ]);
       await this.recordProject(project);
       return {
         project,
-        exitCode: output.exitCode,
-        stdout: stdout.slice(0, MAX_SHELL_OUTPUT),
-        stderr: stderr.slice(0, MAX_SHELL_OUTPUT),
-        truncated: stdout.length > MAX_SHELL_OUTPUT || stderr.length > MAX_SHELL_OUTPUT,
+        exitCode,
+        stdout: stdout.text,
+        stderr: stderr.text,
+        truncated: stdout.truncated || stderr.truncated,
         persistence: "checkpoint-scheduled"
       };
     } finally {
