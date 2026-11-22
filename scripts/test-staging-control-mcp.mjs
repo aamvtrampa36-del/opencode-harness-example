@@ -329,9 +329,9 @@ try {
     assert.equal(completed.status, "finished", "Read-only model execution must complete.");
     assert.ok(completed.completedTools >= 1, "Runtime must execute at least one real tool.");
     const transcript = await getTaskTranscript(client, requestId);
-    assert.match(transcript, /Herramienta: linux\\b/, "Transcript must prove a Linux tool call.");
+    assert.match(transcript, /Herramienta: linux\b/, "Transcript must prove a Linux tool call.");
     assert.match(transcript, /SHA_CERTIFIED_LINUX_OK/, "Linux must observe the imported source.");
-    assert.doesNotMatch(transcript, /"action"\\s*:\\s*"(?:branch|write|pr|review)"/,
+    assert.doesNotMatch(transcript, /"action"\s*:\s*"(?:branch|write|pr|review)"/,
       "Read-only task must not perform a GitHub write.");
     readOnlyCheck = {
       requestId, repository, sourceCommit, sourceTree, status: completed.status,
