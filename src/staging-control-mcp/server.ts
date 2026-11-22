@@ -330,7 +330,9 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
       const supervisor = bindings.supervisor(workspace);
       const task = asRecord(await supervisor.startSupervisedTask({
         requestId, repository: repository ?? STAGING_REPOSITORY, prompt,
-        ...(model ? { model } : {}), ...(sourceSession ? { sourceSession } : {})
+        ...(model ? { model } : {}), ...(sourceSession ? { sourceSession } : {}),
+        ...(mode ? { mode } : {}), ...(sourceCommit ? { sourceCommit } : {}),
+        ...(sourceTree ? { sourceTree } : {})
       }));
       const current = task.reused === true && typeof task.id === "string"
         ? asRecord(await supervisor.supervisedTaskStatus(task.id))
