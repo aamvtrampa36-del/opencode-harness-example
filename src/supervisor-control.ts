@@ -19,6 +19,11 @@ export type SupervisorStart = {
   model?: ModelSelectionID;
   /** Optional exact OpenCode session to fork. Its conversation is inherited, its files are not. */
   sourceSession?: string;
+  /** Read-only tasks never create a branch, PR or GitHub review. */
+  mode?: "read_only";
+  /** Optional immutable commit and Git tree pair, verified by GitHub before inference. */
+  sourceCommit?: string;
+  sourceTree?: string;
 };
 
 export type SupervisorTask = {
