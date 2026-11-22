@@ -341,11 +341,12 @@ export class DevContainer extends DurableObject<Env> {
         return existing;
       }
       const pending = await this.ctx.storage.get<{
-        project: string; repository: string; sourceCommit?: string
+        project: string; repository: string; sourceCommit?: string; sourceTree?: string
       }>("repo-import-pending-v1");
       if (pending && (pending.project !== id ||
           pending.repository.toLowerCase() !== repository.toLowerCase() ||
-          (pending.sourceCommit ?? "") !== (sourceCommit ?? ""))) {
+          (pending.sourceCommit ?? "") !== (sourceCommit ?? "") ||
+          (pending.sourceTree ?? "") !== (sourceTree ?? ""))) {
         throw Error("Ya hay otra importación pendiente en este Container");
       }
       if (await this.ctx.storage.get("lastActivity") && !pending) {
