@@ -42,7 +42,7 @@ describe("bounded process output", () => {
       text: "", truncated: false, totalBytes: 0, omittedBytes: 0
     });
     expect((await captureBoundedOutput(chunks("abc"), 1)).omittedBytes).toBe(2);
-    expect(captureBoundedOutput(chunks("abc"), 0)).rejects.toThrow(RangeError);
+    await expect(captureBoundedOutput(chunks("abc"), 0)).rejects.toThrow(RangeError);
   });
 
   test("drains 16 MiB while retaining at most 128 bytes of payload", async () => {
