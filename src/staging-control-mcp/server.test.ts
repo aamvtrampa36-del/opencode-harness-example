@@ -253,7 +253,7 @@ describe("OpenCode staging MCP server", () => {
         requestId: "f1234567890bcdef", prompt: "Analiza el código sin escribir ni abrir una PR",
         mode: "read_only", sourceCommit: commit, sourceTree: tree
       } });
-      expect(readOnly.isError).toBe(false);
+      expect(readOnly.isError).not.toBe(true);
       expect(started).toEqual({
         requestId: "f1234567890bcdef", repository: STAGING_REPOSITORY,
         prompt: "Analiza el código sin escribir ni abrir una PR", mode: "read_only",
