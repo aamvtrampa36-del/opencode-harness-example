@@ -1,0 +1,24 @@
+bun test v1.4.4 (38afee6c8)
+
+tests/classify-numbers.test.mjs:
+(pass) classifyNumbers — contrato del PLANIFICADOR > L3: particiona y conserva orden y conteos [0.25ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L1: array vacío [0.03ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L2: -0 cuenta como cero, no como negativo [0.04ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L4: NaN se rechaza [0.10ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L5: ±Infinity se rechazan [0.04ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L6: cadenas numéricas se rechazan sin coerción [0.03ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L7: hueco de array disperso se rechaza en su índice [0.13ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L8: objeto envoltorio Number se rechaza [0.05ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L9: BigInt se rechaza [0.07ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L10: valores extremos finitos se aceptan [0.04ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L11: entrada que no es array se rechaza [0.07ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > L12: no muta la entrada [0.10ms]
+(pass) classifyNumbers — contrato del PLANIFICADOR > atomicidad: un inválido al final no devuelve resultado parcial [0.05ms]
+(pass) classifyNumbers — hallazgos del REVISOR (regresión) > R1: [null] y [undefined] se rechazan identificando el índice [0.09ms]
+(pass) classifyNumbers — hallazgos del REVISOR (regresión) > R2: la cadena numérica rechazada identifica su índice [0.04ms]
+(pass) classifyNumbers — hallazgos del REVISOR (regresión) > R3: Proxy con length inconsistente no rompe counts.total [0.19ms]
+
+ 16 pass
+ 0 fail
+ 26 expect() calls
+Ran 16 tests across 1 file. [8.00ms]
