@@ -1,0 +1,85 @@
+{
+  "id": "opencode-exp4-pinned-read-20261115",
+  "intent": "experimental optimization of scoped GitHub tool execution",
+  "base": {
+    "branch": "main",
+    "code": "src/github.ts, src/scoped-github.ts, src/server.ts",
+    "dependency": "GitHub REST content API"
+  },
+  "environment": "GitHub Actions Bun 1.4.4, actual GitHubBridge + session-bound tool executor with deterministic HTTP fake; no production GitHub reads or paid inference",
+  "hypotheses": [
+    {
+      "id": "H1",
+      "observedSource": "GitHubBridge.execute({action:'read'}) unconditionally makes GET contents; server creates new bridge per call. No dedup for identical pinned source.",
+      "intervention": "Inject shared bounded immutable-commit read reuse across bridge instances owned by same DO; cache only exact 40-hex commit SHA ref, revalidate session binding and local allowlist for every call; never cache mutable refs",
+      "prediction": "At least 70% fewer GET calls and returned bytes for repeated immutable read workloads, 0% reduction for branch mutable refs, exact outputs preserved",
+      "falsification": "Any stale branch output, cross-credential leak, unapproved repository read, a mismatch or <70% repeated-source saving; meaningful CPU/latency regression"
+    }
+  ],
+  "cases": [
+    {
+      "id": "pinned_repeat",
+      "calls": 10,
+      "unique": 1,
+      "type": "immutable commit"
+    },
+    {
+      "id": "pinned_many",
+      "calls": 12,
+      "unique": 3,
+      "type": "immutable commits and paths"
+    },
+    {
+      "id": "mutable_branch",
+      "calls": 8,
+      "unique": 1,
+      "type": "branch ref changes every read"
+    },
+    {
+      "id": "authorization",
+      "calls": 4,
+      "type": "rejected scope + credential rotation, before HTTP"
+    },
+    {
+      "id": "mixed",
+      "calls": 9,
+      "type": "multi-step synthetic repo analysis/review, same required exact contents"
+    }
+  ],
+  "metrics": {
+    "httpGets": "count - instrumented fake fetch",
+    "payloadBytes": "bytes - fake GitHub REST response bodies",
+    "wallMs": "ms - performance.now() over real bridge and scoped adapter",
+    "outputCorrectness": "PASS/FAIL - deep same output, no stale metadata, refusal preserved",
+    "providerTokens": "UNKNOWN",
+    "inferenceDollars": "UNKNOWN",
+    "runtimeBilling": "UNKNOWN"
+  },
+  "thresholds": {
+    "repeatedGetSavingsPct": 70,
+    "mutableBranchGetsReductionPct": 0,
+    "correctness": "100%",
+    "noSecurityRegressions": true,
+    "productionChanges": 0
+  },
+  "repetitions": 3,
+  "pairOrder": "AB/BA alternated by repetition",
+  "evidence_plan": {
+    "root": "experiments/pinned-read-20261115",
+    "code": "src/pinned-read-experiment.test.ts",
+    "log": "CI original run stdout, begin/end event rows later copied verbatim to repo with origin",
+    "baselineFirst": true,
+    "finalCI": "all tests and build"
+  },
+  "exclusions": [
+    "main",
+    "PR #54",
+    "PR #55",
+    "PR #56",
+    "PR #57",
+    "Production",
+    "Operational Staging",
+    "personal code & conversations"
+  ],
+  "limitations": "Without real model/tool-call trace, no claim duplicate reads dominate actual usage. Reuse reduces network but does not remove model's repeated tool-result tokens."
+}

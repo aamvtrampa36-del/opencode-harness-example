@@ -7,6 +7,8 @@
  * writes ONLY to opencode/* review branches. No merging, force-push, deletion,
  * releases or production deployments.
  */
+import { ExperimentalPinnedReadCache } from "./experimental-pinned-read-cache";
+
 export const ALLOWED_REPOS = [
   "aamvtrampa36-del/cdf-cloud-engine",
   "aamvtrampa36-del/CDF-WorkBench-",
@@ -123,7 +125,8 @@ export class GitHubBridge {
   constructor(
     private readonly token: string,
     private readonly http: GitHubFetch = fetch,
-    allowedRepos: readonly string[] = ALLOWED_REPOS
+    allowedRepos: readonly string[] = ALLOWED_REPOS,
+    private readonly experimentalPinnedCache?: ExperimentalPinnedReadCache
   ) {
     if (!token) throw new Error("GITHUB_TOKEN is not configured in Cloudflare Secrets");
     this.allowed = new Set(allowedRepos.map(normalizeOwnedRepository));
@@ -174,13 +177,21 @@ export class GitHubBridge {
       case "read": {
         const safePath = pathChecked(input.path);
         const suffix = input.ref ? "?ref=" + encodeURIComponent(input.ref) : "";
-        const file = await this.api("GET", base + "/contents/" + safePath + suffix);
-        if (file.type !== "file" || file.encoding !== "base64" ||
-            typeof file.content !== "string") {
-          throw new Error("GitHub resource is not a readable text file");
+        const load = async () => {
+          const file = await this.api("GET", base + "/contents/" + safePath + suffix);
+          if (file.type !== "file" || file.encoding !== "base64" ||
+              typeof file.content !== "string") {
+            throw new Error("GitHub resource is not a readable text file");
+          }
+          if (file.size > MAX_FILE_BYTES) throw new Error("File is larger than 100KB");
+          return { repo, path: input.path, sha: file.sha, ref: input.ref || "default", content: fromBase64(file.content) };
+        };
+        // Only exact immutable commits qualify. The account allowlist and
+        // session binding have already been checked before any cache lookup.
+        if (this.experimentalPinnedCache && ExperimentalPinnedReadCache.supports(input.ref)) {
+          return this.experimentalPinnedCache.read(this.token, repo, input.path, input.ref, load);
         }
-        if (file.size > MAX_FILE_BYTES) throw new Error("File is larger than 100KB");
-        return { repo, path: input.path, sha: file.sha, ref: input.ref || "default", content: fromBase64(file.content) };
+        return load();
       }
       case "pr_search": {
         if (typeof input.query !== "string") throw new Error("Invalid PR discovery query");
