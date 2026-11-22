@@ -89,6 +89,7 @@ describe("OpenCode staging MCP server", () => {
       async cancelSupervisedTask(id) { operations.push("cancel:" + id); return { id, status: "cancelled" }; },
       async supervisedTaskReview(id) { operations.push("review:" + id); return { id, reviewRequired: true, approved: false }; },
       async supervisedTaskTranscript() {
+        operations.push("transcript");
         return JSON.stringify({ messages: [
           { type: "user", text: "Revisa este token ghp_abcdefghijklmnopqrstuvwx" },
           { type: "assistant", content: [{ type: "reasoning", text: "oculto" }, { type: "text", text: "Resultado" }] }
@@ -295,14 +296,17 @@ describe("OpenCode staging MCP server", () => {
       const review = await client.callTool({ name: "staging_review_task", arguments: { id: "a1234567890bcdef" } });
       expect(JSON.parse(textContent(review))).toMatchObject({ targetWorker: STAGING_WORKER, reviewRequired: true, approved: false });
 
+      const statusCallsBeforeTranscript = operations.filter(op => op === "status:a1234567890bcdef").length;
       const transcript = await client.callTool({
         name: "staging_task_transcript", arguments: { id: "a1234567890bcdef" }
       });
       const transcriptText = textContent(transcript);
-      expect(transcriptText).toContain("sesAbc123");
-      expect(transcriptText).toContain("[REDACTADO]");
+      expect(transcript.isError).toBe(true);
+      expect(transcriptText).toContain("SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED");
       expect(transcriptText).not.toContain("ghp_abcdefghijklmnopqrstuvwx");
-      expect(transcriptText).not.toContain("oculto");
+      expect(operations).not.toContain("transcript");
+      expect(operations.filter(op => op === "status:a1234567890bcdef").length)
+        .toBe(statusCallsBeforeTranscript);
       expect(operations).toContain("start");
       expect(operations).toContain("status:a1234567890bcdef");
       expect(operations).toContain("cancel:a1234567890bcdef");
