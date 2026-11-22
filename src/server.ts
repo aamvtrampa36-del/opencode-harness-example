@@ -98,7 +98,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
     const job: SupervisorTask = {
       id: start.requestId, repository: start.repository,
-      project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId, start.repository),
+      project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId, start.repository, start.mode),
       fingerprint, createdAt: old?.createdAt ?? Date.now(), status: "preparing",
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
