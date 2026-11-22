@@ -322,17 +322,44 @@ try {
     } }), "read_only SHA task start");
     assert.equal(started.mode, "read_only", "Runtime must preserve the read_only mode.");
     assert.equal(started.branch, "", "read_only must not reserve a GitHub branch.");
-    assert.equal(started.baseCommit, sourceCommit, "Runtime must verify the exact source commit.");
-    assert.equal(started.sourceTree, sourceTree, "Runtime must certify the exact Git tree.");
+    assert.equal(started.id, requestId);
+    assert.equal(started.accepted, true, "The first RPC must acknowledge the durable reservation.");
+    assert.ok(["preparing", "running"].includes(started.status), "No false failed/unknown at acceptance.");
+    assert.equal(started.sourceTree, sourceTree, "The pinned tree must survive reservation.");
     assert.equal(started.reused, false);
+    const duplicate = parseResult(await client.callTool({ name: "staging_start_task", arguments: {
+      requestId, prompt, repository, model: "economy", mode: "read_only", sourceCommit, sourceTree
+    } }), "idempotent read_only start");
+    assert.equal(duplicate.id, requestId);
+    assert.equal(duplicate.reused, true, "Repeated requestId must reuse the reservation.");
+    assert.equal(duplicate.branch, "", "Retry must not create a branch.");
     const completed = await pollTask(client, requestId);
-    assert.equal(completed.status, "finished", "Read-only model execution must complete.");
-    assert.ok(completed.completedTools >= 1, "Runtime must execute at least one real tool.");
+    assert.equal(completed.status, "finished", "Read-only model must finish without a manual turn.");
+    assert.equal(completed.baseCommit, sourceCommit, "Runtime must certify exact commit before inference.");
+    assert.equal(completed.sourceTree, sourceTree, "Runtime must certify exact tree before inference.");
+    assert.equal(completed.failedTools, 0);
+    assert.ok(completed.completedTools >= 1, "Runtime must execute a real Linux tool.");
+    if (duplicate.session) assert.equal(completed.session, duplicate.session, "Retry must not fork a session.");
     const transcript = await getTaskTranscript(client, requestId);
     assert.match(transcript, /Herramienta: linux\b/, "Transcript must prove a Linux tool call.");
     assert.match(transcript, /SHA_CERTIFIED_LINUX_OK/, "Linux must observe the imported source.");
     assert.doesNotMatch(transcript, /"action"\s*:\s*"(?:branch|write|pr|review)"/,
       "Read-only task must not perform a GitHub write.");
+    const conflict = await client.callTool({ name: "staging_start_task", arguments: {
+      requestId, prompt: prompt + " Modificado", repository, model: "economy",
+      mode: "read_only", sourceCommit, sourceTree
+    } });
+    assert.equal(conflict.isError, true, "Conflicting idempotency fingerprints must be rejected.");
+    const invalidPair = await client.callTool({ name: "staging_start_task", arguments: {
+      requestId: randomUUID().replaceAll("-", "").slice(0, 16), prompt, repository,
+      mode: "read_only", sourceCommit
+    } });
+    assert.equal(invalidPair.isError, true, "Missing sourceTree must be rejected at MCP.");
+    const unauthorized = await client.callTool({ name: "staging_start_task", arguments: {
+      requestId: randomUUID().replaceAll("-", "").slice(0, 16), prompt,
+      repository: "aamvtrampa36-del/not-authorized", mode: "read_only", sourceCommit, sourceTree
+    } });
+    assert.equal(unauthorized.isError, true, "Unauthorized repository must be rejected.");
     readOnlyCheck = {
       requestId, repository, sourceCommit, sourceTree, status: completed.status,
       completedTools: completed.completedTools, branch: started.branch,

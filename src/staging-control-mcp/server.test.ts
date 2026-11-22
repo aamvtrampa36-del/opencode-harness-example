@@ -407,6 +407,13 @@ describe("OpenCode staging MCP server", () => {
       expect(payload).not.toHaveProperty("workspace");
       expect(JSON.stringify(payload)).not.toContain(SUPERVISOR_OBJECT);
       expect(statusReads).toBe(1);
+      const readOnly = await client.callTool({
+        name: "staging_start_task",
+        arguments: { requestId: id, prompt: "Repite la consulta de estado idempotente",
+          mode: "read_only", sourceCommit: "a".repeat(40), sourceTree: "b".repeat(40) }
+      });
+      expect(JSON.parse(textContent(readOnly))).toMatchObject({ id, reused: true, status: "running" });
+      expect(statusReads).toBe(1);
     } finally {
       await client.close();
       await server.close();

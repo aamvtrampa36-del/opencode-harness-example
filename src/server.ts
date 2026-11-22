@@ -51,7 +51,7 @@ import {
   supervisorBaseCommit, supervisorBranch, supervisorFingerprint, supervisorProject,
   supervisorPrompt, supervisorResponse, supervisorTaskKey, supervisorStartOperationId,
   supervisorTurnOperationId, classifySupervisorOperation, isUntrackedLegacySupervisorOperation,
-  preflightReadOnlySource, validateSupervisorStart, type SupervisorTask
+  deferSupervisorStart, preflightReadOnlySource, validateSupervisorStart, type SupervisorTask
 } from "./supervisor-control";
 
 export const MODEL_ID = MODEL_PRESETS.cloudflare.id;
@@ -116,7 +116,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       reused = !reservation.created;
       if (old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
     }
-    return this.withSupervisorStartLock(start.requestId, async () => {
+    const resume = () => this.withSupervisorStartLock(start.requestId, async () => {
       const saved = await this.ctx.storage.get<SupervisorTask>(key);
       if (!saved) throw new Error("La reserva de la tarea desapareció");
       if (["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(saved.status)) {
@@ -124,6 +124,23 @@ export class OpenCodeAgent extends DurableObject<Env> {
       }
       return this.advanceSupervisedTask(saved, start, reused);
     }, old);
+    if (start.mode === "read_only") {
+      // Git import may bootstrap the managed container and exceed the MCP RPC deadline.
+      // Reply from the durable reservation and continue without client intervention.
+      // The tree still must be verified before any model setup or inference.
+      const receipt = this.supervisorTaskReceipt(old, reused);
+      deferSupervisorStart(work => this.ctx.waitUntil(work), resume, async error => {
+        const current = await this.ctx.storage.get<SupervisorTask>(key);
+        if (current && ["preparing", "unknown"].includes(current.status)) {
+          current.status = "failed";
+          current.error = error instanceof Error ? error.message.slice(0, 230) : "Inicio diferido fallido";
+          current.updatedAt = Date.now();
+          await this.ctx.storage.put(key, current);
+        }
+      });
+      return { ...receipt, accepted: true, retryAfterMs: 1_000 };
+    }
+    return resume();
   }
 
   private supervisorTaskReceipt(task: SupervisorTask, reused: boolean): Record<string, unknown> {
@@ -142,7 +159,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const acquired = await this.ctx.storage.transaction(async tx => {
       const existing = await tx.get<{ token: string; expiresAt: number }>(key);
       if (existing && existing.expiresAt > Date.now()) return false;
-      await tx.put(key, { token, expiresAt: Date.now() + 60_000 });
+      await tx.put(key, { token, expiresAt: Date.now() + 240_000 });
       return true;
     });
     if (!acquired) return { ...this.supervisorTaskReceipt(current, true), retryAfterMs: 1_000 };

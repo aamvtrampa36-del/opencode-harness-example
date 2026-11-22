@@ -334,7 +334,7 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
         ...(mode ? { mode } : {}), ...(sourceCommit ? { sourceCommit } : {}),
         ...(sourceTree ? { sourceTree } : {})
       }));
-      const current = task.reused === true && typeof task.id === "string"
+      const current = mode !== "read_only" && task.reused === true && typeof task.id === "string"
         ? asRecord(await supervisor.supervisedTaskStatus(task.id))
         : undefined;
       const payload: Record<string, unknown> = current

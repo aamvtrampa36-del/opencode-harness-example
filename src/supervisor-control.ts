@@ -276,6 +276,16 @@ export function supervisorPrompt(task: SupervisorStart, branch: string, project:
     task.prompt;
 }
 
+/** Schedule slow initialization outside the MCP request while keeping the DO active.
+ * The caller persists any unexpected failure; the lifetime promise settles cleanly. */
+export function deferSupervisorStart(
+  waitUntil: (work: Promise<void>) => void,
+  work: () => Promise<unknown>,
+  onError: (error: unknown) => Promise<void>
+): void {
+  waitUntil(Promise.resolve().then(work).then(() => undefined, onError));
+}
+
 /** A read_only task must import and verify its exact source tree before any
  * model setup or inference. Normal tasks keep their existing lazy import. */
 export async function preflightReadOnlySource(
