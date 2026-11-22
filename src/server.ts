@@ -56,6 +56,8 @@ import {
 
 export const MODEL_ID = MODEL_PRESETS.cloudflare.id;
 
+const SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED = "SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED";
+
 /** A playable OpenCode instance backed by one Durable Object. */
 export class OpenCodeAgent extends DurableObject<Env> {
   // Credentials are resolved server-side. All browsers share one owner config.
@@ -309,18 +311,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async remoteSupervisorInspectSession(id: string): Promise<unknown> {
     this.assertStagingRemote();
     if (!/^ses[A-Za-z0-9_]{1,64}$/.test(id)) throw new Error("Identificador de sesión inválido");
-    const sessionInfo = (await this.harness.sessions.list()).find(item => item.id === id);
-    if (!sessionInfo) throw new Error("La sesión no existe en este workspace Staging");
-    const [history, project] = await Promise.all([this.harness.session(id).history(), this.sessionProject(id)]);
-    const repository = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(id));
-    const markdown = renderConversationMarkdown(id, {
-      messages: history, project: project || undefined, repository: repository?.repository
-    });
-    return { environment: "staging", session: id, busy: sessionInfo.busy,
-      ...(sessionInfo.parent ? { parent: sessionInfo.parent } : {}),
-      ...(sessionInfo.title ? { title: sessionInfo.title.slice(0, 160) } : {}),
-      ...(project ? { project } : {}), ...(repository?.repository ? { repository: repository.repository } : {}),
-      transcriptExcerpt: markdown.slice(-12_000), truncated: markdown.length > 12_000 };
+    // No byte-bounded transcript API is available in agents@0.33.0.
+    // Refuse this read before materializing any session history.
+    throw new Error(SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED);
   }
 
   private async supervisorModel(model: unknown): Promise<{ providerID: string; id: string; selection: ModelSelectionID }> {
@@ -399,14 +392,22 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   async remoteSupervisorInspect(id: string): Promise<unknown> {
     this.assertStagingRemote();
-    const status = await this.supervisedTaskStatus(id);
+    // Durable supervisor ledger snapshot only: not a live OpenCode operation result.
     const task = await this.supervisedRecord(id);
-    if (!task.session) return { status };
-    const [transcript, progress] = await Promise.all([
-      this.supervisedTaskTranscript(id), this.remoteSupervisorProgress(id, 0)
-    ]);
-    return { status, progress, transcriptExcerpt: transcript.slice(-16_000),
-      truncated: transcript.length > 16_000, reviewRequired: true };
+    return {
+      status: {
+        id: task.id, repository: task.repository, project: task.project,
+        branch: task.branch, baseCommit: task.baseCommit, session: task.session,
+        operationId: task.operationId, model: task.model,
+        startedAt: task.createdAt, updatedAt: task.updatedAt,
+        status: task.status, error: task.error,
+        snapshot: true, source: "supervisor-task-ledger",
+        reviewRequired: true, passed: false, verified: false
+      },
+      snapshot: true, transcriptAvailable: false,
+      transcriptError: SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED,
+      progressAvailableViaCursor: true, reviewRequired: true
+    };
   }
 
   async remoteSupervisorMcpServers(): Promise<unknown> {
@@ -580,7 +581,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     this.assertStagingRemote();
     const job = await this.supervisedRecord(id);
     if (!job.session) throw new Error("La tarea todavía no tiene sesión");
-    return this.exportSessionData(job.session);
+    // Clipping a full history afterward does not bound memory usage.
+    throw new Error(SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED);
   }
 
   async supervisedTaskReview(id: string): Promise<unknown> {
