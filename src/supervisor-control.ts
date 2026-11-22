@@ -178,8 +178,13 @@ export function supervisorProject(id: string): string {
 export function assertSupervisorBoundGitHubOperation(
   operation: string | undefined,
   branch: string | undefined,
-  lockedBranch: string
+  lockedBranch: string,
+  mode?: "read_only"
 ): void {
+  if (mode === "read_only" &&
+      (GITHUB_MUTATIONS.has(operation ?? "") || operation === "review")) {
+    throw new Error("Supervisor: tarea de solo lectura no puede escribir, revisar ni crear PR");
+  }
   if (operation === "branch") throw new Error("Rama del supervisor precreada: no crear otras");
   if ((GITHUB_MUTATIONS.has(operation ?? "") || operation === "review") &&
       branch !== lockedBranch) {
