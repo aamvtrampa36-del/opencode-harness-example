@@ -1,0 +1,542 @@
+name: F0-OOM-02 Staging artifact evidence (no deploy)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [staging/opencode-g1-rpc-safe-20261120]
+    paths:
+      - .github/workflows/f0-oom02-staging-artifact.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: f0-oom02-artifact-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  stage-artifact:
+    if: ${{ github.event.pull_request.head.ref == 'ops/f0-oom02-staging-build-evidence-20261122' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SOURCE_SHA: 19bba24d81be5b0673acbf2a56b500aed4fa0b66
+      SOURCE_REF: fix/f0-oom02-supervisor-transcript-containment-20261122
+      BASE_SHA: 11161dd6f2c4b5237a2da59d7275ff693e0afdbe
+      STAGING_CONFIG: wrangler.g1.jsonc
+      CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH: wrangler.g1.jsonc
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - name: Checkout exact candidate commit, never the PR merge ref
+        uses: actions/checkout@v4
+        with:
+          ref: 19bba24d81be5b0673acbf2a56b500aed4fa0b66
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify source and immutable staging base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          actual_base="$(git ls-remote https://github.com/aamvtrampa36-del/opencode-harness-example.git refs/heads/staging/opencode-g1-rpc-safe-20261120 | cut -f1)"
+          test "$actual_base" = "$BASE_SHA"
+          test -f "$STAGING_CONFIG"
+          test ! -e .env
+          test ! -e .env.production
+
+      - name: Setup Bun 1.4.4
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Install exact locked dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Vite explicitly for Staging
+        run: bun run build
+
+      - name: Verify effective Wrangler configuration and isolate production
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8'));
+          const readJsonc = file => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\s*\/\/.*$/gm, ''));
+          const input = readJsonc(process.env.STAGING_CONFIG);
+          const production = readJsonc('wrangler.jsonc');
+          if (input.name !== 'opencode-g1-staging' || input.main !== 'src/entrypoint.ts') throw Error('STAGING_INPUT_MISMATCH');
+          if (production.name === input.name || production.main === input.main) throw Error('PRODUCTION_CONFIGURATION_SELECTED');
+          if (input.compatibility_date !== '2026-06-11') throw Error('STAGING_COMPATIBILITY_MISMATCH');
+          if (input.migrations?.at(-1)?.tag !== 'v4') throw Error('STAGING_DO_MIGRATION_MISMATCH');
+          const classes = new Set(input.durable_objects?.bindings?.map(b => `${b.name}:${b.class_name}`));
+          for (const name of ['OpenCodeAgent:OpenCodeAgent','DEV:DevContainer','SETTINGS:PersonalSettings','SESSION_BK:SessionBackupDrillAgent']) {
+            if (!classes.has(name)) throw Error('STAGING_BINDING_MISSING:' + name);
+          }
+          if (!input.containers?.some(c => c.class_name === 'DevContainer') || !input.workflows?.some(w => w.binding === 'SUPERVISOR_WORKFLOW') || !input.r2_buckets?.some(b => b.binding === 'RECOVERY_R2')) throw Error('STAGING_RESOURCE_MISSING');
+          const pointerFile = '.wrangler/deploy/config.json';
+          if (!fs.existsSync(pointerFile)) throw Error('VITE_DEPLOY_POINTER_MISSING');
+          const pointer = readJson(pointerFile);
+          if (typeof pointer.configPath !== 'string') throw Error('VITE_DEPLOY_CONFIG_PATH_MISSING');
+          const effectiveFile = path.resolve(path.dirname(pointerFile), pointer.configPath);
+          if (!fs.existsSync(effectiveFile)) throw Error('VITE_EFFECTIVE_CONFIG_MISSING');
+          const effective = readJson(effectiveFile);
+          if (effective.name !== input.name) throw Error('VITE_SELECTED_WRONG_WORKER');
+          if (effective.compatibility_date !== input.compatibility_date) throw Error('VITE_COMPATIBILITY_MISMATCH');
+          if (effective.migrations?.at(-1)?.tag !== 'v4') throw Error('VITE_DO_MIGRATION_MISMATCH');
+          const effectiveClasses = new Set(effective.durable_objects?.bindings?.map(b => b.name + ':' + b.class_name));
+          for (const name of classes) if (!effectiveClasses.has(name)) throw Error('VITE_DO_BINDING_MISSING:' + name);
+          if (!effective.main || !fs.existsSync(path.resolve(path.dirname(effectiveFile), effective.main))) throw Error('VITE_BUNDLE_NOT_FOUND');
+          if (!fs.existsSync('dist/client') || fs.readdirSync('dist/client').length === 0) throw Error('STAGING_ASSETS_MISSING');
+          fs.writeFileSync('/tmp/f0-oom02-effective-path', path.relative(process.cwd(), effectiveFile));
+          console.log('Verified source configuration and effective Vite output: ' + effectiveFile);
+          NODE
+
+      - name: Wrangler offline dry-run for Staging only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .f0-oom02/wrangler-dry-run
+          ./node_modules/.bin/wrangler deploy --dry-run --config wrangler.g1.jsonc --outdir .f0-oom02/wrangler-dry-run
+          test "$(find .f0-oom02/wrangler-dry-run -type f | wc -l)" -gt 0
+
+      - name: Measure original trees, losslessly compress and verify SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .f0-oom02/package
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          const groups = ['dist', '.wrangler/deploy', '.f0-oom02/wrangler-dry-run', 'wrangler.g1.jsonc'];
+          const sha = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const walk = root => {
+            const result = [];
+            function visit(file) {
+              const st = fs.lstatSync(file);
+              if (st.isSymbolicLink()) throw Error('ARTIFACT_SYMLINK_FORBIDDEN:' + file);
+              if (st.isDirectory()) for (const n of fs.readdirSync(file).sort()) visit(path.join(file, n));
+              else if (st.isFile()) result.push({path: file.split(path.sep).join('/'), bytes: st.size, sha256: sha(file)});
+              else throw Error('ARTIFACT_UNSUPPORTED_FILE:' + file);
+            }
+            visit(root);
+            return result;
+          };
+          const measured = groups.map(source => {
+            const files = walk(source);
+            const bytes = files.reduce((n,f) => n + f.bytes, 0);
+            console.log('TREE_BYTES source=' + source + ' files=' + files.length + ' bytes=' + bytes);
+            return { source, files: files.length, bytes };
+          });
+          const inventory = groups.flatMap(walk).sort((a,b) => a.path.localeCompare(b.path));
+          if (!inventory.length) throw Error('EMPTY_ARTIFACT_INPUT');
+          const uncompressedBytes = inventory.reduce((n,f) => n + f.bytes, 0);
+          console.log('UNCOMPRESSED_TOTAL_BYTES ' + uncompressedBytes);
+          const seen = new Map();
+          const identicalFilesRetained = [];
+          for (const f of inventory) {
+            const other = seen.get(f.sha256);
+            if (other && other.bytes === f.bytes) identicalFilesRetained.push({
+              matchingFile: other.path, retainedFile: f.path, bytes: f.bytes, sha256: f.sha256
+            });
+            else seen.set(f.sha256, f);
+          }
+          console.log('PROVEN_IDENTICAL_FILES_RETAINED ' + identicalFilesRetained.length);
+          fs.writeFileSync('.f0-oom02/measurement.json', JSON.stringify({
+            groups: measured, uncompressedBytes, inventory, identicalFilesRetained, omittedFiles: []
+          }));
+          NODE
+          # Preserve the complete original contents. No Vite/Wrangler bundle is
+          # discarded or assumed equivalent; gzip only changes representation.
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf - \
+            dist .wrangler/deploy .f0-oom02/wrangler-dry-run wrangler.g1.jsonc \
+            | gzip -n -9 > .f0-oom02/package/payload.tar.gz
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import { execFileSync } from 'node:child_process';
+          const root = '.f0-oom02/package';
+          const data = JSON.parse(fs.readFileSync('.f0-oom02/measurement.json', 'utf8'));
+          const sha = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const payload = root + '/payload.tar.gz';
+          const compressedBytes = fs.statSync(payload).size;
+          console.log('COMPRESSED_PAYLOAD_BYTES ' + compressedBytes);
+          if (!compressedBytes || compressedBytes > 64 * 1024 * 1024)
+            throw Error('ARTIFACT_SIZE_LIMIT_64_MIB: compressed=' + compressedBytes + ' raw=' + data.uncompressedBytes);
+          const version = exe => execFileSync(exe, ['--version'], {encoding:'utf8'}).trim();
+          const manifest = {
+            schema:'f0-oom02-staging-build-evidence-v2',
+            format:'lossless-tar-gzip', directlyDeployable:false,
+            preservation:'all-original-build-trees-retained',
+            repository:process.env.GITHUB_REPOSITORY,
+            sourceSha:process.env.SOURCE_SHA, sourceBranch:process.env.SOURCE_REF,
+            workflowRef:process.env.GITHUB_WORKFLOW_REF,
+            workflowRunId:process.env.GITHUB_RUN_ID,
+            workflowRunAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),
+            actor:process.env.GITHUB_ACTOR, createdAt:new Date().toISOString(),
+            configPath:process.env.STAGING_CONFIG,
+            configSha256:sha(process.env.STAGING_CONFIG),
+            effectiveConfigPath:fs.readFileSync('/tmp/f0-oom02-effective-path','utf8'),
+            workerName:'opencode-g1-staging', sourceEntrypoint:'src/entrypoint.ts',
+            compatibilityDate:'2026-06-11', migrationTag:'v4',
+            bunVersion:version('bun'), viteVersion:version('./node_modules/.bin/vite'),
+            wranglerVersion:version('./node_modules/.bin/wrangler'),
+            originalTreeSizes:data.groups,
+            uncompressedBytes:data.uncompressedBytes,
+            compressedBytes,
+            omittedFiles:data.omittedFiles,
+            identicalFilesRetained:data.identicalFilesRetained,
+            contentArchiveSha256:sha(payload),
+            inventory:data.inventory
+          };
+          fs.writeFileSync(root+'/manifest.json',JSON.stringify(manifest,null,2)+'\n');
+          fs.writeFileSync(root+'/SHA256SUMS',[
+            sha(payload)+'  payload.tar.gz',
+            sha(root+'/manifest.json')+'  manifest.json'
+          ].join('\n')+'\n');
+          const packageBytes = ['payload.tar.gz','manifest.json','SHA256SUMS']
+            .reduce((n,f) => n + fs.statSync(root+'/'+f).size,0);
+          console.log('PACKAGE_BYTES '+packageBytes+' MAX_BYTES '+64*1024*1024);
+          // Leave 1 MiB headroom for the GitHub ZIP wrapper.
+          if (packageBytes > 63*1024*1024)
+            throw Error('ARTIFACT_SIZE_LIMIT_64_MIB: package='+packageBytes+' raw='+data.uncompressedBytes);
+          NODE
+          (cd .f0-oom02/package && sha256sum --check SHA256SUMS)
+          mkdir -p .f0-oom02/verify
+          tar -xzf .f0-oom02/package/payload.tar.gz -C .f0-oom02/verify \
+            --no-same-owner --no-same-permissions
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          const manifest = JSON.parse(fs.readFileSync('.f0-oom02/package/manifest.json','utf8'));
+          const root = '.f0-oom02/verify';
+          const walk = dir => fs.readdirSync(dir,{withFileTypes:true}).flatMap(f => {
+            const file = path.join(dir,f.name);
+            if (f.isSymbolicLink()) throw Error('ARCHIVE_SYMLINK_UNEXPECTED');
+            if (f.isDirectory()) return walk(file);
+            if (!f.isFile()) throw Error('ARCHIVE_UNSUPPORTED_FILE');
+            return [file];
+          });
+          const actual = walk(root).map(f => ({
+            path:path.relative(root,f).split(path.sep).join('/'),
+            bytes:fs.statSync(f).size,
+            sha256:crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex')
+          })).sort((a,b) => a.path.localeCompare(b.path));
+          const expected = [...manifest.inventory].sort((a,b) => a.path.localeCompare(b.path));
+          if (JSON.stringify(actual)!==JSON.stringify(expected)) throw Error('ARCHIVE_RESTORATION_HASH_MISMATCH');
+          if (manifest.omittedFiles.length!==0) throw Error('ARCHIVE_UNEXPECTED_OMISSIONS');
+          console.log('ARCHIVE_VERIFIED files='+actual.length+
+            ' rawBytes='+manifest.uncompressedBytes+' compressedBytes='+manifest.compressedBytes);
+          NODE
+
+      - name: Download exact previously verified main artifact (read-only GitHub)
+        uses: actions/download-artifact@v4
+        with:
+          name: f0-oom02-staging-19bba24d81be5b0673acbf2a56b500aed4fa0b66
+          run-id: 45035875912
+          github-token: ${{ github.token }}
+          path: .f0-oom02/original
+
+      - name: Verify original artifact inventory and restore without running code
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(sha256sum .f0-oom02/original/payload.tar.gz | cut -d' ' -f1)" = \
+            "53b5494c04aa8d4e5e49f6c8de724e39ed030d65ba0f7694439138ee18bdbe65"
+          (cd .f0-oom02/original && sha256sum --check SHA256SUMS)
+          mkdir -p .f0-oom02/restored
+          tar -xzf .f0-oom02/original/payload.tar.gz -C .f0-oom02/restored \
+            --no-same-owner --no-same-permissions
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          const original = JSON.parse(fs.readFileSync('.f0-oom02/original/manifest.json','utf8'));
+          if (original.sourceSha !== process.env.SOURCE_SHA ||
+              original.workerName !== 'opencode-g1-staging' ||
+              original.workflowRunId !== '45035875912' ||
+              original.inventory.length !== 543 ||
+              original.configSha256 !== '9c9fef94753da42244e64d5e72106354db96d022f353f53925320cd0946a2cfd') {
+            throw Error('ORIGINAL_ARTIFACT_PROVENANCE_MISMATCH');
+          }
+          const root='.f0-oom02/restored';
+          const files=dir=>fs.readdirSync(dir,{withFileTypes:true}).flatMap(d=>{
+            const file=path.join(dir,d.name);
+            if(d.isSymbolicLink()) throw Error('UNSAFE_ARTIFACT_SYMLINK');
+            if(d.isDirectory()) return files(file);
+            if(!d.isFile()) throw Error('UNSAFE_ARTIFACT_FILE_TYPE');
+            return [file];
+          });
+          const actual=files(root).map(file=>({
+            path:path.relative(root,file).split(path.sep).join('/'),
+            bytes:fs.statSync(file).size,
+            sha256:crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+          })).sort((x,y)=>x.path.localeCompare(y.path));
+          const expect=[...original.inventory].sort((x,y)=>x.path.localeCompare(y.path));
+          if(JSON.stringify(actual)!==JSON.stringify(expect)) throw Error('ORIGINAL_ARTIFACT_HASH_MISMATCH');
+          if(!fs.existsSync(root+'/dist/client/index.html')) throw Error('ORIGINAL_ASSETS_ABSENT');
+          console.log('RESTORED_ARTIFACT_VERIFIED files='+actual.length);
+          NODE
+
+      - name: Relocate only generated Wrangler metadata and record hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          const root='.f0-oom02/restored';
+          const file=root+'/dist/opencode_g1_staging/wrangler.json';
+          const bytes=fs.readFileSync(file);
+          const cfg=JSON.parse(bytes);
+          const newPath=path.resolve(root+'/wrangler.g1.jsonc');
+          if(cfg.name!=='opencode-g1-staging' || cfg.main!=='index.js' ||
+             cfg.no_bundle!==true || cfg.assets?.directory!=='../client')
+            throw Error('RESTORED_GENERATED_CONFIG_UNEXPECTED');
+          const prior={configPath:cfg.configPath,userConfigPath:cfg.userConfigPath};
+          for(const field of ['configPath','userConfigPath']) {
+            if(typeof cfg[field]!=='string' || !cfg[field].endsWith('/wrangler.g1.jsonc'))
+              throw Error('RESTORED_CONFIG_PATH_UNEXPECTED:'+field);
+            cfg[field]=newPath;
+          }
+          if(!fs.existsSync(newPath)) throw Error('RESTORED_SOURCE_CONFIG_MISSING');
+          fs.writeFileSync(file,JSON.stringify(cfg));
+          const sha=b=>crypto.createHash('sha256').update(b).digest('hex');
+          fs.writeFileSync('.f0-oom02/relocation.json',JSON.stringify({
+            fieldChanges:{configPath:{from:prior.configPath,to:cfg.configPath},
+              userConfigPath:{from:prior.userConfigPath,to:cfg.userConfigPath}},
+            oldConfigSha256:sha(bytes),newConfigSha256:sha(fs.readFileSync(file)),
+            executableModulesRewritten:false
+          }));
+          console.log('GENERATED_CONFIG_PATHS_RELOCATED_ONLY');
+          NODE
+
+      - name: Prebuilt main Worker versions upload DRY RUN (no auth, no upload)
+        shell: bash
+        run: |
+          set -euo pipefail
+          WRANGLER_BIN="$PWD/node_modules/.bin/wrangler"
+          OUTPUT="$PWD/.f0-oom02/prebuilt-main"
+          mkdir -p "$OUTPUT"
+          (
+            cd .f0-oom02/restored
+            "$WRANGLER_BIN" versions upload --dry-run --no-bundle \
+              --config dist/opencode_g1_staging/wrangler.json \
+              --outdir "$OUTPUT"
+          )
+          test "$(find "$OUTPUT" -type f | wc -l)" -gt 0
+
+      - name: Compare prebuilt module bytes and append verified main proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          const input='.f0-oom02/restored/dist/opencode_g1_staging';
+          const output='.f0-oom02/prebuilt-main';
+          const sha=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const walk=dir=>fs.readdirSync(dir,{withFileTypes:true}).flatMap(d=>{
+            const file=path.join(dir,d.name);
+            if(d.isSymbolicLink()) throw Error('PREBUILT_SYMLINK');
+            if(d.isDirectory()) return walk(file);
+            if(!d.isFile()) throw Error('PREBUILT_UNKNOWN_FILE_TYPE');
+            return [file];
+          });
+          const inputJs=walk(input).filter(f=>f.endsWith('.js')).map(f=>({name:path.relative(input,f),sha256:sha(f)}));
+          const outputJs=walk(output).filter(f=>f.endsWith('.js')).map(f=>({name:path.relative(output,f),sha256:sha(f)}));
+          const inHashes=inputJs.map(f=>f.sha256).sort();
+          const outHashes=outputJs.map(f=>f.sha256).sort();
+          console.log('PREBUILT_MODULES input='+inputJs.length+' output='+outputJs.length);
+          if(!inputJs.length||JSON.stringify(inHashes)!==JSON.stringify(outHashes))
+            throw Error('PREBUILT_MODULE_HASH_SET_MISMATCH');
+          const original=JSON.parse(fs.readFileSync('.f0-oom02/original/manifest.json','utf8'));
+          const expected=original.inventory.filter(f=>f.path.startsWith('dist/opencode_g1_staging/')&&f.path.endsWith('.js'));
+          for(const f of expected){
+            const p='.f0-oom02/restored/'+f.path;
+            if(sha(p)!==f.sha256)throw Error('ORIGINAL_EXECUTABLE_BYTES_CHANGED:'+f.path);
+          }
+          const report={
+            schema:'f0-oom02-main-prebuilt-validation-v1',
+            sourceSha:process.env.SOURCE_SHA,
+            originArtifactId:'14759557948',
+            originPayloadSha256:'53b5494c04aa8d4e5e49f6c8de724e39ed030d65ba0f7694439138ee18bdbe65',
+            sourceWorker:'opencode-g1-staging',
+            command:'wrangler versions upload --dry-run --no-bundle --config dist/opencode_g1_staging/wrangler.json',
+            moduleByteIdentical:true, moduleCount:inputJs.length,
+            changesLimitedToGeneratedConfigMetadata:true,
+            relocation:JSON.parse(fs.readFileSync('.f0-oom02/relocation.json','utf8')),
+            inputModuleHashes:inputJs,outputModuleHashes:outputJs,
+            cloudflareVersionUploaded:false
+          };
+          fs.writeFileSync('.f0-oom02/package/prebuilt-report.json',JSON.stringify(report,null,2)+'\n');
+          NODE
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf - \
+            -C .f0-oom02 prebuilt-main | gzip -n -9 > .f0-oom02/package/prebuilt-main.tar.gz
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          const root='.f0-oom02/package/';
+          const sha=f=>crypto.createHash('sha256').update(fs.readFileSync(root+f)).digest('hex');
+          const entries=['payload.tar.gz','manifest.json','prebuilt-report.json','prebuilt-main.tar.gz'];
+          fs.writeFileSync(root+'SHA256SUMS',entries.map(f=>sha(f)+'  '+f).join('\n')+'\n');
+          const total=[...entries,'SHA256SUMS'].reduce((n,f)=>n+fs.statSync(root+f).size,0);
+          console.log('MAIN_EVIDENCE_PACKAGE_BYTES '+total);
+          if(total>63*1024*1024)throw Error('ARTIFACT_SIZE_LIMIT_64_MIB:main='+total);
+          NODE
+          (cd .f0-oom02/package && sha256sum --check SHA256SUMS)
+
+      - name: Upload evidence package (7 days, maximum 64 MiB payload)
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: f0-oom02-staging-${{ env.SOURCE_SHA }}
+          path: .f0-oom02/package/
+          retention-days: 7
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 6
+
+      - name: Record GitHub artifact identity separately from file checksums
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Source SHA: $SOURCE_SHA"
+            echo "Staging worker: opencode-g1-staging"
+            echo "GitHub artifact ID: $ARTIFACT_ID"
+            echo "GitHub artifact digest: $ARTIFACT_DIGEST"
+            echo "Artifact URL: $ARTIFACT_URL"
+            echo "Manifest and SHA256SUMS are inside the archive. This package is not yet approved as directly deployable."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build MCP Worker in isolated Wrangler dry-run
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .f0-oom02/mcp-dry-run
+          ./node_modules/.bin/wrangler deploy --dry-run \
+            --config wrangler.mcp-staging.jsonc \
+            --outdir .f0-oom02/mcp-dry-run
+          test "$(find .f0-oom02/mcp-dry-run -type f | wc -l)" -gt 0
+
+      - name: Validate MCP bindings and package independently with SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .f0-oom02/mcp-package
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          const config=fs.readFileSync('wrangler.mcp-staging.jsonc','utf8');
+          const c=JSON.parse(config.replace(/^\s*\/\/.*$/gm,''));
+          if(c.name!=='opencode-staging-control-mcp' ||
+             c.main!=='src/staging-control-mcp/worker.ts' ||
+             c.compatibility_date!=='2026-11-17' ||
+             !c.compatibility_flags.includes('nodejs_compat') ||
+             c.vars?.MCP_ENABLED!=='true')throw Error('MCP_STAGING_CONFIG_MISMATCH');
+          if(!c.services?.some(b=>b.binding==='STAGING_HEALTH'&&b.service==='opencode-g1-staging'))
+            throw Error('MCP_HEALTH_SERVICE_MISMATCH');
+          if(!c.durable_objects?.bindings?.some(b=>
+            b.name==='STAGING_SUPERVISOR'&&b.class_name==='OpenCodeAgent'&&b.script_name==='opencode-g1-staging'))
+            throw Error('MCP_SUPERVISOR_REFERENCE_MISMATCH');
+          const dir='.f0-oom02/mcp-dry-run';
+          const walk=root=>fs.readdirSync(root,{withFileTypes:true}).flatMap(d=>{
+            const f=path.join(root,d.name);
+            if(d.isSymbolicLink())throw Error('MCP_SYMLINK_FORBIDDEN');
+            if(d.isDirectory())return walk(f);
+            if(!d.isFile())throw Error('MCP_UNKNOWN_FILE');
+            return [f];
+          });
+          const code=walk(dir).filter(f=>f.endsWith('.js'));
+          if(!code.length)throw Error('MCP_JS_BUNDLE_MISSING');
+          if(!code.some(f=>fs.readFileSync(f,'utf8').includes('SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED')))
+            throw Error('MCP_CONTAINMENT_CODE_MISSING');
+          const sha=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const files=[...walk(dir),'wrangler.mcp-staging.jsonc'].sort();
+          const inventory=files.map(file=>({path:file,bytes:fs.statSync(file).size,sha256:sha(file)}));
+          const manifest={
+            schema:'f0-oom02-mcp-evidence-v1', sourceSha:process.env.SOURCE_SHA,
+            repository:process.env.GITHUB_REPOSITORY,
+            workflowRunId:process.env.GITHUB_RUN_ID,
+            workflowRunAttempt:Number(process.env.GITHUB_RUN_ATTEMPT),
+            actor:process.env.GITHUB_ACTOR, createdAt:new Date().toISOString(),
+            workerName:c.name, sourceEntrypoint:c.main, compatibilityDate:c.compatibility_date,
+            configPath:'wrangler.mcp-staging.jsonc', configSha256:sha('wrangler.mcp-staging.jsonc'),
+            serviceBinding:{name:'STAGING_HEALTH',target:'opencode-g1-staging'},
+            supervisorBinding:{name:'STAGING_SUPERVISOR',className:'OpenCodeAgent',scriptName:'opencode-g1-staging'},
+            sourcePreparedBy:'wrangler deploy --dry-run', directlyDeployable:false,
+            inventory
+          };
+          fs.writeFileSync('.f0-oom02/mcp-package/manifest.json',JSON.stringify(manifest,null,2)+'\n');
+          console.log('MCP_SOURCE_FILES '+files.length+' MCP_SOURCE_BYTES '+inventory.reduce((x,y)=>x+y.bytes,0));
+          NODE
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf - \
+            .f0-oom02/mcp-dry-run wrangler.mcp-staging.jsonc \
+            | gzip -n -9 > .f0-oom02/mcp-package/payload.tar.gz
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          const d='.f0-oom02/mcp-package/';
+          const sha=f=>crypto.createHash('sha256').update(fs.readFileSync(d+f)).digest('hex');
+          fs.writeFileSync(d+'SHA256SUMS', ['payload.tar.gz','manifest.json'].map(
+            f=>sha(f)+'  '+f).join('\n')+'\n');
+          const total=['payload.tar.gz','manifest.json','SHA256SUMS']
+            .reduce((n,f)=>n+fs.statSync(d+f).size,0);
+          console.log('MCP_PACKAGE_BYTES '+total);
+          if(total>63*1024*1024)throw Error('ARTIFACT_SIZE_LIMIT_64_MIB:mcp='+total);
+          NODE
+          (cd .f0-oom02/mcp-package && sha256sum --check SHA256SUMS)
+          mkdir -p .f0-oom02/mcp-verify
+          tar -xzf .f0-oom02/mcp-package/payload.tar.gz -C .f0-oom02/mcp-verify \
+            --no-same-owner --no-same-permissions
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          const manifest=JSON.parse(fs.readFileSync('.f0-oom02/mcp-package/manifest.json','utf8'));
+          for(const entry of manifest.inventory){
+            const f='.f0-oom02/mcp-verify/'+entry.path;
+            if(!fs.existsSync(f)||!fs.statSync(f).isFile() ||
+               fs.statSync(f).size!==entry.bytes ||
+               crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex')!==entry.sha256)
+              throw Error('MCP_RESTORED_HASH_MISMATCH:'+entry.path);
+          }
+          console.log('MCP_ARCHIVE_VERIFIED files='+manifest.inventory.length);
+          NODE
+
+      - name: Upload independent MCP evidence (7 days, max 64 MiB)
+        id: upload_mcp
+        uses: actions/upload-artifact@v4
+        with:
+          name: f0-oom02-mcp-${{ env.SOURCE_SHA }}
+          path: .f0-oom02/mcp-package/
+          retention-days: 7
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 6
+
+      - name: Record MCP artifact ID and ZIP digest
+        env:
+          MCP_ARTIFACT_ID: ${{ steps.upload_mcp.outputs.artifact-id }}
+          MCP_ARTIFACT_DIGEST: ${{ steps.upload_mcp.outputs.artifact-digest }}
+          MCP_ARTIFACT_URL: ${{ steps.upload_mcp.outputs.artifact-url }}
+        run: |
+          set -euo pipefail
+          {
+            echo "MCP source SHA: $SOURCE_SHA"
+            echo "MCP artifact ID: $MCP_ARTIFACT_ID"
+            echo "MCP ZIP digest: $MCP_ARTIFACT_DIGEST"
+            echo "MCP artifact URL: $MCP_ARTIFACT_URL"
+            echo "No Cloudflare version or deployment was created."
+          } >> "$GITHUB_STEP_SUMMARY"
