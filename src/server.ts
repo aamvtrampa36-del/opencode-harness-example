@@ -216,7 +216,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
     try {
       const receipt = await this.harness.session(job.session).submit(
-        supervisorPrompt(start, job.branch, job.project, job.baseCommit),
+        supervisorPrompt(start, job.branch, job.project, job.baseCommit, job.sourceTree),
         { operationId: job.operationId, whenBusy: "followUp" }
       );
       job.status = "running";
