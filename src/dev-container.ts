@@ -420,12 +420,18 @@ export class DevContainer extends DurableObject<Env> {
       const process = await container.exec(["node", "-e", TASK_ARTIFACT_SOURCE, id, target], {
         signal: AbortSignal.timeout(15_000)
       });
-      const output = await process.output();
-      if (output.exitCode !== 0) throw new Error("ARTIFACT_READ_UNAVAILABLE");
-      const serialized = new TextDecoder().decode(output.stdout);
+      // Drain stdout/stderr in parallel with hard memory caps; do not use
+      // output(), which could buffer a compromised Container indefinitely.
+      const [stdout, stderr, exitCode] = await Promise.all([
+        captureBoundedOutput(process.stdout, 45_000),
+        captureBoundedOutput(process.stderr, 1_024),
+        process.exitCode
+      ]);
+      if (exitCode !== 0 || stdout.truncated || stderr.truncated)
+        throw new Error("ARTIFACT_READ_UNAVAILABLE");
       // 32 KiB source becomes <=44 KiB Base64 + bounded metadata.
-      if (serialized.length > 45_000) throw new Error("ARTIFACT_SOURCE_TOO_LARGE");
-      return JSON.parse(serialized);
+      if (stdout.totalBytes > 45_000) throw new Error("ARTIFACT_SOURCE_TOO_LARGE");
+      return JSON.parse(stdout.text);
     } finally {
       this.busy--;
       await this.ctx.storage.put("lastActivity", Date.now());
