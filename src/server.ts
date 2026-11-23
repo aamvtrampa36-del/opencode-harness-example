@@ -185,8 +185,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
           return { ...this.supervisorTaskReceipt(admission.task, true),
             accepted: false, confirmed: false,
             reconciliation: "SESSION_NOT_CONFIRMED_NO_RETRY" };
+        const pinnedSlot = admission.slot!; // narrowed by the effect guard above
         const recovered = await trace.run("admission", "reconcile", () =>
-          reconcileSupervisorCreatedSession(this.ctx.storage, admission.task.id, id, admission.slot));
+          reconcileSupervisorCreatedSession(this.ctx.storage, admission.task.id, id, pinnedSlot));
         if (recovered.kind === "recovered")
           return this.withSupervisorStartLock(start.requestId, async () =>
             this.advanceSupervisedTask(recovered.task, start, true, recovered.grant, trace), recovered.task);
@@ -520,11 +521,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const data = new TextEncoder().encode(v.prompt.trim());
     const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", data)),
       b => b.toString(16).padStart(2, "0")).join("");
-    const operationId = supervisorTurnOperationId(id, v.turnId);
+    const turnId = v.turnId;
+    const prompt = v.prompt.trim();
+    const operationId = supervisorTurnOperationId(id, turnId);
     // The one T03 admission ledger and T04 turn journal are updated inside
     // the same transaction, including readmission of a completed task.
     const reservation = await trace.run("admission", "reserve", () =>
-      reserveSupervisorContinuation(this.ctx.storage, id, v.turnId, hash, operationId));
+      reserveSupervisorContinuation(this.ctx.storage, id, turnId, hash, operationId));
     if (reservation.kind === "capacity") {
       return { taskId: id, accepted: false, status: "capacity_rejected",
         reason: reservation.reason, retryAfterMs: reservation.retryAfterMs };
@@ -547,7 +550,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     try {
       const receipt = await trace.run("submit", "continue", () =>
         this.harness.session(reservation.task.session!).submit(
-          v.prompt.trim(), { operationId, whenBusy: "steer" }));
+          prompt, { operationId, whenBusy: "steer" }));
       accepted = receipt.accepted;
     } catch (error) {
       sendError = error instanceof Error ? error.message.slice(0, 240) : "No confirmado";
