@@ -33,9 +33,15 @@ try {
   const opened = fs.realpathSync("/proc/self/fd/" + fd);
   if (!opened.startsWith(dist + path.sep)) refuse();
   const st = fs.fstatSync(fd);
-  if (!st.isFile() || st.size > MAX || st.size < 0) refuse();
+  // A hardlink is a second name for the same inode and defeats realpath-only
+  // containment. Reject it even when the opened fd appears under dist/.
+  if (!st.isFile() || st.nlink !== 1 || st.size > MAX || st.size < 0) refuse();
   const bytes = fs.readFileSync(fd);
   if (bytes.length > MAX || bytes.length !== st.size) refuse();
+  const after = fs.fstatSync(fd);
+  if (!after.isFile() || after.nlink !== 1 || after.dev !== st.dev ||
+      after.ino !== st.ino || after.size !== st.size ||
+      after.mtimeMs !== st.mtimeMs || after.ctimeMs !== st.ctimeMs) refuse();
   const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
   process.stdout.write(JSON.stringify({
     path: requested, byteSize: bytes.length, base64: bytes.toString("base64"), sha256
