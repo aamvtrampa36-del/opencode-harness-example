@@ -55,8 +55,8 @@ const workspaceSchema = z.string()
   .optional();
 const sessionIdSchema = z.string().regex(/^ses[A-Za-z0-9_]{1,64}$/);
 
-function result(value: unknown, maxChars?: number) {
-  return { content: [{ type: "text" as const, text: boundedMcpJsonText(value, maxChars) }] };
+function result(value: unknown, maxChars?: number, supervisorTask = false) {
+  return { content: [{ type: "text" as const, text: boundedMcpJsonText(value, maxChars, undefined, supervisorTask) }] };
 }
 
 function failed(error: unknown) {
@@ -261,14 +261,14 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
         : { ...task };
       if (workspace) payload.workspace = workspace;
       else delete payload.workspace;
-      return result({ ...payload, targetWorker: STAGING_WORKER });
+      return result({ ...payload, targetWorker: STAGING_WORKER }, undefined, true);
     } catch (error) {
       return failed(error);
     }
   });
 
   server.registerTool("staging_task_status", {
-    description: `Consulta una tarea supervisada de Staging por su ID hexadecimal de 16 caracteres. ${WORKSPACE_HINT}`,
+    description: `Snapshot durable de una tarea: SOLO LECTURA, sin espera SDK, no certifica finalización ni PASS. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema.describe("ID de tarea hexadecimal de 16 caracteres"), workspace: workspaceSchema }
   }, async ({ id, workspace }) => callTask(async () => {
     const supervisor = bindings.supervisor(workspace);
@@ -301,7 +301,7 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
   }, undefined, true));
 
   server.registerTool("staging_task_progress", {
-    description: `Lee eventos duraderos de progreso desde un cursor. Solo devuelve secuencia y tipo de evento; no incluye razonamiento interno. ${WORKSPACE_HINT}`,
+    description: `Progreso detallado temporalmente UNAVAILABLE_UNBOUNDED_SDK por eventos nativos de tamaño no acotado; devuelve snapshot y error explícito sin mover el cursor. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema, workspace: workspaceSchema, after: z.number().int().min(0).default(0) }
   }, async ({ id, workspace, after }) =>
     callTask(() => bindings.supervisor(workspace).remoteSupervisorProgress(id, after), undefined, true));
@@ -319,7 +319,7 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
     description: `Selecciona un modelo del catálogo para los siguientes turnos de una tarea inactiva. El proveedor debe estar configurado en Staging. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema, workspace: workspaceSchema, model: z.string().min(1).max(160) }
   }, async ({ id, workspace, model }) =>
-    callTask(() => bindings.supervisor(workspace).remoteSupervisorSelectModel(id, model)));
+    callTask(() => bindings.supervisor(workspace).remoteSupervisorSelectModel(id, model), undefined, true));
 
   server.registerTool("staging_cancel_task", {
     description: `Solicita la cancelación de una tarea supervisada de Staging por su ID. ${WORKSPACE_HINT}`,
@@ -329,7 +329,7 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
   server.registerTool("staging_review_task", {
     description: `Ejecuta la revisión GitHub existente para la rama bloqueada de una tarea de Staging. No aprueba ni fusiona cambios. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema.describe("ID de tarea hexadecimal de 16 caracteres"), workspace: workspaceSchema }
-  }, async ({ id, workspace }) => callTask(() => bindings.supervisor(workspace).supervisedTaskReview(id), 16_000));
+  }, async ({ id, workspace }) => callTask(() => bindings.supervisor(workspace).supervisedTaskReview(id), 16_000, true));
 
   server.registerTool("staging_task_transcript", {
     description: `Transcripción temporalmente no disponible: historial sin límite seguro de memoria en Staging. ${WORKSPACE_HINT}`,
