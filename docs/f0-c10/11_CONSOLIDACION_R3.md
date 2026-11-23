@@ -1,6 +1,6 @@
 # F0-C10/R3-T11 — Consolidación de diez especialidades y decisión de gate
 
-**Estado a la creación:** integración de fuente candidata; CI del HEAD final y compatibilidad de runtime **pendientes de comprobar**. **Decisión global:** `PARTIAL / STOP_LIVE / NO COMPLETE PASS`.
+**Estado R3-T11 (candidato integrado):** fuente y regresiones offline aprobadas hasta `4e2c7af50616658fb01509196946d300a7ed7f6e`; los commits documentales posteriores requieren verificar CI otra vez sobre el nuevo HEAD exacto. Compatibilidad con Staging **NO PROBADA**. **Decisión global:** `PARTIAL / STOP_LIVE / NO COMPLETE PASS`.
 **Issue:** [#90](https://github.com/aamvtrampa36-del/opencode-harness-example/issues/90).
 **Actor de integración:** ChatGPT mediante GitHub, no OpenCode Remote con efectos, no Codex.
 **Rama:** `f0-c10/r3-t11-integration-20261123`.
@@ -50,7 +50,7 @@ Referencia: `docs/f0-c10/15_RETROSPECTIVA_Y_CONTROLES_R3.md`.
 
 ## 4. Gate de pruebas offline e identidad
 
-**Pendiente de comprobación al crear este archivo:** registrar aquí el HEAD definitivo de esta rama y los IDs/resultados CI obtenidos tras completar la composición. Suites requeridas: `bun test`, preview, `bun run typecheck`, `bun run build`, invariantes, Node/DO local, Linux negativos, budget, E2E mock y prueba de firmas incorrectas. Los fixtures con firma efímera NO son recibos de runtime.
+**Evidencia del código compuesto tras reparar una regresión real:** la primera ejecución del SHA `060f05e756ba0e92a2831ac2b45b02f5d6bc4dec` falló en [OpenCode validation #45115537741](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45115537741) y en los dos jobs dependientes del fixture T06 en [workflow #45115537743](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45115537743). Resultado Bun: **757 PASS, 1 FAIL**. El test antiguo T06 esperaba una fuga por hardlink, pero la corrección T09 ya bloqueaba la lectura. No se relajó la protección: se convirtió la expectativa vieja en negativa de lectura. El SHA corregido `4e2c7af50616658fb01509196946d300a7ed7f6e` obtuvo [OpenCode validation #45115683151](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45115683151) y [R3-T11 integrated #45115683117](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45115683117) **completed/success**; tres jobs integrados `source-regression`, `fault-injection` (incluye DO workerd descartable) y `e2e-offline` pasaron. Los resultados siguen siendo solo OFFLINE/local. **El HEAD definitivo de esta PR después de editar documentos se verifica en los checks y comentario de PR #157; no reutilizar un green de SHA anterior.** Suites requeridas: `bun test`, preview, `bun run typecheck`, `bun run build`, invariantes, Node/DO local, Linux negativos, budget, E2E mock y prueba de firmas incorrectas. Los fixtures con firma efímera NO son recibos de runtime.
 
 Si cualquier job falla, identificar prueba exacta, causa y corrección mínima; actualizar el informe y repetir CI solo en HEAD cambiado. **No afirmar PASS anticipadamente.**
 
@@ -68,7 +68,13 @@ La futura campaña necesitará **autorización operativa explícita diferente**,
 
 ## 6. Entrega
 
-- **RESULTADO:** `PARTIAL / SOURCE_CANDIDATE / NO_LIVE` hasta CI final. El área T10 puede pasar su oráculo offline sin que F0-C10 alcance COMPLETE PASS.
-- **EVIDENCIA:** PR R3 #147–#156 y sus commits, los diez informes y Biblioteca, CI combinado pendiente; atribuir actores reales.
+- **RESULTADO:** `PARTIAL / SOURCE_CANDIDATE_OFFLINE_CI_PASS / NO_LIVE`; comprobar que los checks finales corresponden al HEAD más reciente y mantienen verde el código. El área T10 puede pasar su oráculo offline sin que F0-C10 alcance COMPLETE PASS.
+- **EVIDENCIA:** PR R3 #147–#156 y sus commits, diez informes y Biblioteca, CI combinado #45115683151/#45115683117 **verde para SHA `4e2c7af5…`**; confirmar checks posteriores en PR #157, atribuir actores reales.
 - **BLOQUEANTE:** alcance real de legacy, efecto SDK todavía en vuelo, memoria isolate, proceso detached, gasto sin corte, principal ACL y observador live.
-- **PRÓXIMA ACCIÓN ÚNICA:** validar CI y seguridad del candidato integrado y, después, aprobar **solo si se demuestra preflight GO**, un ensayo en entorno DO/Container aislado mediante un lote operacional posterior. En el estado actual, **STOP**.
+- **PRÓXIMA ACCIÓN ÚNICA:** resolver primero las condiciones STOP operativas de un **preflight DO/Container aislado, auténtico, medido y reversiblemente autorizado**, sin pedir todavía despliegue ni campaña 1→2→4→10. En el estado actual, **STOP**.
+
+## 7. Estado del runtime y veredicto posterior a R3-T11
+
+Lectura Cloudflare revalidada: principal `opencode-g1-staging` deployment `36ef84b3-0f99-4dd4-ab8e-c11ee450dd23`, version `3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb` al 100 %; MCP deployment `9fdaf22d-beeb-44a0-ab68-77ecd5745fa1`, version `196240c0-1052-47b3-aaa7-02cf5baa87f0` al 100 %. Esas versiones **no** prueban correspondencia binaria con #157; no se inspeccionaron bytes completos/asset digests y no se despliega. Remote solo devolvió `ready=true`, `supervisedCountAtLeast=96`, `supervisedCountComplete=false`; no equivale a actividad de diez tareas.
+
+El panel de salida Android aún requiere ACL ligada a principal; el presupuesto T07 no tiene interceptor/corte real de proveedores+infra; el legacy y procesos fuera de PGID/cgroup exigen preflight; el diario observado T10 usa claves de test sin colector live. **Decisión de despliegue: STOP. COMPLETE PASS: NO.** No cerrar issue #90, no atribuir autonomía a OpenCode y no pedir nueva ronda R4 automática.
