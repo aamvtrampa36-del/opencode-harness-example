@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { runMock } from './mock.mjs';
 import { evaluateCampaign, evaluateTrace, LIVE_LIMITS } from './evaluate.mjs';
 import { EVIDENCE_ROLES, digest, signingBytes, verifyLiveEvidence } from './live-evidence.mjs';
-import { observedClaimBytes, observedClaimHash, OBSERVED_JOURNAL_SCHEMA } from './observed-journal.mjs';
+import { observedClaimBytes, observedClaimHash, operatorApprovalBytes, OBSERVED_JOURNAL_SCHEMA } from './observed-journal.mjs';
 
 // Test-only ephemeral signing keys. Never ship private keys to Staging or model tools.
 const keys = Object.fromEntries(EVIDENCE_ROLES.map((role) => {
@@ -21,6 +21,25 @@ const observerKeys = Object.fromEntries(['do','container','provider'].map((origi
   const pair = generateKeyPairSync('ed25519');
   return [origin, pair];
 }));
+const operatorKeyPair = generateKeyPairSync('ed25519');
+trust.operatorPublicKeyPem=operatorKeyPair.publicKey.export({format:'pem',type:'spki'});
+trust.approvals={};
+function approveCollectorScope(trace) {
+  const metadata=trace.metadata;
+  const observers=Object.fromEntries(Object.entries(trust.observers).map(([origin,info])=> {
+    const key=observerKeys[origin].publicKey.export({type:'spki',format:'der'});
+    return [origin,{collectorId:info.collectorId,deploymentId:info.deploymentId,clockProofId:info.clockProofId,
+      publicKeySha256:createHash('sha256').update(key).digest('hex')}];
+  }));
+  const claim={environment:'staging',experimentId:metadata.experimentId,sourceSha:metadata.sourceSha,
+    workerVersion:metadata.workerVersion,workerDeploymentId:metadata.workerDeploymentId,
+    mcpDeploymentId:metadata.mcpDeploymentId,leaseId:metadata.leaseId,
+    fencingToken:metadata.fencingToken,clockSyncMaxSkewMs:metadata.clockSyncMaxSkewMs,
+    clockSyncReceiptId:'offline-clock-sync-only',observers};
+  trust.approvals[metadata.experimentId]={
+    claim,signature:sign(null,operatorApprovalBytes(claim),operatorKeyPair.privateKey).toString('base64'),
+  };
+}
 trust.observers = Object.fromEntries(Object.entries(observerKeys).map(([origin,pair]) => [origin, {
   publicKeyPem: pair.publicKey.export({ type: 'spki', format: 'pem' }),
   collectorId: 'offline-observer-' + origin, deploymentId: origin === 'do' ? 'offline-worker-deployment' : 'offline-' + origin + '-deployment',
@@ -146,6 +165,7 @@ async function attestedFixture({ round = 1, size = 10, fault = null } = {}) {
     meterReceiptId: 'fixture-cost-meter',
   };
   buildJournal(trace);
+  approveCollectorScope(trace);
   return reseal(trace);
 }
 
@@ -412,4 +432,20 @@ test('R3 RED: provider inference without independently signed provider journal i
   trace.observedJournal.records=trace.observedJournal.records.filter((r)=>r.claim.origin!=='provider');
   const report=evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
   assert.ok(report.failures.some((f)=>f.code==='OBSERVER_SOURCE_UNOBSERVED'||f.code==='OBSERVED_EVENT_COUNT_MISMATCH'));
+});
+
+test('R3 RED: a model-provided collector approval cannot replace operator trust', async () => {
+  const trace=await attestedFixture();
+  const modelRoot=generateKeyPairSync('ed25519');
+  const bad={...trust,operatorPublicKeyPem:modelRoot.publicKey.export({type:'spki',format:'pem'})};
+  trace.modelApprovalSignature=sign(null,operatorApprovalBytes(trust.approvals[trace.metadata.experimentId].claim),modelRoot.privateKey).toString('base64');
+  const result=evaluateTrace(trace,{mode:'live',trustedKeys:bad,limits});
+  assert.ok(result.failures.some((f)=>f.code==='OPERATOR_APPROVAL_INVALID'));
+});
+test('R3 RED: independently signed approval for a different SHA or deployment is not valid', async () => {
+  const trace=await attestedFixture();
+  trace.metadata.workerDeploymentId='unpublished-deployment';
+  reseal(trace);
+  const result=evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
+  assert.ok(result.failures.some((f)=>f.code==='DEPLOYMENT_SCOPE_UNVERIFIED'||f.code==='OPERATOR_APPROVAL_SCOPE_MISMATCH'));
 });
