@@ -39,3 +39,32 @@
 R2 investigaciones y PR separados → T11 consolida frente a #126 → CI del HEAD integrado y revisión de seguridad → preflight de despliegue/coste/lease si se autoriza expresamente → E2E de 1→2→4→10 → tres rondas 10/10 con telemetría auténtica, descargables y sin OOM → auditoría y aceptación del propietario.
 
 **STOP** ante lease ambiguo, límite de gasto no aplicado, OOM, pérdida de identidad SHA, evento o dato sensible, migración no autorizada o mezcla de proyectos.
+
+# PARTE R3 — Coordinación de tercera ronda (corte 2026-11-23)
+
+**Esta parte reemplaza el mapa de siguiente acción R2, no su historia.** La cadena de código base es #126→#143→#144→#145, todas PR draft/no merge, HEAD histórico de #145 `a49e985909cb56bb42c609c9cd5cb4250a620169`. CI #45106083359 PASS offline, sin DO live. Plan R3 en `F0_C10_PLAN_INTEGRAL.md` §§32–39. Retrospectiva en `15_RETROSPECTIVA_Y_CONTROLES_R3.md` y prompts completos en `16_RONDA_3_PROMPTS.md`. La PR #127 era el documento R2 separado, pero #143 copió plan y coordinación al árbol de código. No asumir que Biblioteca/adjuntos reflejan automáticamente esos commits.
+
+## R3 — Propiedad, entradas y handoff
+
+| T | PR históricas pertinentes | Único problema R3 | Consumidor directo |
+|---|---|---|---|
+| T01 | #116/#129/#134 | perfil OOM por fases en supervisor #145 | T11, insumo T02/T05 |
+| T02 | #115/#128 | memoria/aislamiento, criterio no migración vs coordinador | T11 |
+| T03 | #125/#135/#138/#145 | legacy fuera de slots, readmisión y fencing | T11, contrato T04/T07 |
+| T04 | #120/#136/#144/#145 | SDK real, recuperación y creadores tardíos | T11, contrato T03 |
+| T05 | #106/#114/#139 | SDK event/log limits, MCP states de R2 | T11 |
+| T06 | #121/#132/#140 | procesos detached, EPIPE, Container boundary | T11 |
+| T07 | #117/#142 | hard stop medido e inferencia integrada T03 | T11 |
+| T08 | #122/#124/#130/#138 | escrituras GitHub CAS multiwriter y branch isolation | T11 |
+| T09 | #100/#123/#133 | ACL, bytes, caducidad, Android | T11 |
+| T10 | #118/#119/#141 | procedencia runtime y 10 intervalos reales medibles | T11 |
+
+## R3 — Contrato único de avance
+
+Cada T lee su chat anterior, revalida #145 y dependencias, implementa lo mínimo útil en rama propia, corre pruebas RED/GREEN + CI HEAD, documenta en GitHub y confirma copia no sensible en Biblioteca. **El cierre es un solo `HANDOFF A F0-C10/R3-T11`; NO genera prompt de seguimiento del mismo especialista.** T11 recolecta las diez PR desde GitHub y copias de Biblioteca sin pedir pegarlas en este chat. Cada reporte incluye autoría, costes y conflictos. T11 elige cambios sin doble merge de ancestros y ejecuta regresión del HEAD final.
+
+## R3 — STOP y autonomía
+
+Solo lecturas GitHub/Cloudflare/Remote, ramas propias de código offline, PR draft, CI, docs y Biblioteca con recibo. Sin merge, deploy, Producción/main, DO/Containers persistentes, secretos/Access, reintentos ciegos, pago de inferencia ni prueba real 1→2→4→10. OpenCode es ejecutor preferente solo con capacidad/lease/exclusión y hard stop efectivos; de otro modo ChatGPT trabaja offline declarando actor. `status=ok` Remote no equivale a autonomía ni diez activos.
+
+**Verificación decisiva:** no cerrar #90 sin tres campañas de diez tareas realmente solapadas y diez outputs por campaña, OOM/control coste/aislamiento/recuperación y readback autenticados.
