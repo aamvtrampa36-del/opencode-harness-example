@@ -226,3 +226,61 @@ Archivo: \`src/github-publication-gate.test.ts\`. Usar \`bun test src/github-pub
 - Ejecución: GitHub Actions con Bun **1.4.4**; los tests de T08 son mocks transaccionales en memoria y HTTP simulado, **no fault injection sobre Cloudflare real**.
 
 **Aviso HEAD documental:** la incorporación de este registro crea un commit adicional posterior al SHA citado; verificar nuevamente los tres workflows sobre el HEAD final. Mantener PR draft y no permitir merge/deploy por el hecho de que el candidato tenga CI verde.
+
+
+---
+
+# F0-C10/R3-T08 — HEAD auténtico, respuestas ambiguas y diez escritores stateful
+
+**Corte:** 23-11-2026 UTC. **Autoría:** ChatGPT mediante el conector GitHub autorizado; **OpenCode Remote NO START**, sin Codex, sin gastos de inferencia iniciados, sin despliegues ni mutaciones Cloudflare. **Estado de área:** `PARTIAL` hasta la verificación del HEAD final y entorno real; el objetivo de diez agentes activos continúa sin demostrarse.
+
+**Base de código:** PR [#145](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/145) `a49e985909cb56bb42c609c9cd5cb4250a620169` (apilada #144→#143→#126, todas draft). **Rama R3 propia:** `f0-c10/r3-t08-multiwriter-20261123`, sin modificar los ancestros. La documentación R3 se consultó en [#146](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/146) (rama documental distinta; **no** incorporada automáticamente). El informe anterior T08, los ensayos R2 y #138 son evidencia previa, no aportes independientes que deban reaplicarse.
+
+## R3.1 Defecto RED demostrado y reparación mínima
+
+**Causa:** `src/github.ts` hacía el último `GET headSha`, después `beginExternalEffect()` y `POST /pulls`. Una actualización del HEAD por otro cliente en esa ventana hace que GitHub publique **la nueva punta**, pero el puente devolvía `headSha` de la punta previamente revisada y `github-publication-durable.ts` guardaba un recibo como correcto. En una respuesta 503 tras POST aplicado, el reintento de la misma intención podía leer la rama y PR ya avanzadas y reconciliar **el SHA posterior**, porque el ledger identificaba la intención por repo/base/rama/título/body y **no persistía los SHA del efecto**. Esto es un falso positivo real del contrato ante un mock con interleaving, no una medición de GitHub remoto.
+
+**RED ejecutado:** [Actions #45109568863](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45109568863), HEAD `a4dab85f4d2d821eeec7d373bd371899daedc3cf`, fallo esperado únicamente en los dos tests R3 nuevos: (1) HEAD cambia entre el GET final y POST; (2) POST con respuesta 503 perdida y cambio de HEAD antes de reconciliar. En ambos casos `expect(...).rejects` observó una Promise resuelta falsamente.
+
+**Corrección:** `GitHubPrPublicationPermit.beginExternalEffect({baseSha,headSha})` registra ambos OID Git de 40 caracteres en el ledger, con `token+generation+owner` validado en **la misma transacción durable** que cambia `reserved→publishing`. Tras POST, el puente exige que la **respuesta GitHub** contenga `created.head.ref/sha` y `created.base.ref/sha` iguales al branch/base/SHA revisados; de lo contrario emite `PR_PUBLICATION_HEAD_CHANGED`, el gate conserva `unknown` y nunca reenvía `POST`. Un reintento `retryOnly` recibe exclusivamente el `expectedProof` original del ledger/recibo y rechaza un HEAD distinto **antes** del preflight posterior. La confirmación transaccional rechaza también recibos cuyos SHA difieran del proof persistido.
+
+**Límite semántico:** no existe una instrucción GitHub `create PR if branch HEAD == expected SHA` atómica. El chequeo del PR después del efecto **detecta** una publicación a SHA diferente y la pone en cuarentena, pero **no impide el primer POST** que produjo una PR con el SHA ajeno. Un actor con credenciales directas puede seguir actualizando la rama/PR fuera del gate. Se necesita aislar realmente a todos los mutadores de esa rama y protecciones externas para una garantía más fuerte. No se permite llamar a esto `exactly-once` global.
+
+## R3.2 Contrato branch → commit → PR y garantías
+
+| Frontera | Control vigente | Prueba o límite |
+| --- | --- | --- |
+| `ensureSupervisorBranch` | `GET` fuente, `POST /git/refs` de nombre determinista; reconciliación exacta con ref fuente tras 503 | Unicidad GitHub por nombre, rama ajena distinta SHA se rechaza; no lease global |
+| `branch` expuesto al agente | `branchChecked` `opencode/*`, repo allowlist, Source Staging para patrón supervisor | No permite `main` ni `staging/...`, no `force`; por sí solo no es idempotente |
+| `write` completo | `PUT /contents` con `sha` de blob anterior; mismo contenido por `GET` devuelve `unchanged/reconciled` | 1 PUT efectivo al perder 503; dos contenidos rivales al mismo path deben resultar 1 éxito + 409; no compare-and-swap de todo HEAD |
+| `replaceExact` commit | Ancla única, `expectedHead`, Git blob/tree/commit, `PATCH /git/refs force:false` | GitHub aplica fast-forward, **no** expected-old-SHA CAS; GET posterior permite confirmar commit exacto tras 503 sin segundo PATCH |
+| `pr` supervisada | Transacción del DO supervisor nombrado `repo+base`, token/epoch, revalidación de tarea/sesión/proyecto en transacción de publish, `publishing/unknown` durable | Un solo POST mientras está ocupado; pinned head/base SHA + comprobación de respuesta y recibo; resultado perdido nunca autoriza segundo POST |
+| RPC y scopes | `assertScopedTool` fija repo/proyecto y `assertSupervisorBoundGitHubOperation` fija rama; `assertSupervisedPublicationScope` fija tarea, sesión, proyecto y estado | Cruce de sesión, rama, proyecto, repo o tarea cancelada se rechaza antes del POST |
+| Fuera del puente | Token GitHub directo, cambios en rama protegida o merge externo | **No** cercados por el ledger. Rulesets/branch protection efectivos no se dieron por demostrados |
+
+**CAS relevante:** GitHub `PATCH /git/refs` con `force:false` solo prohíbe movimientos no-fast-forward, no fija `oldOid` en una condición server-side; el `sha` de Contents solo condiciona el blob del fichero. No se introdujo segundo scheduler ni se cambiaron reglas de GitHub. El publicador T08 depende del storage/owner T03 ya integrado en #145. No reescribir `src/server.ts` como solución artificial de la carrera.
+
+## R3.3 Instrumentos y métricas verificables
+
+- **RED/HEAD movido:** `src/github-publication-durable.test.ts`, dos casos nuevos con ref que cambia después del `GET` final o entre POST perdido y readback. Tras el parche se exige `PR_PUBLICATION_HEAD_CHANGED`, un único POST y `unknown` sticky; no recibe `reconciled:true` falso.
+- **Regresión heredada R2:** `src/github-publication-gate.test.ts` actualiza **solo el mock** para aportar `beginExternalEffect(proof)`, `expectedProof` y retorno `head/base.sha`. El contrato de producción se hizo más estricto; los fixtures antiguos no podían acreditar el SHA al no simular la respuesta real de GitHub.
+- **Prueba stateful adicional:** `src/github-r3-multiwriter.test.ts` usa `GitHubBridge` y `DurableGitHubPublicationGate` auténticos con GitHub HTTP y storage transaccional **simulados**. Almacena refs, contenidos/blobs, commits, paths, PR, historial de mutaciones y recibos en memoria sin llamadas reales a GitHub.
+- **Diez escritores:** diez nombres deterministas y diez archivos exclusivos; `Promise.all` para crear ramas/escribir, lote de diez PR con una publicación mantenida en vuelo; nueve rechazos `PR_PUBLICATION_BUSY_UNKNOWN` sin efectos, que se reenvían **solo después** de demostrar que no pasaron la frontera mutante; total esperado **10 nuevas refs, 10 PUT efectivos, 10 commits de archivos, 10 POST PR, 10 recibos, 10 paths disjuntos**, SHA de `main` y Staging inalterados. La serialización de **publicación**, no de la ejecución de agentes, es deliberada y no impide que diez tareas Linux/inferencia trabajen simultáneamente.
+- **Mismo destino:** dos PUT competidores con distinto contenido en la misma rama/path producen un único commit efectivo y 409 del otro en el mock de SHA condicionado; dos ramas con blobs distintos sobre el mismo path conservan ambos contenidos pero el segundo `POST /pulls` se bloquea por `PR_WRITE_SCOPE_CONFLICT`. Una colisión de PR no debe confundirse con pérdida de su archivo en la rama.
+- **Respuestas perdidas:** crear ref determinista, PUT de Contents y POST PR pueden aplicar y devolver 503 simulado. El mismo `requestId`/branch/payload se recupera con GET/receipt exacto y **1 efecto efectivo por mutador**, sin repetir a ciegas ni atribuir otra operación. Un payload distinto al mismo branch falla con `PR_BRANCH_INTENT_CONFLICT`.
+- **ACL negativa:** acciones a `main`, ref Staging, repositorio ajeno, sesión de otro propietario, tarea cancelada, proyecto y rama cruzados denegadas; cero escrituras ni llamadas HTTP para los rechazos previos a acceso. Las suite heredadas mantienen pruebas de rename, archivos truncados, HEAD obsoleto y reglas de ruta.
+
+**Evidencia de entorno:** Cloudflare lectura devolvió Workers activos principal `3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb` y MCP `196240c0-1052-47b3-aaa7-02cf5baa87f0`, ambos 100%; Remote `status=ok`, 96 sesiones **al menos** registradas con `supervisedCountComplete=false`. Nada demuestra binarios R3 activos ni diez agentes reales. No hubo RPC Remote con efectos, DO alterado o inferencia. El coste de GitHub Actions/Cloudflare por consultas **no se midió**.
+
+## R3.4 Orden mecánico de integración para T11
+
+1. **Punto de partida:** confirmar HEAD/estado de #145 y su ascendencia #144→#143→#126. La R3-T08 debe compararse por `compare_commits(base SHA exacto, head SHA exacto)`. No cherry-pick de #122/#124/#130/#138 porque su código ya es ancestro del candidato, ni reintroducir la alternativa #131. La PR documental #146 es paralela y no reemplaza la fuente.
+2. **Ownership por archivo:** T08 solo modifica `src/github.ts`, `src/github-publication-durable.ts`, sus pruebas, `docs/f0-c10/08_GITHUB_INTEGRIDAD.md` y el workflow de validación de esta rama. `src/server.ts`, `src/supervisor-admission.ts`, `src/supervisor-r2.ts` y journals de recuperación pertenecen a T03/T04; comparar contratos/funciones si T03 cambió el estado de la tarea. No sobrescribir archivos enteros al integrar.
+3. **Colisiones:** para cada PR R3 comprobar `base/head SHA`, rename `previous_filename`, intersección de archivos y dependencias de ámbito (no solo nombres); rechazar `truncated`/listas incompletas. Si una rama modificó el mismo path que otra, conservar ambas ramas y resolver con revisión semántica; no asumir que un merge textual sin conflictos equivale a integración.
+4. **Orden:** integrar primero contratos de admisión/recuperación T03/T04; aplicar después solamente los hunks de `GitHubPrPublicationProof` del puente T08 y ledger durable, sin cambiar el nombre de DO ni duplicar el coordinador. Integrar el resto de especialistas con fuente/owner definidos; no incluir de forma automática `.github/workflows/f0-c10-r3-t08.yml` como workflow permanente (solo dispara en la rama R3).
+5. **Revalidación de 10 ramas:** tras cualquier integración que toque `github.ts`, ledger durable, scope, server o SDK, volver a ejecutar el test stateful de diez PR, carreras, HEAD movido, 503 y fallos de autorización **sobre el HEAD integrado**, luego `bun test`, preview, typecheck, build ambos Workers/web, invariantes y CI del mismo SHA. Un PASS individual o de un HEAD anterior no autoriza promover.
+6. **STOP:** si un POST se repite tras `unknown`, un recibo acepta SHA distinto, el scope permite un escritor ajeno, o el runtime pierde fencing/recovery, mantener `PARTIAL` y no probar Staging con efectos hasta control de costes, identidad binaria y rollback verificados.
+
+**Referencias externas:** se conservaron las investigaciones y SHAs/licencias de GitHub REST, Aider, SWE-agent y OpenHands recogidos en R2. R3 no incorpora código de terceros ni dependencias nuevas. El defecto y la corrección surgen del propio contrato de GitHub REST ya auditado, sin nueva investigación externa de coste.
+
+**Cierre T08:** prueba offline de identidad y serialización del publicador, **no garantía live de diez agentes**. GitHub sigue siendo autoridad de código y CI; el puente OpenCode permanece en uso. No fusionar, desplegar ni modificar infraestructura dentro de este lote.
