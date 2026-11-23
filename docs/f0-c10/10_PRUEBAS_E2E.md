@@ -29,7 +29,7 @@ Usa Node >=20 sin paquetes externos, proveedores ni credenciales. Ejecutar desde
     node scripts/f0-c10/run-offline.mjs --size 10 --fault historical-red
     node scripts/f0-c10/run-offline.mjs --size 10 --fault false-pass
 
-El último par **debe salir con código 1**; el modo --suite sale 0 solo si los GREEN pasan y **todos** los RED fallan. La salida JSON está limitada a fixtures no sensibles; no contiene tokens ni transcripciones. Resultado de validación local T10: **24/24 tests y 16/16 escenarios originales de suite correctos**, antes de la auditoría de lectura independiente. La rama de auditoría agrega dos tests y dos negativos; el resultado de CI de estos cambios debe verificarse en el HEAD de la PR.. En mock hubo solapamiento de aproximadamente 130 ms para diez herramientas simuladas; no representa rendimiento real de OpenCode.
+El último par **debe salir con código 1**; el modo --suite sale 0 solo si los GREEN pasan y **todos** los RED fallan. La salida JSON está limitada a fixtures no sensibles; no contiene tokens ni transcripciones. Resultado de validación local T10: **24/24 tests y 16/16 escenarios originales de suite correctos**, antes de la auditoría de lectura independiente. La rama de auditoría agrega dos tests y dos negativos; la CI de #119 se verificó sobre HEAD `ecbc531166b6c3806a906ec362f0aac520a6ef69`: 26/26 tests, suite 18/18 y build/CI generales en verde; no hay E2E real. En mock hubo solapamiento de aproximadamente 130 ms para diez herramientas simuladas; no representa rendimiento real de OpenCode.
 
 ## 3. Diez tareas sintéticas descartables
 
@@ -62,7 +62,8 @@ Cada entrada tiene requestId hexadecimal único (exactamente 16 caracteres), ses
 | cross-project | RED |
 | duplicate-request | RED |
 | client-only/busy-only | RED |
-| cancelled inesperado | RED |\n| missing-readback; corrupt-readback | RED: el artefacto afirmado no basta si no se recuperan bytes idénticos |
+| cancelled inesperado | RED |
+| missing-readback; corrupt-readback | RED: el artefacto afirmado no basta si no se recuperan bytes idénticos |
 | restart-recovered, ids duraderos reconciliados | GREEN de simulador |
 | retry 429 con mismo requestId, una vez | GREEN de simulador |
 | TDD sin evidencia RED; output ausente; status fuera de actividad; campaña duplicada; forged live sin telemetría | RED |
@@ -106,3 +107,59 @@ El costo total incluye tokens por proveedor/modelo real, Workers/DO, Container C
 **Estado final del instrumento:** PASS solo cuando implementación, CI del HEAD y negativos estén verdes. **Estado F0-C10:** NOT VERIFIED hasta E2E autenticado y auditoría independiente de G-C10-A/B/C/D/E. Ni tres rondas simuladas ni CI verde equivalen a COMPLETE PASS.
 
 **Handoff T11:** requiere autorización específica de prueba real, lease atómico, instrumento de telemetría genuina, candidato Stage/versiones SHA, medidor/corte de gasto, límites de proveedor y Containers, permisos y rollback independientes, integración de outputs e infraestructura estable. Cero inicios masivos autorizados por esta documentación.
+
+
+---
+
+## R2-T10 — Entrada E2E con pruebas de procedencia y lectura de bytes (2026-11-22/23)
+
+**Actor:** ChatGPT mediante GitHub/CI, no OpenCode Remote. **Rama R2** `f0-c10/r2-t10-live-evidence-20261122` desde candidato integrado [#126](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/126) @ `1268ba22f26330d619b046fcf551ca846cb69d0f`. No modificar #126 ni desplegar. Evidencia Stage de lectura Cloudflare: principal deployment `36ef84b3-0f99-4dd4-ab8e-c11ee450dd23`, version `3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb`; MCP deployment `9fdaf22d-beeb-44a0-ab68-77ecd5745fa1`, version `196240c0-1052-47b3-aaa7-02cf5baa87f0`, ambos al 100 %. **No** equivalen al candidato #126 ni al código R2 publicado. Remote solo consultado en lectura, devolvió `ready=true` y `supervisedCountComplete=false`.
+
+### Modelo mínimo de recibos live (nuevo)
+
+La **entrada** del evaluador es una traza `mode:"live"` más cuatro firmas **Ed25519 independientes** sobre vistas canónicas del mismo experimento (`scripts/f0-c10/live-evidence.mjs`). El archivo de claves públicas confiables se suministra **por el operador de T11 fuera de la traza**; las claves privadas nunca se entregan al modelo ni al repo. Un JSON que autoafirme `source:"runtime"`, `source:"cloudflare"` o `verified:true` no basta. No se aceptan claves públicas incluidas en la entrada. La aceptación requiere firmas válidas, custodios independientes (sin reutilizar una clave para dos roles), identidades y bytes correctos.
+
+1. **runtime:** adaptador que observe las llamadas y resultados directamente en el Worker/Harness, firme `metadata`, `tasks` y los eventos `received/admitted/persisted/queued/execution_start/tool_start/tool_end/inference_start/inference_end/status_probe/output/completed` con `experimentId`, `sourceSha` de 40 hex, `requestId` de 16 hex, `sessionId`, `operationId`, `projectId`, `executorId`, `callId`, `seq`, `atMs`. La firma cubre el `workerVersion`, `mcpVersion`, `gitBaseSha`, el hash de límites y lease. Captura desde fuentes internas autorizadas y no desde mensajes generados por IA. Para inferencia, el cierre debe tener `outcome:"success"`; para herramienta, `exitCode:0`. Falta instalar/auditar el adaptador. La firma no inventa observaciones.
+2. **artifact:** colector **distinto** con GET real autenticado bajo identidad/ACL de tarea, `retrievalReceipt` con `retrievalId`, `authenticated:true`, `method:"GET"`, `status:200`, `sha256`, `byteLength`. Firma el evento `artifact_readback` y su `bytesBase64` original; el verificador exige base64 canónico, SHA-256 de bytes, longitud, igualdad byte a byte con contenido y oráculo independiente, ruta/proyecto e identidad de sesión correctos. La ruta textual de `/bundle` no es GET. T09 informa que **no existe todavía endpoint de archivo individual en Staging**: fixture local HTTP no equivale a entrega real.
+3. **telemetry:** colector de Cloudflare **fuera del runtime del agente** que consulte endpoints autorizados, preserve `queryId`, versión, servicio, UTC del evento, memoria del isolate y errores OOM, deduplicando resets por identidad trazable. Firma las muestras. El evaluador rechaza firmas alteradas, versión/query incompatibles, memoria sobre umbral o falta de muestra durante la intersección completa. Muestras del isolate no prueban memoria privada de un DO.
+4. **budget:** colector independiente de T07 que firme la contabilidad por inferencia, Workers, DO, Container, observabilidad, CI y egreso; cada importe debe ser numérico y conocido, incluidos ceros demostrados. También firma cap y recibo del *corte técnico realmente aplicado* (`stop.enforced`, `scope:full-experiment`, `controlId`, `meterReceiptId`). Los eventos autoafirmados de consumo o un `maxCostUsd` escrito a mano no prueban corte. **Actualmente NO hay control efectivo certificado**.
+
+Todas las firmas usan bytes `OPEN-CODE/F0-C10/LIVE-EVIDENCE/V1/<rol>\0<JSON canónico>`, separación por rol y vistas de procedencia en el código; no hay dependencias externas. `metadata.limitsSha256` ata los límites a un archivo externo. La verificación reejecuta el oráculo por tarea y el barrido temporal. Las firmas verifican la **custodia de claves**, no el comportamiento honesto del software: para que una traza sea auténtica, T11 debe inspeccionar el código, SHA, despliegue, ACL, orígenes, relojes y permisos de cada colector, y conservar el recibo de consulta Cloudflare.
+
+### Ejecución offline y exit codes
+
+Desde checkout verificable, Node >=20 y sin credenciales:
+
+```sh
+node --test scripts/f0-c10/evaluate.test.mjs scripts/f0-c10/live-evidence.test.mjs
+node scripts/f0-c10/run-offline.mjs --suite --out f0-c10-offline-evidence.json
+node scripts/f0-c10/verify-live.mjs --traces ronda1.json,ronda2.json,ronda3.json --trust /ruta/externa/claves-publicas.json --limits /ruta/externa/limites-bloqueados.json --out evaluacion.json
+```
+
+`verify-live` **únicamente lee archivos offline** y nunca solicita tareas ni se conecta a Staging. `--traces` exige 1 o 3 entradas, `--trust` cuatro claves independientes `{runtime,artifact,telemetry,budget}` en PEM, `--limits` valores numéricos completos incluyendo un cap positivo con corte independiente. Exit `0`: el registro recibido cumple el verificador (aún requiere auditoría humana de procedencia); `1`: RED/rechazado; `2`: entradas ausentes/corruptas o error del verificador. El `--out` se escribe nuevo con modo 0600 y nunca contiene claves privadas ni transcripts. El CI sólo genera claves efímeras de TEST en memoria. No admitir claves del fixture ni datos autoafirmados como prueba E2E real.
+
+Matriz adicional RED: firma de runtime alterada; telemetría Cloudflare falsificada; clave incluida en traza o reutilizada; SHA de evento cambiado aun con nueva firma; bytes alterados tras GET; lectura inexistente; contabilidad desconocida o sin corte real; intervalos sólo de cuatro ejecutores; OOM histórica #90; `requestId` reutilizados entre rondas. GREEN de fixture: 1/2/4/10 y tres rondas de 10 con firmas **sintéticas**; se distingue en el informe de una aceptación auténtica.
+
+### Dependencias y coordinación horizontal
+
+- **T01 (memoria):** reportar queryId de Observability, `rpcMethod`, DO/isolate asociado, deduplicación de resets, muestras y origen de timestamps; no inventar medición de heap. La ausencia de memoria verdadera equivale a STOP para campaña.
+- **T09 (outputs):** construir endpoint GET autenticado por task/artefacto con ACL server-side y leer bytes originales, metadata `sha256/length`, estado 403/404/409/410, retención y aislamiento; T10 solo consume el recibo firmado. Fixture T09 loopback es verde parcial, no autenticación real.
+- **T03 (admisión):** contrato de lease único con fencing, transiciones persistidas, `requestId` idempotente y capacidad de sostener diez trabajos efectivamente activos, no sólo queued/busy.
+- **T07 (inferencias y costes):** presupuesto de *worst case*, reserva/corte técnico de facturación total y reconciliación de unknown charge, límite de intentos. Sus tests de proveedor falso no prueban corte real; el propio informe T07 reconoce ese bloqueo. No iniciar tarea Remote hasta tenerlo.
+
+### Ventanas, métricas predeclaradas y escalones
+
+Conservar los límites de sección 6: 10 intervalos firmados con intersección >= 1000ms, peak isolate <=102.4MiB, p95 admisión <=10s, p95 status <=5s, duración <=180s por tarea, <=1 reintento por tarea, 0 OOM, 0 huérfanos, 0 mezclas y 0 outputs sin byte-readback. **Tres rondas distintas**, 10/10 outputs por ronda. Probar escalones **1→2→4→10** con lectura durante herramienta activa y verificar recuperación/cancelación focalizada antes de ejecutar tres rondas; la continuidad/fairness y los outputs tras reinicio requieren pruebas reales específicas. No ajustar thresholds después del fallo para forzar PASS. `maxCostUsd:null` es STOP para actividad real; el valor positivo del fixture sirve sólo para probar el parser. Los importes reales permanecen **desconocidos**.
+
+**STOP estricto:** sin fuente runtime autenticada, firma/identidad/version/sha corrupta, sin lectura real, coste desconocido, lease ambiguo, OOM o reset, usuario de otro proyecto, cursores incompletos, tiempos no comparables, límite de memoria excedido, fallo de 10/10, o más de un reintento. No reintentar efectos ambiguos con otro requestId.
+
+### Alternativas abiertas: revisión documental, no copia de código
+
+- [DeepSeek Harness @ 4b399c39a6d1479cd84ca591b4d7c88e24d38a96](https://github.com/deepseek-ai/deepseek-harness/tree/4b399c39a6d1479cd84ca591b4d7c88e24d38a96) — licencia MIT (archivo LICENSE verificado), subprocess supervisado, lecturas bounded y offsets. Se aprovecha patrón de observación, no su shell local como sandbox Cloudflare.
+- [OpenHands software-agent-sdk @ ebec01b3893696c2f5454762eb44796c71bb391a](https://github.com/OpenHands/software-agent-sdk/tree/ebec01b3893696c2f5454762eb44796c71bb391a) — MIT, eventos de conversación y workspace remoto. Patrón de eventos independientes vs resultados, no conexión binaria directa con OpenCode.
+- [SWE-agent @ 3ea751c087f32b16e039a2233dd6eefecef325d5](https://github.com/SWE-agent/SWE-agent/tree/3ea751c087f32b16e039a2233dd6eefecef325d5) — MIT, trajectories y verificación posterior. Patrón de separar acción, observación y resultado.
+- **Compatibilidad:** la implementación R2 utiliza exclusivamente `node:crypto`, `node:fs` y los fixtures del proyecto; Node >=20/Bun soportado. No se copiaron módulos externos ni se instalaron paquetes, por tanto no hay obligaciones nuevas de redistribución de código tercero.
+
+### Delimitación de resultados
+
+La CI de esta PR confirma únicamente el verificador offline y las pruebas de regresión. Aun con firmas de fixture verdes, sin adaptadores realmente autenticados, reserva/corte efectivo, source-to-deployment y E2E de tres rondas, **F0-C10 continúa PARTIAL / NO COMPLETE PASS**. Los propietarios de integración decidirán el siguiente lote de instrumentación, despliegue y campaña; R2-T10 no modifica `src/server.ts`, Workers, credenciales, DO, main ni #126.
