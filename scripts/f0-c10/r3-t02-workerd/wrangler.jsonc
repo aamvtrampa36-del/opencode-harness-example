@@ -1,0 +1,9 @@
+{
+  "name": "f0-c10-r3-t02-local-only",
+  "main": "./worker.mjs",
+  "compatibility_date": "2026-11-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "durable_objects": {"bindings": [{"name": "LOCAL_PROBE", "class_name": "ResidencyProbe"}]},
+  "migrations": [{"tag": "test-local-only-v1", "new_sqlite_classes": ["ResidencyProbe"]}]
+}

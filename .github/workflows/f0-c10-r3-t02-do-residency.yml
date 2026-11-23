@@ -1,0 +1,64 @@
+name: F0-C10 R3-T02 DO residency (offline, NO DEPLOY)
+
+on:
+  push:
+    branches: [f0-c10/r3-t02-do-residency-20261123]
+  pull_request:
+    branches: [f0-c10/r2-t11-recovery-readmission-20261123]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install pinned dependencies
+        run: bun install --frozen-lockfile
+      - name: Positive, negative and cancellation/race reference tests (Node)
+        run: node --test scripts/f0-c10/r3-t02-lifecycle.test.mjs
+      - name: Collect 12 per-process synthetic reference measurements
+        run: node --expose-gc scripts/f0-c10/r3-t02-lifecycle.mjs > r3-t02-offline-evidence.json
+      - name: Fail closed on forged workerd/isolate results
+        run: |
+          node --input-type=module -e '
+            import {readFileSync} from "node:fs";
+            const x=JSON.parse(readFileSync("r3-t02-offline-evidence.json","utf8"));
+            if (x.schema!=="opencode.r3-t02.offline.v1" || x.workerdUsed!==false ||
+                x.sdkUsed!==false || x.fullIsolationClaim!==false || x.cases?.length!==12) process.exit(1);
+            for (const n of [1,2,4,10]) for (const mode of
+                ["full-history","bounded-tail","coordinator-only"]) {
+              const c=x.cases.find(z=>z.sessions===n && z.mode===mode);
+              if (!c || c.workerd!==false || c.isolateCount!==null ||
+                  c.nativeCreateCalls!==n || c.peakSlots!==n || c.recovered!==1 ||
+                  c.continuationSubmits!==n || c.duplicateContinuationReused!==n ||
+                  c.afterFinalSettlementReferences!==0 || c.afterRestartSlots!==0) process.exit(1);
+            }
+            console.log("12/12 synthetic cases; NO actual workerd/SDK/ten-active PASS");
+          '
+      - name: Syntax-check disposable standalone workerd probe (not executed)
+        run: |
+          node --check scripts/f0-c10/r3-t02-workerd/worker.mjs
+          node --check scripts/f0-c10/r3-t02-workerd/smoke.mjs
+      - name: Full Bun test suite
+        run: bun test
+      - name: Real static preview check (offline)
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build both Workers and client (NO DEPLOY)
+        run: bun run build
+      - name: Security and project invariants
+        run: bun scripts/check-invariants.mjs
+      - name: Archive synthetic JSON, explicitly not runtime evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: f0-c10-r3-t02-offline-${{ github.sha }}
+          path: r3-t02-offline-evidence.json
+          retention-days: 7
