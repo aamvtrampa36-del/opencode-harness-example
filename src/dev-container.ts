@@ -429,12 +429,13 @@ export class DevContainer extends DurableObject<Env> {
       await this.ensureGitAvailable(container);
       if (commandRequiresBun(command)) await this.ensureBunAvailable(container);
       // Pass the command as a positional argument: no injection into wrapper.
-      // GNU timeout bounds one foreground command to 180 s. Jobs that need
-      // longer must be broken into resumable steps.
+      // GNU timeout sends TERM at 180 s, then KILL after 5 s if required.
+      // This only covers the command's process group, not detached descendants.
+      // Longer jobs must be broken into resumable steps.
       const wrapper = [
         "mkdir -p /workspace/projects/" + project,
         "cd /workspace/projects/" + project,
-        "timeout --signal=TERM 180s bash -lc \"$1\""
+        "timeout --signal=TERM --kill-after=5s 180s bash -lc \"$1\""
       ].join(" && ");
       const process = await container.exec(["bash", "-lc", wrapper, "opencode", command]);
       // Drain both pipes while the process runs. output() accumulates unbounded
