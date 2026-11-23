@@ -149,6 +149,22 @@ export async function renewDisposableLease(storage: DurableObjectStorage,
   });
 }
 
+/**
+ * For the future trusted cost adapter: validate lease ownership INSIDE the
+ * same Durable Object transaction as an expense reservation. This is not an
+ * external authorization token and cannot attest physical isolation.
+ */
+export async function verifyDisposableLeaseInTransaction(
+  tx: Pick<DurableObjectStorage,"get">,grant:PreflightLeaseGrant,now:number
+):Promise<void> {
+  validateGrant(grant);
+  verifyScope(await tx.get<Scope>(PREFIX),grant.scopeHash);
+  const row=decodeRow(await tx.get<Row>(LEASE));
+  current(row,grant);clock(now,row);
+  check(row.state==="held" && now<row.expiresAt,
+    "PREFLIGHT_LEASE_NOT_ACTIVE");
+}
+
 /** MUST be committed before a native external call. First attempt only.
  * A duplicate requestId/effectId is never a second permission to dispatch.
  */
