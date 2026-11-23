@@ -97,6 +97,30 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
       bytes += Buffer.byteLength(output.artifact.content || '', 'utf8');
       if (!verifyArtifact(task, output.artifact)) fail('FALSE_PASS_OUTPUT', task.requestId);
     }
+    // Self-reported output is not evidence that the artifact is retrievable.
+    // A separate collector read must supply the actual bytes; compare exact UTF-8
+    // content, location, checksum and independent task oracle.
+    const readbacks = stream.filter((e) => e.type === 'artifact_readback');
+    if (readbacks.length !== 1) {
+      fail('ARTIFACT_READBACK_MISSING', task.requestId);
+    } else {
+      const readback = readbacks[0];
+      const original = output?.artifact;
+      const artifact = readback.artifact;
+      const expectedSource = mode === 'live' ? 'artifact-collector' : 'mock';
+      const expectedRetrieval = mode === 'live' ? 'authenticated-byte-read' : 'local-fixture-read';
+      if (readback.source !== expectedSource ||
+          readback.retrieval !== expectedRetrieval ||
+          !original || !artifact ||
+          readback.seq <= output.seq || readback.seq >= done.seq ||
+          artifact.path !== original.path ||
+          artifact.projectId !== task.projectId ||
+          artifact.content !== original.content ||
+          artifact.sha256 !== original.sha256 ||
+          !verifyArtifact(task, artifact)) {
+        fail('ARTIFACT_READBACK_MISMATCH', task.requestId);
+      }
+    }
     // TDD receipt proves the RED test actually failed and GREEN actually passed.
     if (task.kind === 'tdd') {
       const tests = stream.filter((e) => e.type === 'test_result');
