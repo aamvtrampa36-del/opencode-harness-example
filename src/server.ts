@@ -719,17 +719,14 @@ export class OpenCodeAgent extends DurableObject<Env> {
       throw error;
     }
   }
-  /** Persisted server-side transcript for the owner's authenticated download. */
-  async exportSessionData(sessionID: string) {
-    const sessions = await this.harness.sessions.list();
-    if (!sessions.some(item => item.id === sessionID)) {
-      throw new Error("La conversación no existe en este espacio");
-    }
-    const [messages, scope] = await Promise.all([
-      this.harness.session(sessionID).history(),
-      this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID))
-    ]);
-    return JSON.stringify({ messages, project: scope?.project, repository: scope?.repository });
+  /** Legacy full export has no SDK byte-bounded paging primitive.
+   * Reject before sessions.list(), history(), or JSON.stringify().
+   * Persisted sessions remain intact; a future indexed export needs its own gate.
+   */
+  async exportSessionData(sessionID: string): Promise<string> {
+    if (!/^ses[A-Za-z0-9_]{1,64}$/.test(sessionID))
+      throw new Error("SESSION_EXPORT_ID_INVALID");
+    throw new Error("SESSION_EXPORT_PAGINATION_UNAVAILABLE_LEGACY");
   }
 
   private sessionModelsKey(sessionID: string): string {
