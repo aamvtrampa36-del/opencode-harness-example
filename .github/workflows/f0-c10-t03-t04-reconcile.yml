@@ -1,0 +1,53 @@
+name: F0-C10 T03-T04 reconciliation (offline only)
+
+on:
+  pull_request:
+    branches: [f0-c10/r2-t11-master-integration-20261123]
+    paths:
+      - 'src/server.ts'
+      - 'src/supervisor-control.ts'
+      - 'src/supervisor-admission.ts'
+      - 'src/supervisor-r2.ts'
+      - 'src/supervisor-t03-t04-integration.test.ts'
+      - 'src/supervisor-admission.test.ts'
+      - 'scripts/f0-c10-r2-t04-*'
+      - '.github/workflows/f0-c10-t03-t04-reconcile.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile-offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact candidate HEAD
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install exactly locked dependencies
+        run: bun install --frozen-lockfile
+      - name: T03 and T04 focal contracts and races (offline)
+        run: bun test src/supervisor-admission.test.ts src/supervisor-t03-t04-integration.test.ts src/supervisor-recovery.test.ts
+      - name: T04 failure injection with disposable storage, not Staging
+        run: node --experimental-strip-types --test scripts/f0-c10-r2-t04-fault.test.mjs
+      - name: All Bun unit tests
+        run: bun test
+      - name: Existing preview regression
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build both Workers and web client (NO DEPLOY)
+        run: bun run build
+      - name: Security and project invariants
+        run: bun scripts/check-invariants.mjs
