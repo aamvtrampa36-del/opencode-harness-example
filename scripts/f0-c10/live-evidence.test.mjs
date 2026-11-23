@@ -58,7 +58,7 @@ function buildJournal(trace, { restartDoAfter = null } = {}) {
       workerVersion:trace.metadata.workerVersion, experimentId:trace.metadata.experimentId,
       fencingToken: trace.metadata.fencingToken, seq:(previous?.seq ?? 0) + 1,
       epoch:overrideEpoch ?? previous?.epoch ?? 1,
-      prevHash:previous?.hash ?? '0'.repeat(64), observedAtMs:event.atMs ?? previous?.atMs, event,
+      prevHash:previous?.hash ?? '0'.repeat(64), observedAtMs:event.atMs ?? previous?.atMs, event:structuredClone(event),
     };
     records.push({ claim, signature:sign(null, observedClaimBytes(claim), observerKeys[origin].privateKey).toString('base64') });
     state.set(origin, { seq:claim.seq, epoch:claim.epoch, hash:observedClaimHash(claim), atMs:claim.observedAtMs });
