@@ -434,7 +434,7 @@ export class DevContainer extends DurableObject<Env> {
       const wrapper = [
         "mkdir -p /workspace/projects/" + project,
         "cd /workspace/projects/" + project,
-        "timeout --signal=TERM 180s bash -lc \"$1\""
+        "timeout --signal=TERM --kill-after=5s 180s bash -lc \"$1\""
       ].join(" && ");
       const process = await container.exec(["bash", "-lc", wrapper, "opencode", command]);
       // Drain both pipes while the process runs. output() accumulates unbounded
