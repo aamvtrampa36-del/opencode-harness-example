@@ -17,7 +17,7 @@ import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
 import { collectSupervisorDirectory, supervisorTaskCount } from "./supervisor-directory";
 import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
-import { projectSupervisorProgress } from "./supervisor-progress";
+// Progress is read from the bounded supervisor ledger, never raw SDK log().
 import {
   reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot,
@@ -560,7 +560,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
       },
       snapshot: true, transcriptAvailable: false,
       transcriptError: SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED,
-      progressAvailableViaCursor: true, reviewRequired: true
+      progressAvailableViaCursor: false,
+      progressError: "SUPERVISOR_PROGRESS_UNAVAILABLE_UNBOUNDED_SDK",
+      reviewRequired: true
     };
   }
 
@@ -671,7 +673,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
   /** A bounded manifest: no transcript, raw paths, stored bytes or credentials. */
   async supervisedTaskArtifacts(id: string): Promise<unknown> {
     const task = await this.scopedArtifactTask(id);
-    const status = await this.supervisedTaskStatus(id) as { status?: string; operationId?: string };
+    // Artifact manifest GET must not reconcile an operation or inspect SDK logs.
+    const status = await this.remoteSupervisorTaskStatusSnapshot(id) as { status?: string; operationId?: string };
     const index = (await this.ctx.storage.get<string[]>(artifactIndexKey(id))) ?? [];
     if (!Array.isArray(index) || index.length > TASK_ARTIFACT_MAX_PER_TASK) {
       throw new Error("ARTIFACT_INDEX_INVALID");
@@ -703,6 +706,27 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (record.artifactId !== artifactId || record.requestId !== id ||
         !artifactIsOwnedBy(record, task)) return artifactErrorResponse("ARTIFACT_NOT_FOUND", 404);
     return await verifiedArtifactDownload(record);
+  }
+
+  /** Read-only, bounded MCP status: no native wait/busy/log, no DO writes.
+   * This is not a live completion receipt. T03/T04's effectful native
+   * supervisedTaskStatus remains separate for recovery and cancellation.
+   */
+  async remoteSupervisorTaskStatusSnapshot(id: string): Promise<unknown> {
+    this.assertStagingRemote();
+    if (!/^[a-f0-9]{16}$/.test(id)) throw new Error("SUPERVISOR_TASK_ID_INVALID");
+    const task = await this.supervisedRecord(id);
+    const slot = await supervisorAdmissionSlot(this.ctx.storage, id);
+    return {
+      id: task.id, repository: task.repository, project: task.project,
+      branch: task.branch, session: task.session, operationId: task.operationId,
+      status: task.status, recordedStatus: task.status, error: task.error?.slice(0, 200),
+      updatedAt: task.updatedAt, asOf: task.updatedAt, source: "supervisor-task-ledger",
+      admissionState: slot?.phase ?? "legacy_or_released",
+      ...(slot?.effect ? { admissionEffect: slot.effect } : {}),
+      snapshot: true, nativeReconciled: false, toolCalls: null, toolCountsComplete: false,
+      reviewRequired: true, passed: false, verified: false
+    };
   }
 
   async supervisedTaskStatus(id: string): Promise<unknown> {
@@ -827,17 +851,29 @@ export class OpenCodeAgent extends DurableObject<Env> {
       passed: false, verified: false };
   }
 
+  /** agents@0.33.0 exposes a sequence cursor but no pre-materialization
+   * byte/column bound for a SINGLE native log record. A capped for-await
+   * still allocates a giant event before the first yield. Fail closed.
+   * Retain projectSupervisorProgress for verified bounded-source fixtures.
+   */
   async remoteSupervisorProgress(id: string, after = 0): Promise<unknown> {
     this.assertStagingRemote();
-    if (!Number.isSafeInteger(after) || after < 0) throw new Error("Cursor de eventos inválido");
-    const task = await this.supervisedRecord(id);
-    if (!task.session) return { taskId: id, events: [], nextAfter: after,
-      status: task.status, truncated: false, gapDetected: false, scanned: 0 };
-    // Reads at most 128 raw records; filtered reasoning records also advance
-    // the durable cursor. No history() call or post-hoc transcript slicing.
-    const page = await projectSupervisorProgress(
-      this.harness.session(task.session).log({ after, follow: false }), after);
-    return { taskId: id, session: task.session, status: task.status, ...page };
+    if (!Number.isSafeInteger(after) || after < 0)
+      throw new Error("SUPERVISOR_PROGRESS_CURSOR_INVALID");
+    const snapshot = await this.remoteSupervisorTaskStatusSnapshot(id) as {
+      status: string; session?: string; operationId?: string;
+      admissionState?: string; admissionEffect?: string; updatedAt?: number;
+    };
+    return {
+      taskId: id, session: snapshot.session, operationId: snapshot.operationId,
+      status: snapshot.status, admissionState: snapshot.admissionState,
+      admissionEffect: snapshot.admissionEffect, asOf: snapshot.updatedAt,
+      source: "supervisor-task-ledger", snapshot: true,
+      events: [], nextAfter: after, truncated: true, gapDetected: false,
+      scanned: 0, pageAvailable: false, complete: false,
+      error: "SUPERVISOR_PROGRESS_UNAVAILABLE_UNBOUNDED_SDK",
+      reviewRequired: true, passed: false, verified: false
+    };
   }
 
   async cancelSupervisedTask(id: string): Promise<unknown> {
