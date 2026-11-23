@@ -1,0 +1,21 @@
+name: F0-C10 T09 offline output integrity
+on:
+  pull_request:
+    branches: [staging/opencode-g1-rpc-safe-20261120]
+    paths:
+      - "docs/f0-c10/fixtures/**"
+      - "docs/f0-c10/09_OUTPUTS_ARCHIVOS.md"
+      - ".github/workflows/f0-c10-t09-offline.yml"
+permissions:
+  contents: read
+jobs:
+  verify-fixture-downloads:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Assert task-to-file ownership and byte-exact download
+        run: node --test docs/f0-c10/fixtures/09-output-contract.test.mjs
