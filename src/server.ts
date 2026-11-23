@@ -486,7 +486,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const state = await this.supervisedTaskStatus(id) as { status?: string };
     if (state.status !== "finished") throw new Error("ARTIFACT_TASK_NOT_FINISHED");
     const dev = this.env.DEV.getByName(projectContainerName(task.project));
-    const inspected = await dev.inspect(task.project, "read", request.path);
+    const inspected = await dev.readTaskArtifact(task.project, request.path);
     const prepared = await captureInspectedArtifact({
       requestId: task.id, ownerProject: task.project, ownerSession: task.session,
       repository: task.repository, request, inspected
