@@ -3,7 +3,7 @@
  * Never stringify/redact a complete untrusted RPC result before applying limits.
  * This bounds our own work, not the already allocated incoming RPC payload.
  */
-const SECRET_FIELD=/(^|[_.\\s-])(password|passphrase|token|secret|authorization|cookie|credential|api[_-]?key|private[_-]?key)([_.\\s-]|$)/i;
+const SECRET_FIELD=/(^|[_.\s-])(password|passphrase|token|secret|authorization|cookie|credential|api[_-]?key|private[_-]?key)([_.\s-]|$)/i;
 const OMIT="[contenido omitido por límite]";
 const MAX_DEPTH=10, MAX_NODES=512, MAX_KEYS=64, MAX_ITEMS=64;
 const MAX_KEY_CHARS=128, MAX_VALUE_CHARS=4096, MAX_TOTAL_CHARS=32_768;
@@ -11,11 +11,11 @@ type Budget={nodes:number;remainingChars:number;truncated:boolean;seen:WeakSet<o
 
 export function redactMcpString(value:string):string{
   return value
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,"[REDACTADO]")
-    .replace(/\\b(?:github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]{12,}\\b/g,"[REDACTADO]")
-    .replace(/\\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\\b/g,"[REDACTADO]")
-    .replace(/\\bBearer\\s+[A-Za-z0-9_.~+/-]+/gi,"Bearer [REDACTADO]")
-    .replace(/((?:api[_-]?key|password|passphrase|token|secret|authorization|cookie)\\s*[:=]\\s*["']?)([^\\s,;"']+)/gi,"$1[REDACTADO]");
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,"[REDACTADO]")
+    .replace(/\b(?:github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]{12,}\b/g,"[REDACTADO]")
+    .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/g,"[REDACTADO]")
+    .replace(/\bBearer\s+[A-Za-z0-9_.~+/-]+/gi,"Bearer [REDACTADO]")
+    .replace(/((?:api[_-]?key|password|passphrase|token|secret|authorization|cookie)\s*[:=]\s*["']?)([^\s,;"']+)/gi,"$1[REDACTADO]");
 }
 
 function bounded(value:unknown, budget:Budget,depth:number):unknown {
