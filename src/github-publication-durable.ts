@@ -25,6 +25,7 @@ type Claimed = { retryOnly: boolean; token: string; generation: number };
 const PREFIX = "github:pr-publisher:v1:";
 const TTL_MS = 60_000;
 const SHA = /^[a-f0-9]{40}$/i;
+const HASH = /^[a-f0-9]{64}$/i;
 
 async function digest(text: string): Promise<string> {
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
@@ -37,7 +38,7 @@ function readLedger(value: unknown): Ledger {
   if (entry.version !== 1 || !Number.isSafeInteger(entry.generation) || entry.generation! < 0)
     throw Error("PR_LEDGER_INVALID");
   const a = entry.active;
-  if (a && (!SHA.test(a.intentHash) || !/^[0-9a-f-]{36}$/i.test(a.token) ||
+  if (a && (!HASH.test(a.intentHash) || !/^[0-9a-f-]{36}$/i.test(a.token) ||
     !Number.isSafeInteger(a.generation) || a.generation < 1 ||
     !Number.isSafeInteger(a.deadline) || !["reserved", "publishing", "unknown"].includes(a.phase)))
     throw Error("PR_LEDGER_INVALID");
@@ -47,7 +48,7 @@ function readReceipt(value: unknown): Receipt | undefined {
   if (value === undefined) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw Error("PR_RECEIPT_INVALID");
   const r = value as Receipt;
-  if (r.version !== 1 || !SHA.test(r.intentHash) ||
+  if (r.version !== 1 || !HASH.test(r.intentHash) ||
     typeof r.repo !== "string" || typeof r.base !== "string" ||
     typeof r.branch !== "string" || !Number.isSafeInteger(r.number) || r.number < 1 ||
     typeof r.url !== "string" || r.draft !== true || !SHA.test(r.headSha) ||
