@@ -131,11 +131,14 @@ type GitHubFetch = typeof fetch;
 export type GitHubPrPublicationScope = {
   repo: string; base: string; branch: string; title: string; body: string;
 };
+export type GitHubPrPublicationProof = { readonly baseSha: string; readonly headSha: string };
 export type GitHubPrPublicationPermit = {
   readonly fencingToken: string;
   readonly retryOnly: boolean;
+  /** Pinned to the original write-ahead effect, never regenerated from a changed branch. */
+  readonly expectedProof?: GitHubPrPublicationProof;
   /** Durable "publishing" journal + token validation BEFORE HTTP POST. */
-  beginExternalEffect(): Promise<void>;
+  beginExternalEffect(proof: GitHubPrPublicationProof): Promise<void>;
 };
 export interface GitHubPrPublicationGate {
   withExclusive<T>(
@@ -603,6 +606,12 @@ export class GitHubBridge {
           return sha.toLowerCase();
         };
         const [baseSha, headSha] = await Promise.all([getHead(source), getHead(branch)]);
+        // A lost POST response must never be reconciled against a DIFFERENT
+        // branch HEAD, even if the branch, PR title and body have not changed.
+        if (permit?.retryOnly &&
+            (permit.expectedProof?.baseSha !== baseSha ||
+             permit.expectedProof?.headSha !== headSha))
+          throw new Error("PR_PUBLICATION_HEAD_CHANGED: original commit proof does not match current refs");
         const comparison = await this.api("GET", base + "/compare/" +
           encodeURIComponent(source) + "..." + encodeURIComponent(branch));
         if (!Array.isArray(comparison?.files) || comparison.files.length === 0 ||
@@ -677,11 +686,18 @@ export class GitHubBridge {
         if (baseShaNow !== baseSha || headShaNow !== headSha)
           throw new Error("PR_PREFLIGHT_STALE: branch moved during collision preflight");
         if (permit?.retryOnly) throw new Error("PR_PUBLISH_UNKNOWN: same intent previously attempted; no second POST");
-        if (permit) await permit.beginExternalEffect();
+        if (permit) await permit.beginExternalEffect({ baseSha, headSha });
         const created = await this.api("POST", base + "/pulls", {
           title: input.title, body: desiredBody,
           head: branch, base: source, draft: true
         });
+        // GitHub PR creation targets a BRANCH, not an immutable commit. A
+        // competing external push between final GET and POST can change what
+        // GitHub actually published. Only the returned PR SHA can confirm it.
+        if (permit && (created?.head?.ref !== branch || created?.base?.ref !== source ||
+                       created?.head?.sha?.toLowerCase() !== headSha ||
+                       created?.base?.sha?.toLowerCase() !== baseSha))
+          throw new Error("PR_PUBLICATION_HEAD_CHANGED: PR response does not confirm the reviewed commit");
         return { repo, number: created.number, url: created.html_url, draft: created.draft,
           base: source, head: branch, baseSha, headSha };
         };
