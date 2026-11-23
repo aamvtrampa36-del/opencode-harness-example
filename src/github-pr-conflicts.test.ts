@@ -81,3 +81,98 @@ describe("automatic GitHub PR writer-scope preflight",()=>{
    expect(h.posts()).toBe(0);
  });
 });
+
+describe("draft PR receipt reconciliation after ambiguous GitHub responses",()=>{
+  test("reuses only an open PR with the exact branch, SHA, base, title and body",async()=>{
+    const title="Synthetic verified receipt",body="T08 deterministic intent";
+    const previous={number:77,base:{ref:source,sha:shaB},
+      head:{ref:branch,sha:shaA,repo:{full_name:repo}},
+      title,body,draft:true,html_url:"https://github.com/"+repo+"/pull/77"};
+    const h=harness({open:[previous]});
+    const result:any=await h.bridge.execute({action:"pr",repo,branch,title,body});
+    expect(result).toMatchObject({number:77,reconciled:true,headSha:shaA});
+    expect(h.posts()).toBe(0);
+  });
+
+  test("rejects a same-branch PR with different intent, head or repository",async()=>{
+    const title="Expected intent",body="Expected payload";
+    const base={number:77,base:{ref:source,sha:shaB},
+      head:{ref:branch,sha:shaA,repo:{full_name:repo}},
+      title,body,draft:true,html_url:"https://github.com/"+repo+"/pull/77"};
+    for(const previous of [
+      {...base,body:"Changed payload"},
+      {...base,head:{...base.head,sha:"c".repeat(40)}},
+      {...base,head:{...base.head,repo:{full_name:"other/fork"}}},
+      {...base,draft:false}
+    ]){
+      const h=harness({open:[previous]});
+      await expect(h.bridge.execute({action:"pr",repo,branch,title,body}))
+        .rejects.toThrow("PR_ALREADY_OPEN");
+      expect(h.posts()).toBe(0);
+    }
+  });
+
+  test("lost 503 response after POST is reconciled, without a second POST",async()=>{
+    const title="Lost response",body="Deterministic draft";
+    let opened:any=null,posts=0;
+    const mock=async(url:unknown,init:RequestInit={})=>{
+      const u=new URL(String(url)),method=init.method||"GET",path=u.pathname+u.search;
+      if(method==="GET" && path===api)
+        return Response.json({default_branch:source});
+      if(method==="GET" && path.startsWith(api+"/git/ref/heads/"))
+        return Response.json({object:{sha:path.endsWith("/main")?shaB:shaA}});
+      if(method==="GET" && path.startsWith(api+"/compare/"))
+        return Response.json({total_commits:1,ahead_by:1,files:[{filename:changed}]});
+      if(method==="GET" && path.startsWith(api+"/pulls?"))
+        return Response.json(opened?[opened]:[]);
+      if(method==="POST" && path===api+"/pulls"){
+        posts++;
+        opened={number:78,base:{ref:source,sha:shaB},
+          head:{ref:branch,sha:shaA,repo:{full_name:repo}},
+          title,body,draft:true,html_url:"https://github.com/"+repo+"/pull/78"};
+        return Response.json({message:"upstream reply lost"},{status:503});
+      }
+      return Response.json({message:"unexpected request"},{status:404});
+    };
+    const bridge=new GitHubBridge("synthetic-test",mock as typeof fetch);
+    await expect(bridge.execute({action:"pr",repo,branch,title,body}))
+      .rejects.toThrow("GITHUB_TRANSIENT");
+    const receipt:any=await bridge.execute({action:"pr",repo,branch,title,body});
+    expect(receipt).toMatchObject({number:78,reconciled:true});
+    expect(posts).toBe(1);
+  });
+});
+
+describe("T08 bounded concurrent-writer exposure",()=>{
+  test("two simultaneous PR preflights can each miss the other (not an atomic lock)",async()=>{
+    const first="opencode/synthetic-a",second="opencode/synthetic-b";
+    let arrivals=0,release!:()=>void,posts=0;
+    const bothPreflighted=new Promise<void>(resolve=>{release=resolve;});
+    const mock=async(url:unknown,init:RequestInit={})=>{
+      const u=new URL(String(url)),method=init.method||"GET",path=u.pathname+u.search;
+      if(method==="GET" && path===api)return Response.json({default_branch:source});
+      if(method==="GET" && path.startsWith(api+"/git/ref/heads/"))
+        return Response.json({object:{sha:path.endsWith("/main")?shaB:shaA}});
+      if(method==="GET" && path.startsWith(api+"/compare/"))
+        return Response.json({total_commits:1,ahead_by:1,files:[{filename:changed}]});
+      if(method==="GET" && path.startsWith(api+"/pulls?")){
+        if(++arrivals===2)release();
+        await bothPreflighted;
+        return Response.json([]);
+      }
+      if(method==="POST" && path===api+"/pulls"){
+        posts++;
+        return Response.json({number:posts+100,html_url:"https://github.com/"+repo+"/pull/synthetic",draft:true},{status:201});
+      }
+      return Response.json({message:"unexpected request"},{status:404});
+    };
+    const bridge=new GitHubBridge("synthetic-test",mock as typeof fetch);
+    const result=await Promise.all([
+      bridge.execute({action:"pr",repo,branch:first,title:"Writer A"}),
+      bridge.execute({action:"pr",repo,branch:second,title:"Writer B"})
+    ]);
+    expect(result).toHaveLength(2);
+    expect(arrivals).toBe(2);
+    expect(posts).toBe(2); // Known TOCTOU defect; not a claim of safe arbitration.
+  });
+});
