@@ -312,3 +312,67 @@ Licencias comprobadas leyendo `LICENSE` a estos commits; **no se copió código 
 **EVIDENCIA:** commits/SHAs/CI indicados, inspección de SDK pin y fuente #126, Worker #374/MCP #19, Node test exit 0, issue #90, T01 #116 y T03 #125.  
 **BLOQUEANTE:** heap real del host V8, mapas en `@opencode/sdk@2.0.24`, leak/retención tras cancelación, workerd y co-residencia, lease y coste efectivo.  
 **PRÓXIMA ACCIÓN:** T01+T05 perfilar `wait()/history()/events()/sockets.` y runtime bajo controles; T03 integrar admisión idempotente; T11 conciliar las PR; solo después instrumentar un experimento workerd/Stage autorizado 1→2→4→10 y decidir B por mediciones, nunca por intuición.
+
+
+---
+
+# Parte III — Coordinación operativa R2-T02 con T01, T03, T05 y T11
+
+**Corte de lectura:** noche del 22-11-2026 BRT / 23-11-2026 UTC. **Autor:** ChatGPT mediante GitHub/Cloudflare/Remote de lectura y CI offline; **no hubo ejecución OpenCode Remote con efectos**. **Estado:** `PARTIAL / CROSS-PR_CONTRACT_RECORDED / DEPLOY_BLOCKED`. Esta sección no eleva autoridad sobre otras ramas.
+
+## 18. Reconciliación puntual de las PR y los dos Workers
+
+| Responsable | Fuente leída y SHA | Contribución demostrada | Pendiente específico; no atribuir PASS runtime |
+|---|---|---|---|
+| T01 | [PR R2 #129](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/129), `c8afb5302252d7edce18332b602d6d4e72755d58`, sobre #126 | 18 filas de observabilidad correlacionadas en **6 OOM reales**, RPC final `startSupervisedTask`, mismo DO, fase `supervisor.phase` con **0 registros**; fase sintética RED/GREEN Node y CI offline `45096090166` success | **No hay heap/isolate cuantitativo por fase ni método causal demostrado**; fase `create/fork/setModel/submit/status/alarm` requiere instrumentos antes del siguiente lote |
+| T02 | [PR R2 #128](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/128), base exacta #126 SHA `1268ba22f26330d619b046fcf551ca846cb69d0f` | Auditoría pin `agents@0.33.0` y benchmark Node 1/2/4/10, CI de integración de la rama previo al nuevo workflow: `45095780432`, `45095780437`, `45095780433` success | Hasta workerd/SDK real no hay memoria verdadera por sesión ni prueba 10 activos. Nueva CI [workflow offline T02](../../.github/workflows/f0-c10-r2-t02-residency.yml) registra las 12 combinaciones y artefacto JSON con procedencia `node-synthetic` |
+| T03 | [PR #125](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/125) `3d2a7927cf50087c710c66bf1d49e7fd7b8297e1` | 13 tests de ledger/claims **solo en memoria Node**, dos fallas RED sintéticas; contrato de `requestId` idempotente | NO hay admisión durable/fencing integrada con #126; no equivale a diez ejecutores reales ni sustituye journal T04 |
+| T05 | [PR #114](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/114) `4d0ec61f35920dc015b85a8561d743bb2de40a3e`, contenido incluido en #126 con #106 | Progress limitado a 128 eventos crudos, 64 visibles y 8192 bytes de proyección; #106 bloquea lectura supervisor de transcript | **Evento individual / serialización previa** aún ilimitados, `src/sockets.ts#snapshot` y `sessions.list` fuera de la protección supervisor, y ruta legacy export sin límite |
+| T11 | [PR #126](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/126) `1268ba22f26330d619b046fcf551ca846cb69d0f` | Integración previa draft CI verde ``45093134023`/`45093134014`/`45093134038` | Integrar la PR #128 **por comparación de 4 paths T02**, no importar toda la rama de nuevo. CI del nuevo HEAD conjunto y pruebas live siguen pendientes |
+
+**Estado Cloudflare reconfirmado por GET:** principal `opencode-g1-staging` #374 `3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb` / deployment `36ef84b3-0f99-4dd4-ab8e-c11ee450dd23`, MCP `opencode-staging-control-mcp` #19 `196240c0-1052-47b3-aaa7-02cf5baa87f0` / deployment `9fdaf22d-beeb-44a0-ab68-77ecd5745fa1`, ambos 100%. `staging_status` devuelve `status=ok`, `ready=true`, índice de al menos 96 sesiones incompleto. Sin prueba E2E ni memoria. Issue [#90](https://github.com/aamvtrampa36-del/opencode-harness-example/issues/90) **OPEN**.
+
+**Nota de alcance:** la PR #129 apareció después de iniciar el trabajo #128: es nueva evidencia T01, no prueba de que existan mediciones de heap que no se hayan leído. No cambiar ramas ajenas ni combinar instrumentaciones ficticias con runtime.
+
+## 19. Interfaces que deben coordinarse antes de un arreglo real
+
+### A — Fases y métricas: T01 ↔ T02
+
+Los eventos `supervisor.phase` (propuesta **NO implementada**) deben contener exclusivamente: `experiment_id`, versión Worker y SHA asociado **con evidencia de build**, `phase` enum fijo (`admit/create/fork/setModel/submit/status/alarm/recover/idleClose`), `timestampUtc`, `durationMs`, `outcome`, `traceId` y correlación anonimizada por tarea. No registrar prompt, transcript, claves, herramientas con argumentos ni strings de errores sin saneamiento. **No inventar `process.memoryUsage()` en workerd**; obtener cuantiles reales de memoria del isolate de Cloudflare y unir por tiempo/trace. El cuantíl de memoria filtrado por DO sigue siendo del isolate, posiblemente compartido.
+
+**Atribución mínima:** comparar baseline caliente, apertura de un host nuevo, 1/2/4/10 sesiones activas instrumentadas, settlement y reposo hasta cierre; aislar en el análisis la inicialización de plugins, las lecturas y las inferencias. Si la telemetría solo dice `startSupervisedTask` en OOM, reportar `cause=UNKNOWN`. No dar porcentajes de memoria por fase sin muestras reales de esa fase.
+
+### B — Capacidad y admisión: T03 ↔ T02 ↔ T04
+
+Un único ledger durable debe administrar `requestId→sessionId→operationId`, huella y cambio de estado; los claims tienen epoch/fencing y no se autoriza crear otra sesión para el mismo request tras `unknown`. El semáforo/capacidad es propiedad de T03; **T02 no introduce un segundo scheduler o lease**. Aceptar límites experimentales 1/2/4 con liberación de slot **solo al estado demostrado** y permitir 10 si y solo si se certifica memoria/coste. Un `busy=true` no acredita actividad de herramienta/inferencia. El journal para creación incierta pertenece a T04; `unknown/not_found` no autoriza replay ni libera automáticamente la reserva.
+
+### C — Lecturas, snapshots y memoria: T05 ↔ T02
+
+**Defecto de código verificable en #126 (no demostrado como causa del OOM):** [`src/sockets.ts`](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/1268ba22f26330d619b046fcf551ca846cb69d0f/src/sockets.ts) `#snapshot` L579–590 solicita `handle.history()`; `#broadcastSnapshot` L594–610 vuelve a materializar cada resnapshot, y `#settle` L617 usa `sessions.list()`. `#onConnect` L274 y `reattach` L265 también listan todas las sesiones. **Ni #106 ni #114 acotan estas vistas**, aunque el flujo del supervisor sin sockets puede no ejecutarlas. El SDK `agents@0.33.0` materializa `history()` y el snapshot de `events()` con historial total (fuente fijada en sección 12).
+
+**Contrato de arreglo que corresponde a T05:** API de página/cursor de mensajes antes de materializar, límite de bytes de entrada y salida **por evento y por RPC**, preservación de orden/continuidad y estado de `hasMore`; fan-out sin un transcript completo por cada cambio; cerrar streams con `stop()` al desconectar/cancelar; para cliente Android, conservar historial mediante paginación, no sustituir silenciosamente por `messages()` (que excluye partes compactadas). La salida recortada después de `JSON.stringify` es **insuficiente**. Cualquier cambio debe incluir mock de mucha historia, evento individual enorme, dos conexiones a una misma sesión, reconnect e idleClose, sin borrar datos. No eliminar historial persistido para obtener un benchmark favorable. T02 **no editó** `src/sockets.ts` ni rutas T05.
+
+### D — Handoff a T11
+
+La PR #128 tiene como base **#126**, por lo que el diff es específico y no vuelve a importar #106/#114/#120. El nuevo workflow offline es de pruebas, no utiliza tokens, modelos, llamadas remotas, datos DO ni secretos. T11 revisa `git diff #126..#128`, compara únicamente los nuevos ficheros y el apéndice de T02, ejecuta `bun test`, `typecheck`, build y los 12 casos sintéticos en un nuevo HEAD propio. **El CI verde de #128 no certifica ninguna modificación de #126** ni puede convertirse en merge automático.
+
+## 20. Protocolo de perfil real propuesto, bloqueado operativamente
+
+**Antes de crear sesiones nuevas:** registrar versión binaria efectiva de ambos Workers, revalidar código/artefactos asociados, control de acceso y scopes, lease exclusivo atómico sobre el único supervisor, presupuesto con **corte ejecutable** (no solo valor escrito), coste/tokens/rate limits verificados y ventana de prueba limitada. Requerir parada segura y reconciliación de IDs `unknown`. Una lectura `staging_status=ok` **no** concede lease ni presupuesto. Sin esos prerrequisitos, el perfil real está **BLOCKED**; se permite solo Observability read-only.
+
+**Instrumentación sin datos sensibles:** fase/trace/epoch, `active_execution_start/end` para intervalos reales de herramienta o inferencia, orden y número de eventos/bytes **antes** de serializar, estado de leases/streams y close/reopen, percentiles P50/P90/P99 memoria isolate, OOM por versión, estado terminal y confirmación recuperable de output. No deducir `memoryUsage` por sustracción de otros DO co-residentes.
+
+**Secuencia posterior autorizable:** baseline sin sesiones nuevas; 1→2→4→10 solicitudes independientes; en cada nivel registrar `active_execution` de cada tarea con **intersección común positiva** y validar resultados bytes/acciones. Después de finalizar/cancelar, observar baseline caliente y muestras de reposo/close, con marcas correlacionadas. Tres rondas completas de diez tareas solo tras superar preflight; detenerse inmediatamente al primer OOM, corrupción de scope, pérdida de lease, coste sin corte, resultados `unknown` o pérdida de consistencia. Ninguna etapa de este contrato fue ejecutada en Staging.
+
+**Decisión A/B con evidencia:** conservar A si, después de limitar todas las rutas de lectura relevantes y observar CPU/memoria real, diez intervalos activos independientes terminan sin OOM/huérfanos y con margen controlado. Elevar B (coordinador ligero + ejecutores) solo ante evidencia de límite de residencia del host o contención insalvable, con contrato de routing, rollback y aislamiento verificable; objetos DO diferentes pueden compartir isolate. No proponer bindings, migraciones ni Contenedores nuevos antes de un lote aparte.
+
+## 21. Recibo y publicación
+
+**Rama:** `f0-c10/r2-t02-harness-residency-20261122`, desde `1268ba22f26330d619b046fcf551ca846cb69d0f`; [PR #128](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/128) draft. **Cambios R2 de esta continuación:** informe `docs/f0-c10/02_DURABLE_OBJECTS.md`, instrumento previo 1/2/4/10, pruebas y workflow offline `f0-c10-r2-t02-residency.yml`. Sin cambios `src/server.ts`, `src/sockets.ts`, `src/supervisor-control.ts`, `wrangler*`, bindings, migraciones ni datos. No merge/deploy/Producción.
+
+**Verificación CI:** ejecutar workflow en HEAD y registrar identificadores/resultados a posteriori. Los archivos de evidencia son JSON etiquetado explícitamente `node-synthetic` y retenidos siete días; **no** se publica reporte en Biblioteca personal hasta verificar recibo de publicación. Gastos marginales GitHub/Cloudflare por lectura/CI no cuantificados; ningún modelo externo ejecutado por este encargo. Los comentarios de coordinación a las PR deben enlazar este documento con su SHA definitivo.
+
+**RESULTADO:** `PARTIAL / HANDOFF_READY`; coordinación de interfaces verificable, pero runtime 10-active no medido.  
+**EVIDENCIA:** #129, #125, #114, #126 y #128; fuentes de código, WORKER #374/MCP #19; suite 1/2/4/10 bajo CI específico.  
+**BLOQUEANTE:** métricas de isolate por fase, lease+corte real, observabilidad de verdadero solapamiento, reconciliación de sesión incierta, snapshots completos.  
+**PRÓXIMA ACCIÓN:** T11 incorporar el contrato sin duplicar la integración; T01 y T05 medir/limitar rutas indicadas y T03 aportar claim durable, en PR propias y sin despliegue. Después solicitar autorización **separada** de preflight/Stage E2E bajo controles, no ejecutarlo automáticamente.
