@@ -10,6 +10,8 @@ export const OBSERVER_ORIGINS = Object.freeze(['do', 'container', 'provider']);
 const ZERO = '0'.repeat(64);
 const observationBytes = (claim) => Buffer.from(
   'OPEN-CODE/F0-C10/OBSERVED-JOURNAL/V1\0' + canonicalJson(claim), 'utf8');
+export const operatorApprovalBytes = (claim) => Buffer.from(
+  'OPEN-CODE/F0-C10/OBSERVER-APPROVAL/V1\\0' + canonicalJson(claim), 'utf8');
 const hex40 = (s) => typeof s === 'string' && /^[a-f0-9]{40}$/.test(s);
 const nonempty = (s) => typeof s === 'string' && s.length > 0;
 const sha = (v) => createHash('sha256').update(canonicalJson(v)).digest('hex');
@@ -40,6 +42,30 @@ export function verifyObservedJournal(trace, trustedKeys, limits) {
     fail('SYNTHETIC_TRACE_REJECTED', 'fixture provenance is never admissible as real E2E');
   }
   const observerTrust = trustedKeys?.observers;
+  // An explicit operator-signed, independently supplied approval of the collector
+  // key fingerprints and deployments is required. Event signatures alone are not
+  // authority: a model may sign its own fabrications with ephemeral keys.
+  const approval = trustedKeys?.approval;
+  const operatorPem = trustedKeys?.operatorPublicKeyPem;
+  const approvalClaim = approval?.claim;
+  try {
+    const root = createPublicKey(operatorPem);
+    if (root.asymmetricKeyType !== 'ed25519' ||
+        !verify(null, operatorApprovalBytes(approvalClaim), root, Buffer.from(approval?.signature || '', 'base64')))
+      fail('OPERATOR_APPROVAL_INVALID', 'approval does not verify against external operator root');
+  } catch { fail('OPERATOR_APPROVAL_MISSING', 'operator-signed collector approval must be supplied externally'); }
+  if (!approvalClaim || approvalClaim.environment !== 'staging' ||
+      approvalClaim.experimentId !== meta.experimentId ||
+      approvalClaim.sourceSha !== meta.sourceSha ||
+      approvalClaim.workerVersion !== meta.workerVersion ||
+      approvalClaim.workerDeploymentId !== meta.workerDeploymentId ||
+      approvalClaim.mcpDeploymentId !== meta.mcpDeploymentId ||
+      approvalClaim.leaseId !== meta.leaseId ||
+      approvalClaim.fencingToken !== meta.fencingToken ||
+      approvalClaim.clockSyncMaxSkewMs !== meta.clockSyncMaxSkewMs ||
+      !nonempty(approvalClaim.clockSyncReceiptId)) {
+    fail('OPERATOR_APPROVAL_SCOPE_MISMATCH', 'approval not bound to worker, clocks, lease and experiment');
+  }
   const stream = new Map();
   const witnessed = new Map();
   const calls = new Map();
@@ -65,6 +91,12 @@ export function verifyObservedJournal(trace, trustedKeys, limits) {
       const pub = createPublicKey(t.publicKeyPem);
       if (pub.asymmetricKeyType !== 'ed25519') fail('OBSERVER_KEY_INVALID', origin);
       const fingerprint = createHash('sha256').update(pub.export({ type:'spki', format:'der' })).digest('hex');
+      const approved = approvalClaim?.observers?.[origin];
+      if (!approved || approved.publicKeySha256 !== fingerprint ||
+          approved.collectorId !== t.collectorId || approved.deploymentId !== t.deploymentId ||
+          approved.clockProofId !== t.clockProofId) {
+        fail('COLLECTOR_NOT_APPROVED', origin);
+      }
       if (fingerprints.has(fingerprint)) fail('OBSERVER_KEY_REUSE', origin);
       fingerprints.add(fingerprint);
     } catch { fail('OBSERVER_TRUST_INVALID', origin); }
