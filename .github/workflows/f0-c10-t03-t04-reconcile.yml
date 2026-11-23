@@ -2,7 +2,7 @@ name: F0-C10 T03-T04 reconciliation (offline only)
 
 on:
   pull_request:
-    branches: [f0-c10/r2-t11-master-integration-20261123]
+    branches: [f0-c10/r2-t11-master-integration-20261123, f0-c10/r2-t11-t03-t04-reconcile-20261123]
     paths:
       - 'src/server.ts'
       - 'src/supervisor-control.ts'
