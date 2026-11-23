@@ -44,10 +44,12 @@ function deferred() {
 }
 
 function mockGitHub(options: { samePath?: boolean; lost?: "applied" | "not-applied";
-  pausePost?: boolean } = {}) {
+  pausePost?: boolean; mutateHeadAfterFinalRead?: boolean } = {}) {
   const opened: any[] = [];
   const arrivals = deferred(), unblock = deferred();
-  let posts = 0;
+  let posts = 0, branchHead = headSha;
+  const headReads = new Map<string, number>();
+  const moveHead = () => { branchHead = "c".repeat(40); for (const pr of opened) pr.head.sha = branchHead; };
   const filename = (b: string) => options.samePath ? "src/shared.ts" :
     "docs/fixtures/" + b.slice(-16) + ".md";
   const http = (async (url: unknown, init: RequestInit = {}) => {
@@ -58,7 +60,12 @@ function mockGitHub(options: { samePath?: boolean; lost?: "applied" | "not-appli
       return Response.json({ default_branch: "main" });
     if (method === "GET" && path.startsWith(api + "/git/ref/heads/")) {
       const ref = decodeURIComponent(path.slice((api + "/git/ref/heads/").length));
-      return Response.json({ object: { sha: ref === OPENCODE_STAGING_BASE ? baseSha : headSha } });
+      if (ref === OPENCODE_STAGING_BASE) return Response.json({ object: { sha: baseSha } });
+      const count = (headReads.get(ref) ?? 0) + 1;
+      headReads.set(ref, count);
+      const observed = branchHead;
+      if (options.mutateHeadAfterFinalRead && count === 2) moveHead();
+      return Response.json({ object: { sha: observed } });
     }
     if (method === "GET" && path.startsWith(api + "/compare/")) {
       const ref = decodeURIComponent(path.split("...").at(-1) ?? "");
@@ -80,15 +87,16 @@ function mockGitHub(options: { samePath?: boolean; lost?: "applied" | "not-appli
       const number = 6000 + posts;
       const url = "https://github.com/" + repo + "/pull/" + number;
       opened.push({ number, html_url: url, draft: true, base: { ref: OPENCODE_STAGING_BASE, sha: baseSha },
-        head: { ref: payload.head, sha: headSha, repo: { full_name: repo } },
+        head: { ref: payload.head, sha: branchHead, repo: { full_name: repo } },
         title: payload.title, body: payload.body });
       if (options.lost === "applied")
         return Response.json({ message: "reply lost after commit" }, { status: 503 });
-      return Response.json({ number, html_url: url, draft: true }, { status: 201 });
+      return Response.json({ number, html_url: url, draft: true,
+        head: { ref: payload.head, sha: branchHead }, base: { ref: payload.base, sha: baseSha } }, { status: 201 });
     }
     return Response.json({ message: "Unexpected route " + method + " " + path }, { status: 404 });
   }) as typeof fetch;
-  return { http, opened, posts: () => posts, arrivals, unblock };
+  return { http, opened, posts: () => posts, arrivals, unblock, moveHead };
 }
 function bridge(storage: FakeStorage, h: ReturnType<typeof mockGitHub>) {
   return new GitHubBridge("synthetic-secret", h.http, undefined,
@@ -228,5 +236,26 @@ describe("F0-C10 R2-T08 durable publication: transactional ledger and real bridg
       { s: "sesVerified1", task: { ...task, repository: "aamvtrampa36-del/other-repo" } }
     ]) expect(() => assertSupervisedPublicationScope(intent(1), bad.s, bad.task))
       .toThrow("PR_PUBLICATION_SESSION_SCOPE_DENIED");
+  });
+});
+
+
+describe("R3 RED: actual GitHub PR HEAD must match the fenced write-ahead proof", () => {
+  test("external HEAD moves after final preflight GET but before POST: must not commit a false receipt", async () => {
+    const s = new FakeStorage(), h = mockGitHub({ mutateHeadAfterFinalRead: true });
+    await expect(bridge(s, h).execute(intent(1))).rejects.toThrow("PR_PUBLICATION_HEAD_CHANGED");
+    expect(h.posts()).toBe(1); // POST took place, but verified completion must be denied.
+    expect(h.opened[0]?.head.sha).toBe("c".repeat(40));
+    const active = s.snapshot().find(([k]) => k.startsWith("github:pr-publisher:v1:") && !k.includes(":branch:"))?.[1] as any;
+    expect(active?.active?.phase).toBe("unknown");
+    await expect(bridge(s,h).execute(intent(1))).rejects.toThrow("PR_PUBLICATION_HEAD_CHANGED");
+    expect(h.posts()).toBe(1);
+  });
+  test("POST applied, HTTP 503 lost, then branch HEAD moves: replay must not accept different commit", async () => {
+    const s = new FakeStorage(), h = mockGitHub({ lost: "applied" });
+    await expect(bridge(s, h).execute(intent(1))).rejects.toThrow("GITHUB_TRANSIENT");
+    h.moveHead();
+    await expect(bridge(s, h).execute(intent(1))).rejects.toThrow("PR_PUBLICATION_HEAD_CHANGED");
+    expect(h.posts()).toBe(1);
   });
 });
