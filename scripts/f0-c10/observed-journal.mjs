@@ -11,7 +11,7 @@ const ZERO = '0'.repeat(64);
 const observationBytes = (claim) => Buffer.from(
   'OPEN-CODE/F0-C10/OBSERVED-JOURNAL/V1\0' + canonicalJson(claim), 'utf8');
 export const operatorApprovalBytes = (claim) => Buffer.from(
-  'OPEN-CODE/F0-C10/OBSERVER-APPROVAL/V1\\0' + canonicalJson(claim), 'utf8');
+  'OPEN-CODE/F0-C10/OBSERVER-APPROVAL/V1\0' + canonicalJson(claim), 'utf8');
 const hex40 = (s) => typeof s === 'string' && /^[a-f0-9]{40}$/.test(s);
 const nonempty = (s) => typeof s === 'string' && s.length > 0;
 const sha = (v) => createHash('sha256').update(canonicalJson(v)).digest('hex');
@@ -34,7 +34,7 @@ export function verifyObservedJournal(trace, trustedKeys, limits) {
   const journal = trace?.observedJournal;
   const meta = trace?.metadata || {};
   if (journal?.schema !== OBSERVED_JOURNAL_SCHEMA || !Array.isArray(journal.records) ||
-      journal.records.length === 0) {
+      journal.records.length === 0 || journal.records.length > 5000) {
     return { pass: false, errors: [{ code: 'OBSERVED_JOURNAL_MISSING', detail: 'no source-signed observations' }] };
   }
   if (meta.simulated === true || meta.fixture === true || meta.synthetic === true ||
@@ -70,6 +70,10 @@ export function verifyObservedJournal(trace, trustedKeys, limits) {
   const witnessed = new Map();
   const calls = new Map();
   const fingerprints = new Set();
+  try {
+    const operatorRoot = createPublicKey(operatorPem);
+    fingerprints.add(createHash('sha256').update(operatorRoot.export({type:'spki',format:'der'})).digest('hex'));
+  } catch { fail('OPERATOR_TRUST_INVALID', 'unreadable external operator root'); }
   const usedRoles = ['runtime', 'artifact', 'telemetry', 'budget'];
   for (const role of usedRoles) {
     const pem = trustedKeys?.[role];
