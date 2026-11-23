@@ -9,6 +9,7 @@ import {
 
 type ControlEnv = {
   MCP_ENABLED?: string;
+  OPENCODE_SUPERVISOR_PHASE_TELEMETRY?: string;
   STAGING_HEALTH: Fetcher;
   STAGING_SUPERVISOR: DurableObjectNamespace;
 };
@@ -16,6 +17,7 @@ type ControlEnv = {
 const controlEnv = env as unknown as ControlEnv;
 const handler = createMcpHandler(() => {
   const bindings: StagingControlBindings = {
+    phaseTelemetryEnabled: controlEnv.OPENCODE_SUPERVISOR_PHASE_TELEMETRY === "true",
     readHealth: () => controlEnv.STAGING_HEALTH.fetch(new Request("https://staging.internal/api/health", {
       method: "GET",
       headers: { Accept: "application/json", "Cache-Control": "no-store" }
