@@ -7,7 +7,7 @@
 | Gate | Fuente real | Resultado |
 | --- | --- | --- |
 | T02 principal | [PR #111](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/111), `docs/f0-oom-02/recovery/02-binario-principal.md`; [CI 45070892923](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45070892923) success sobre SHA `87cbd07a06cfcc9eb5c4e3e1d9989943d78dfe84` | PASS de auditoría; 207/228 módulos activos coinciden con candidato, 21/228 divergen. No promovido |
-| T03 MCP | Documento hermano `03-binario-mcp.md`: ZIP y manifiestos SHA verificados, Cloudflare GET `content/v2` y digest del cuerpo activo | PASS de auditoría; activo #19 `3c7ef3c9…` vs candidato `4b9323d8…`, sin guard publicado. No promovido |
+| T03 MCP | [PR #112](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/112), `docs/f0-oom-02/recovery/03-binario-mcp.md`, y [verificación adicional](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/112#issuecomment-7088042418): ZIP/manifiestos SHA y Cloudflare GET `content/v2` | PASS de auditoría; activo #19 `3c7ef3c9…` vs candidato `4b9323d8…`, sin guard publicado. No promovido |
 | T04 transporte | [PR #109](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/109), [CI final 45066206624](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45066206624) success sobre `2d96d35286e3190287708fce752123afb3983c88` | PASS de descarga autenticada GitHub Actions, verificación y `--dry-run --no-bundle` principal y MCP; NO se subieron versiones |
 | T05 compatibilidad | [PR #110](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/110), 30 invariantes; [CI 45070504642](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45070504642) success sobre `a14511f5e31209e7d715a3c6cfc63b08f893df33` | PASS estructural limitado; identidad de assets, efectos sobre Workflow/Containers y persistencia no certificados |
 
@@ -66,7 +66,7 @@ La [documentación Cloudflare](https://developers.cloudflare.com/workers/authori
 
 ## 6. Decisión actual
 
-- **Hechos completados:** T02 auditado, T03 auditado directamente, T04 doble dry-run y verificación en CI, T05 invariantes estructurales, snapshots de Workers confirmados sin cambios; este documento prepara secuencia, parada y rollback.
+- **Hechos completados:** T02 auditado en PR #111, T03 auditado en PR #112 y corroborado independientemente, T04 doble dry-run y verificación en CI, T05 invariantes estructurales, snapshots de Workers confirmados sin cambios; este documento prepara secuencia, parada y rollback.
 - **Bloqueantes restantes:** GitHub Actions secret/token y scope real no observables; Cloudflare inventario de tokens HTTP 403; presupuesto de escritura sin corte demostrado; efecto real del upload sobre Workflow/Container/assets no verificado. T06 **no puede declararse ejecutado** y la corrección F0-OOM-02 **no está desplegada**.
 - **Próxima decisión del propietario:** aprobar un lote escrito y controlado para crear versiones **inactivas** solo después de resolver evidencias de credencial, scope, costes y side effects. El avance aquí no constituye autorización para intentar la carga a ciegas.
 
