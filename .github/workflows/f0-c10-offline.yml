@@ -2,7 +2,7 @@ name: F0-C10 offline harness (no Staging)
 
 on:
   pull_request:
-    branches: [staging/opencode-g1-rpc-safe-20261120, f0-c10/t11-integration-20261122]
+    branches: [staging/opencode-g1-rpc-safe-20261120, f0-c10/t11-integration-20261122, f0-c10/r2-t11-recovery-readmission-20261123]
     paths:
       - 'scripts/f0-c10/**'
       - 'docs/f0-c10/10_PRUEBAS_E2E.md'
@@ -43,6 +43,10 @@ jobs:
         run: node --experimental-strip-types scripts/f0-c10/t06-r2-process-fixtures.mjs
       - name: R2-T06 EPIPE consumer disconnect (offline)
         run: node --test scripts/f0-c10/t06-r2-output-disconnect.test.mjs
+      - name: R3-T06 local tree, setsid, artifact and cgroup RED fixtures
+        run: node --experimental-strip-types --test scripts/f0-c10/t06-r3-linux.test.mjs
+      - name: R3-T06 bounded bootstrap source contract
+        run: node --test scripts/f0-c10/t06-r3-source-contract.test.mjs
       - name: Inspect bounded JSON evidence
         run: node -e "const x=require('./f0-c10-offline-evidence.json'); if (!x.pass || x.realStagingTested) process.exit(1)"
 
