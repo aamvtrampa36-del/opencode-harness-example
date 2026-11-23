@@ -101,6 +101,22 @@ describe("F0-OOM-02 supervisor transcript memory containment", () => {
     expect(calls).toEqual({ history: 0, wait: 0, session: 0, log: 0, writes: 0 });
   });
 
+
+  test("R3 effect_unknown turn_submit snapshot never exposes a fencing token", async () => {
+    const { agent, task, rows, calls } = fixture({status:"unknown"});
+    const token="00000000-0000-4000-8000-000000000000";
+    rows.set("supervisor:admission:v1", {version:1, slots:{
+      [task.id]: {token,generation:1,expiresAt:1000,phase:"effect_unknown",effect:"turn_submit"}
+    }});
+    const receipt=await agent.remoteSupervisorTaskStatusSnapshot(task.id);
+    expect(receipt).toMatchObject({
+      status:"unknown",admissionState:"effect_unknown",admissionEffect:"turn_submit",
+      passed:false,verified:false,nativeReconciled:false
+    });
+    expect(JSON.stringify(receipt)).not.toContain(token);
+    expect(calls).toEqual({ history: 0, wait: 0, session: 0, log: 0, writes: 0 });
+  });
+
   test("R3 remote progress refuses any SDK log() allocation and never advances cursor", async () => {
     const { agent, task, calls } = fixture();
     for (const after of [0, 128, 1_000_000]) {
