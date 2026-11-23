@@ -451,9 +451,6 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (typeof v.turnId !== "string" || !/^[a-f0-9]{16}$/.test(v.turnId)) throw new Error("turnId inválido");
     if (typeof v.prompt !== "string" || v.prompt.trim().length < 12 || v.prompt.length > 5000)
       throw new Error("Instrucción inválida");
-    const admission = await supervisorAdmissionSlot(this.ctx.storage, id);
-    if (!supervisorAdmissionAllowsContinuation(admission))
-      throw new Error("SUPERVISOR_INITIAL_EFFECT_NOT_SETTLED");
     const key = r2TurnJournalKey(id, v.turnId);
     const taskKey = supervisorTaskKey(id);
     const data = new TextEncoder().encode(v.prompt.trim());
@@ -466,6 +463,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const reservation = await this.ctx.storage.transaction(async tx => {
       const task = await tx.get<SupervisorTask>(taskKey);
       if (!task?.session) throw new Error("Tarea no disponible");
+      // Read the global capacity slot in the SAME transaction as the
+      // continuation journal. A concurrent new-task admission may reclaim
+      // terminal slots; a stale preflight read cannot guard this race.
+      const admission = await supervisorAdmissionSlot(tx, id);
+      if (!supervisorAdmissionAllowsContinuation(
+        admission, task.sessionIdPolicy === "deterministic-v1"))
+        throw new Error("SUPERVISOR_TURN_REQUIRES_ACTIVE_ADMISSION");
       const previous = await tx.get<R2TurnJournal>(key);
       if (previous && (previous.hash !== hash || previous.session !== task.session ||
           previous.operationId !== operationId)) throw new Error("turnId reutilizado con otra instrucción");
