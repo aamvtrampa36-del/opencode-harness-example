@@ -1144,7 +1144,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (!key) throw Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
     return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
       await this.personalConfig.getAllowedRepositories(),
-      new DurableGitHubPublicationGate(this.ctx.storage)).execute(input);
+      new DurableGitHubPublicationGate(this.ctx.storage, Date.now, async (tx, scope) => {
+        const match = /^opencode\/staging-([a-f0-9]{16})$/.exec(scope.branch);
+        const current = match
+          ? await tx.get<SupervisorTask>(supervisorTaskKey(match[1])) : undefined;
+        assertSupervisedPublicationScope(input, sessionID, current);
+      })).execute(input);
   }
 
   private readonly githubRunner = {
