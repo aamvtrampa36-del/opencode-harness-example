@@ -182,3 +182,17 @@ La ruta del primer fixture T09 `/api/tasks/{id}/artifacts/{artifactId}` era un *
 En un lote posterior con candidato desplegado y autorización diferenciada: en Android real autenticado, completar una tarea que escriba `dist/report.txt`; capturarla, listar manifiesto tras reiniciar cliente, descargar mediante cliente autorizado con encabezado (nunca secreto en URL), verificar el archivo desde la carpeta Descargas mediante SHA-256 y tamaño; repetir con `.md`, `.json`, nombre Unicode, caducidad, cambio de sesión, conexión interrumpida y permisos denegados. Recoger modelo Android, versión Chrome/WebView o app, versión de Worker/MCP, SHA, ID de tarea, estado HTTP y SHA descargado sin revelar contenido privado. Playwright emulado no sustituye teléfono real. **No probado en este encargo**.
 
 **Gate R2-T09:** código de candidato creado; test unitario local PASS. No se ha demostrado descarga desde Cloudflare/Android ni diez ejecuciones reales. El resultado solo podrá elevarse tras CI en HEAD y pruebas E2E autorizadas; F0-C10 continúa PARTIAL. No fusionar, desplegar ni usar Producción.
+
+
+### 10.6 Cierre de ingeniería R2-T09 — CI confirmado
+
+**HEAD de código completo verificado:** `ff6872c4f9eaef30c69de1e330ab89c0892928fe`. GitHub Actions del SHA exacto, `completed/success`:
+
+- [R2-T09 offline #45097510680](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45097510680).
+- [R2-T09 offline #45097514981](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45097514981).
+
+Estas ejecuciones incorporaron `src/task-artifact-source.test.mjs`, `src/task-output-artifacts.test.mjs`, `src/task-artifact-http.test.mjs`, pruebas MCP, fixture anterior de T09, typecheck, build y validación de invariantes. La función `readTaskArtifact` drena stdout y stderr **con `captureBoundedOutput` concurrente**, topes 45 KiB y 1 KiB; NO utiliza `process.output()` para retener salida arbitraria. Un prefijo/sufijo truncado se considera error, nunca un archivo válido. Esto reusa el mecanismo ya existente de #105 para reducir presión de memoria.
+
+**Contrato de manifiesto final:** `schema`, `requestId`, `status` leído del supervisor, `artifacts[]`, `summary.available=false`, `errors=[]`, `evidence.sessionId/operationId/projectId`, `evidence.collectorVerification='pending'`, `passed=false`, `verified=false`. La proyección no anuncia un resumen textual auténtico si todavía no se ha obtenido; para T10 el colector debe efectuar otro GET y comparar hashes y contenido con oráculo independiente antes de emitir `artifact_readback`. El backend rechaza ID de artefacto inconsistente con la clave de ruta y permite recapturar una versión expirada sin asociarla a bytes de otra tarea.
+
+**Limitaciones finales:** PASS de CI y simulación de recuperación en servidor localhost; **NO** acceso autenticado real por Access contra el Worker publicado, **NO** lectura efectiva de un Container desplegado, **NO** sesión Android, **NO** autenticación multiusuario, **NO** GC periódico ni objetos grandes, **NO** demostración de 10 tareas OpenCode solapadas. El token global existente del supervisor no tiene caducidad individual: las pruebas de "token expirado" simulan un bearer viejo/rotado. Habilitar descarga Android exige un mecanismo de delegación segura de credenciales sin entregar el token del supervisor al JS cliente; esa política requiere otro lote. La PR #133 se mantiene draft, sin merge/deploy.
