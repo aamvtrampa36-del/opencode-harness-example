@@ -591,7 +591,7 @@ export class DevContainer extends DurableObject<Env> {
       "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git ca-certificates'";
     const handle = await container.exec(["bash", "-lc", script]);
     // Drain both streams before completion: output() buffers unbounded bytes.
-    const [stdout, stderr, exitCode] = await Promise.all([
+    const [, stderr, exitCode] = await Promise.all([
       captureBoundedOutput(handle.stdout, MAX_SHELL_OUTPUT),
       captureBoundedOutput(handle.stderr, MAX_SHELL_OUTPUT),
       handle.exitCode
@@ -614,7 +614,7 @@ export class DevContainer extends DurableObject<Env> {
       signal: AbortSignal.timeout(160_000)
     });
     // npm stdout is redirected, but stderr may still be large. Drain concurrently.
-    const [stdout, stderr, exitCode] = await Promise.all([
+    const [, , exitCode] = await Promise.all([
       captureBoundedOutput(process.stdout, MAX_SHELL_OUTPUT),
       captureBoundedOutput(process.stderr, MAX_SHELL_OUTPUT),
       process.exitCode
