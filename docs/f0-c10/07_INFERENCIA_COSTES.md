@@ -106,3 +106,95 @@ Escenario 10 tareas independientes × 3 inferencias, latencias variables, herram
 **EVIDENCIA:** código del SHA atribuido 74632f75db010223cc90d99ba4a801ce0e6414e5; Cloudflare versiones #374/#19; catálogo Remote; issue #90; 8 tests locales y scripts de esta rama. **Bloqueante:** capacidad real concurrente y saldo/corte upstream no observados, idempotencia de llamada upstream por verificar, OOM del DO #90 abierto.
 
 **PRÓXIMA ACCIÓN:** revisión del mock y del contrato del adaptador Harness; implementar una prueba RED/GREEN sin gasto, seguida de preflight explícito antes de inferencia real. No merge ni deploy autorizados.
+
+
+---
+
+# R2-T07 — Contrato de inferencia y gasto condicionado (continuación de segunda ronda)
+
+**Corte:** 2026-11-22 BRT. **Autoría:** ChatGPT, mediante lecturas autorizadas GitHub/Cloudflare/Remote y desarrollo con Node offline. **Estado:** PARTIAL / CONTRACT_CANDIDATE / NO RUNTIME ENFORCEMENT. Este apartado complementa el informe inicial, no lo sustituye.
+
+## R2.1 Autoridad y estado revalidado
+
+- Primera integración: PR https://github.com/aamvtrampa36-del/opencode-harness-example/pull/126, rama f0-c10/t11-integration-20261122, HEAD 1268ba22f26330d619b046fcf551ca846cb69d0f; abierta, draft, no merged al corte. Workflows 45093134023 (OpenCode validation), 45093134014 (offline harness) y 45093134038 (T09 output) completados con success en ese SHA. Contiene los tres archivos anteriores de PR #117 y los fixtures de T03 (#125): NO repetirlos ni modificarlos en #126.
+- Base R2-T07: rama propia f0-c10/r2-t07-inference-budget-20261122 creada desde el HEAD inmutable 1268ba22f26330d619b046fcf551ca846cb69d0f. Solo se añaden módulos locales de contrato/contraprueba y esta documentación. Ni main ni #126 ni ramas ajenas sufrieron escrituras.
+- El documento de coordinación y el plan adjuntos del proyecto están titulados F0_C10_COORDINACION_R2.md y F0_C10_PLAN_INTEGRAL.md; la consulta a docs/f0-c10/00_COORDINACION.md y docs/f0-c10/F0_C10_PLAN_INTEGRAL.md en #126 devolvió 404. No convertir un archivo adjunto en una supuesta versión del repositorio.
+- GET de Cloudflare revalidado: opencode-g1-staging, deployment 36ef84b3-0f99-4dd4-ab8e-c11ee450dd23, versión #374 3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb al 100%; opencode-staging-control-mcp, deployment 9fdaf22d-beeb-44a0-ab68-77ecd5745fa1, versión #19 196240c0-1052-47b3-aaa7-02cf5baa87f0 al 100%. El candidato #126 no está demostrado desplegado. Remote: status ok, preset economy todavía DeepSeek @cf/deepseek-ai/deepseek-v4.1-flash-1017, OpenRouter configurado, catálogo truncado; no prueba cuota ni capacidad real.
+- Issue #90 sigue siendo RED histórico: 10 starts no equivalen a diez trabajos simultáneos; 0/10 verificados, OOM DO, operaciones unknown/not_found y preparing. No hay evidencia de que límites de inferencia hayan causado ese incidente.
+
+## R2.2 Ruta SDK y matriz de límites
+
+**Código inspeccionado en #126:** src/model-presets.ts resuelve economy a proveedor cloudflare y el modelo DeepSeek indicado; src/server.ts reserva supervisor:task:requestId, fija modelo con handle.setModel y crea operación con handle.submit(operationId). src/sockets.ts persiste ModelRun con operationId, selección y fecha, no cada llamada interna del SDK. src/token-economizer-adapter.ts observa eventos session.step.ended con tokens/cost en conector opcional, pero no hace preflight vinculante. src/personal-settings.ts consulta consumo OpenRouter a nivel de clave. No se verificó en código de terceros el punto de interceptación por generación, el número de reintentos que el Harness puede efectuar por debajo de submit ni una API de lectura de respuesta facturable previamente perdida; por ello NO se implantó una guarda alrededor de submit que fingiera proteger todas las inferencias.
+
+| Control | Dato verificado | No demostrado / criterio |
+|---|---|---|
+| Cloudflare DeepSeek 1017 RPM | 20 peticiones/min modelo/cuenta con facturación Workers AI estándar, según anuncio oficial 19/10/2026 | Modalidad y cuota efectiva de esta cuenta, y tokens/minute |
+| Cloudflare AI Gateway prepagado | 50 RPM solo en ruta elegible de créditos y Unified Billing | No asumir aplicado ni cambiar configuración |
+| Concurrencia upstream | No se obtuvo un número de inferencias simultáneas garantizado | RPM no es semáforo, TPM ni capacidad física |
+| Contexto | 1.048.576 tokens máximos de ventana nominal del modelo | Contexto no implica presupuesto ni max-output acordado |
+| Workers AI 429 / 3040 | RejectIfBusy puede producir HTTP 429, código 3040 por capacidad | No equivale a OOM del isolate ni a 429 de presupuesto |
+| DO/Container | Límite físico de isolate y Container independiente del proveedor | Sin demostración 10 activos, sin correlación causal OOM→inferencia |
+| OpenRouter | Catálogo actualmente habilitado, sin cambio de preset | 402/429, límites por cuenta/proveedor, dedupe, cuota/modelo y facturación reales desconocidos |
+| Precio de referencia | DeepSeek USD 0,30/1M input ordinario, USD 0,006/1M cached input y USD 1,20/1M output en Cloudflare | Precio de fixture no constituye un recibo de facturación ni cubre compute/herramientas |
+
+Fuentes oficiales: https://developers.cloudflare.com/changelog/post/2026-10-19-deepseek-v4.1-flash-workers-ai/ ; https://developers.cloudflare.com/workers-ai/platform/pricing/ ; https://developers.cloudflare.com/workers-ai/features/reject-if-busy/ ; https://developers.cloudflare.com/ai-gateway/features/spend-limits/ ; https://developers.cloudflare.com/changelog/post/2026-11-13-spend-management/ .
+
+## R2.3 Corrección mínima implementada: contrato OFFLINE
+
+Archivos nuevos:
+
+- scripts/f0-c10/inference-budget.mjs
+- scripts/f0-c10/inference-budget.test.mjs
+- scripts/f0-c10/inference-known-red.red.mjs (RED esperado, no forma parte de CI)
+
+InferenceBudgetReference es una referencia sin red ni invocación del modelo. Cada generación lógica se identifica por (requestId, callId), vinculada a operationId de Harness, attemptId, proveedor/modelo, precio revisionado y topes de input/output. Recibe verifyT03Claim como dependencia: solo el owner T03 puede verificar un claim durable/fenced real. El valor lease-verified empleado en los tests es un marcador sintético, NO una prueba de autorización en runtime.
+
+El ciclo probado es reserve → dispatch (permiso de envío solo una vez por intento) → settle con recibo y tokens observados; los fallos pueden pasar a rejected solo con prueba interna autoritativa de rechazo **antes** de generación, o a unknown cuando el efecto upstream es ambiguo. En unknown se conserva responsabilidad potencial y se rechaza la creación de un nuevo intento para la misma llamada. El contrato permite un nuevo attemptId únicamente después de rechazo pre-generación confirmado y dentro de maxAttempts. 402 bloquea reintentos. El modelo/ proveedor no cambia silenciosamente para otras llamadas del mismo requestId, incluso cuando ambos modelos figuran en precios autorizados.
+
+La contabilidad del mock usa micro-US$ enteros, redondeo conservador hacia arriba, coste máximo reservado según tokens máximos y tarifas inmutables capturadas en cada registro. La exposición agregada es confirmed + reserved + unknownLiability; no admite reservas que excedan el límite por tarea o por lote. Los resultados duplicados idénticos son idempotentes, pero un mismo receiptId con tokens diferentes falla. Si el uso informado supera el techo reservado, se conserva la obligación y se genera error sin afirmar que el proveedor haya obedecido el presupuesto.
+
+No hay scheduler, cola, mecanismo RPM, Durable Object nuevo ni retry policy temporal en este cambio; esos contratos deben conectarse a **T03, no duplicarse**. La serialización Promise local de la clase no sirve entre isolates, instancias ni reinicios; snapshot en JSON es una FIJACIÓN DE ESTADO PARA TEST, no persistencia. No se debe exportar la clase tal cual al runtime como límite de gasto.
+
+## R2.4 Interfaz de integración propuesta con T03, NO instalada
+
+1. T03 emite/valida claim asociado a requestId, operationId, capacidad de trabajo y fencing generation, bajo autoridad duradera. T07 verifica ese claim **antes** de reservar y otra vez justo antes del dispatch. NO emitir permisos desde prompts ni desde el navegador.
+2. El mismo owner duradero y transaccional registra (requestId, callId, attemptId) y el importe worst-case en presupuesto GLOBAL y por tarea, antes de cualquier llamada real a modelo. Si las llamadas pueden ejecutarse en varios DO, la transacción debe residir en un único owner para esa cuenta y presupuesto: nunca Map/semáforo local. Al fallar commit se prohíbe el despacho.
+3. El adaptador SDK/Harness necesita un punto de enganche por generación real, que adjunte bounded input/output y usage/receipt nativo al registro; ninguna llamada lateral (subagentes, imágenes, reintentos internos, selección manual) debe eludirlo. Un permiso T03 para iniciar tarea **no** cubre por sí solo varias generaciones.
+4. Tras commit de sent y antes de obtener recibo, pérdida de respuesta → unknown; no suponer que un requestId/operationId del Harness deduplica solicitudes facturables upstream. Solo prueba del proveedor o auditoría autoritativa puede liberar esa reserva. El tiempo vencido no equivale a efecto ausente.
+5. T03 decide fairness, admisión de tareas, 1→2→4→10 y cola; la política por proveedor/modelo debe contar RPM en ventana móvil y capacidad de proveedor por ruta, pero no imponer permanentemente dos ejecutores de trabajos. InferenceBudgetReference NO hace rate limiting ni monitoriza ten concurrent physical agents.
+
+**Punto de parada:** hasta disponer de hook real, contabilidad transaccional duradera, protección de todas las rutas de inferencia y corte upstream verificable, ninguna cifra de presupuesto en este fichero protege dinero real.
+
+## R2.5 Reproducción y pruebas RED→GREEN
+
+Entorno local aislado: Node v22.16.0. Comandos sin servicios externos:
+
+- node --test scripts/f0-c10/inference-known-red.red.mjs ⇒ **2 fallos esperados / exit 1**: duplicación con reenvío ciego tras timeout y overbooking de diez solicitudes que solo consultan gasto confirmado; ambos son modelos inseguros, no fallos del SDK desplegado.
+- node --test scripts/f0-c10/inference-budget.test.mjs ⇒ **15 PASS / 0 FAIL / exit 0**: misma petición concurrente, reserva y settle idempotentes, límites globales/per-task, 429/3040 pre-generación, retry acotado, 402, timeout desconocido tras restore, recibo duplicado incompatible, techo de tokens, precio fijado ante cambio de catálogo, rechazo de claim vencido, prohibición de fallback autorizado solo por catálogo y operación ID exacta.
+- Los 15 GREEN no ejecutan ningún proveedor: tokens y tarifas de fixtures; no coste externo de inferencia. Tampoco sustituyen bun test/typecheck/build/invariantes y CI del HEAD de PR draft.
+
+Evidencia local de SHA-1 Git blob (debe coincidir con GitHub): inference-budget.mjs 736e25a45df30eeeb96aefaafd147982c965d3ac, inference-budget.test.mjs f11a6050a52a4b4dc51e4d252ee380f020190e74, inference-known-red.red.mjs 321cd36739f1e8f445efb6ee1018e9b73a2a25b9. El enlace GitHub de PR R2 y su HEAD exacto se registran en el recibo de PR, no como un SHA supuesto al escribir el documento.
+
+## R2.6 Controles externos de gasto: corte NO comprobado
+
+**Consulta Cloudflare read-only en R2:** GET account AI Gateway billing spending-limit devolvió success=true, enabled=false. Esto solo describe **ese control de gasto de AI Gateway**; no prueba presencia/ausencia de reglas específicas de gateways ni que OpenCode enrute su binding AI por Gateway. GET billing spend-policies devolvió HTTP 403: alcance insuficiente para confirmar reglas generales de Workers/DO. No se inspeccionaron ni modificaron importes, tarjetas, credenciales, secretos, billing ni configuración.
+
+Cloudflare documenta desde noviembre de 2026 controles de bloqueo de gasto para Workers y Durable Objects por producto; AI Gateway ofrece reglas que bloquean al superar cuota (HTTP 429), pero su cómputo de coste se basa en estimaciones y solo cubre las solicitudes que efectivamente lo atraviesan. No hay demostración de stop duro de Workers AI + OpenRouter + Workers + Durable Objects + Containers en conjunto, ni del crédito prepago aislado con corte no eludible. Por ello **NO es seguro empezar ensayo real** y está prohibido en este lote.
+
+Preflight vinculante para una futura autorización separada: identificar la ruta de cada modelo/proveedor, límite efectivo real y coste por token; comprobar un control upstream de rechazo por gasto y de cuota por modelo, un balance aislado con corte máximo incluyendo in-flight, bloqueos Worker/DO/Container y gastos externos, y registrar receipt de configuración sin secretos. Debe demostrarse con un test autorizado no facturable o simulado en el mismo punto de salida (no solo leer settings) y conciliar uso. Si el proveedor no admite hard cutoff o las peticiones eluden la ruta protegida, STOP.
+
+## R2.7 Alternativas abiertas verificadas y decisión
+
+- Cockatiel: https://github.com/connor4312/cockatiel, commit master 7d53faff11ebe4d892b17b85135f7dbeb86cfd78, licencia MIT comprobada desde LICENSE del repositorio. Ofrece bulkhead/retry/circuit breaker útiles dentro de un proceso, pero **NO sustituye transacción Durable Object ni deduplicación pagada del upstream**; introducir dependencia sería más complejidad que el contrato local.
+- Bottleneck: https://github.com/SGrondin/bottleneck, commit master b83528333ba4d27cf70b81cc2be12e09d7ff692f, licencia MIT comprobada. Puede coordinar tasas en runtimes Node/Redis; requiere servicios y compatibilidad Cloudflare Workers/Harness no probada, y duplicaría T03. No usar por defecto.
+- No se copió código de terceros, ni se introdujo proveedor, modelo, dependencia o servicio nuevo.
+
+## R2.8 Estado y entrega
+
+**RESULTADO:** PARTIAL — corrección offline determinista y contrato listo para revisión por T03/T11; no está en producción ni desplegado en Stage.
+
+**EVIDENCIA:** PR base #126 HEAD 1268ba22f26330d619b046fcf551ca846cb69d0f; Worker #374, MCP #19; Remote economy nativo; 2/2 RED esperados exit1 y 15/15 GREEN exit0 locales; tres archivos nuevos; git blob SHA cotejable; no llamadas pagadas.
+
+**BLOQUEANTE:** integración con punto real del SDK por generación; claim/fence duradero T03; persistencia global transaccional; validación de límites efectivos y corte de gasto upstream (AI Gateway account spend-limit disabled, billing spend-policies 403); OOM #90 no resuelto.
+
+**PRÓXIMA ACCIÓN:** T03/T11 integran, con pruebas de fault injection en proveedor simulado y memoria/recuperación bajo el mismo DO, el ledger de inferencia duradero sin otro scheduler. Hasta verificar los cortes reales y obtener lote de despliegue/gasto expresamente autorizado, no ejecutar Remote con efectos ni ensayos 10×.
