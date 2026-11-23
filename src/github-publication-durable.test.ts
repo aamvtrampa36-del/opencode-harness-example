@@ -170,7 +170,7 @@ describe("F0-C10 R2-T08 durable publication: transactional ledger and real bridg
     const a = gate.withExclusive(req, async permit => {
       entered.release();
       await resume.promise;
-      await permit.beginExternalEffect();
+      await permit.beginExternalEffect({baseSha,headSha});
       throw Error("unexpected");
     });
     await entered.promise;
@@ -194,7 +194,7 @@ describe("F0-C10 R2-T08 durable publication: transactional ledger and real bridg
     const old = gate.withExclusive(request, async permit => {
       entered.release();
       await resume.promise;
-      await permit.beginExternalEffect();
+      await permit.beginExternalEffect({baseSha,headSha});
       throw Error("should never send HTTP");
     });
     await entered.promise;
