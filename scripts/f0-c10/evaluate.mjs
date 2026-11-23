@@ -1,4 +1,6 @@
 import { TASKS, verifyArtifact } from './tasks.mjs';
+import { createHash } from 'node:crypto';
+import { verifyLiveEvidence, digest } from './live-evidence.mjs';
 
 // Preset registered BEFORE live sampling. Monetary cap is intentionally unset: no live run
 // is eligible until a measured provider-side spend stop and a run-specific cap are proven.
@@ -49,13 +51,17 @@ export function measureOverlap(intervals, size) {
   return { maxActive, longestFullMs, fullStart };
 }
 
-export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live' ? LIVE_LIMITS : OFFLINE_LIMITS } = {}) {
+export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live' ? LIVE_LIMITS : OFFLINE_LIMITS, trustedKeys } = {}) {
   const failures = [];
   const fail = (code, detail) => failures.push({ code, detail });
   if (!trace || !Array.isArray(trace.events) || !Array.isArray(trace.tasks)) {
     return { pass: false, failures: [{ code: 'INVALID_TRACE', detail: 'missing tasks/events' }] };
   }
   const { tasks, events } = trace;
+  if (mode === 'live') {
+    const attestation = verifyLiveEvidence(trace, trustedKeys, limits);
+    for (const issue of attestation.failures) fail(issue.code, issue.detail);
+  }
   const size = tasks.length;
   if (![1, 2, 4, 10].includes(size)) fail('INVALID_SIZE', size);
   if (trace.mode !== mode) fail('MODE_MISMATCH', { expected: mode, actual: trace.mode });
@@ -74,6 +80,7 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     }
     if (identity.some((x) => typeof x !== 'string' || !x.length)) continue;
     const stream = events.filter((e) => e.requestId === task.requestId).sort((a, b) => a.seq - b.seq);
+    if (task.experimentId !== trace.metadata?.experimentId || task.sourceSha !== trace.metadata?.sourceSha) fail('TASK_SCOPE_MISMATCH', task.requestId);
     const types = stream.map((e) => e.type);
     for (const required of ['received', 'admitted', 'persisted', 'execution_start', 'output', 'completed']) {
       if (types.filter((t) => t === required).length !== 1) fail('MISSING_OR_DUPLICATE_' + required.toUpperCase(), task.requestId);
@@ -117,6 +124,7 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
           artifact.projectId !== task.projectId ||
           artifact.content !== original.content ||
           artifact.sha256 !== original.sha256 ||
+          (mode === 'live' && (typeof artifact.bytesBase64 !== 'string' || !artifact.retrievedAtMs)) ||
           !verifyArtifact(task, artifact)) {
         fail('ARTIFACT_READBACK_MISMATCH', task.requestId);
       }
@@ -128,12 +136,16 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     }
     const open = new Map();
     for (const e of stream) {
-      if (e.type === 'tool_start' || e.type === 'inference_start') open.set(e.type + ':' + e.callId, e);
+      if (e.type === 'tool_start' || e.type === 'inference_start') {
+        const callKey = e.type + ':' + e.callId;
+        if (!e.callId || open.has(callKey)) fail('DUPLICATE_ACTIVITY_START', task.requestId);
+        else open.set(callKey, e);
+      }
       if (e.type === 'tool_end' || e.type === 'inference_end') {
         const startType = e.type === 'tool_end' ? 'tool_start' : 'inference_start';
         const item = open.get(startType + ':' + e.callId);
         if (!item || e.atMs <= item.atMs || item.atMs < start.atMs || e.atMs > done.atMs) fail('INVALID_ACTIVITY_INTERVAL', task.requestId);
-        else if (item.source === (mode === 'live' ? 'runtime' : 'mock') && e.source === item.source && e.toolName === item.toolName && e.exitCode === 0) intervals.push({ requestId: task.requestId, start: item.atMs, end: e.atMs });
+        else if (item.source === (mode === 'live' ? 'runtime' : 'mock') && e.source === item.source && e.toolName === item.toolName && (e.type === 'tool_end' ? e.exitCode === 0 : e.outcome === 'success')) intervals.push({ requestId: task.requestId, start: item.atMs, end: e.atMs });
         else fail('UNTRUSTED_ACTIVITY', task.requestId);
         open.delete(startType + ':' + e.callId);
       }
@@ -149,6 +161,7 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     for (const e of stream) {
       if (!Number.isFinite(e.seq) || !Number.isFinite(e.atMs)) fail('INVALID_EVENT_CLOCK', task.requestId);
       if (e.sessionId !== task.sessionId || e.operationId !== task.operationId || e.projectId !== task.projectId || e.executorId !== task.executorId) fail('CROSS_SESSION_EVENT', task.requestId);
+      if (e.experimentId !== trace.metadata?.experimentId || e.sourceSha !== trace.metadata?.sourceSha) fail('CROSS_EXPERIMENT_OR_SHA', task.requestId);
       if (mode === 'live' && (e.type === 'artifact_readback' ? e.source !== 'artifact-collector' : (e.source !== 'runtime' && e.source !== 'telemetry'))) fail('UNTRUSTED_LIVE_EVENT', task.requestId);
       const eventKey = task.requestId + ':' + e.seq;
       if (seenEvents.has(eventKey)) fail('DUPLICATE_EVENT_SEQUENCE', eventKey);
@@ -159,6 +172,7 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     }
   }
   if (events.some((e) => !ids.has(e.requestId))) fail('UNKNOWN_REQUEST_EVENTS', 'event without declared task');
+  if (!trace.metadata?.experimentId || !/^[a-f0-9]{40}$/.test(trace.metadata?.sourceSha || '')) fail('MISSING_EXPERIMENT_SHA', 'attribution not established');
   const overlap = measureOverlap(intervals, size);
   if (overlap.maxActive !== size || overlap.longestFullMs < limits.minOverlapMs) fail('INSUFFICIENT_REAL_OVERLAP', overlap);
   if (oom > limits.maxOom) fail('OOM', oom);
@@ -185,7 +199,8 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     if (!trace.metadata?.observabilityQueryId) fail('MISSING_CLOUDFLARE_QUERY', 'independent query receipt required');
     if (trace.metadata?.sourceClock !== 'server') fail('CLOCK_UNTRUSTED', trace.metadata?.sourceClock);
     if (trace.metadata?.evidenceOrigin !== 'independent_runtime') fail('PROVENANCE_UNTRUSTED', trace.metadata?.evidenceOrigin);
-    if (!trace.metadata?.exclusiveLeaseAtomicVerified) fail('LEASE_UNVERIFIED', 'atomic lease + fencing token required');
+    if (!trace.metadata?.exclusiveLeaseAtomicVerified || !trace.metadata?.fencingToken) fail('LEASE_UNVERIFIED', 'atomic lease + fencing token required');
+    if (trace.metadata?.limitsSha256 !== digest(limits)) fail('LIMITS_NOT_PREDECLARED', 'out-of-band run limits changed');
   }
   return {
     pass: failures.length === 0, size, failures, metrics: {
@@ -197,14 +212,18 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
   };
 }
 
-export function evaluateCampaign(rounds, limits = LIVE_LIMITS) {
+export function evaluateCampaign(rounds, limits = LIVE_LIMITS, { trustedKeys } = {}) {
   if (!Array.isArray(rounds) || rounds.length < limits.minRounds) return { pass: false, code: 'TOO_FEW_ROUNDS' };
-  const ids = new Set();
-  const reports = rounds.map((trace) => evaluateTrace(trace, { mode: 'live', limits }));
+  const ids = new Set(), allRequests = new Set();
+  const reports = rounds.map((trace) => evaluateTrace(trace, { mode: 'live', limits, trustedKeys }));
   for (const trace of rounds) {
     if (trace.tasks?.length !== 10) return { pass: false, code: 'NOT_TEN_TASKS', reports };
     if (!trace.metadata?.experimentId || ids.has(trace.metadata.experimentId)) return { pass: false, code: 'DUPLICATE_EXPERIMENT', reports };
     ids.add(trace.metadata.experimentId);
+    for (const task of trace.tasks) {
+      if (allRequests.has(task.requestId)) return { pass: false, code: 'REUSED_REQUEST_BETWEEN_ROUNDS', reports };
+      allRequests.add(task.requestId);
+    }
   }
   return { pass: reports.every((r) => r.pass), reports };
 }
