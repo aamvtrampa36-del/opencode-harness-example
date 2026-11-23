@@ -18,7 +18,7 @@ Archivos implementados:
 - scripts/f0-c10/tasks.mjs: diez entradas y oráculos; hash real de bytes UTF-8.
 - scripts/f0-c10/mock.mjs: proveedor falso con demoras, ejecución concurrente simulada, estados y fallos.
 - scripts/f0-c10/evaluate.mjs: aceptación fail-closed y cálculo de solapamiento temporal mediante intervalos de herramienta/inferencia; distingue modo offline de live.
-- scripts/f0-c10/evaluate.test.mjs: 24 tests RED/GREEN.
+- scripts/f0-c10/evaluate.test.mjs: 26 tests RED/GREEN.
 - scripts/f0-c10/run-offline.mjs: CLI ejecutable y matriz de fallos.
 - .github/workflows/f0-c10-offline.yml: prueba aislada sin secretos, inferencia ni llamadas a Staging.
 
@@ -29,7 +29,7 @@ Usa Node >=20 sin paquetes externos, proveedores ni credenciales. Ejecutar desde
     node scripts/f0-c10/run-offline.mjs --size 10 --fault historical-red
     node scripts/f0-c10/run-offline.mjs --size 10 --fault false-pass
 
-El último par **debe salir con código 1**; el modo --suite sale 0 solo si los GREEN pasan y **todos** los RED fallan. La salida JSON está limitada a fixtures no sensibles; no contiene tokens ni transcripciones. Resultado de validación local T10: **24/24 tests y 16/16 escenarios de suite correctos**. En mock hubo solapamiento de aproximadamente 130 ms para diez herramientas simuladas; no representa rendimiento real de OpenCode.
+El último par **debe salir con código 1**; el modo --suite sale 0 solo si los GREEN pasan y **todos** los RED fallan. La salida JSON está limitada a fixtures no sensibles; no contiene tokens ni transcripciones. Resultado de validación local T10: **24/24 tests y 16/16 escenarios originales de suite correctos**, antes de la auditoría de lectura independiente. La rama de auditoría agrega dos tests y dos negativos; el resultado de CI de estos cambios debe verificarse en el HEAD de la PR.. En mock hubo solapamiento de aproximadamente 130 ms para diez herramientas simuladas; no representa rendimiento real de OpenCode.
 
 ## 3. Diez tareas sintéticas descartables
 
@@ -62,7 +62,7 @@ Cada entrada tiene requestId hexadecimal único (exactamente 16 caracteres), ses
 | cross-project | RED |
 | duplicate-request | RED |
 | client-only/busy-only | RED |
-| cancelled inesperado | RED |
+| cancelled inesperado | RED |\n| missing-readback; corrupt-readback | RED: el artefacto afirmado no basta si no se recuperan bytes idénticos |
 | restart-recovered, ids duraderos reconciliados | GREEN de simulador |
 | retry 429 con mismo requestId, una vez | GREEN de simulador |
 | TDD sin evidencia RED; output ausente; status fuera de actividad; campaña duplicada; forged live sin telemetría | RED |
@@ -71,11 +71,11 @@ Estas pruebas verifican la capacidad del **observador** para rechazar evidencia 
 
 ## 5. Evidencia temporal y correlación
 
-Evento mínimo: type, seq, atMs, requestId, sessionId, operationId, projectId, executorId y source. Para un intervalo: callId, toolName, exitCode y pares start/end emitidos por el runtime. Output: kind, content, projectId, path, sha256, readback. En modo live, el validador exige source=runtime, metadata de SHA/base/deployment y clockSyncMaxSkewMs <=250, un query ID de Cloudflare, lease con fencing token y telemetría independiente. Una traza mock renombrada live debe fallar.
+Evento mínimo: type, seq, atMs, requestId, sessionId, operationId, projectId, executorId y source. Para un intervalo: callId, toolName, exitCode y pares start/end emitidos por el runtime. Output: kind, content, projectId, path, sha256; readback: bytes completos recuperados por un colector separado, misma ruta, proyecto, SHA y oráculo. Un evento output autoemitido nunca prueba descarga. En modo live, el validador exige source=runtime para eventos de ejecución y source=artifact-collector para el evento separado de lectura de bytes; también exige metadata de SHA/base/deployment y clockSyncMaxSkewMs <=250, un query ID de Cloudflare, lease con fencing token y telemetría independiente. Una traza mock renombrada live debe fallar.
 
 Medir máximo de tareas con intervalos tool/inference realmente abiertos y duración de la intersección de las diez. Los HTTP iniciados, el campo busy, una cola, las llamadas al proveedor aún no iniciadas y la mera existencia de operaciones no cuentan. La lectura de estado bajo carga se registra con su latencia y debe estar temporalmente dentro del intervalo de una herramienta. Las métricas del isolate en Cloudflare pueden sumar varios Durable Objects: nunca adjudicar la memoria compartida a una sola sesión. Ver [límites Worker](https://developers.cloudflare.com/workers/platform/limits/) y [métricas DO](https://developers.cloudflare.com/durable-objects/observability/metrics-and-analytics/).
 
-El Remote actual expone start/status/progress, pero su secuencia de eventos por sí sola **no acredita** intervalos reales de inferencia o ejecución. Para T11 hace falta un colector runtime independiente y verificado; no sintetizar intervalos de busy ni inventar timestamps.
+El Remote actual expone start/status/progress, pero su secuencia de eventos por sí sola **no acredita** intervalos reales de inferencia o ejecución. Las marcas `source` del JSON no son firmas criptográficas: T11 debe autenticar la procedencia del colector y los recibos contra Cloudflare o un registro verificable externo antes de considerar confiable cualquier traza live. Para T11 hace falta un colector runtime independiente y verificado; no sintetizar intervalos de busy ni inventar timestamps.
 
 ## 6. Umbrales fijados antes de medir
 
