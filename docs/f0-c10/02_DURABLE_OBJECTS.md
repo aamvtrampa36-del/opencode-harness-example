@@ -376,3 +376,21 @@ La PR #128 tiene como base **#126**, por lo que el diff es específico y no vuel
 **EVIDENCIA:** #129, #125, #114, #126 y #128; fuentes de código, WORKER #374/MCP #19; suite 1/2/4/10 bajo CI específico.  
 **BLOQUEANTE:** métricas de isolate por fase, lease+corte real, observabilidad de verdadero solapamiento, reconciliación de sesión incierta, snapshots completos.  
 **PRÓXIMA ACCIÓN:** T11 incorporar el contrato sin duplicar la integración; T01 y T05 medir/limitar rutas indicadas y T03 aportar claim durable, en PR propias y sin despliegue. Después solicitar autorización **separada** de preflight/Stage E2E bajo controles, no ejecutarlo automáticamente.
+
+
+## 22. Recibos de coordinación y benchmark con CI — 2026-11-23 UTC
+
+**Comentarios registrados y leídos de nuevo por GitHub** (no son tareas ejecutadas automáticamente por otros agentes):
+
+| Destinatario | Comentario publicado | Alcance transferido |
+|---|---|---|
+| T01 / PR #129 | [#7089423834](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/129#issuecomment-7089423834) | Etiquetas y evidencia de memoria por fase; nunca inferir allocador solo por RPC |
+| T03 / PR #125 | [#7089424283](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/125#issuecomment-7089424283) | Único ledger durable y fencing, `unknown` sin replay, sin second scheduler |
+| T05 / PR #114 | [#7089424766](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/114#issuecomment-7089424766) | Rutas `src/sockets.ts` no acotadas, paginación que preserve historial y event bytes |
+| T11 / PR #126 | [#7089425312](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/126#issuecomment-7089425312) | Conciliación #128 como diff de cuatro archivos sobre SHA fijo #126 |
+
+**Resultado CI reproducible:** workflow [`F0-C10 R2-T02 offline residency`, run `45096509737`](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45096509737), **completed/success** sobre `2b2204201e0a591e9ca90b0a000f649e5c4f5136`. En el job `137437379931` los pasos de tests Node 1/2/4/10, recolección de doce combinaciones, validación del esquema/procedencia y subida de artefacto obtuvieron `success`. Artefacto GitHub Actions `14783771427`, nombre `f0-c10-r2-t02-node-synthetic-7c79cc22f4825bb92bfd3304eeea9a60606198f8`, digest ZIP declarado `sha256:194314af90fbcc6dfad86ff3617ff5915a3025eea0d4c7274e911a219d76ecc3`, caducidad **2026-11-30T01:47:15Z**. La metainformación del artefacto indica `head_sha=2b2204201e0a591e9ca90b0a000f649e5c4f5136`. No se descargó ni rehasheó independientemente su ZIP, así que el digest es **metadato de GitHub**, no verificación independiente.
+
+Este nuevo apéndice actualiza el HEAD del PR #128, y el workflow puede ejecutarse de nuevo: **el PASS indicado pertenece estrictamente a `2b220420...`**. Cualquier HEAD posterior se debe verificar por separado. GitHub Actions corrió sólo Node/synthetic; no invocó un modelo real ni operó sobre Staging. Coste de CI/API no cuantificado.
+
+**Punto de continuidad material:** comentarios confirmados, contrato publicado y benchmarks archivados, pero **no hay entrega de T01/T03/T05 posterior al intercambio ni aceptación formal por T11**. T11 sigue draft y no puede declararse integrada sólo porque exista comentario o PR #128 apuntando a su HEAD. **F0-C10 = PARTIAL**.
