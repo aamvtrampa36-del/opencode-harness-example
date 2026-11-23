@@ -29,6 +29,8 @@ export type ArtifactView = {
   delivery: { kind: "authenticated-route"; path: string; expiresAt: number };
 };
 export type StoredTaskArtifact = Omit<ArtifactView, "schema" | "delivery"> & {
+  /** Private relative source path for content-id verification, NEVER in ArtifactView. */
+  sourcePath: string;
   ownerProject: string;
   ownerSession: string;
   repository: string;
@@ -123,7 +125,7 @@ export async function captureInspectedArtifact(args: {
   const now = args.now ?? Date.now();
   assert(Number.isSafeInteger(now) && now >= 0, "INVALID_CAPTURE_TIME");
   return {
-    requestId: args.requestId, artifactId,
+    requestId: args.requestId, artifactId, sourcePath: req.path,
     ownerProject: args.ownerProject, ownerSession: args.ownerSession, repository: args.repository,
     name: req.name, mime: req.mime, byteSize: bytes.byteLength, sha256,
     createdAt: now, expiresAt: now + TASK_ARTIFACT_TTL_MS, bytes
@@ -174,9 +176,30 @@ export async function verifiedArtifactDownload(artifact: StoredTaskArtifact, now
       (await shaHex(artifact.bytes)) !== artifact.sha256) {
     return artifactErrorResponse("ARTIFACT_INTEGRITY_FAILURE", 502);
   }
-  // Validate metadata again: never trust storage corruption or a forged MIME/name.
-  try { validateCaptureRequest({ path: "dist/archivo." + artifact.name.slice(artifact.name.lastIndexOf(".") + 1), name: artifact.name, mime: artifact.mime }); }
-  catch { return artifactErrorResponse("INVALID_ARTIFACT_METADATA", 502); }
+  // A stored hash that matches stored bytes is insufficient: the bytes AND
+  // checksum could be rewritten under the original artifactId. Recompute
+  // the task-scoped content ID from the private captured source path.
+  try {
+    assertTaskId(artifact.requestId);
+    assertArtifactId(artifact.artifactId);
+    const identity = validateCaptureRequest({
+      path: artifact.sourcePath, name: artifact.name, mime: artifact.mime
+    });
+    if (!Number.isSafeInteger(artifact.createdAt) ||
+        !Number.isSafeInteger(artifact.expiresAt) ||
+        artifact.createdAt < 0 || artifact.createdAt > now ||
+        artifact.expiresAt - artifact.createdAt !== TASK_ARTIFACT_TTL_MS) {
+      return artifactErrorResponse("ARTIFACT_IDENTITY_FAILURE", 502);
+    }
+    const fingerprint = new TextEncoder().encode([
+      artifact.requestId, identity.path, identity.name, identity.mime, artifact.sha256
+    ].join("\n"));
+    if ((await shaHex(fingerprint)).slice(0, 32) !== artifact.artifactId) {
+      return artifactErrorResponse("ARTIFACT_IDENTITY_FAILURE", 502);
+    }
+  } catch {
+    return artifactErrorResponse("INVALID_ARTIFACT_METADATA", 502);
+  }
   return new Response(new Uint8Array(artifact.bytes), { status: 200, headers: {
     "Content-Type": artifact.mime + "; charset=utf-8",
     "Content-Length": String(artifact.byteSize),

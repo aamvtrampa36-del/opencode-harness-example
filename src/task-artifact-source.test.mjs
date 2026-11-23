@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, linkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -22,6 +22,11 @@ try {
   writeFileSync(join(root, 'private.txt'), 'PRIVATE');
   symlinkSync(join(root,'private.txt'),join(root,project,'dist','link.txt'));
   symlinkSync(join(root,'private.txt'),join(root,project,'dist','alias.txt'));
+  linkSync(join(root,'private.txt'),join(root,project,'dist','hard.txt'));
+  const foreign = 'supervised-0000000000000002';
+  mkdirSync(join(root,foreign,'dist'), {recursive:true});
+  writeFileSync(join(root,foreign,'dist','confidential.txt'), 'OTHER TASK SECRET');
+  linkSync(join(root,foreign,'dist','confidential.txt'), join(root,project,'dist','cross-task.txt'));
   // Probe path and identity in the actual read-only process, not a mocked receipt.
   test('real Container-style process reads exact source bytes and SHA-256', () => {
     const result=probe('dist/valid.txt');
@@ -41,6 +46,15 @@ try {
     for (const p of ['dist/link.txt','dist/alias.txt','dist/../private.txt','../private.txt','/bundle/x.txt','file:///tmp/x.txt','dist/missing.txt']) {
       const result=probe(p); assert.notEqual(result.status,0,p);
       assert.equal(result.stdout,'',p);
+    }
+  });
+  test('hardlinks to other tasks or private files fail closed (R3 RED to GREEN)', () => {
+    for (const p of ['dist/hard.txt','dist/cross-task.txt']) {
+      const result = probe(p);
+      assert.notEqual(result.status,0,p);
+      assert.equal(result.stdout,'',p);
+      assert.ok(!result.stderr.includes('OTHER TASK SECRET') &&
+        !result.stderr.includes('PRIVATE'),p);
     }
   });
   test('large files over 32KiB cannot become a successful receipt', () => {

@@ -136,3 +136,37 @@ test('Manifest advertises only authenticated relative route, no bearer or source
  assert.ok(!JSON.stringify(m).includes('dist/report.txt'));assert.ok(!JSON.stringify(m).includes('/bundle'));
  assert.ok(!JSON.stringify(m).includes('Bearer'));assert.ok(!JSON.stringify(m).includes('http'));
 });
+test('R3 same-length stored replacement with recomputed SHA fails after manifest',async()=>{
+  const original=await capture(T1,'first');
+  const replacement=await capture(T1,'other'); // same byte size
+  const forged={...original,bytes:replacement.bytes,sha256:replacement.sha256};
+  assert.equal(artifactView(forged).artifactId,original.artifactId);
+  const res=await verifiedArtifactDownload(forged,1001);
+  assert.equal(res.status,502);
+  assert.equal(res.headers.get('content-disposition'),null);
+  assert.equal((await res.json()).error,'ARTIFACT_IDENTITY_FAILURE');
+});
+
+test('R3 tampered private source path, expiry or capture date cannot pass readback',async()=>{
+  const a=await capture(T1,'immutable');
+  assert.equal(artifactView(a).sourcePath,undefined);
+  assert.ok(!JSON.stringify(artifactView(a)).includes('dist/report.txt'));
+  for(const forged of [
+    {...a,sourcePath:'dist/different.txt'},
+    {...a,sourcePath:'file:///tmp/private.txt'},
+    {...a,expiresAt:a.expiresAt+60000},
+    {...a,createdAt:a.createdAt+1}
+  ]){
+    const result=await verifiedArtifactDownload(forged,1001);
+    assert.equal(result.status,502);
+    assert.equal(result.headers.get('content-disposition'),null);
+  }
+  assert.equal((await verifiedArtifactDownload(a,1001)).status,200);
+});
+
+test('R3 ownership excludes wrong repository, session or task even with same name',async()=>{
+  const a=await capture(T1,'owner');
+  assert.equal(artifactIsOwnedBy(a,{...task(T1),repository:'other/repository'},1001),false);
+  assert.equal(artifactIsOwnedBy(a,{...task(T1),session:'sesDifferent'},1001),false);
+  assert.equal(artifactIsOwnedBy(a,{...task(T2),project:task(T1).project},1001),false);
+});
