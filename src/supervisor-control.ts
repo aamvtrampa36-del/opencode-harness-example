@@ -28,6 +28,9 @@ export type SupervisorTask = {
   branch: string;
   fingerprint: string;
   session?: string;
+  /** Durable write-ahead marker. If a session creation RPC lost its response,
+   * never invoke create/fork again without independent reconciliation. */
+  sessionCreationAttempted?: boolean;
   createdAt: number;
   status: "preparing" | "running" | "finished" | "unanswered" | "failed" |
     "cancel_requested" | "cancelled" | "unknown";
@@ -47,6 +50,23 @@ export function isUntrackedLegacySupervisorOperation(
 ): boolean {
   return Boolean(task.session) && !task.operationId &&
     (task.status === "running" || task.status === "unknown");
+}
+
+/** Missing marker means a legacy task and is never proof of a safe replay. */
+export function supervisorSessionCreationDisposition(
+  task: Pick<SupervisorTask, "session" | "sessionCreationAttempted">
+): "bound" | "create" | "reconcile" {
+  if (task.session) return "bound";
+  return task.sessionCreationAttempted === false ? "create" : "reconcile";
+}
+
+/** No-session is not proof of no effect after an interrupted create/fork RPC.
+ * An active or stranded start lock also makes confirmation unsafe. */
+export function canConfirmSupervisorPreSessionCancellation(
+  task: Pick<SupervisorTask, "session" | "sessionCreationAttempted">,
+  startLockPresent: boolean
+): boolean {
+  return supervisorSessionCreationDisposition(task) === "create" && !startLockPresent;
 }
 
 export function classifySupervisorOperation(
