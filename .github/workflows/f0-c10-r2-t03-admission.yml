@@ -38,7 +38,7 @@ jobs:
           status=$?
           set -e
           test "$status" -eq 1
-          grep -q '# fail 2' /tmp/r2-t03-known-red.log
+          grep -Eq 'fail[[:space:]]+2([[:space:]]|$)' /tmp/r2-t03-known-red.log
       - name: Repository typecheck
         run: bun run typecheck
       - name: Worker and client build (not deploy)
