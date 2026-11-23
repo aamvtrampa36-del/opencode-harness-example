@@ -210,3 +210,19 @@ Archivo: \`src/github-publication-gate.test.ts\`. Usar \`bun test src/github-pub
 **Estado:** \`CODE_CANDIDATE / CI_PENDING / RUNTIME_NOT_VERIFIED\`. Para aceptar este subsistema hacen falta CI verde del HEAD, prueba de RPC dentro y fuera del DO central, fault injection con reinicio entre POST y recibo, restauración del journal, doble escritor real sin doble POST, revalidación de permisos/branch y prueba de coste y memoria. Para aceptar F0-C10 siguen siendo necesarias las rondas E2E 10/10 de T10 y criterios del issue #90.
 
 **Criterio STOP:** un token antiguo consigue publicar, aparece una segunda publicación tras UNKNOWN, la sesión ajena publica sobre rama supervisada, existen escrituras fuera del carril central o un fallo de memoria consume el ledger: bloquear promoción y no relajar permisos.
+
+
+### Auditoría RED → GREEN y CI del candidato
+
+**RED observado en GitHub Actions:** [OpenCode validation #45098032541](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45098032541), HEAD inicial \`8ed5da21298480a1ba8658d51425c9ece83420fd\`, \`failure\` en Unit tests: **10 fallos**, nueve de la nueva suite por confundir SHA-256 del fingerprint (64 hex) con SHA de commit Git (40 hex) en \`readLedger/readReceipt\`; uno por expectativa histórica de publicar una rama staging sin gate. No hubo error de infraestructura ni Remote; build/typecheck quedaron omitidos por fallo previo. No ocultar el RED.
+
+**Reparación focal:** \`HASH=64\` para intención/fingerprint, \`SHA=40\` para OIDs Git; la antigua prueba de PR sin gate ahora espera \`PR_PUBLICATION_COORDINATOR_REQUIRED\` antes de API, y la ruta positiva se verifica a través del ledger/bridge. No se relajó ninguna guarda.
+
+**GREEN verificado sobre SHA \`b5e3801a9ed31e69b399e1e7bb151116d0dfb308\`**:
+
+- [OpenCode validation #45098121582](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45098121582) — \`completed/success\`; **551 pruebas aprobadas en 76 archivos**, incluidas **11/11 nuevas del ledger durable**, vistas previas, typecheck, build de Workers/web e invariantes.
+- [F0-C10 offline harness #45098121612](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45098121612) — \`completed/success\`.
+- [T09 offline output #45098121592](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45098121592) — \`completed/success\`.
+- Ejecución: GitHub Actions con Bun **1.4.4**; los tests de T08 son mocks transaccionales en memoria y HTTP simulado, **no fault injection sobre Cloudflare real**.
+
+**Aviso HEAD documental:** la incorporación de este registro crea un commit adicional posterior al SHA citado; verificar nuevamente los tres workflows sobre el HEAD final. Mantener PR draft y no permitir merge/deploy por el hecho de que el candidato tenga CI verde.
