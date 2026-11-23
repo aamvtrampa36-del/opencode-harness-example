@@ -19,6 +19,9 @@ export interface StagingSupervisor {
   remoteSupervisorStatus(): Promise<unknown>;
   startSupervisedTask(input: unknown): Promise<unknown>;
   supervisedTaskStatus(id: string): Promise<unknown>;
+  /** Optional during rollout; the Worker remains backward compatible with older supervisor versions. */
+  supervisedTaskArtifacts?(id: string): Promise<unknown>;
+  supervisedArtifactCapture?(id: string, raw: unknown): Promise<unknown>;
   remoteSupervisorProgress(id: string, after?: number): Promise<unknown>;
   remoteSupervisorContinue(input: unknown): Promise<unknown>;
   remoteSupervisorSelectModel(id: string, model: string): Promise<unknown>;
@@ -341,6 +344,29 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
     description: `Consulta una tarea supervisada de Staging por su ID hexadecimal de 16 caracteres. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema.describe("ID de tarea hexadecimal de 16 caracteres"), workspace: workspaceSchema }
   }, async ({ id, workspace }) => callTask(() => bindings.supervisor(workspace).supervisedTaskStatus(id)));
+
+  server.registerTool("staging_task_artifacts", {
+    description: "Lista un manifiesto acotado de archivos realmente capturados para una tarea supervisada. No obtiene un transcript ni convierte rutas internas en descargas. La ruta HTTP requiere Cloudflare Access y bearer; no es una URL pública.",
+    inputSchema: { id: taskIdSchema }
+  }, async ({ id }) => callTask(async () => {
+    const supervisor = bindings.supervisor();
+    if (!supervisor.supervisedTaskArtifacts) throw new Error("ARTIFACT_BACKEND_UNAVAILABLE");
+    return supervisor.supervisedTaskArtifacts(id);
+  }));
+
+  server.registerTool("staging_capture_task_artifact", {
+    description: "CAPTURA CON EFECTO: crea una copia inmutable de un archivo de texto existente del proyecto de una tarea TERMINADA. Ejecuta inspección Linux acotada y persiste <=32 KiB en el DO; no modifica archivos de origen ni buckets. Úsala solo con autorización de captura, nunca para buscar secretos o rutas internas.",
+    inputSchema: {
+      id: taskIdSchema,
+      path: z.string().min(10).max(240).describe("Ruta relativa bajo dist/, e.g. dist/reporte.txt. NO /bundle, file: ni URL."),
+      name: z.string().min(1).max(120).describe("Nombre de descarga, Unicode NFC admitido"),
+      mime: z.enum(["text/plain", "text/markdown", "application/json"])
+    }
+  }, async ({ id, path, name, mime }) => callTask(async () => {
+    const supervisor = bindings.supervisor();
+    if (!supervisor.supervisedArtifactCapture) throw new Error("ARTIFACT_BACKEND_UNAVAILABLE");
+    return supervisor.supervisedArtifactCapture(id, { path, name, mime });
+  }));
 
   server.registerTool("staging_task_progress", {
     description: `Lee eventos duraderos de progreso desde un cursor. Solo devuelve secuencia y tipo de evento; no incluye razonamiento interno. ${WORKSPACE_HINT}`,
