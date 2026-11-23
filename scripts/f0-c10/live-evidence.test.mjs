@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { runMock } from './mock.mjs';
 import { evaluateCampaign, evaluateTrace, LIVE_LIMITS } from './evaluate.mjs';
 import { EVIDENCE_ROLES, digest, signingBytes, verifyLiveEvidence } from './live-evidence.mjs';
+import { observedClaimBytes, observedClaimHash, operatorApprovalBytes, OBSERVED_JOURNAL_SCHEMA } from './observed-journal.mjs';
 
 // Test-only ephemeral signing keys. Never ship private keys to Staging or model tools.
 const keys = Object.fromEntries(EVIDENCE_ROLES.map((role) => {
@@ -16,6 +17,67 @@ const keys = Object.fromEntries(EVIDENCE_ROLES.map((role) => {
 }));
 const trust = Object.fromEntries(EVIDENCE_ROLES.map((role) => [role, keys[role].publicKey]));
 const limits = { ...LIVE_LIMITS, maxCostUsd: 1, maxCampaignCostUsd: 3 };
+const observerKeys = Object.fromEntries(['do','container','provider'].map((origin) => {
+  const pair = generateKeyPairSync('ed25519');
+  return [origin, pair];
+}));
+const operatorKeyPair = generateKeyPairSync('ed25519');
+trust.operatorPublicKeyPem=operatorKeyPair.publicKey.export({format:'pem',type:'spki'});
+trust.approvals={};
+function approveCollectorScope(trace) {
+  const metadata=trace.metadata;
+  const observers=Object.fromEntries(Object.entries(trust.observers).map(([origin,info])=> {
+    const key=observerKeys[origin].publicKey.export({type:'spki',format:'der'});
+    return [origin,{collectorId:info.collectorId,deploymentId:info.deploymentId,clockProofId:info.clockProofId,
+      publicKeySha256:createHash('sha256').update(key).digest('hex')}];
+  }));
+  const claim={environment:'staging',experimentId:metadata.experimentId,sourceSha:metadata.sourceSha,
+    workerVersion:metadata.workerVersion,workerDeploymentId:metadata.workerDeploymentId,
+    mcpDeploymentId:metadata.mcpDeploymentId,leaseId:metadata.leaseId,
+    fencingToken:metadata.fencingToken,clockSyncMaxSkewMs:metadata.clockSyncMaxSkewMs,
+    clockSyncReceiptId:'offline-clock-sync-only',observers};
+  trust.approvals[metadata.experimentId]={
+    claim,signature:sign(null,operatorApprovalBytes(claim),operatorKeyPair.privateKey).toString('base64'),
+  };
+}
+trust.observers = Object.fromEntries(Object.entries(observerKeys).map(([origin,pair]) => [origin, {
+  publicKeyPem: pair.publicKey.export({ type: 'spki', format: 'pem' }),
+  collectorId: 'offline-observer-' + origin, deploymentId: origin === 'do' ? 'offline-worker-deployment' : 'offline-' + origin + '-deployment',
+  clockProofId: 'offline-clock-proof-' + origin, sourceSha: 'f'.repeat(40),
+  environment: 'staging',
+}]));
+function buildJournal(trace, { restartDoAfter = null } = {}) {
+  const state = new Map(), records = [];
+  let doCount = 0, restarted = false;
+  const append = (origin, event, overrideEpoch = null) => {
+    const previous = state.get(origin);
+    const config = trust.observers[origin];
+    const claim = {
+      origin, collectorId:config.collectorId, deploymentId:config.deploymentId,
+      clockProofId: config.clockProofId, sourceSha:trace.metadata.sourceSha,
+      workerVersion:trace.metadata.workerVersion, experimentId:trace.metadata.experimentId,
+      fencingToken: trace.metadata.fencingToken, seq:(previous?.seq ?? 0) + 1,
+      epoch:overrideEpoch ?? previous?.epoch ?? 1,
+      prevHash:previous?.hash ?? '0'.repeat(64), observedAtMs:event.atMs ?? previous?.atMs, event:structuredClone(event),
+    };
+    records.push({ claim, signature:sign(null, observedClaimBytes(claim), observerKeys[origin].privateKey).toString('base64') });
+    state.set(origin, { seq:claim.seq, epoch:claim.epoch, hash:observedClaimHash(claim), atMs:claim.observedAtMs });
+  };
+  for (const event of trace.events) {
+    if (event.type === 'artifact_readback') continue;
+    const origin = ['tool_start','tool_end','test_result'].includes(event.type) ? 'container' :
+      ['inference_start','inference_end'].includes(event.type) ? 'provider' : 'do';
+    if (origin === 'do' && restartDoAfter !== null && !restarted && doCount >= restartDoAfter) {
+      const prev = state.get('do');
+      append('do', {type:'observer_resume',lastVerifiedHash:prev.hash,atMs:event.atMs}, prev.epoch + 1);
+      restarted = true;
+    }
+    append(origin,event);
+    if (origin === 'do') doCount++;
+  }
+  trace.observedJournal = { schema:OBSERVED_JOURNAL_SCHEMA, records };
+  return trace;
+}
 
 function reseal(trace) {
   trace.attestations = Object.fromEntries(EVIDENCE_ROLES.map((role) =>
@@ -28,6 +90,9 @@ async function attestedFixture({ round = 1, size = 10, fault = null } = {}) {
   trace.mode = 'live';
   trace.metadata.experimentId = 'r2-synthetic-signed-' + round;
   trace.metadata.gitBaseSha = 'a'.repeat(40);
+  delete trace.metadata.simulated;
+  trace.metadata.workerDeploymentId = 'offline-worker-deployment';
+  trace.metadata.mcpDeploymentId = 'offline-mcp-deployment';
   trace.metadata.workerVersion = 'fixture-worker-only';
   trace.metadata.mcpVersion = 'fixture-mcp-only';
   trace.metadata.environment = 'staging';
@@ -65,6 +130,11 @@ async function attestedFixture({ round = 1, size = 10, fault = null } = {}) {
     event.experimentId = trace.metadata.experimentId;
     event.atMs = original + (event.atMs - original) * 20;
     event.source = event.type === 'artifact_readback' ? 'artifact-collector' : 'runtime';
+    event.fencingToken = trace.metadata.fencingToken;
+    if (event.type === 'tool_start' || event.type === 'tool_end') {
+      event.containerId = 'offline-container-' + task.requestId;
+      event.commandSha256 = 'b'.repeat(64);
+    }
     if (event.artifact) {
       event.artifact.projectId = task.projectId;
       event.artifact.path = 'tmp/f0-c10/' + requestId + '/' + task.kind + '.json';
@@ -94,6 +164,8 @@ async function attestedFixture({ round = 1, size = 10, fault = null } = {}) {
     stop: { enforced: true, controlId: 'fixture-spend-stop', scope: 'full-experiment' },
     meterReceiptId: 'fixture-cost-meter',
   };
+  buildJournal(trace);
+  approveCollectorScope(trace);
   return reseal(trace);
 }
 
@@ -217,4 +289,163 @@ test('RED three individually affordable rounds cannot exceed a predeclared campa
   const report = evaluateCampaign(rounds, strict, { trustedKeys: trust });
   assert.equal(report.pass, false);
   assert.equal(report.code, 'CAMPAIGN_COST_UNKNOWN_OR_OVER_CAP');
+});
+
+
+test('R3 RED: R2-style signed live JSON without observed source journal is rejected', async () => {
+  const trace = await attestedFixture();
+  delete trace.observedJournal;
+  reseal(trace);
+  const report = evaluateTrace(trace, {mode:'live',trustedKeys:trust,limits});
+  assert.equal(report.pass,false);
+  assert.ok(report.failures.some((f)=>f.code==='OBSERVED_JOURNAL_MISSING'));
+});
+test('R3 RED: mock labelled runtime and signed by fixtures is NEVER live evidence', async () => {
+  const trace = await attestedFixture();
+  trace.metadata.simulated = true;
+  reseal(trace);
+  const result = evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
+  assert.ok(result.failures.some((f)=>f.code==='SYNTHETIC_TRACE_REJECTED'));
+});
+test('R3 RED: model-generated source signature cannot replace externally pinned observer key', async () => {
+  const trace = await attestedFixture();
+  const attacker = generateKeyPairSync('ed25519');
+  const claim = trace.observedJournal.records.find((r)=>r.claim.origin==='container').claim;
+  const receipt = trace.observedJournal.records.find((r)=>r.claim===claim);
+  receipt.signature=sign(null,observedClaimBytes(claim),attacker.privateKey).toString('base64');
+  trace.modelProvidedPublicKey=attacker.publicKey.export({format:'pem',type:'spki'});
+  const result=evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
+  assert.ok(result.failures.some((f)=>f.code==='OBSERVER_SIGNATURE_INVALID'));
+});
+test('R3 RED: ten HTTP/admission starts without tool or inference receipts cannot PASS', async () => {
+  const trace=await attestedFixture();
+  trace.events=trace.events.filter((e)=>!['tool_start','tool_end'].includes(e.type));
+  buildJournal(trace);
+  reseal(trace);
+  const report=evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
+  assert.equal(report.metrics.maxActive,0);
+  assert.ok(report.failures.some((f)=>f.code==='INSUFFICIENT_REAL_OVERLAP'));
+});
+test('R3 RED: source says busy even with signed success claim but lacks tool intervals', async () => {
+  const trace=await attestedFixture();
+  trace.events=trace.events.filter((e)=>!['tool_start','tool_end'].includes(e.type));
+  for (const event of trace.events) if (event.type==='execution_start') event.busy=true;
+  buildJournal(trace);
+  reseal(trace);
+  assert.ok(evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits}).failures.some((f)=>f.code==='NO_EXECUTION_EVIDENCE'));
+});
+test('R3 RED: model fabricates interval in trace after collector signs raw events', async () => {
+  const trace=await attestedFixture();
+  const forged=trace.events.find((e)=>e.type==='tool_end');
+  forged.atMs+=50000;
+  reseal(trace); // re-sign only legacy runtime bundle, NOT the observer receipts
+  const result=evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
+  assert.ok(result.failures.some((f)=>f.code==='OBSERVED_EVENT_MISMATCH'));
+});
+test('R3 RED: lost response after tool completion is not success', async () => {
+  const trace=await attestedFixture();
+  trace.events=trace.events.filter((e)=>e.type!=='completed' || e.requestId!==trace.tasks[0].requestId);
+  buildJournal(trace);
+  reseal(trace);
+  assert.ok(evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits}).failures.some((f)=>f.code==='MISSING_OR_DUPLICATE_COMPLETED'));
+});
+test('R3 RED: byte-readback from another request does not prove output', async () => {
+  const trace=await attestedFixture();
+  const reads=trace.events.filter((e)=>e.type==='artifact_readback');
+  reads[0].artifact={...reads[1].artifact};
+  reseal(trace);
+  assert.ok(evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits}).failures.some((f)=>f.code==='OUTPUT_ISOLATION'||f.code==='ARTIFACT_READBACK_MISMATCH'));
+});
+test('R3 RED: clock source skew cannot be hidden by re-signing runtime JSON', async () => {
+  const trace=await attestedFixture();
+  trace.events.find((e)=>e.type==='tool_start').atMs+=1500;
+  reseal(trace);
+  const report=evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
+  assert.ok(report.failures.some((f)=>f.code==='OBSERVED_EVENT_MISMATCH'));
+});
+test('R3 RED: falsified signed observer clock diverges from event clock', async () => {
+  const trace=await attestedFixture();
+  const first=trace.observedJournal.records[0];
+  first.claim.observedAtMs+=1000;
+  first.signature=sign(null,observedClaimBytes(first.claim),observerKeys[first.claim.origin].privateKey).toString('base64');
+  const report=evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
+  assert.ok(report.failures.some((f)=>f.code==='OBSERVER_EVENT_SCOPE_OR_CLOCK'));
+});
+test('R3 RED: interrupted journal after restart has no contiguous seq/hash', async () => {
+  const trace=await attestedFixture();
+  buildJournal(trace,{restartDoAfter:7});
+  const records=trace.observedJournal.records;
+  records.splice(records.findIndex((r)=>r.claim.event.type==='observer_resume'),1);
+  const result=evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
+  assert.ok(result.failures.some((f)=>f.code==='JOURNAL_GAP_OR_REPLAY'||f.code==='JOURNAL_UNACKNOWLEDGED_RESTART'));
+});
+test('R3 GREEN: durable DO observer restarts while Container events interleave', async () => {
+  const trace=await attestedFixture();
+  buildJournal(trace,{restartDoAfter:7});
+  const report=evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
+  assert.equal(report.pass,true,JSON.stringify(report.failures));
+  assert.ok(trace.observedJournal.records.some((r)=>r.claim.event.type==='observer_resume'));
+});
+test('R3 RED: incomplete tool receipt cannot span container observer epoch', async () => {
+  const trace=await attestedFixture();
+  const firstContainer=trace.observedJournal.records.find((r)=>r.claim.origin==='container');
+  const lastContainer=trace.observedJournal.records.findLast((r)=>r.claim.origin==='container');
+  lastContainer.claim.epoch=firstContainer.claim.epoch+1;
+  lastContainer.signature=sign(null,observedClaimBytes(lastContainer.claim),observerKeys.container.privateKey).toString('base64');
+  const report=evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
+  assert.ok(report.failures.some((f)=>f.code==='JOURNAL_UNACKNOWLEDGED_RESTART'||f.code==='UNMATCHED_OBSERVED_END'));
+});
+test('R3 RED: independent signed worker origin cannot be replaced by shared mock key', async () => {
+  const trace=await attestedFixture();
+  const wrong={...trust,observers:{...trust.observers,container:{...trust.observers.container,publicKeyPem:trust.observers.do.publicKeyPem}}};
+  const report=evaluateTrace(trace,{mode:'live',trustedKeys:wrong,limits});
+  assert.ok(report.failures.some((f)=>f.code==='OBSERVER_KEY_REUSE'||f.code==='OBSERVER_SIGNATURE_INVALID'));
+});
+test('R3 RED: unexpected cancellation and OOM remain rejected with observer journal', async () => {
+  for (const fault of ['cancelled','oom']) {
+    const trace=await attestedFixture({fault});
+    const result=evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
+    assert.equal(result.pass,false);
+    assert.ok(result.failures.some((f)=>f.code=== (fault==='oom'?'OOM':'UNEXPECTED_FAILURES')));
+  }
+});
+test('R3 RED: unknown total cost remains blocked even with ten observed tool receipts', async () => {
+  const trace=await attestedFixture();
+  trace.budget.components.inference=null;
+  reseal(trace);
+  assert.ok(evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits}).failures.some((f)=>f.code==='BUDGET_ACCOUNTING_INVALID'));
+});
+test('R3 RED: provider inference without independently signed provider journal is rejected', async () => {
+  const trace=await attestedFixture({size:1});
+  const start=trace.events.find((e)=>e.type==='tool_start');
+  const base={...start,callId:'inference-1',providerRequestId:'provider-request-1',model:'fixture-model'};
+  const extras=[
+    {...base,type:'inference_start',atMs:start.atMs+1},
+    {...base,type:'inference_end',atMs:start.atMs+2,outcome:'success'},
+  ];
+  trace.events.push(...extras);
+  const events=trace.events.filter((e)=>e.requestId===trace.tasks[0].requestId).sort((a,b)=>a.atMs-b.atMs);
+  events.forEach((e,i)=>e.seq=i+1);
+  buildJournal(trace);
+  reseal(trace);
+  // Source-matched provider receipts are present and signed; removing them must fail.
+  trace.observedJournal.records=trace.observedJournal.records.filter((r)=>r.claim.origin!=='provider');
+  const report=evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
+  assert.ok(report.failures.some((f)=>f.code==='OBSERVER_SOURCE_UNOBSERVED'||f.code==='OBSERVED_EVENT_COUNT_MISMATCH'));
+});
+
+test('R3 RED: a model-provided collector approval cannot replace operator trust', async () => {
+  const trace=await attestedFixture();
+  const modelRoot=generateKeyPairSync('ed25519');
+  const bad={...trust,operatorPublicKeyPem:modelRoot.publicKey.export({type:'spki',format:'pem'})};
+  trace.modelApprovalSignature=sign(null,operatorApprovalBytes(trust.approvals[trace.metadata.experimentId].claim),modelRoot.privateKey).toString('base64');
+  const result=evaluateTrace(trace,{mode:'live',trustedKeys:bad,limits});
+  assert.ok(result.failures.some((f)=>f.code==='OPERATOR_APPROVAL_INVALID'));
+});
+test('R3 RED: independently signed approval for a different SHA or deployment is not valid', async () => {
+  const trace=await attestedFixture();
+  trace.metadata.workerDeploymentId='unpublished-deployment';
+  reseal(trace);
+  const result=evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
+  assert.ok(result.failures.some((f)=>f.code==='DEPLOYMENT_SCOPE_UNVERIFIED'||f.code==='OPERATOR_APPROVAL_SCOPE_MISMATCH'));
 });
