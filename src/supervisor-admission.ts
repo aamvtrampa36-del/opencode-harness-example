@@ -186,3 +186,10 @@ export async function reconcileSupervisorSubmittedEffect(
     return true;
   });
 }
+
+/** Turn arbitration is task-local, but it cannot overtake an unsettled
+ * initial T03 external effect. Legacy tasks without a slot retain their
+ * existing continuation behavior; an active slot must be fully running. */
+export function supervisorAdmissionAllowsContinuation(slot: AdmissionSlot | undefined): boolean {
+  return slot === undefined || slot.phase === "running";
+}
