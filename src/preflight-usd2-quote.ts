@@ -91,11 +91,13 @@ export function evaluateUsd2ShadowQuote(input:ShadowUsd2Quote):ShadowUsd2Decisio
   ];
   for(const value of amounts)
     assert(value===null||isAmount(value),"USD2_QUOTE_AMOUNT_INVALID");
-  const baseline={decision:"STOP" as const,
+  const baseline: Omit<ShadowUsd2Decision,"shadowStatus"|"totalWorstCaseMicroUsd">={
+    decision:"STOP",
     ceilingMicroUsd:F0_C10_GLOBAL_APPROVED_MICRO_USD,
-    providerDispatchAuthorized:false as const,
-    operationalLeaseVerified:false as const,
-    providerHardCutoffVerified:false as const};
+    providerDispatchAuthorized:false,
+    operationalLeaseVerified:false,
+    providerHardCutoffVerified:false
+  };
   if(input.plannedControlDOs!==1)
     return {...baseline,shadowStatus:"MULTI_LEDGER_BYPASS",totalWorstCaseMicroUsd:null};
   if(amounts.some(value=>value===null))
