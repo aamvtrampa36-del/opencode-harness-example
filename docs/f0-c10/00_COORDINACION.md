@@ -79,3 +79,10 @@ CI fuente corregida en SHA `4e2c7af50616658fb01509196946d300a7ed7f6e`: [OpenCode
 ## PREFLIGHT-01 — Puerta operativa de solo lectura y continuidad
 
 Desde la integración #157 (HEAD histórico `304145eca71a5ffcf6d9c235e67a8065718c6ae5`) se prepara en rama independiente `f0-c10/preflight-01-operational-stop-20261123` el informe `docs/f0-c10/F0_C10_PREFLIGHT_OPERATIVO.md`. Los controles reales de presupuesto, exclusividad, provenance binaria, memoria/cgroups, ACL y observador **no** están completos. AI Gateway devuelve `enabled=false` en su endpoint legacy de spending limit; no se tocaron límites de cuenta ni servicios. La herramienta de auditoría es offline, retorna siempre `STOP`/exit 2, y no puede ejecutar un GO/live. El siguiente gate no es una ronda R4 ni un deploy: probar el corte efectivo de gasto y un lease aislado verificable, mediante una autorización operativa y techo de USD definidos antes de cualquier efecto real.
+
+
+## PREFLIGHT-02 — Una sola preparación hacia la puerta operacional
+
+Rama exclusiva `f0-c10/preflight-02-cutoff-lease-20261123` desde PR #158 `2231c385dfb5e3d17d84cedafc997c557e2e990d`. Se crearon fixtures de carrera de diez claims, replay y fencing con TTL sticky, más reserva de coste transaccional **en DO sintético** sin autorización de proveedor. CI del SHA final se registra en la PR draft de este preflight; informe: `docs/f0-c10/F0_C10_PREFLIGHT_02_COST_LEASE.md`.
+
+Los límites de Cloudflare no se modificaron. `GET /billing/spend-policies` retornó HTTP 403; no inferir si hay límites activos. No hay un techo numérico de gasto autorizado, y el SDK/Containers/CI no han probado corte efectivo en un entorno aislado. **Próximo gate único:** validar cuenta/namespaces realmente aislados con límites observables y un presupuesto máximo USD aprobado, sin otro prompt de diez especialistas ni inferencia antes de pruebas de contención auténticas.
