@@ -98,7 +98,9 @@ export class AdmissionLedger {
         throw new Error('AUTHORITATIVE_RECEIPT_REQUIRED');
       // A positive durable native receipt may resolve an ambiguous operation;
       // absence/not_found NEVER licenses another submit.
-      x.state = completed ? 'finished' : 'running';
+      // Native operation completion is NOT a verified task result.
+      x.operationCompleted = Boolean(completed);
+      x.state = 'running';
       return { ...x };
     });
   }
