@@ -45,7 +45,7 @@ async function attestedFixture({ round = 1, size = 10, fault = null } = {}) {
   const mapping = new Map();
   for (const task of trace.tasks) {
     const old = task.requestId;
-    const next = (0xf0c1000000000000n + BigInt(round * 100 + Number(task.requestId.slice(-2)))).toString(16);
+    const next = (0xf0c1000000000000n + BigInt(round * 100 + Number.parseInt(task.requestId.slice(-2), 16))).toString(16);
     mapping.set(old, next);
     task.requestId = next;
     task.sessionId = 'ses_mock_' + next;
