@@ -32,7 +32,9 @@ describe("F0-C10/T05 bounded Remote/MCP progress",()=>{
   test("missing sequence is explicitly flagged and not silently verified",async()=>{
     const page=await projectSupervisorProgress(source([row(1),row(3),row(4)]));
     expect(page.gapDetected).toBe(true);
-    expect(page.nextAfter).toBe(4);
+    expect(page.nextAfter).toBe(1);
+    expect(page.events.map(x=>x.seq)).toEqual([1]);
+    expect(page.truncated).toBe(true);
     expect("passed" in page).toBe(false);
     expect("verified" in page).toBe(false);
   });
@@ -76,4 +78,28 @@ describe("F0-C10/T05 bounded Remote/MCP progress",()=>{
       expect(pages[i].page.truncated).toBe(true);
     }
   });
+
+  test("giant single event payload is not copied into progress page",async()=>{
+    const giant="x".repeat(8*1024*1024);
+    const page=await projectSupervisorProgress(source([row(1,"session.tool.called",{toolOutput:giant})]));
+    expect(page.events).toEqual([{seq:1,type:"session.tool.called"}]);
+    expect(JSON.stringify(page).length).toBeLessThan(1024);
+    expect(page.projectedBytes).toBeLessThan(128);
+  });
+  test("gap after filtered records does not jump over lost event",async()=>{
+    const page=await projectSupervisorProgress(source([
+      row(1,"session.reasoning.delta"),row(3,"session.tool.success"),row(4,"session.tool.failed")
+    ]));
+    expect(page.skipped).toBe(1);
+    expect(page.nextAfter).toBe(1);
+    expect(page.gapDetected).toBe(true);
+    expect(page.events).toEqual([]);
+  });
+  test("gap at the beginning fails closed without changing cursor",async()=>{
+    const page=await projectSupervisorProgress(source([row(5)]),0);
+    expect(page.nextAfter).toBe(0);
+    expect(page.gapDetected).toBe(true);
+    expect(page.truncated).toBe(true);
+  });
+
 });
