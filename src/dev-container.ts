@@ -3,6 +3,7 @@ import { MAX_SHELL_OUTPUT, validateCommand, validateProject } from "./dev-guard"
 import { captureBoundedOutput } from "./bounded-process-output";
 import { PREVIEW_SOURCE, PREVIEW_PORT } from "./preview-server";
 import { INSPECT_SOURCE, validateInspectionPath } from "./linux-inspect";
+import { TASK_ARTIFACT_SOURCE } from "./task-artifact-source";
 import { chunkBackup, joinBackup, sha256Hex, MAX_ARCHIVE_BYTES, type StoredBackup } from "./durable-backup";
 import {
   FS_VERIFY_SOURCE,
@@ -395,6 +396,36 @@ export class DevContainer extends DurableObject<Env> {
           decoder.decode(output.stderr).slice(-250));
       }
       return JSON.parse(decoder.decode(output.stdout));
+    } finally {
+      this.busy--;
+      await this.ctx.storage.put("lastActivity", Date.now());
+      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+    }
+  }
+
+  /**
+   * Bounded binary readback for a supervised task's output. The Node process
+   * opens a real file descriptor inside that task's isolated Container,
+   * rejects symlinks/escapes, and reports the exact Base64 bytes + SHA-256.
+   * Unlike inspect(read), it never converts file bytes to lossy UTF-8.
+   */
+  async readTaskArtifact(project: string, relativePath: string): Promise<unknown> {
+    const id = validateProject(project);
+    const target = validateInspectionPath(relativePath, "read");
+    if (!target.startsWith("dist/")) throw new Error("ARTIFACT_SOURCE_RESTRICTED");
+    const container = await this.ensureRunning();
+    this.busy++;
+    await this.ctx.storage.put("lastActivity", Date.now());
+    try {
+      const process = await container.exec(["node", "-e", TASK_ARTIFACT_SOURCE, id, target], {
+        signal: AbortSignal.timeout(15_000)
+      });
+      const output = await process.output();
+      if (output.exitCode !== 0) throw new Error("ARTIFACT_READ_UNAVAILABLE");
+      const serialized = new TextDecoder().decode(output.stdout);
+      // 32 KiB source becomes <=44 KiB Base64 + bounded metadata.
+      if (serialized.length > 45_000) throw new Error("ARTIFACT_SOURCE_TOO_LARGE");
+      return JSON.parse(serialized);
     } finally {
       this.busy--;
       await this.ctx.storage.put("lastActivity", Date.now());
