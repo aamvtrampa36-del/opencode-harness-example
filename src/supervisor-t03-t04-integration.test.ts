@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import {
   reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot,
-  supervisorAdmissionAllowsContinuation, hasSupervisorAdmissionSlot
+  supervisorAdmissionAllowsContinuation, hasSupervisorAdmissionSlot,
+  reconcileSupervisorCreatedSession, supervisorCommitCreatedSession,
+  reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
+  reconcileSupervisorTurnEffect
 } from "./supervisor-admission";
 import {
   r2SessionId, r2TurnAdmission, r2CancelledByReceipt,
@@ -146,10 +149,143 @@ describe("F0-C10/R2-T11 T03 admission + T04 recovery contract (OFFLINE)", () => 
       "SUPERVISOR_FORK_IDEMPOTENCY_UNSUPPORTED", "this.harness.create({ id: sessionId })",
       "publishSupervisedGithubDraft", "supervisedArtifactCapture"
     ]) expect(source.includes(symbol)).toBe(true);
-    expect(source.includes("supervisorAdmissionSlot(tx, id)")).toBe(true);
+    expect(source.includes("reserveSupervisorContinuation(")).toBe(true);
+    expect(source.includes("reconcileSupervisorCreatedSession(")).toBe(true);
+    expect(source.includes("supervisorCommitCreatedSession(")).toBe(true);
+    expect(source.includes("reconcileSupervisorTurnEffect(tx, id")).toBe(true);
     const begin = source.indexOf('supervisorBeginExternalEffect(this.ctx.storage, grant, "session_create")');
     const create = source.indexOf("this.harness.create({ id: sessionId })");
     expect(begin).toBeGreaterThan(-1);
     expect(begin).toBeLessThan(create);
   });
+  test("lost session-create reply: positive exact ID transfers fence, stale owner cannot commit", async () => {
+    const db = new FakeDO(), first = await grant(db, 21), sid = r2SessionId(id(21));
+    await supervisorBeginExternalEffect(db.asDO(), first, "session_create", 1101);
+    const key = "supervisor:task:" + id(21);
+    await db.transaction(async tx => {
+      const task = await tx.get<SupervisorTask>(key);
+      await tx.put(key, {...task!, sessionCreationAttempted: true, status:"unknown"});
+    });
+    const observedSlot = await supervisorAdmissionSlot(db.asDO(),id(21));
+    const recovered = await reconcileSupervisorCreatedSession(db.asDO(),id(21),sid,observedSlot!,1102);
+    expect(recovered.kind).toBe("recovered");
+    if (recovered.kind !== "recovered") return;
+    expect(recovered.grant.token).not.toBe(first.token);
+    expect(recovered.grant.generation).toBe(first.generation+1);
+    expect(recovered.task).toMatchObject({session:sid,status:"preparing"});
+    expect(await db.get("supervisor:session:"+sid)).toBe(id(21));
+    await expect(supervisorCommitCreatedSession(db.asDO(),first,sid,1103))
+      .rejects.toThrow("ADMISSION_FENCE_REJECTED");
+    await expect(supervisorBeginExternalEffect(db.asDO(),first,"configure",1104))
+      .rejects.toThrow("ADMISSION_FENCE_REJECTED");
+    await supervisorBeginExternalEffect(db.asDO(),recovered.grant,"configure",1103);
+    expect((await supervisorAdmissionSlot(db.asDO(),id(21)))?.effect).toBe("configure");
+    const twice = await reconcileSupervisorCreatedSession(db.asDO(),id(21),sid,observedSlot!,1105);
+    expect(twice.kind).toBe("stale");
+  });
+
+  test("original creator can commit exactly once under the initial token", async () => {
+    const db=new FakeDO(), g=await grant(db,22), sid=r2SessionId(id(22));
+    await supervisorBeginExternalEffect(db.asDO(),g,"session_create",1101);
+    const key="supervisor:task:"+id(22);
+    await db.transaction(async tx=>{
+      const task=await tx.get<SupervisorTask>(key);
+      await tx.put(key,{...task!,sessionCreationAttempted:true});
+    });
+    const result=await supervisorCommitCreatedSession(db.asDO(),g,sid,1102);
+    expect(result.session).toBe(sid);
+    expect((await supervisorAdmissionSlot(db.asDO(),id(22)))?.phase).toBe("reserved");
+    await expect(supervisorCommitCreatedSession(db.asDO(),g,sid,1103))
+      .rejects.toThrow("ADMISSION_FENCE_REJECTED");
+  });
+
+  test("missing marker, wrong session ID and foreign reverse mapping fail closed", async () => {
+    const db=new FakeDO(),g=await grant(db,23),sid=r2SessionId(id(23));
+    await supervisorBeginExternalEffect(db.asDO(),g,"session_create",1101);
+    const slot=(await supervisorAdmissionSlot(db.asDO(),id(23)))!;
+    expect((await reconcileSupervisorCreatedSession(db.asDO(),id(23),sid,slot,1102)).kind).toBe("stale");
+    await expect(reconcileSupervisorCreatedSession(db.asDO(),id(23),"ses_r2_wrong",slot,1102))
+      .rejects.toThrow("SESSION_RECONCILE_ID_MISMATCH");
+    const key="supervisor:task:"+id(23);
+    await db.transaction(async tx=>{
+      const task=await tx.get<SupervisorTask>(key);
+      await tx.put(key,{...task!,sessionCreationAttempted:true,status:"unknown"});
+      await tx.put("supervisor:session:"+sid,id(99));
+    });
+    await expect(reconcileSupervisorCreatedSession(db.asDO(),id(23),sid,slot,1103))
+      .rejects.toThrow("SESSION_RECONCILE_SCOPE_CONFLICT");
+    expect((await supervisorAdmissionSlot(db.asDO(),id(23)))?.phase).toBe("effect_unknown");
+  });
+
+  test("one terminal task readmits to one slot with one turn intent", async () => {
+    const db=new FakeDO(), g=await grant(db,31);
+    await supervisorBeginExternalEffect(db.asDO(),g,"submit",1101);
+    await supervisorConfirmExternalEffect(db.asDO(),g,"submit",{confirmed:true},1102);
+    const key="supervisor:task:"+id(31),sid=r2SessionId(id(31));
+    await db.transaction(async tx=>{
+      const task=await tx.get<SupervisorTask>(key);
+      await tx.put(key,{...task!,session:sid,status:"finished",
+        operationId:"rc-start-"+id(31),revision:3});
+    });
+    const turnId=id(36),op="rc-turn-"+id(31)+"-"+turnId,hash="b".repeat(64);
+    const [a,b]=await Promise.all([
+      reserveSupervisorContinuation(db.asDO(),id(31),turnId,hash,op,1103),
+      reserveSupervisorContinuation(db.asDO(),id(31),turnId,hash,op,1103)
+    ]);
+    expect([a.kind,b.kind].sort()).toEqual(["existing","submit"]);
+    expect((await supervisorAdmissionSlot(db.asDO(),id(31)))?.effect).toBe("turn_submit");
+    const r=await recordSupervisorContinuationReceipt(db.asDO(),id(31),turnId,op,{accepted:true},1104);
+    expect(r.pendingTurn?.operationId).toBe(op);
+    expect((await supervisorAdmissionSlot(db.asDO(),id(31)))?.phase).toBe("running");
+    expect(await reconcileSupervisorTurnEffect(db.asDO(),id(31),op,
+      {status:"unanswered",reason:"not_found"})).toBe(false);
+    expect(await reconcileSupervisorTurnEffect(db.asDO(),id(31),op,
+      {status:"done"})).toBe(false); // slot already acknowledged and running
+    await expect(reserveSupervisorContinuation(db.asDO(),id(31),id(37),
+      hash,"rc-turn-"+id(31)+"-"+id(37),1105)).rejects.toThrow("SUPERVISOR_TURN_IN_FLIGHT");
+  });
+
+  test("readmission refuses overflow after a reclaimed terminal slot is used", async () => {
+    const db=new FakeDO();
+    const grants=await Promise.all(Array.from({length:10},(_,i)=>grant(db,i+41)));
+    for(let i=0;i<10;i++){
+      const n=i+41, g=grants[i],sid=r2SessionId(id(n));
+      await supervisorBeginExternalEffect(db.asDO(),g,"submit",1101);
+      await supervisorConfirmExternalEffect(db.asDO(),g,"submit",{confirmed:true},1102);
+      const key="supervisor:task:"+id(n);
+      await db.transaction(async tx=>{
+        const task=await tx.get<SupervisorTask>(key);
+        await tx.put(key,{...task!,session:sid,status:i===0?"finished":"running",
+          operationId:"rc-start-"+id(n),revision:2});
+      });
+    }
+    await grant(db,55); // reclaims completed #41 and occupies the tenth slot
+    const op="rc-turn-"+id(41)+"-"+id(63);
+    const answer=await reserveSupervisorContinuation(db.asDO(),id(41),id(63),"c".repeat(64),op,1111);
+    expect(answer).toMatchObject({kind:"capacity",reason:"CAPACITY_EXHAUSTED"});
+    expect(await db.get("supervisor:turn:"+id(41)+":"+id(63))).toBeUndefined();
+    expect((await supervisorAdmissionSlot(db.asDO(),id(41)))).toBeUndefined();
+  });
+
+  test("lost continuation receipt keeps unknown slot and never submits again", async () => {
+    const db=new FakeDO(),g=await grant(db,71),sid=r2SessionId(id(71));
+    await supervisorBeginExternalEffect(db.asDO(),g,"submit",1101);
+    await supervisorConfirmExternalEffect(db.asDO(),g,"submit",{confirmed:true},1102);
+    await db.transaction(async tx=>{
+      const key="supervisor:task:"+id(71),task=await tx.get<SupervisorTask>(key);
+      await tx.put(key,{...task!,session:sid,status:"finished",operationId:"rc-start-"+id(71),revision:2});
+    });
+    const t=id(72),op="rc-turn-"+id(71)+"-"+t,hash="d".repeat(64);
+    expect((await reserveSupervisorContinuation(db.asDO(),id(71),t,hash,op,1103)).kind).toBe("submit");
+    await recordSupervisorContinuationReceipt(db.asDO(),id(71),t,op,
+      {error:"REPLY_LOST_AFTER_NATIVE_INBOX_COMMIT"},1104);
+    expect((await supervisorAdmissionSlot(db.asDO(),id(71)))?.phase).toBe("effect_unknown");
+    expect((await reserveSupervisorContinuation(db.asDO(),id(71),t,hash,op,999999)).kind).toBe("existing");
+    expect(await reconcileSupervisorTurnEffect(db.asDO(),id(71),op,
+      {status:"unanswered",reason:"not_found"})).toBe(false);
+    expect((await supervisorAdmissionSlot(db.asDO(),id(71)))?.phase).toBe("effect_unknown");
+    expect(await reconcileSupervisorTurnEffect(db.asDO(),id(71),op,{status:"done"})).toBe(true);
+    expect((await supervisorAdmissionSlot(db.asDO(),id(71)))?.phase).toBe("running");
+  });
+
 });

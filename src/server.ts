@@ -22,6 +22,9 @@ import {
   reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot,
   hasSupervisorAdmissionSlot, supervisorAdmissionAllowsContinuation,
+  reconcileSupervisorCreatedSession, supervisorCommitCreatedSession,
+  reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
+  reconcileSupervisorTurnEffect,
   reconcileSupervisorSubmittedEffect, type StartGrant
 } from "./supervisor-admission";
 import { workspacePlugin } from "./workspace";
@@ -136,6 +139,49 @@ export class OpenCodeAgent extends DurableObject<Env> {
         reason: admission.reason, retryAfterMs: admission.retryAfterMs, capacity: 10 };
     }
     if (admission.kind === "reused") {
+      // A positive exact-ID read is the only evidence used to reconcile an
+      // interrupted session_create. No enumeration, transcript or blind
+      // second create is permitted here. The transaction transfers the
+      // grant and fences out a late response from the original owner.
+      if (admission.reason === "EFFECT_UNCONFIRMED" &&
+          admission.slot?.effect === "session_create" &&
+          admission.task.sessionIdPolicy === "deterministic-v1" &&
+          admission.task.sessionCreationAttempted === true &&
+          !admission.task.session && !admission.task.forkedFrom) {
+        const id = r2SessionId(admission.task.id);
+        let observed = false;
+        try {
+          observed = await this.harness.use(async opencode => {
+            try {
+              const item = await opencode.sessions.get({ sessionID: id });
+              return item?.id === id;
+            } catch (error) {
+              // The pinned embedded SDK returns a tagged not-found;
+              // *other* errors never prove absence and never trigger create.
+              if (error && typeof error === "object" &&
+                  "_tag" in error && error._tag === "SessionNotFoundError")
+                return false;
+              throw error;
+            }
+          });
+        } catch {
+          return { ...this.supervisorTaskReceipt(admission.task, true),
+            accepted: false, confirmed: false,
+            reconciliation: "SESSION_LOOKUP_UNAVAILABLE" };
+        }
+        if (!observed)
+          return { ...this.supervisorTaskReceipt(admission.task, true),
+            accepted: false, confirmed: false,
+            reconciliation: "SESSION_NOT_CONFIRMED_NO_RETRY" };
+        const recovered = await reconcileSupervisorCreatedSession(
+          this.ctx.storage, admission.task.id, id, admission.slot);
+        if (recovered.kind === "recovered")
+          return this.withSupervisorStartLock(start.requestId, async () =>
+            this.advanceSupervisedTask(recovered.task, start, true, recovered.grant), recovered.task);
+        return { ...this.supervisorTaskReceipt(
+          await this.supervisedRecord(admission.task.id), true),
+          accepted: false, confirmed: false, reconciliation: recovered.reason };
+      }
       return { ...this.supervisorTaskReceipt(admission.task, true), admitted: true,
         admissionState: admission.slot?.phase ?? "legacy_reconcile_required",
         admissionReason: admission.reason };
@@ -216,15 +262,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "session_create");
         job.sessionCreationAttempted = true;
         job.updatedAt = Date.now();
+        // A reconciling caller cannot prove native existence until this
+        // marker is durable. Failures cannot release an unknown slot.
         await this.ctx.storage.put(key, job);
         const createdId = await this.harness.create({ id: sessionId });
         if (createdId !== sessionId) throw new Error("SUPERVISOR_SESSION_ID_MISMATCH");
-        job.session = sessionId;
-        job.updatedAt = Date.now();
-        await this.ctx.storage.put(key, job);
-        await supervisorConfirmExternalEffect(this.ctx.storage, grant, "session_create", { confirmed: true });
+        // Commit receipt, task owner and slot clearance atomically, still
+        // under the original grant. A reconciler may already have fenced it.
+        job = await supervisorCommitCreatedSession(this.ctx.storage, grant, sessionId);
         await this.bindSessionScope(sessionId, { project: job.project, repository: job.repository });
-        await this.ctx.storage.put("supervisor:session:" + sessionId, job.id);
       }
       // A lost reply may interrupt a prior bind. Rechecking the same-scope
       // mapping is safe; it must never widen a session's project permissions.
@@ -451,52 +497,22 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (typeof v.turnId !== "string" || !/^[a-f0-9]{16}$/.test(v.turnId)) throw new Error("turnId inválido");
     if (typeof v.prompt !== "string" || v.prompt.trim().length < 12 || v.prompt.length > 5000)
       throw new Error("Instrucción inválida");
-    const key = r2TurnJournalKey(id, v.turnId);
-    const taskKey = supervisorTaskKey(id);
     const data = new TextEncoder().encode(v.prompt.trim());
     const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", data)),
       b => b.toString(16).padStart(2, "0")).join("");
     const operationId = supervisorTurnOperationId(id, v.turnId);
-
-    // Atomically journal intent, operation ID, and the newest task cursor
-    // BEFORE making an SDK call. This is per-task arbitration, not T03's scheduler.
-    const reservation = await this.ctx.storage.transaction(async tx => {
-      const task = await tx.get<SupervisorTask>(taskKey);
-      if (!task?.session) throw new Error("Tarea no disponible");
-      // Read the global capacity slot in the SAME transaction as the
-      // continuation journal. A concurrent new-task admission may reclaim
-      // terminal slots; a stale preflight read cannot guard this race.
-      const admission = await supervisorAdmissionSlot(tx, id);
-      if (!supervisorAdmissionAllowsContinuation(
-        admission, task.sessionIdPolicy === "deterministic-v1"))
-        throw new Error("SUPERVISOR_TURN_REQUIRES_ACTIVE_ADMISSION");
-      const previous = await tx.get<R2TurnJournal>(key);
-      if (previous && (previous.hash !== hash || previous.session !== task.session ||
-          previous.operationId !== operationId)) throw new Error("turnId reutilizado con otra instrucción");
-      if (previous && !task.pendingTurn) {
-        // One native operationId already exists or the task has moved on.
-        // Do not submit a second time from a stale HTTP retry.
-        return { kind: "existing" as const, task, previous };
-      }
-      const decision = r2TurnAdmission(task, operationId);
-      if (decision === "denied") throw new Error("SUPERVISOR_TURN_DENIED_TERMINAL_OR_CANCEL");
-      if (decision === "busy") throw new Error("SUPERVISOR_TURN_IN_FLIGHT");
-      if (!previous) {
-        const journal: R2TurnJournal = { hash, operationId, session: task.session,
-          phase: "intent", revision: (task.revision ?? 0) + 1 };
-        await tx.put(key, journal);
-        const updated: SupervisorTask = { ...task,
-          pendingTurn: { turnId: v.turnId as string, operationId },
-          operationId, status: "running", revision: journal.revision, updatedAt: Date.now() };
-        await tx.put(taskKey, updated);
-        return { kind: "submit" as const, task: updated, journal };
-      }
-      return { kind: "submit" as const, task, journal: previous };
-    });
+    // The one T03 admission ledger and T04 turn journal are updated inside
+    // the same transaction, including readmission of a completed task.
+    const reservation = await reserveSupervisorContinuation(
+      this.ctx.storage, id, v.turnId, hash, operationId);
+    if (reservation.kind === "capacity") {
+      return { taskId: id, accepted: false, status: "capacity_rejected",
+        reason: reservation.reason, retryAfterMs: reservation.retryAfterMs };
+    }
     if (reservation.kind === "existing") {
       return { taskId: id, operationId, session: reservation.task.session,
         status: reservation.task.status, reused: true, confirmed: false,
-        journalPhase: reservation.previous.phase };
+        journalPhase: reservation.journal.phase };
     }
     // Cancellation may win just after the transaction; never deliberately
     // send a queued steer after observing the cancellation intent.
@@ -515,22 +531,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
     } catch (error) {
       sendError = error instanceof Error ? error.message.slice(0, 240) : "No confirmado";
     }
-    const persisted = await this.ctx.storage.transaction(async tx => {
-      const journal = await tx.get<R2TurnJournal>(key);
-      const fresh = await tx.get<SupervisorTask>(taskKey);
-      if (!journal || !fresh || journal.operationId !== operationId)
-        throw new Error("SUPERVISOR_TURN_JOURNAL_MISSING");
-      await tx.put(key, { ...journal, phase: sendError ? "unknown" as const : "accepted" as const });
-      if (fresh.pendingTurn?.operationId !== operationId) return fresh;
-      // Never overwrite cancellation or erase its ambiguous concurrent steer.
-      if (fresh.status === "cancel_requested" || fresh.cancelAmbiguous) return fresh;
-      const updated: SupervisorTask = { ...fresh,
-        ...(sendError ? { status: "unknown" as const, error: sendError } :
-          { status: "running" as const, error: undefined }),
-        pendingTurn: undefined, revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-      await tx.put(taskKey, updated);
-      return updated;
-    });
+    const persisted = await recordSupervisorContinuationReceipt(
+      this.ctx.storage, id, v.turnId, operationId,
+      { accepted, ...(sendError ? {error: sendError} : {}) });
     if (persisted.status === "cancel_requested" || persisted.cancelAmbiguous) {
       return { taskId: id, session: persisted.session, operationId,
         status: "cancel_requested", confirmed: false, accepted,
@@ -784,6 +787,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
           const turnKey = r2TurnJournalKey(id, turnId);
           const journal = await tx.get<R2TurnJournal>(turnKey);
           if (journal?.operationId === fresh.operationId && journal.phase !== "settled") {
+            // Native terminal evidence also reconciles a prior lost
+            // continuation-submit receipt in T03's global capacity ledger.
+            await reconcileSupervisorTurnEffect(tx, id, job.operationId, operation!);
             await tx.put(turnKey, { ...journal, phase: "settled" as const,
               receiptStatus: operation!.status, receiptReason: operation!.reason?.slice(0, 120),
               settledAt: Date.now() });
