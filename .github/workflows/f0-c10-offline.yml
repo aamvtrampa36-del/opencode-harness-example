@@ -2,7 +2,7 @@ name: F0-C10 offline harness (no Staging)
 
 on:
   pull_request:
-    branches: [staging/opencode-g1-rpc-safe-20261120]
+    branches: [staging/opencode-g1-rpc-safe-20261120, f0-c10/t11-integration-20261122]
     paths:
       - 'scripts/f0-c10/**'
       - 'docs/f0-c10/10_PRUEBAS_E2E.md'
@@ -22,5 +22,10 @@ jobs:
         run: node --test scripts/f0-c10/evaluate.test.mjs
       - name: Matrix and negative fault suite
         run: node scripts/f0-c10/run-offline.mjs --suite --out f0-c10-offline-evidence.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: R2-T06 Linux process-group and escaped-descendant fixtures (offline)
+        run: node --experimental-strip-types scripts/f0-c10/t06-r2-process-fixtures.mjs
       - name: Inspect bounded JSON evidence
         run: node -e "const x=require('./f0-c10-offline-evidence.json'); if (!x.pass || x.realStagingTested) process.exit(1)"
