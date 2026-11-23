@@ -590,9 +590,14 @@ export class DevContainer extends DurableObject<Env> {
       "'apt-get update -qq -o Acquire::Retries=2 && " +
       "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git ca-certificates'";
     const handle = await container.exec(["bash", "-lc", script]);
-    const outcome = await handle.output();
-    if (outcome.exitCode !== 0) {
-      const error = new TextDecoder().decode(outcome.stderr).slice(-350);
+    // Drain both streams before completion: output() buffers unbounded bytes.
+    const [stdout, stderr, exitCode] = await Promise.all([
+      captureBoundedOutput(handle.stdout, MAX_SHELL_OUTPUT),
+      captureBoundedOutput(handle.stderr, MAX_SHELL_OUTPUT),
+      handle.exitCode
+    ]);
+    if (exitCode !== 0) {
+      const error = stderr.text.slice(-350);
       throw new Error("Git bootstrap failed in the Linux container: " + (error || "package installation failed"));
     }
   }
@@ -608,9 +613,14 @@ export class DevContainer extends DurableObject<Env> {
     const process = await container.exec(["bash", "-lc", script], {
       signal: AbortSignal.timeout(160_000)
     });
-    const output = await process.output();
-    if (output.exitCode !== 0) {
-      throw new Error(`Bun ${BUN_RUNTIME_VERSION} bootstrap failed in the Linux container (exit ${output.exitCode ?? "unknown"}).`);
+    // npm stdout is redirected, but stderr may still be large. Drain concurrently.
+    const [stdout, stderr, exitCode] = await Promise.all([
+      captureBoundedOutput(process.stdout, MAX_SHELL_OUTPUT),
+      captureBoundedOutput(process.stderr, MAX_SHELL_OUTPUT),
+      process.exitCode
+    ]);
+    if (exitCode !== 0) {
+      throw new Error(`Bun ${BUN_RUNTIME_VERSION} bootstrap failed in the Linux container (exit ${exitCode ?? "unknown"}).`);
     }
   }
 
