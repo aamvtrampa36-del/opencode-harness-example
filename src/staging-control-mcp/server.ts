@@ -1,6 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { renderConversationMarkdown } from "../session-export";
 import { MODEL_PRESETS } from "../model-presets";
 import { BUN_RUNTIME_VERSION } from "../dev-runtime";
 import {
@@ -374,29 +373,9 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
   }, async ({ id, workspace }) => callTask(() => bindings.supervisor(workspace).supervisedTaskReview(id), 16_000));
 
   server.registerTool("staging_task_transcript", {
-    description: `Lee los últimos 20 mensajes de una tarea de Staging, sin razonamiento interno y con claves/tokens redactados. ${WORKSPACE_HINT}`,
+    description: `Transcripción temporalmente no disponible: historial sin límite seguro de memoria en Staging. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema.describe("ID de tarea hexadecimal de 16 caracteres"), workspace: workspaceSchema }
-  }, async ({ id, workspace }) => {
-    try {
-      const supervisor = bindings.supervisor(workspace);
-      const task = asRecord(await supervisor.supervisedTaskStatus(id));
-      if (typeof task.session !== "string") throw new Error("La tarea de Staging todavía no tiene una sesión disponible");
-      const raw = await supervisor.supervisedTaskTranscript(id);
-      const transcript: unknown = JSON.parse(raw);
-      if (!transcript || typeof transcript !== "object" || !Array.isArray((transcript as { messages?: unknown }).messages)) {
-        throw new Error("La transcripción de Staging no tiene un formato válido");
-      }
-      const data = transcript as { messages: unknown[]; project?: unknown; repository?: unknown };
-      const markdown = renderConversationMarkdown(task.session, {
-        ...data,
-        messages: data.messages.slice(-20)
-      });
-      const clipped = markdown.length <= 20_000 ? markdown : markdown.slice(-20_000) + "\n[Transcripción recortada]";
-      return { content: [{ type: "text" as const, text: `Destino: ${STAGING_WORKER}\nTarea: ${id}\n\n${clipped}` }] };
-    } catch (error) {
-      return failed(error);
-    }
-  });
+  }, async () => failed(new Error("SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED")));
 
   return server;
 }
