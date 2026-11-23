@@ -4,7 +4,7 @@
 **Actor:** ChatGPT coordinó lecturas, simulación local y commits mediante el conector GitHub autorizado. **OpenCode no ejecutó esta corrección**: no existía evidencia suficiente de reserva exclusiva ni corte efectivo de coste para iniciar una tarea remota.  
 **Repositorio:** https://github.com/aamvtrampa36-del/opencode-harness-example  
 **Base inmutable examinada:** `staging/opencode-g1-rpc-safe-20261120` @ `11161dd6f2c4b5237a2da59d7275ff693e0afdbe`.  
-**Rama T08 exclusiva:** `f0-c10/t08-20261122` (creada desde esa base). **PR:** draft hacia la misma base; no merge, no deploy.
+**Rama T08 exclusiva:** `f0-c10/t08-20261122` (creada desde esa base). **PR draft:** [#122](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/122) hacia la misma base; no merge, no deploy. **Preflight:** 13 PR abiertas examinadas, sin archivos solapados con T08.
 
 ## 1. Resultado verificable y límites
 
@@ -81,6 +81,8 @@ Cloudflare documenta almacenamiento fuerte y transacciones por DO ([SQLite DO AP
 - Pruebas anteriores de la base: `src/github.test.ts` (respuesta de PUT perdida; SHA y validación de reemplazo), `src/github-pr-conflicts.test.ts` (colisión, rename, truncamiento, cambio de refs y duplicación).
 
 **Reproducción local efectivamente ejecutada:** `node --test f0_c10_t08_model_tests.mjs` (Node v22), **8/8 PASS, exit 0**, en un modelo independiente que simula diez ramas, colisión secuencial/paralela, PUT/PR con respuesta perdida, no-fast-forward y fencing. Este script local es una simulación, **no carga el puente TypeScript real**. El runtime local no ofrece `bun` y no permitió clonar por DNS; no atribuir esas ocho pruebas a `bun test`. El test real de fuente debe pasar en CI del HEAD de la PR y luego, cuando se autorice, en Staging.
+
+**Primera consulta CI del draft #122:** la API no devolvió workflow runs ni estados combinados para el HEAD inicial `37257a1c89de4bc97204a669b17704737a27ce08`; **no hay CI verde comprobado**. Es necesario repetir comprobación tras este último commit documental.
 
 **Comandos de verificación en CI del SHA exacto:** `bun test src/github-pr-conflicts.test.ts src/github.test.ts`, `bun run typecheck`, `bun run build`, `bun scripts/check-invariants.mjs`. Deben comprobarse sus exit codes y asociarlos al HEAD tras la última edición; una PR draft por sí sola no es PASS.
 
