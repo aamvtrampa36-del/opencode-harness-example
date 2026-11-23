@@ -71,6 +71,23 @@ function validateReceipt(value: unknown, intent: GitHubPrPublicationScope, hash:
   };
 }
 
+export function assertSupervisedPublicationScope(
+  input: { repo: string; branch: string; action: string },
+  sessionID: unknown,
+  task: { id: string; repository: string; branch: string; project: string;
+    session?: string; status: string } | undefined
+): void {
+  const match = /^opencode\\/staging-([a-f0-9]{16})$/.exec(input.branch);
+  if (input.action !== "pr" || !match || !task ||
+      task.id !== match[1] || task.branch !== input.branch ||
+      task.repository.toLowerCase() !== input.repo.toLowerCase() ||
+      task.project !== "supervised-" + task.id ||
+      typeof sessionID !== "string" || !sessionID ||
+      task.session !== sessionID ||
+      !["preparing", "running"].includes(task.status))
+    throw Error("PR_PUBLICATION_SESSION_SCOPE_DENIED");
+}
+
 /** Do not instantiate per project: the storage must be the same supervisor DO. */
 export class DurableGitHubPublicationGate implements GitHubPrPublicationGate {
   constructor(
