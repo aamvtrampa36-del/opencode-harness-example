@@ -7,6 +7,8 @@
  * writes ONLY to opencode/* review branches. No merging, force-push, deletion,
  * releases or production deployments.
  */
+import { GitHubPublicationGate, type PublicationProof, type PublicationReceipt } from "./github-publication-gate";
+
 export const ALLOWED_REPOS = [
   "aamvtrampa36-del/cdf-cloud-engine",
   "aamvtrampa36-del/CDF-WorkBench-",
@@ -129,7 +131,9 @@ export class GitHubBridge {
   constructor(
     private readonly token: string,
     private readonly http: GitHubFetch = fetch,
-    allowedRepos: readonly string[] = ALLOWED_REPOS
+    allowedRepos: readonly string[] = ALLOWED_REPOS,
+    private readonly publicationGate?: GitHubPublicationGate,
+    private readonly requirePublicationGate = false
   ) {
     if (!token) throw new Error("GITHUB_TOKEN is not configured in Cloudflare Secrets");
     this.allowed = new Set(allowedRepos.map(normalizeOwnedRepository));
@@ -562,6 +566,10 @@ export class GitHubBridge {
             throw new Error("PR_PREFLIGHT_INCOMPLETE: unverifiable branch SHA");
           return sha.toLowerCase();
         };
+        const desiredBody = (input.body || "").slice(0, 5000);
+        const publish = async (
+          beforePost?: (proof: PublicationProof) => Promise<void>
+        ): Promise<PublicationReceipt> => {
         const [baseSha, headSha] = await Promise.all([getHead(source), getHead(branch)]);
         const comparison = await this.api("GET", base + "/compare/" +
           encodeURIComponent(source) + "..." + encodeURIComponent(branch));
@@ -591,7 +599,6 @@ export class GitHubBridge {
           encodeURIComponent(source) + "&per_page=100&page=1");
         if (!Array.isArray(existing) || existing.length >= 100)
           throw new Error("PR_PREFLIGHT_INCOMPLETE: open PR list missing or truncated");
-        const desiredBody = (input.body || "").slice(0, 5000);
         for (const item of existing) {
           if (!Number.isSafeInteger(item?.number) || item.number < 1 ||
               item?.base?.ref !== source || typeof item?.head?.ref !== "string")
@@ -636,11 +643,51 @@ export class GitHubBridge {
         const [baseShaNow, headShaNow] = await Promise.all([getHead(source), getHead(branch)]);
         if (baseShaNow !== baseSha || headShaNow !== headSha)
           throw new Error("PR_PREFLIGHT_STALE: branch moved during collision preflight");
+        if (beforePost) await beforePost({ baseSha, headSha });
         const created = await this.api("POST", base + "/pulls", {
           title: input.title, body: desiredBody,
           head: branch, base: source, draft: true
         });
-        return { repo, number: created.number, url: created.html_url, draft: created.draft, base: source, head: branch };
+        return { repo, number: created.number, url: created.html_url,
+          draft: created.draft, base: source, head: branch } as PublicationReceipt;
+
+        };
+        // A fully scoped shared gate is injected by the T03 owner. Do not
+        // mistake per-request Bridge instances for durable exclusivity.
+        const reconcile = async (proof: PublicationProof): Promise<PublicationReceipt | null> => {
+          const matches = await this.api("GET", base + "/pulls?state=all&head=" +
+            encodeURIComponent(OWNER + ":" + branch) + "&base=" +
+            encodeURIComponent(source) + "&per_page=100&page=1");
+          if (!Array.isArray(matches) || matches.length >= 100)
+            throw new Error("PR_PUBLICATION_UNKNOWN: incomplete authoritative PR search");
+          const exactBranch = matches.filter((item: any) =>
+            item?.head?.ref === branch && item?.base?.ref === source);
+          if (exactBranch.length === 0) return null;
+          if (exactBranch.length !== 1)
+            throw new Error("PR_PUBLICATION_UNKNOWN: ambiguous PR identity");
+          const item = exactBranch[0];
+          if (item.head?.repo?.full_name?.toLowerCase() !== repo.toLowerCase() ||
+              item.head?.sha?.toLowerCase() !== proof.headSha ||
+              item.base?.sha?.toLowerCase() !== proof.baseSha ||
+              item.title !== input.title || (item.body ?? "") !== desiredBody ||
+              item.draft !== true || !Number.isSafeInteger(item.number) || item.number < 1 ||
+              typeof item.html_url !== "string") {
+            throw new Error("PR_PUBLICATION_UNKNOWN: divergent existing PR; do not retry POST");
+          }
+          return { repo, number: item.number, url: item.html_url, draft: true,
+            base: source, head: branch, headSha: proof.headSha, reconciled: true };
+        };
+        if (this.publicationGate) {
+          return this.publicationGate.run(
+            { repo, base: source, branch, title: input.title, body: desiredBody },
+            beforePost => publish(beforePost), reconcile
+          );
+        }
+        // T03 will enable this strict flag when it supplies shared durable
+        // storage; otherwise the legacy path is unchanged for compatibility.
+        if (this.requirePublicationGate && STAGING_REVIEW.test(branch))
+          throw new Error("PR_PUBLICATION_GATE_REQUIRED: durable publication owner missing");
+        return publish();
       }
       default:
         throw new Error("Unsupported GitHub action");
