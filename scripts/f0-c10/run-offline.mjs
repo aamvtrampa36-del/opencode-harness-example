@@ -8,7 +8,7 @@ const option = (key) => { const i = args.indexOf(key); return i === -1 ? undefin
 const size = Number(option('--size') || 10);
 const fault = option('--fault') || null;
 const suite = args.includes('--suite');
-const negativeFaults = ['historical-red', 'oom', 'partial', 'orphan', 'false-pass', 'queued-only', 'cross-project', 'duplicate-request', 'client-only', 'cancelled'];
+const negativeFaults = ['historical-red', 'oom', 'partial', 'orphan', 'false-pass', 'queued-only', 'cross-project', 'duplicate-request', 'client-only', 'cancelled', 'missing-readback', 'corrupt-readback'];
 try {
   if (suite) {
     const results = [];
