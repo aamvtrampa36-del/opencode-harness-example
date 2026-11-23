@@ -175,6 +175,28 @@ describe("F0-C10 R2-T08 durable publication: transactional ledger and real bridg
     resume.release();
     await expect(a).rejects.toThrow("PR_PUBLICATION_FENCE_REJECTED");
   });
+  test("task revoked during preflight is rejected in the publishing transaction", async () => {
+    const s = new FakeStorage(), entered = deferred(), resume = deferred();
+    const gate = new DurableGitHubPublicationGate(s.asDO(), Date.now, async (tx) => {
+      const current = await tx.get<{ status: string }>("synthetic-owner");
+      if (current?.status !== "running") throw Error("PR_PUBLICATION_SESSION_SCOPE_DENIED");
+    });
+    await s.put("synthetic-owner", { status: "running" });
+    const request = { repo, base: OPENCODE_STAGING_BASE, branch: branch(1), title: "X", body: "" };
+    const old = gate.withExclusive(request, async permit => {
+      entered.release();
+      await resume.promise;
+      await permit.beginExternalEffect();
+      throw Error("should never send HTTP");
+    });
+    await entered.promise;
+    await s.put("synthetic-owner", { status: "cancelled" });
+    resume.release();
+    await expect(old).rejects.toThrow("PR_PUBLICATION_SESSION_SCOPE_DENIED");
+    expect(s.snapshot().some(([key, v]) =>
+      key.startsWith("github:pr-publisher:v1:") &&
+      (v as any)?.active !== undefined)).toBe(false);
+  });
   test("an uncoordinated staging draft is rejected before API reads", async () => {
     let calls = 0;
     const http = (async () => { calls++; return Response.json({}); }) as typeof fetch;
