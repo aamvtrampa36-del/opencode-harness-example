@@ -394,3 +394,132 @@ La PR #128 tiene como base **#126**, por lo que el diff es específico y no vuel
 Este nuevo apéndice actualiza el HEAD del PR #128, y el workflow puede ejecutarse de nuevo: **el PASS indicado pertenece estrictamente a `2b220420...`**. Cualquier HEAD posterior se debe verificar por separado. GitHub Actions corrió sólo Node/synthetic; no invocó un modelo real ni operó sobre Staging. Coste de CI/API no cuantificado.
 
 **Punto de continuidad material:** comentarios confirmados, contrato publicado y benchmarks archivados, pero **no hay entrega de T01/T03/T05 posterior al intercambio ni aceptación formal por T11**. T11 sigue draft y no puede declararse integrada sólo porque exista comentario o PR #128 apuntando a su HEAD. **F0-C10 = PARTIAL**.
+
+
+---
+
+# Parte IV — F0-C10/R3-T02: residencia, recuperación y decisión de aislamiento
+
+**Fecha/corte:** 2026-11-23 (BRT/UTC). **Actor:** ChatGPT, conector GitHub y Cloudflare/Remote de lectura, Node 22.16.0 local; **no** OpenCode Remote de ejecución, **no** Codex. **Estado:** `PARTIAL / OFFLINE_LIFECYCLE_VERIFIED / ISOLATE_NOT_MEASURED`. Esta sección prevalece para la decisión T02 sobre las partes históricas, que se conservan sin alterar.
+
+## 23. Continuidad: árbol base real, dependencias y runtime
+
+**Base exacta de la rama T02 R3:** [PR #145](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/145) HEAD `a49e985909cb56bb42c609c9cd5cb4250a620169`, sobre PR [#144](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/144) `baebc30a71dbaa8abca722c0780d4d658e2192c8`, sobre [#143](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/143) `160eafbb0e4842063e37c71425f1a5c2e08b18b2`, sobre [#126](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/126) `1268ba22f26330d619b046fcf551ca846cb69d0f`. Las cuatro PR están abiertas en draft y **sin merge**. #145 run [45106083359](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45106083359) `completed/success`, solo pruebas y build offline.
+
+La [PR documental R3 #146](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/146) HEAD `05da68fd1644f92578588c62a4586d561c418c49` contiene `F0_C10_PLAN_INTEGRAL.md` ``32–39, `00_COORDINACION.md` R3 y `15_RETROSPECTIVA_Y_CONTROLES_R3.md`. Es documentación, no código nuevo implementado. Este trabajo utiliza #145 como autoridad de código y **no crea otra base integrada**. Se recuperaron las PR T02 históricas [#115](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/115) y [#128](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/128), y se extendió el fixture de #128 sin copiar nuevamente sus módulos.
+
+**Cloudflare GET de deployments/settings (corte actual):**
+
+| Recurso | Tráfico y versión publicada | Importancia |
+|---|---|---|
+| `opencode-g1-staging` | deployment `36ef84b3-0f99-4dd4-ab8e-c11ee450dd23`, versión `3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb`, 100 % | No ejecuta #145. Binding `OpenCodeAgent`, `DEV→DevContainer`, `SETTINGS→PersonalSettings`, `SESSION_BK→SessionBackupDrillAgent`, `SUPERVISOR_WORKFLOW`; AI/LOADER/R2 también presentes |
+| `opencode-staging-control-mcp` | deployment `9fdaf22d-beeb-44a0-ab68-77ecd5745fa1`, versión `196240c0-1052-47b3-aaa7-02cf5baa87f0`, 100 % | Binding service `STAGING_HEALTH` y DO `STAGING_SUPERVISOR→OpenCodeAgent` del Worker principal |
+
+Remote (lectura estricta `staging_status`): `health=ok`, `ready=true`, mínimo 96 sesiones indexadas, `supervisedCountComplete=false`. **No** son 96 sesiones activas ni validación de 10. El [issue #90](https://github.com/aamvtrampa36-del/opencode-harness-example/issues/90#issuecomment-7083567558) sigue abierto: diez peticiones simultáneas el 22/11, **0/10 resultados verificados**, seis errores de memoria y estados ambiguos.
+
+**Dependencias fijadas de #145:** `agents@0.33.0` (tag → commit `5684e278e44abfb592a6ae6ef3e2f5250feacd8c`), `@opencode/sdk@2.0.24`, `@opencode/plugin@2.0.24`, Bun 1.4.4 y Wrangler 4.158.0. El SDK pin documenta referencias y contrato, **no prueba** su consumo de memoria real bajo workerd. [cloudflare/agents @ pin](https://github.com/cloudflare/agents/blob/5684e278e44abfb592a6ae6ef3e2f5250feacd8c/packages/agents/src/harness/opencode/harness.ts), licencia [MIT](https://github.com/cloudflare/agents/blob/5684e278e44abfb592a6ae6ef3e2f5250feacd8c/LICENSE). **No se copió código de terceros.** Las referencias externas ya revisadas en R2 se preservan, sin repetir investigación.
+
+## 24. Mapa de residencias y transiciones exactas
+
+```text
+opencode-staging-control-mcp / cliente
+  └─ STAGING_SUPERVISOR DO binding → opencode-g1-staging/OpenCodeAgent
+       └─ getByName("opencode-supervisor-v1") [un ID lógico]
+            ├─ ctx.storage SQLite durable
+            │    supervisor:admission:v1 [hasta 10 slots R2, T03]
+            │    supervisor:task:<requestId> / supervisor:session:<sessionId>
+            │    supervisor:turn:<task>:<turn> / journal, scope y opencode_* SDK
+            ├─ readonly harness: OpenCodeHarness [un host compartido]
+            │    #opening: Promise<OpenCodeWorkerd> -> host/plugins/recursos V8
+            │    #waits: Map<sessionId, Promise>; #admitting: Map<sessionId, count>
+            │    #leases: number; Lifecycle wake/close jobs/alarm
+            │    sessions: fachada OpenCodeSessions, no Map de historial propio
+            ├─ readonly workspace: Workspace / LOADER / herramientas / plugins
+            ├─ readonly sockets: OpenCodeSessionSockets
+            │    #watches: Map<session, Promise<event stream>>
+            │    #snapshots, #submitLocks, #activeConfigurations, #cancelledWorkflows
+            └─ sessionProject → DEV.getByName("project-v1:"+project)
+                   └─ DevContainer DO + Linux Container por proyecto
+                      (separación de proceso Linux, no del Harness ni del isolate)
+```
+
+**Fuentes por función en #145:**
+
+| Referencia/ciclo | Archivo/funciones | Durabilidad/efecto |
+|---|---|---|
+| DO único, apertura y plugins | [`src/server.ts` @#145](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/a49e985909cb56bb42c609c9cd5cb4250a620169/src/server.ts) L85, `startSupervisedTask` L93, `harness` L1760–1815, `workspace` L1669, `sockets/webSockets/lifecycle` L1817–1843 | Referencias de la **instancia V8** mientras residente; un nuevo DO no se crea por cada sesión supervisada |
+| Locks y restore | `src/server.ts` `withSupervisorStartLock` L211 y `advanceSupervisedTask` L232, ``1404–1434` PR publisher | Lock por requestId más un único ledger T03; RPC después de `await` puede intercalarse. El publisher usa el mismo DO lógico |
+| Estado durable T03 | [`src/supervisor-admission.ts` @#145](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/a49e985909cb56bb42c609c9cd5cb4250a620169/src/supervisor-admission.ts) `reserveSupervisorAdmission` L55, `supervisorBeginExternalEffect` L111, `supervisorCommitCreatedSession` L249, `reserveSupervisorContinuation` L290 | Slots `reserved/effect_unknown/running`, token+generation y transacciones. `effect_unknown` **no** libera automáticamente capacidad |
+| Recuperación por identidad | `src/server.ts` L137–182 (`opencode.sessions.get` por ID), `harness.create({id})` L268, [`docs/f0-c10/14_SESSION_RECOVERY_READMISSION.md`](../../docs/f0-c10/14_SESSION_RECOVERY_READMISSION.md) | GET positivo no prueba ausencia de efectos del creador viejo; GET negativo no autoriza recreación |
+| Continuación/readmisión | `src/server.ts` `remoteSupervisorContinue` L490, `src/supervisor-admission.ts` `reserveSupervisorContinuation` L290, `recordSupervisorContinuationReceipt` L356, `reconcileSupervisorTurnEffect` L394 | `finished` puede tomar slot en misma transacción; `not_found` conserva reserva y estado incierto |
+| WebSockets/retención | [`src/sockets.ts` @#145](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/a49e985909cb56bb42c609c9cd5cb4250a620169/src/sockets.ts) L111–119, `reattach` L263, `#snapshot` L579, `#broadcastSnapshot` L594, `#settle` L614, `#unwatch` L648 | `history()` de snapshot materializa transcript completo, `sessions.list()` enumera en otras rutas: riesgo **de código** sin atribuirlo a cada OOM |
+| Host SDK y leases | [`agents@0.33.0 harness.ts`](https://github.com/cloudflare/agents/blob/5684e278e44abfb592a6ae6ef3e2f5250feacd8c/packages/agents/src/harness/opencode/harness.ts): ``218–244`, `enqueue` `413–449`, `#wakeStep` `622–663`, `#closeStep` `744–762`, `#messagesAfter` `843–867`, `history` `1097–1113`, `events` `1123–1203` | `#admitting` se elimina tras submit en finally; `#waits` tras esperar; stream exige `stop()`; `#opening` host cierra **solo** en idle real |
+| Linux/Container | [`src/project-container.ts` @#145](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/a49e985909cb56bb42c609c9cd5cb4250a620169/src/project-container.ts) `projectContainerName`; `src/server.ts` `isolatedProject` L1718; [`src/dev-container.ts`](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/a49e985909cb56bb42c609c9cd5cb4250a620169/src/dev-container.ts) `startOrRecover` L187 | Container Linux por proyecto, con memoria y cargos propios; no prueba aislamiento de heap del supervisor |
+
+**Al terminar:** cierre lógico y slot terminal no borran SQLite ni liberan inmediatamente el host `#opening`; leases, sockets y trabajos lifecycle pueden conservarlo. `#settle` elimina configuración/watches cuando idle, pero `#snapshot` lee historia completa antes de ello. **Al cancelar:** la cancelación es intento y solo receipt nativo confirma; un `unknown/not_found` conserva capacidad. **Al reiniciar:** se pierden maps/closures V8, se reabre SQLite y SDK reanuda según su contrato; no se demuestra que todos los efectos externos se reconcilien. **Coste de un host abierto y heap retenido:** aún desconocidos cuantitativamente.
+
+Cloudflare confirma **128 MB de memoria por isolate**, no por DO, y que DO de misma clase pueden compartir isolate: [limites](https://developers.cloudflare.com/workers/platform/limits/#memory), [DO analytics](https://developers.cloudflare.com/durable-objects/observability/metrics-and-analytics/#memory-usage), [architecture guidance](https://developers.cloudflare.com/durable-objects/best-practices/architecture-guidance/). Cambiar `getByName` por tarea **no** prueba 128 MB independientes. Los Container son otro límite/medición.
+
+## 25. RED y resultado reproducible del benchmark extendido de #128
+
+**Problema comprobable:** el benchmark previo solo comparaba retención de eventos. No ejercía el ciclo `create→receipt lost→GET exact-ID→continue→settle/cancel→restart`, ni la relación entre liberar slots y liberar referencias. El defecto de aplicación `src/sockets.ts#snapshot/history` es real a nivel código, pero está en la superficie de T05 y no se atribuyó causalmente al OOM; **no se modificó runtime para evitar un parche incompatible**. En R3 se agrega cobertura de referencia con parada ante invariantes violados.
+
+Archivos: [`scripts/f0-c10/r3-t02-lifecycle.mjs`](../../scripts/f0-c10/r3-t02-lifecycle.mjs) y [`r3-t02-lifecycle.test.mjs`](../../scripts/f0-c10/r3-t02-lifecycle.test.mjs), importando niveles/estrategias equivalentes a #128 sin recrear su estudio. El modelo conserva `store` y `nativeRows` como maps **simulados**, separados de `resident` y `slots`; la reconstrucción `restart()` crea otra instancia y restaura slots simulados. **No usa transacciones SQLite, API real del SDK, Workers AI, DO ni inferencias**. Aunque la capacidad de 10 y la generación se imitan, sus tests **no prueban** serializabilidad, token atómico ni contención efectiva del código T03/T04.
+
+**Ejecución efectiva local:** Node `v22.16.0`, `node --test .../r3-t02-lifecycle.test.mjs` → **6/6 PASS, exit 0**; `node --expose-gc .../r3-t02-lifecycle.mjs` → **12/12 casos generados, exit 0**. El benchmark se repitió **tres veces** en procesos separados por combinación: medianas de `heapUsed` activo sobre baseline de cada subproceso (MiB, no workerd):
+
+| Sesiones | Historial completo | Cola 20 | Proyección solo coordinador | Buffers máximos completo/acotado/coordinador |
+|---:|---:|---:|---:|---|
+| 1 | 0,106 | 0,016 | 0,014 | 160 / 20 / 0 |
+| 2 | 0,196 | 0,018 | 0,015 | 320 / 40 / 0 |
+| 4 | 0,372 | 0,019 | 0,014 | 640 / 80 / 0 |
+| 10 | 0,914 | 0,038 | 0,025 | 1600 / 200 / 0 |
+
+Cada sesión sintética produce 160 eventos de aprox. 1024 caracteres, y un turno posterior de 32 eventos menores; no hay diez CPU/LLM concurrentes: es un lazo JS intercalado dentro de un proceso. **0 referencias/0 slots simulados** después de completar y reconstruir, con **1 sesión cancelada sintéticamente** por nivel. **El heap real de Node puede permanecer alto por GC/JIT incluso si se borraron referencias**. Las tres ejecuciones no demuestran significado estadístico cloud.
+
+**Contrapruebas explícitas:** (1) lectura por ID ausente mantiene `effect_unknown` y slot, nunca nueva creación; (2) identidad/owner incorrecto no reconcilia; (3) un creador anterior a generación cambiada no puede pasar el guard sintético; (4) recibo de turno perdido conserva capacidad y deduplica `turnId`; (5) tras reinicio sintético la instancia V8 pierde `resident` pero sigue habiendo slot `unknown` en store; (6) entradas inválidas se rechazan. El RED histórico #90 **no pasa** por ejecutar este modelo: es una herramienta de revisión, no un arreglo live.
+
+## 26. Workerd/Miniflare descartable: fixture y prueba falsable NO EJECUTADA
+
+Ruta de fixture: [`scripts/f0-c10/r3-t02-workerd/`](../../scripts/f0-c10/r3-t02-workerd/README.md), con `worker.mjs`, `wrangler.jsonc` (solo migración de SQLite local `test-local-only-v1`, **ninguna configuración de Staging**) y `smoke.mjs` para dos pasadas. Clase `ResidencyProbe` deliberadamente distinta de `OpenCodeAgent`. Enruta todas las solicitudes a **un solo DO de nombre fijo**; nunca construye múltiples objetos para fingir isolates separados. Mantiene buffers de 20 eventos en RAM, estado simple en SQLite, expone `durationMs` y `memoryIsolateMiB:null`.
+
+Protocolo (leer README exacto):
+1. En máquina descartable con Bun/Wrangler del repo instalado, iniciar `wrangler dev --local --ip 127.0.0.1 --persist-to <dir>` con su `wrangler.jsonc` local; **no** remoto ni deploy.
+2. `node .../smoke.mjs prepare` realiza 1→2→4→10 series lógicas terminadas (una sesión adicional queda `running`), verifica conteos y referencias en snapshot.
+3. Detener únicamente el Wrangler **de este experimento**, reiniciarlo con el **mismo** `--persist-to`; `node .../smoke.mjs verify` exige fila SQLite persistida, mapas nuevos vacíos y negativa `RECOVERY_UNCONFIRMED` antes de reanudar trabajo. No es una prueba de pérdida de respuesta del SDK.
+4. Registrar llamadas HTTP, `durationMs`, duración/CPU/RSS de proceso workerd por herramientas de OS, número de filas/referencias, respuestas de error, repetición y cancelación. No confundir RSS de proceso con memoria **del isolate**, que requiere observabilidad de Cloudflare bajo lote autorizado.
+5. Negativos pendientes explícitos: undécima tarea, duplicado con dos requests intercaladas, timeout del cliente tras efecto, cancel y creator tardío, reinicio mientras RPC nativo está activo, recuperación de la versión **real** del SDK. El fixture simple NO reproduce transacciones T03/T04 ni memoria inferencial.
+
+**Estado real de ejecución:** Node `--check worker.mjs` local **PASS exit 0**; **no se ejecutó workerd/Miniflare** en este contenedor porque no están Bun/Wrangler/dependencias, ni se dispone de acceso GitHub desde contenedor. La CI del HEAD comprobará también la sintaxis del driver. [Wrangler local persistence](https://developers.cloudflare.com/workers/local-development/local-data/), [Miniflare DO](https://developers.cloudflare.com/workers/testing/miniflare/storage/durable-objects/). **Un test local completo tampoco certificaría la colocación física en Cloudflare.**
+
+## 27. Alternativas comparadas y decisión que puede refutarse
+
+| Propiedad | **A. Acotar retención / medir host actual** | B. Coordinador ligero + ejecutores por sesión | C. Contener admisión con ledger (ya en #145) |
+|---|---|---|---|
+| Memoria y diez activos | Baja picos de historia/eventos; mantiene un Harness común; viabilidad **desconocida** | Desplaza heap del host y fallo por sesión; **DO separados pueden compartir isolate** | Limita tareas admitidas (10 nominales), NO bytes/heap por sesión; legacy puede saltarse los slots |
+| Coste y complejidad | Bajos comparativamente; una API paginada/guardas y telemetría, sin nuevos servicios | Altos: DO/host por tarea, RPC, supervisión, recursos facturados y posible doble mantenimiento | Ya existe; coste incremental de transacciones y cola, pero desconocido; backpressure puede ocultar falta de 10 activos |
+| Estado / migración | Sin mover `opencode_*` ni cambiar `getByName` | Necesita owner/routing versionado, migra o conserva sesiones antiguas, decisiones de clase/DO y, quizás, bindings; **no implementado** | Conserva ledger T03 `supervisor:admission:v1` y journal T04; sesiones legacy siguen sin slot |
+| ACL / seguridad | Mantener scope servidor por sesión y output; rutas de snapshot limitadas también para Android | Cada nuevo ejecutor debe revalidar identidad, repo/proyecto, capability y separación de datos | Mantener aislamiento en Linux/GitHub y no liberar `unknown`; resolver multi-tenant en T09 |
+| Interleaving / recuperación | Menos superficies; `await` del DO puede intercalar RPC; tests de carrera reales pendientes | RPC distribuidos + outbox/idempotencia + jobs perdidos; mayor superficie de fallos y rollback | CAS/transacciones dentro del DO, pero RPC nativo externo y expiración del lock siguen necesitando reconciliación |
+| Reversibilidad | Alta si parche de lectura no modifica formato durable; restaurar historial sin volver al OOM | Baja-media: revertir Worker no revierte SQLite/estado de ejecutores y sus sesiones; requiere ruta de rollback probada | Mantener capacidad sin desbloquear `effect_unknown`. Bajar temporalmente slots NO acredita 10 activos |
+
+**Única elección mínima a integrar por T11: A, encima del ledger C ya existente en #145; NO crear una segunda admisión ni migrar a B.** T02 aporta informe, benchmark y fixture workerd descargable, **no cambia runtime**. T05 es dueño de la lectura paginada y guardas de `src/sockets.ts`; T01 es dueño de la observabilidad de fases; T03/T04 son dueños de slots y reconciliación. Las PR #134 (instrumentación) y #145 tienen conflicto de flujo en `src/server.ts`: el integrador debe adaptar semánticamente los hooks, no aplicar hunk viejo por posición. El legacy fuera del ledger es bloqueo real de garantía de capacidad total.
+
+**Gatillos falsables antes de escalar a B (propuestos, no aceptados ni medidos):** en candidato A tras acotar TODAS las rutas de historial relevantes, medir en isolate Cloudflare bajo lote autorizado 1→2→4→10, con diez intervalos independientes y auténticos de inferencia/herramienta. Pre-registrar presupuesto y umbrales exploratorios de memoria **p99 <=96 MiB**, máximo observado **<112 MiB**, **0 OOM**, ninguna pendiente `unknown/not_found` sin reconciliación, diez resultados recuperables. Comparar caliente/idle/cierre y tendencia bajo rondas repetidas. Estas cifras son **objetivos de seguridad propuestos**, no límites prometidos ni medidas actuales; un máximo muestreado no descarta picos entre muestras. Si A supera persistentemente el umbral o no logra diez ejecuciones genuinas por el heap/contención de un solo host, proponer B en un lote independiente con prueba de placement/co-residencia, ACL, rollback y costes. Si falla por proveedor, Linux, slot legacy o gasto, no atribuirlo a memoria ni concluir B.
+
+**Criterio global:** tres campañas 10/10 auténticas, cero OOM, journaling sin duplicados ni scope mezclado, outputs bytes autenticados y gasto con corte efectivo; una CI PASS/offline workerd no sustituye esto.
+
+## 28. Pruebas, autoría, costes, solapamientos y cierre del área
+
+| Nivel | Realizado y probado | No demostrado |
+|---|---|---|
+| Node puro | 6/6 tests (negativos/identidad/dedupe/unknown/capacidad/cancelación), exit 0; 12 combinaciones × 3 repeticiones `--expose-gc`, exit 0; ciclo `create→reconcile→continue→settle/restart` sintético | Transacciones DO reales, serialización Cloudflare, modelo, Linux, SDK heap |
+| Workerd fixture | Sintaxis `worker.mjs` en Node `--check`, exit 0; scripts aislados y configuración solo local | Ejecutar `wrangler dev --local`, prueba de persistencia al reiniciar, CPU y memoria reales workerd |
+| GitHub CI | Verificar ID, estado, jobs y SHAs **del HEAD final** al abrir PR; no reutilizar CI #145 como prueba de esta rama | No hay despliegue/inferencia, no hay 10 activos |
+| Runtime Staging | Cloudflare bindings/versiones y Remote status **solo lectura** | Perfil heap isolate, rol del allocador de OOM, actividad concurrente 10, coste integral con corte |
+
+**Conflictos detectados:** T01 #134 cambia un flujo ya modificado por T03/#145; T05 #139 incluye contención MCP, pero `sockets.ts` aún materializa historia completa; T03 slots 10 deja legado sin slot; T04 exact GET no detiene side effects del viejo creador; T09 y T10 necesitan reales ACL/procedencia. Esta rama R3 **no edita** sus superficies, `src/server.ts`, `src/supervisor-admission.ts`, `src/sockets.ts`, `wrangler.g1.jsonc`, `wrangler.mcp-staging.jsonc` ni `main`. El único YAML de migración es **config local descartable** y no fue aplicado.
+
+**Coste:** 0 tareas OpenCode Remote nuevas y 0 inferencias provocadas por este encargo; ninguna mutación de Staging, DO, Containers o despliegue. CI GitHub, lecturas Cloudflare y tiempo de cómputo local no se facturaron/medieron aquí de forma completa; no declarar coste total de US$0. No existe lease exclusivo ni corte de presupuesto verificado para operaciones vivas.
+
+**Estado:** `PARTIAL`. Entrega de especialidad lista para integrar por T11 **solo como documentación/fixtures**, no como prueba de memoria real ni autorización de migración/despliegue.
