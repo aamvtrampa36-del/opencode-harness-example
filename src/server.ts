@@ -22,6 +22,9 @@ import {
   reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot,
   hasSupervisorAdmissionSlot, supervisorAdmissionAllowsContinuation,
+  reconcileSupervisorCreatedSession, supervisorCommitCreatedSession,
+  reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
+  reconcileSupervisorTurnEffect,
   reconcileSupervisorSubmittedEffect, type StartGrant
 } from "./supervisor-admission";
 import { workspacePlugin } from "./workspace";
@@ -136,6 +139,49 @@ export class OpenCodeAgent extends DurableObject<Env> {
         reason: admission.reason, retryAfterMs: admission.retryAfterMs, capacity: 10 };
     }
     if (admission.kind === "reused") {
+      // A positive exact-ID read is the only evidence used to reconcile an
+      // interrupted session_create. No enumeration, transcript or blind
+      // second create is permitted here. The transaction transfers the
+      // grant and fences out a late response from the original owner.
+      if (admission.reason === "EFFECT_UNCONFIRMED" &&
+          admission.slot?.effect === "session_create" &&
+          admission.task.sessionIdPolicy === "deterministic-v1" &&
+          admission.task.sessionCreationAttempted === true &&
+          !admission.task.session && !admission.task.forkedFrom) {
+        const id = r2SessionId(admission.task.id);
+        let observed = false;
+        try {
+          observed = await this.harness.use(async opencode => {
+            try {
+              const item = await opencode.sessions.get({ sessionID: id });
+              return item?.id === id;
+            } catch (error) {
+              // The pinned embedded SDK returns a tagged not-found;
+              // *other* errors never prove absence and never trigger create.
+              if (error && typeof error === "object" &&
+                  "_tag" in error && error._tag === "SessionNotFoundError")
+                return false;
+              throw error;
+            }
+          });
+        } catch {
+          return { ...this.supervisorTaskReceipt(admission.task, true),
+            accepted: false, confirmed: false,
+            reconciliation: "SESSION_LOOKUP_UNAVAILABLE" };
+        }
+        if (!observed)
+          return { ...this.supervisorTaskReceipt(admission.task, true),
+            accepted: false, confirmed: false,
+            reconciliation: "SESSION_NOT_CONFIRMED_NO_RETRY" };
+        const recovered = await reconcileSupervisorCreatedSession(
+          this.ctx.storage, admission.task.id, id, admission.slot);
+        if (recovered.kind === "recovered")
+          return this.withSupervisorStartLock(start.requestId, async () =>
+            this.advanceSupervisedTask(recovered.task, start, true, recovered.grant), recovered.task);
+        return { ...this.supervisorTaskReceipt(
+          await this.supervisedRecord(admission.task.id), true),
+          accepted: false, confirmed: false, reconciliation: recovered.reason };
+      }
       return { ...this.supervisorTaskReceipt(admission.task, true), admitted: true,
         admissionState: admission.slot?.phase ?? "legacy_reconcile_required",
         admissionReason: admission.reason };
@@ -216,15 +262,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "session_create");
         job.sessionCreationAttempted = true;
         job.updatedAt = Date.now();
+        // A reconciling caller cannot prove native existence until this
+        // marker is durable. Failures cannot release an unknown slot.
         await this.ctx.storage.put(key, job);
         const createdId = await this.harness.create({ id: sessionId });
         if (createdId !== sessionId) throw new Error("SUPERVISOR_SESSION_ID_MISMATCH");
-        job.session = sessionId;
-        job.updatedAt = Date.now();
-        await this.ctx.storage.put(key, job);
-        await supervisorConfirmExternalEffect(this.ctx.storage, grant, "session_create", { confirmed: true });
+        // Commit receipt, task owner and slot clearance atomically, still
+        // under the original grant. A reconciler may already have fenced it.
+        job = await supervisorCommitCreatedSession(this.ctx.storage, grant, sessionId);
         await this.bindSessionScope(sessionId, { project: job.project, repository: job.repository });
-        await this.ctx.storage.put("supervisor:session:" + sessionId, job.id);
       }
       // A lost reply may interrupt a prior bind. Rechecking the same-scope
       // mapping is safe; it must never widen a session's project permissions.
