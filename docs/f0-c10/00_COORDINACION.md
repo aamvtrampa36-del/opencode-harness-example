@@ -86,3 +86,10 @@ Desde la integración #157 (HEAD histórico `304145eca71a5ffcf6d9c235e67a8065718
 Rama exclusiva `f0-c10/preflight-02-cutoff-lease-20261123` desde PR #158 `2231c385dfb5e3d17d84cedafc997c557e2e990d`. Se crearon fixtures de carrera de diez claims, replay y fencing con TTL sticky, más reserva de coste transaccional **en DO sintético** sin autorización de proveedor. CI del SHA final se registra en la PR draft de este preflight; informe: `docs/f0-c10/F0_C10_PREFLIGHT_02_COST_LEASE.md`.
 
 Los límites de Cloudflare no se modificaron. `GET /billing/spend-policies` retornó HTTP 403; no inferir si hay límites activos. No hay un techo numérico de gasto autorizado, y el SDK/Containers/CI no han probado corte efectivo en un entorno aislado. **Próximo gate único:** validar cuenta/namespaces realmente aislados con límites observables y un presupuesto máximo USD aprobado, sin otro prompt de diez especialistas ni inferencia antes de pruebas de contención auténticas.
+
+
+## PREFLIGHT-03 — Techo autorizado y autoridad de corte
+
+**Presupuesto global máximo autorizado:** `USD 2.00` / `2_000_000 microUSD` para **todos** los cargos de prueba, no seis presupuestos independientes. Se incorpora como límite *offline* inalterable al candidato del ledger de gastos, pero no se instala en Cloudflare ni se invoca SDK. El preflight GET de `/billing/spend-policies` devuelve HTTP 403 y el gateway no presenta rate-limit verificable. **No inventar GO o gasto cero**.
+
+Rama exclusiva `f0-c10/preflight-03-usd2-cap-20261123` derivada exactamente de PR #159 SHA `63706447d36b10ccbbaa87e75cc3e9874808ad54`. CI del HEAD exacto y revisión de pruebas de US$2 se registrarán en la PR draft correspondiente. Informe de fuente: `docs/f0-c10/F0_C10_PREFLIGHT_03_USD2.md`. Próximo gate único: lectura autorizada de Spend Policies y hard cutoff auténtico en entorno separado con lease demostrado, antes de cualquier tráfico pagado. Mantener #90 `PARTIAL` y **STOP_LIVE**.
