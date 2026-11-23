@@ -8,7 +8,7 @@ import {
 } from './task-output-artifacts.ts';
 
 const task = id => ({ id, project: `supervised-${id}`, session: 'sesA_task_' + id, repository: 'aamvtrampa36-del/opencode-harness-example' });
-const text = (v, path='dist/report.txt') => ({ path, contents: v, size: Buffer.byteLength(v) });
+const text = (v, path='dist/report.txt') => ({ path, byteSize: Buffer.byteLength(v), base64: Buffer.from(v).toString('base64'), sha256: createHash('sha256').update(v).digest('hex') });
 async function capture(id, contents='hello', overrides={}) {
   const owner = task(id);
   const req = overrides.request ?? { path:'dist/report.txt',name:'report.txt',mime:'text/plain' };
@@ -82,7 +82,7 @@ test('Large source rejects at 32KiB instead of truncating and announcing 200',as
 });
 
 test('Invalid UTF-8 readback accounting is a hard failure',async()=>{
-  await assert.rejects(capture(T1,'hello',{inspected:{path:'dist/report.txt',contents:'hello',size:1}}),/SOURCE_UTF8_BYTE_MISMATCH/);
+  await assert.rejects(capture(T1,'hello',{inspected:{...text('hello'),byteSize:1}}),/SOURCE_BYTE_COUNT_MISMATCH/);
 });
 
 test('Expired bytes never receive attachment headers',async()=>{
