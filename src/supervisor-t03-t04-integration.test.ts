@@ -24,6 +24,14 @@ class FakeDO {
     return value === undefined ? undefined : structuredClone(value) as T;
   }
   async put<T>(key: string, value: T): Promise<void> { this.rows.set(key, structuredClone(value)); }
+  async list<T>(opts: {prefix?:string;limit?:number} = {}):Promise<Map<string,T>> {
+    const entries = [...this.rows.entries()]
+      .filter(([key])=>key.startsWith(opts.prefix ?? ""))
+      .sort(([a],[b])=>a.localeCompare(b))
+      .slice(0,opts.limit ?? Infinity)
+      .map(([key,value])=>[key,structuredClone(value)] as [string,T]);
+    return new Map(entries);
+  }
   async transaction<T>(callback: (tx: FakeDO) => Promise<T>): Promise<T> {
     const previous = this.tail;
     let unlock!: () => void;
@@ -88,7 +96,7 @@ describe("F0-C10/R2-T11 T03 admission + T04 recovery contract (OFFLINE)", () => 
     expect(supervisorAdmissionAllowsContinuation(await supervisorAdmissionSlot(db.asDO(),id(2)))).toBe(false);
     await supervisorConfirmExternalEffect(db.asDO(),g,"submit",{confirmed:true},1104);
     expect(supervisorAdmissionAllowsContinuation(await supervisorAdmissionSlot(db.asDO(),id(2)))).toBe(true);
-    expect(supervisorAdmissionAllowsContinuation(undefined)).toBe(true); // legacy compatibility
+    expect(supervisorAdmissionAllowsContinuation(undefined)).toBe(false); // legacy STOP
     expect(supervisorAdmissionAllowsContinuation(undefined, true)).toBe(false); // T03 managed slot lost
   });
 
@@ -107,7 +115,7 @@ describe("F0-C10/R2-T11 T03 admission + T04 recovery contract (OFFLINE)", () => 
     const oldSlot = await supervisorAdmissionSlot(db.asDO(),id(1));
     expect(oldSlot).toBeUndefined();
     expect(supervisorAdmissionAllowsContinuation(oldSlot,true)).toBe(false);
-    expect(supervisorAdmissionAllowsContinuation(oldSlot,false)).toBe(true);
+    expect(supervisorAdmissionAllowsContinuation(oldSlot,false)).toBe(false);
   });
 
   test("cancellation of a task with active admission slot cannot claim no session effect", async () => {

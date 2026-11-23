@@ -217,3 +217,69 @@ Los siguientes repositorios fueron leídos en commits **anclados** con sus archi
 **CI R2 focal:** workflow `.github/workflows/f0-c10-r2-t03-admission.yml`, permisos `contents:read`, solo Bun 1.4.4, suites de admisión/T04, typecheck/build e invariantes, sin Cloudflare/Remote. La PR puede apuntarse temporalmente a Staging para disparar CI de revisión, pero debe volver a base #126 antes de entregar; ningún resultado será declarado sin run y SHA exactos.
 
 **Evidencia CI focal verificada (commit anterior):** [run #45097034304](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45097034304), HEAD `416dc1209d4ca3bbcfe4014b44a3897ffadd7b83`, `completed/success`; 30/30 pruebas Bun focales, `typecheck`, build Worker/cliente e invariantes PASS. Después se amplió el workflow de validación para incluir `bun test` completo, R1 GREEN 13/13 y la expectativa explícita de RED sintéticos 2/2; **exige un nuevo run del último HEAD**. No hay inferencia ni cambio del runtime remoto.
+
+
+---
+
+# R3-T03 — Política de legado sin slot, auditoría de capacidad y STOP (23-11-2026)
+
+**Estatus:** CANDIDATO OFFLINE / NO DESPLEGADO. **Actor:** ChatGPT mediante GitHub; sin OpenCode Remote con efectos, Codex, merge o uso de datos DO. **Base de código exacta:** [PR #145](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/145) `a49e985909cb56bb42c609c9cd5cb4250a620169`, descendiente de #144/#143/#126 y de T03 #135/T08 #138. **PR R3:** [#147](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/147), rama exclusiva `f0-c10/r3-t03-legacy-admission-20261123`, destinada únicamente a T11. Plan R3: [#146](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/146), `F0_C10_PLAN_INTEGRAL.md` §§32–39, `00_COORDINACION.md`, `14_SESSION_RECOVERY_READMISSION.md`, `15_RETROSPECTIVA_Y_CONTROLES_R3.md`.
+
+## Defecto RED y evidencia
+
+En #145 `reserveSupervisorContinuation()` preservaba explícitamente compatibilidad de tareas sin `sessionIdPolicy` y sin slot: podía crear `supervisor:turn` y ejecutar otro `submit` sin consumir capacidad. `reserveSupervisorAdmission()` contaba solo las diez entradas de `supervisor:admission:v1`; una tarea heredada `running/unknown` sin slot no afectaba a nuevas admisiones. Además, `agent_check`, G8 y G9 creaban sesiones reales desde rutas fuera de ese registro.
+
+El nuevo test `src/supervisor-legacy-admission.test.ts`, inicialmente sin modificación de implementación, provocó **cuatro fallos RED** (observados con `exit code 1` de Bun en [OpenCode validation #45109436557](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45109436557), SHA `7cc4cf2fe4fa22f26fb603baa6f71eda2b6380b3`): (1) legacy `running` sin slot no impedía inicio, (2) nueve slots + legacy `unknown` permitían una décima reserva, (3) tarea R2 gestionada `running` sin slot era ignorada y (4) `continue` legacy podía crear turno nuevo. El quinto caso (TTL de `effect_unknown`) se mantenía verde. Estos RED son pruebas de doble DO serializado, **no** fallos observados de un Durable Object real.
+
+## Inventario de entradas y propiedad
+
+| Ruta / mecanismo | ¿Puede causar efecto externo nuevo? | Contrato R3 candidato |
+| --- | --- | --- |
+| `staging_start_task`, RPC `startSupervisedTask`, workflow `action=start`, supervisor HTTP POST | Sí: GitHub→SDK→inferencia | Un solo `reserveSupervisorAdmission` y auditoría legacy **en la misma transacción**; sin capacidad, respuesta explícita `admission_stopped`/STOP |
+| `staging_task_continue`, `remoteSupervisorContinue` | Sí: `submit(steer)` | T04 conserva `turnId/hash/pendingTurn`; T03 audita capacidad en su misma transacción `reserveSupervisorContinuation`; legacy sin política se rechaza con `SUPERVISOR_LEGACY_QUARANTINED` salvo lectura de journal preexistente |
+| `staging_task_status`, progreso, inspección y `remoteSupervisorStatus` | No inician otra tarea, algunas lecturas concilian estado | Reportan métricas limitadas de admisión; no `sessions.list` global ni transcript nuevo; no convierten `busy`/status `finished` en ejecución validada |
+| `staging_cancel_task` | Sí, solo `abort` de operación ya identificada | Permitir reducir/cancelar trabajo; T04 decide `cancelAmbiguous` y recibo exacto, sin liberar `effect_unknown` por TTL |
+| `staging_review_task`, `supervisedTaskReview` | GitHub `review`, lectura de diff, sin nueva inferencia | Mantener, con permisos GitHub independientes T08; no crea slot de inferencia |
+| `staging_agent_check`, `staging_openrouter_check`, `/api/dev/agent-check` | Sí; SDK `sessions.create` sin ledger | **STAGING STOP** antes de crear sesión; status de pruebas históricas sigue disponible |
+| `startG8LiveReview`, `startG9SelfDev` por `/api/dev` | Sí: 2 sesiones G8 o GitHub/Linux/SDK G9 | **STAGING STOP** antes de cualquier efecto; no se modifica el comportamiento de Producción sin `OPENCODE_SUPERVISOR_ENABLED=true` |
+| `supervisor:task:<id>` sin `sessionIdPolicy`, con/sin sesión | Posiblemente; identidad legacy sin capacidad certificada | Sin slot y sin **prueba terminal T04 positiva** se mantiene como carga posible, jamás cero |
+| Tareas con `sessionIdPolicy=deterministic-v1` sin slot | Pueden ser `finished` reclamadas o inconsistencias | Si aún están activas/ambiguas/pendingTurn, **STOP**; readmisión `finished` por journal nuevo solo mediante transacción T03 |
+
+**Límite explícito:** esta auditoría solo gobierna el DO supervisor y los cuatro marcadores auxiliares conocidos almacenados allí. **No prueba la ausencia de sesiones en otros DO/workspaces, otras rutas SDK o inferencia compartida de Workers AI**. G8/G9 y `agent_check` reciben bloqueo preventivo en Staging; acciones anteriores o desde otros Workers siguen siendo un **STOP operativo pendiente de reconciliación**, no se contabilizan como cero por su ausencia en el índice. La plataforma puede alojar varios DO en un isolate; diez slots lógicos no prueban límite físico.
+
+## Política fail-closed elegida
+
+`src/supervisor-legacy-capacity.ts` introduce `auditLegacyCapacity(tx,slots)`. Lee **solo** el índice acotado `supervisor:task:` mediante `tx.list({prefix,limit:101})` y cuatro claves de estado de autopruebas; no lee transcripts, mensajes, sesiones privadas del SDK ni escribe datos DO desde esta investigación. En runtime candidato se ejecutará dentro de **la misma transacción** del ledger `supervisor:admission:v1` para todo **nuevo** start, lease `reserved` readmitido y turno nuevo. Si la consulta devuelve 101 filas, el inventario se declara `LEGACY_INVENTORY_INCOMPLETE` y se niega la admisión (no se deduce que la fila 102 no exista). Si una tarea sin `sessionIdPolicy=deterministic-v1` carece de slot, se considera `LEGACY_UNGOVERNED`; incluso un string cacheado `finished` no acredita recibo nativo. Única excepción sin prueba adicional: `cancelled` persistido con `sessionCreationAttempted === false`, **sin** `session`, `pendingTurn` ni `cancelAmbiguous` (no llegó a intentar el efecto externo). Toda tarea gestionada sin slot que aún podría ejecutar efectos causa `UNTRACKED_MANAGED_TASK`. Marcadores auxiliares presentes provocan `AUXILIARY_UNGOVERNED` hasta conciliación.
+
+Los motivos STOP se transmiten en `AdmissionDecision.kind=capacity`, `stop=true`, `status=admission_stopped` y `retryAfterMs=0` (evitar reintento automático). Mismo `requestId` y fingerprint no se vuelve a enviar; `effect_unknown` persiste sin caducar. Un comprobante de terminal `finished` **de T03 gestionada** puede liberar un slot para inicio/readmisión; el mismo tratamiento **no** se extiende a legacy sin prueba de efecto. Esto es una cuarentena deliberada, no un nuevo scheduler ni una cuota perpetua de dos.
+
+`requireMeteredDiagnosticAdmission` impide nuevas llamadas Staging de `agent_check`, G8 y G9 antes de sus efectos; fuera de la flag Staging no cambia esas rutas. Son endpoints antiguos sin requestId compatible, por lo que hasta reimplementarlos bajo T03+T07 se preserva la seguridad a costa de su disponibilidad en Stage.
+
+## Evidencia cuantitativa
+
+`remoteSupervisorStatus` ahora incluye `admissionCapacity` devuelto por `inspectSupervisorAdmissionCapacity` con **solo contadores**, sin tokens ni registros individuales:
+
+| Campo | Semántica | Alcance |
+| --- | --- | --- |
+| `capacity` | 10 | Cuota lógica T03, no capacidad física |
+| `activeSlots` | número real de slots persistidos (0–10) | incluye `running` y `effect_unknown` |
+| `possibleLegacyExecutions` | número de filas legacy **potencialmente** activas sin slot dentro del índice | un candidato no es una llamada nativa verificada |
+| `untrackedManagedTasks` | tareas R2 activas/sospechosas sin slot | inconsistencias de capacidad |
+| `indexedTaskRows`, `inventoryComplete` | lectura acotada a 101, incompleta si 101 | no implica ausencia de otras sesiones |
+| `auxiliaryStateKeys`, `stopReason` | marcadores auxiliares conocidos y decisión STOP | ninguna inferencia sobre su actividad actual |
+| `activeNativeOperations: null`, `nativeOperationsMeasured:false` | **sin telemetría nativa autenticada** | jamás sustituir por `activeSlots` o `busy` |
+
+Un fixture offline con 10 slots devuelve `activeSlots=10` y `activeNativeOperations=null` por diseño. `10` slots + un legacy fuera del ledger requiere STOP; un onceavo no se admite. El inventario real de `supervisor:admission:v1` no ha sido leído ni alterado en este encargo. **No se ha medido ni probado `activeNativeOperations=10`**.
+
+## Pruebas, carreras y límites del cierre
+
+El nuevo fixture `src/supervisor-legacy-admission.test.ts` cubre el RED anterior, legacy `finished` no certificado, excepción de cancelación previa a create, 101 registros truncados, marcadores G8/G9/agent_check, onceavo inicio, métricas sin falsa atribución física, readmisión concurrente con start y `cancel_requested/cancelAmbiguous` durante `turn_submit`. Se mantienen los tests previos T03/T04 para reintento de mismo ID, digest divergente, fencing de token+generation, TTL y `effect_unknown`. `src/supervisor-admission.test.ts` y `src/supervisor-t03-t04-integration.test.ts` usan `list` en sus doubles y reflejan la nueva política. Se requiere CI del **HEAD definitivo** con Bun completo, Node fixtures, preview, typecheck, build principal/MCP/web e invariantes; el número del run y exit codes deben contrastarse en la PR #147.
+
+### Migración necesaria (propuesta, **NO ejecutada**)
+
+1. Inventariar de forma autenticada/acotada los registros legacy y los estados de agentes auxiliares, sin enumeración masiva de transcripts; si truncado, auditar por páginas/cursor con límites antes de declarar censo completo.
+2. T04 aporta **recibos nativos terminales inequívocos** o una transferencia segura de ownership para cada sesión/turno; no basta `status=finished`, `busy=false`, `not_found` ni expiración del lease. T03 define cómo reservar/preservar slots y deducir capacidad durante la transición. Toda migración de datos DO requiere lote y autorización nuevos.
+3. Las entradas de `agent_check`, G8, G9 y otras sesiones no supervisadas deben quedar bajo el **mismo** arbitraje T03+T07, o aislarse con presupuesto/capacidad propios demostrados. El gate T08 para GitHub sigue independiente del scheduler; T07 aplica un corte monetario verificable previo a inferencia, **sin duplicar** este ledger.
+4. T10 valida `activeNativeOperations` mediante intervalos firmados y solapados, correlacionados a `requestId/sessionId/operationId/executorId`. SOLO si la contabilidad completa es verificable, la prueba progresiva 1→2→4→10 bajo autorización aparte puede alcanzar diez activos reales.
+
+**R3-T03 resultado de candidato:** `PARTIAL`. Se evita asignación conocida fuera de la autoridad T03 para nuevas rutas supervisadas y se obtiene STOP verificable cuando existen legacies no reconciliados. **No** se acredita que Staging esté sin legacy activo ni que diez operaciones simultáneas sean físicamente posibles. No desplegar ni fusionar sin T11/T04/T07 y autorización de preflight operacional; NO COMPLETE PASS global.
