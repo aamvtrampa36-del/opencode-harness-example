@@ -31,7 +31,7 @@ import { assertOpenRouterImageModel, generateOpenRouterImage, getOpenRouterImage
 import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import { GitHubBridge } from "./github";
 import { r2SessionId, r2TurnJournalKey, r2TurnAdmission, r2CancelledByReceipt,
-  r2StatusWriteAllowed, type R2TurnJournal } from "./supervisor-r2";
+  r2StatusWriteAllowed, r2TerminalNativeReceipt, type R2TurnJournal } from "./supervisor-r2";
 import { verifyG8Proofs, G8_PROOFS } from "./g8-smoke";
 import { assessG8LiveHistory, g8LivePrompt, G8_LIVE_CHECK_VERSION, type G8LiveCheck } from "./g8-live-agent";
 import { G9_PROOF_VERSION, G9_REPO, G9_BRANCH, G9_PROJECT, G9_SOURCE, G9_TEST_PATH, G9_BROKEN, G9_FIXED, G9_TEST_SOURCE, assessG9History, g9AgentPrompt, assertG9BoundGitHubOperation, type G9ProofState } from "./g9-selfdev";
@@ -594,6 +594,21 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const fresh = await tx.get<SupervisorTask>(supervisorTaskKey(id));
       if (!fresh) throw new Error("Tarea del supervisor inexistente");
       if (!r2StatusWriteAllowed(fresh, job.operationId)) return fresh;
+      // Persist an authentic SDK terminal receipt with the turn journal.
+      // not_found and timeouts are explicitly NOT settled outcomes.
+      const turnPrefix = "rc-turn-" + id + "-";
+      if (fresh.operationId?.startsWith(turnPrefix) && r2TerminalNativeReceipt(operation)) {
+        const turnId = fresh.operationId.slice(turnPrefix.length);
+        if (/^[a-f0-9]{16}$/.test(turnId)) {
+          const turnKey = r2TurnJournalKey(id, turnId);
+          const journal = await tx.get<R2TurnJournal>(turnKey);
+          if (journal?.operationId === fresh.operationId && journal.phase !== "settled") {
+            await tx.put(turnKey, { ...journal, phase: "settled" as const,
+              receiptStatus: operation!.status, receiptReason: operation!.reason?.slice(0, 120),
+              settledAt: Date.now() });
+          }
+        }
+      }
       let status = classifySupervisorOperation(fresh, busy, operation);
       if (status === "cancelled" &&
           (!r2CancelledByReceipt(fresh, job.operationId!, operation) || fresh.cancelAmbiguous)) {
@@ -615,7 +630,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
       completedTools: toolCounts?.completedTools ?? null,
       failedTools: toolCounts?.failedTools ?? null,
       toolCountsComplete, toolCountsError, reviewRequired: true,
-      operationReason: operation?.reason, operationAnswerAvailable: Boolean(operation?.text), waitError,
+      operationReason: reconciled.operationId === job.operationId ? operation?.reason : undefined,
+      operationAnswerAvailable: reconciled.operationId === job.operationId && Boolean(operation?.text),
+      waitError: reconciled.operationId === job.operationId ? waitError : "STALE_OPERATION_CURSOR",
       passed: false, verified: false };
   }
 
