@@ -21,7 +21,7 @@ import { projectSupervisorProgress } from "./supervisor-progress";
 import {
   reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot,
-  hasSupervisorAdmissionSlot, type StartGrant
+  hasSupervisorAdmissionSlot, reconcileSupervisorSubmittedEffect, type StartGrant
 } from "./supervisor-admission";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
@@ -223,6 +223,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
         await this.ctx.storage.put(key, job);
       }
     } catch (error) {
+      if (error instanceof Error && error.message === "ADMISSION_FENCE_REJECTED") {
+        // A fenced-out stale starter cannot overwrite the new owner's record.
+        return this.supervisorTaskReceipt(await this.supervisedRecord(job.id), true);
+      }
       const slot = await supervisorAdmissionSlot(this.ctx.storage, job.id);
       const uncertainEffect = slot?.phase === "effect_unknown";
       const uncertainCreate = job.sessionCreationAttempted === true && !job.session;
@@ -498,7 +502,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
       updatedAt: job.updatedAt, operationId: job.operationId, model: job.model, error: job.error,
       ...(job.forkedFrom ? { forkedFrom: job.forkedFrom } : {}) };
     if (!job.session) {
-      const uncertain = job.sessionCreationAttempted === true;
+      const uncertain = job.sessionCreationAttempted === true ||
+        admission?.phase === "effect_unknown";
       return { ...base, status: uncertain ? "unknown" : job.status,
         error: uncertain ? (job.error ?? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED") : job.error,
         reviewRequired: true, passed: false, verified: false };
@@ -518,6 +523,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (!waitController.signal.aborted) waitError = error instanceof Error ? error.message.slice(0, 200) : "No se pudo esperar la operación";
     } finally {
       clearTimeout(waitTimer);
+    }
+    if (job.operationId && operation &&
+        (operation.status === "done" ||
+          operation.status === "unanswered" && operation.reason !== "not_found")) {
+      await reconcileSupervisorSubmittedEffect(this.ctx.storage, id, job.operationId, operation);
     }
     // Never materialize a complete tool transcript in the supervisor's
     // memory-constrained Durable Object on every status poll. The durable
