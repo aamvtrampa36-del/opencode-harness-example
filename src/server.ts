@@ -26,7 +26,7 @@ import {
   reconcileSupervisorCreatedSession, supervisorCommitCreatedSession,
   reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
   reconcileSupervisorTurnEffect, inspectSupervisorAdmissionCapacity,
-  reconcileSupervisorSubmittedEffect, type StartGrant
+  reconcileSupervisorSubmittedEffect, supervisorGrantStillOwned, type StartGrant
 } from "./supervisor-admission";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
@@ -78,7 +78,7 @@ import { createSupervisorMemoryProbe, type PhaseProbe } from "./supervisor-phase
 
 import { r2SessionId, r2TurnJournalKey, r2TurnAdmission,
   r2CancelledByReceipt, r2StatusWriteAllowed, r2TerminalNativeReceipt,
-  r2PendingTurnReconcileAllowed, type R2TurnJournal } from "./supervisor-r2";
+  r2PendingTurnReconcileAllowed, r3IsNativeSessionNotFound, type R2TurnJournal } from "./supervisor-r2";
 
 export const MODEL_ID = MODEL_PRESETS.cloudflare.id;
 
@@ -173,9 +173,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
             } catch (error) {
               // The pinned embedded SDK returns a tagged not-found;
               // *other* errors never prove absence and never trigger create.
-              if (error && typeof error === "object" &&
-                  "_tag" in error && error._tag === "SessionNotFoundError")
-                return false;
+              if (r3IsNativeSessionNotFound(error)) return false;
               throw error;
             }
           }));
@@ -334,6 +332,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
       job = await this.ctx.storage.transaction(async tx => {
         const fresh = await tx.get<SupervisorTask>(key);
         if (!fresh) throw new Error("SUPERVISOR_TASK_MISSING_AFTER_FAILURE");
+        // A positive exact-ID GET may transfer token+generation while the
+        // original native create call is still in flight. Its later SDK
+        // failure must NOT write 'failed' on the new owner's task.
+        if (!await supervisorGrantStillOwned(tx, grant)) return fresh;
         if (fresh.status === "cancel_requested" || fresh.status === "cancelled" ||
             fresh.pendingTurn || (fresh.operationId && fresh.operationId !== job.operationId))
           return fresh;
