@@ -1,0 +1,69 @@
+name: F0-C10 PREFLIGHT-01 — read-only STOP and source regression
+
+on:
+  push:
+    branches: [f0-c10/preflight-01-operational-stop-20261123]
+  pull_request:
+    branches: [f0-c10/r3-t11-integration-20261123]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: f0-c10-preflight-01-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  read-only-stop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Pin exact candidate HEAD
+        env:
+          EXACT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXACT_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Validate STOP and forged-GO failure cases
+        run: node --test scripts/f0-c10/operational-preflight.test.mjs
+      - name: Run audited read-only preflight (exit 2 is required)
+        shell: bash
+        run: |
+          set +e
+          node scripts/f0-c10/operational-preflight.mjs --snapshot docs/f0-c10/preflight-01-observed-20261123.json > /tmp/f0-c10-preflight-result.json
+          code=$?
+          set -e
+          test "$code" -eq 2
+          node -e "const p=require('/tmp/f0-c10-preflight-result.json');if(p.decision!=='STOP'||p.liveLoadAuthorizedByThisArtifact!==false||p.blockers.length<9)process.exit(1);console.log('STOP verified; blockers='+p.blockers.length);"
+
+  source-integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Pin exact candidate HEAD
+        env:
+          EXACT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXACT_SHA"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install pinned dependencies
+        run: bun install --frozen-lockfile
+      - name: Full Bun regression
+        run: bun test
+      - name: Static preview
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build two Workers and web client (NO DEPLOY)
+        run: bun run build
+      - name: Project invariant checks
+        run: bun scripts/check-invariants.mjs
