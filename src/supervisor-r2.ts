@@ -90,3 +90,11 @@ export function r2PendingTurnReconcileAllowed(
     !task.cancelAmbiguous && r2TerminalNativeReceipt(receipt) &&
     task.status !== "cancelled" && task.status !== "cancel_requested");
 }
+
+/** The pinned workerd SDK may surface the core Effect error tag or the
+ * client/harness-normalized tag. Never mistake transport errors for absence. */
+export function r3IsNativeSessionNotFound(error: unknown): boolean {
+  if (!error || typeof error !== "object" || !("_tag" in error)) return false;
+  return error._tag === "SessionNotFoundError" ||
+    error._tag === "Session.NotFoundError";
+}
