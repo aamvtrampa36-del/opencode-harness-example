@@ -45,7 +45,7 @@ export function verifyObservedJournal(trace, trustedKeys, limits) {
   // An explicit operator-signed, independently supplied approval of the collector
   // key fingerprints and deployments is required. Event signatures alone are not
   // authority: a model may sign its own fabrications with ephemeral keys.
-  const approval = trustedKeys?.approval;
+  const approval = trustedKeys?.approvals?.[meta.experimentId] ?? trustedKeys?.approval;
   const operatorPem = trustedKeys?.operatorPublicKeyPem;
   const approvalClaim = approval?.claim;
   try {
