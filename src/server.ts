@@ -476,7 +476,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return { id, project: job.project, session, repository: job.repository };
   }
 
-  /** Capture only proven bytes from an isolated project's read-only inspection.
+  /** Capture only hash-verified bytes from an isolated project's binary reader.
    * Hard bound: 32 KiB UTF-8, 8 immutable files per task, expires after 12 h.
    * This never accepts data/file/https URLs, binary blobs, or arbitrary /bundle.
    */
@@ -495,11 +495,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const indexKey = artifactIndexKey(id);
     const saved = await this.ctx.storage.transaction(async tx => {
       const existing = await tx.get<StoredTaskArtifact>(idKey);
-      if (existing) {
+      if (existing && existing.expiresAt > Date.now()) {
         if (existing.sha256 !== prepared.sha256 ||
             !artifactIsOwnedBy(existing, task)) throw new Error("ARTIFACT_CONFLICT");
         return existing;
       }
+      if (existing) await tx.delete(idKey);
       const index = (await tx.get<string[]>(indexKey)) ?? [];
       if (!Array.isArray(index) || index.length > TASK_ARTIFACT_MAX_PER_TASK)
         throw new Error("ARTIFACT_INDEX_INVALID");
@@ -522,6 +523,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   /** A bounded manifest: no transcript, raw paths, stored bytes or credentials. */
   async supervisedTaskArtifacts(id: string): Promise<unknown> {
     const task = await this.scopedArtifactTask(id);
+    const status = await this.supervisedTaskStatus(id) as { status?: string; operationId?: string };
     const index = (await this.ctx.storage.get<string[]>(artifactIndexKey(id))) ?? [];
     if (!Array.isArray(index) || index.length > TASK_ARTIFACT_MAX_PER_TASK) {
       throw new Error("ARTIFACT_INDEX_INVALID");
@@ -530,9 +532,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
       this.ctx.storage.get<StoredTaskArtifact>(artifactKey(id, key))));
     const now = Date.now();
     return {
-      schema: TASK_ARTIFACT_SCHEMA, requestId: id,
+      schema: TASK_ARTIFACT_SCHEMA, requestId: id, status: status.status ?? "unknown",
       artifacts: records.filter(x => artifactIsOwnedBy(x, task, now)).map(x => artifactView(x!)),
       summary: { text: "", available: false, truncated: false },
+      errors: [],
+      evidence: { sessionId: task.session, operationId: status.operationId ?? null,
+        projectId: task.project, byteReadback: "captured", collectorVerification: "pending" },
       passed: false, verified: false, reviewRequired: true
     };
   }
@@ -547,7 +552,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
       await this.ctx.storage.delete(artifactKey(id, artifactId));
       return artifactErrorResponse("ARTIFACT_EXPIRED", 410);
     }
-    if (!artifactIsOwnedBy(record, task)) return artifactErrorResponse("ARTIFACT_NOT_FOUND", 404);
+    if (record.artifactId !== artifactId || record.requestId !== id ||
+        !artifactIsOwnedBy(record, task)) return artifactErrorResponse("ARTIFACT_NOT_FOUND", 404);
     return await verifiedArtifactDownload(record);
   }
 
