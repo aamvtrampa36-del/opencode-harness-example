@@ -9,7 +9,10 @@ export type R2TurnJournal = {
   hash: string;
   operationId: string;
   session: string;
-  phase: "intent" | "accepted" | "unknown";
+  phase: "intent" | "accepted" | "unknown" | "settled";
+  receiptStatus?: "done" | "unanswered";
+  receiptReason?: string;
+  settledAt?: number;
   revision: number;
 };
 export type R2TaskView = {
@@ -63,4 +66,12 @@ export function r2StatusWriteAllowed(
 ): boolean {
   return Boolean(probedOperationId && task.operationId === probedOperationId && !task.pendingTurn) &&
     task.status !== "cancelled";
+}
+
+/** A missing/native-not-found result is NOT a terminal receipt. */
+export function r2TerminalNativeReceipt(
+  receipt: { status: "done" | "unanswered"; reason?: string } | undefined
+): boolean {
+  return receipt?.status === "done" || (receipt?.status === "unanswered" &&
+    ["failed", "interrupted", "aborted"].includes(receipt.reason ?? ""));
 }
