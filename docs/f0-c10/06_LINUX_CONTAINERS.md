@@ -200,3 +200,95 @@ El test sin modificación del contrato de salida falla dos subcasos contra el su
 0 tareas iniciadas por OpenCode Remote, 0 inferencias nuevas, 0 comandos en Containers Staging, 0 deploy/merge, 0 cambios a main, Production, secretos, Access o recursos persistentes. Las pruebas locales se ejecutaron en directorios temporales y limpiaron solo procesos que crearon. Gastos monetarios de CI, de Cloudflare y del entorno local: **no medidos**, no declarar coste cero. GitHub Actions es el medio para certificar Bun/compilación; no confirma el runtime.
 
 **Resultado de subsistema:** mitigación EPIPE local PASS (2/2), suite anterior PASS_WITH_KNOWN_GAPS (9/9 con dos casos RED deliberados). **No garantiza** ausencia de huérfanos por setsid, aislamiento físico de diez Containers, control de cancelación RPC, autenticidad de código desplegado ni gasto controlado. Sigue bloqueado el gate de procesos detached/cgroups y compatibilidad de instancia. La próxima consolidación T11 deberá seleccionar una sola ruta entre #132, #137 y este incremento; nunca fusionar parches completos superpuestos por duplicado. F0-C10 = PARTIAL / NOT COMPLETE PASS.
+
+
+---
+
+## R3-T06 — Cierre especializado Linux, cgroups y rutas de artefactos
+
+**Corte:** 2026-11-23 UTC (America/Sao_Paulo). **Autoría:** ChatGPT mediante GitHub y pruebas Node/Linux locales; NO OpenCode Remote ni Codex. **Estado:** PARTIAL / BOUNDED_BOOTSTRAP_CANDIDATE / LOCAL_POSITIVES / DETACHED_AND_HARDLINK_RED / CLOUD_CONTAINER_NOT_PROVEN.
+
+### 1. Autoridad de fuente y dependencia exacta
+
+- Fuente de partida R3: [PR #145](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/145), commit **a49e985909cb56bb42c609c9cd5cb4250a620169**; hereda #144 (baebc30a71dbaa8abca722c0780d4d658e2192c8), #143 (160eafbb0e4842063e37c71425f1a5c2e08b18b2) y #126 (1268ba22f26330d619b046fcf551ca846cb69d0f). Se comprobó que siguen abiertos/draft sin merge. La rama R3 propia es **f0-c10/r3-t06-linux-scope-20261123**, creada desde ese SHA exacto; no modifica ninguna rama ajena.
+- #145 contiene los parches Linux previos: #121 (timeout con KILL diferido), #132 (Node supervisor por PGID), #140 (manejo de EPIPE) y el informe #137. No se copió ni aplicó nuevamente ninguna de esas PR.
+- Fuente operativa al corte, verificada por Cloudflare **GET-only**: principal deployment **36ef84b3-0f99-4dd4-ab8e-c11ee450dd23**, versión **3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb** al 100 %; MCP deployment **9fdaf22d-beeb-44a0-ab68-77ecd5745fa1**, versión **196240c0-1052-47b3-aaa7-02cf5baa87f0** al 100 %. No se inspeccionó una instancia Container mediante exec ni se atribuye igualdad byte-a-byte entre estos binarios y #145.
+- Los documentos docs/f0-c10/F0_C10_PLAN_INTEGRAL.md, docs/f0-c10/00_COORDINACION.md, docs/f0-c10/14_SESSION_RECOVERY_READMISSION.md y la retrospectiva R3 se leyeron; el plan R3 de Biblioteca es posterior a los cortes R2 incluidos en la rama. GitHub es autoridad de código; Biblioteca no se sincroniza automáticamente.
+
+### 2. Contrato verificado de DevContainer.run y corrección mínima de memoria
+
+**Routing y aislamiento lógico:** src/project-container.ts construye el nombre de DO project-v1:<slug>. DevContainer.run valida proyecto/comando, serializa los comandos del MISMO DO mediante commandQueue, comprueba import/restore pendientes y llama runExclusive. ensureRunning/startOrRecover inicia o recupera un Container managed cloudflare/debian-trixie, con enableInternet=true, instance: "basic" y snapshots. CWD por proyecto es /workspace/projects/<project>. Distintos DO son nombres lógicos distintos; no son prueba de aislamiento físico de diez Containers ni permisos dentro del filesystem.
+
+**Ciclo de comando:** runExclusive mantiene busy, lastActivity y alarm; prepara Git/Bun si falta; pasa texto de comando y fuente Node separados como argumentos posicionales a bash, no interpolados en el código del wrapper. El Node supervisor crea GNU timeout sobre bash con detached:true y un PGID privado; timeout aplica TERM a 180 s y KILL tras 5 s. El supervisor recibe TERM/INT/HUP explícitos, señala solo ese PGID y termina descendientes que continúen dentro del grupo al salir la raíz. Si stdout/stderr del consumidor se cierra con EPIPE, desengancha el forwarding, drena y termina el grupo, devolviendo código 125; si hay pipes heredados abiertos después de la ventana de 1.5 s, también devuelve 125. Los exit codes de comando ordinario no cero se conservan. La cancelación del RPC externo NO envía necesariamente señal al Node supervisor. El código 125 no identifica una causa exclusiva.
+
+**stdin:** la ruta ordinaria no solicita stdin interactivo ni PTY persistente. Otros comandos auxiliares que pasan stdin explícito quedan fuera de la corrección. **stdout/stderr:** src/bounded-process-output.ts, heredado de #105, drena ambos flujos concurrentemente; conserva máximo 32.000 bytes de contenido por canal (prefijo y sufijo más marcador), sin recuperar binarios desde texto de forma byte-exacta. **exitCode** corresponde al proceso controlado, NO a la totalidad del árbol, y una respuesta cero no prueba que todos sus descendientes estén muertos.
+
+**Nuevo defecto acotado (fuente RED):** aunque runExclusive ya evita output(), ensureGitAvailable utilizaba handle.output() para apt-get y ensureBunAvailable utilizaba process.output() para npm install. Esos métodos pueden materializar streams completos **antes** de aplicar un recorte; Git/Bun bootstrap podían seguir elevando memoria del isolate aunque el comando Linux general fuera bounded. Se confirmó por lectura de la fuente en #145; no se ha reproducido la OOM histórica #90 en esa llamada.
+
+**Parche R3 pequeño, src/dev-container.ts solamente:** sustituir esas dos lecturas por Promise.all de captureBoundedOutput(stdout, MAX_SHELL_OUTPUT), captureBoundedOutput(stderr, MAX_SHELL_OUTPUT) y exitCode. En Git se conserva el sufijo de error de hasta 350 caracteres y la salida de fallo; en Bun se mantiene el código de salida no cero y el mismo mensaje de error. En ambos, se drenan los dos pipes antes de esperar finalización, sin nuevas dependencias, cambios de imagen o permisos. No se toca ninguna ruta que pertenezca a T03/T04/T05/T08/T09 ni se proclama acotación total del resto de process.output() (por ejemplo inspect/import/recovery).
+
+**RED/GREEN de contrato:** el baseline #145 muestra explícitamente los dos output() no acotados, y el nuevo test source-contract falla si vuelve a aparecer output() en cualquiera de los dos bootstrap. Las pruebas locales de flujos grandes confirman la retención del helper, pero **no miden una reducción real de memoria Cloudflare** ni ejecutan apt-get/npm como efecto de prueba.
+
+### 3. Suite descartable Linux (reproducida fuera de Cloudflare)
+
+Archivos nuevos:
+- scripts/f0-c10/t06-r3-tree-child.cjs: raíz/intermedio/nieto, IGNORE_TERM, setsid, doble fork (setsid con stdio redirigido), barrera de proyectos, salida binaria y 16 MiB por canal.
+- scripts/f0-c10/t06-r3-linux.test.mjs: extrae LINUX_RUNNER_SOURCE del código candidato para utilizar EL MISMO source en CI, llama procesos locales con bash posicional, monitorea únicamente /proc/<PID> de los procesos propios, registra inicio (starttime) para evitar matar PID reutilizados, los termina en finally y retira los directorios temporales. No usa pkill, killall ni un scan global de /proc. Ejecuta también el lector real de src/task-artifact-source.ts.
+- scripts/f0-c10/t06-r3-source-contract.test.mjs: impide regresar a output() en los dos bootstrap y conserva el PGID y pipes bounded.
+- docs/f0-c10/fixtures/06_r3_local_evidence.json: JSON con 12 subpruebas, exit codes, valores de memoria y RED explícitos.
+
+**Ejecución local Linux/Node v22.16.0**, mirror textual local de LINUX_RUNNER_SOURCE y del lector de artefactos creado desde la fuente; se exige CI de la rama para repetir contra **archivos exactos del repositorio**. Comando de prueba: node --experimental-strip-types --test scripts/f0-c10/t06-r3-linux.test.mjs. **12/12 PASS en el significado propio de las aserciones; dos pruebas demuestran fallos de seguridad persistentes**, no equivalen a cero defectos.
+
+| Escenario | Resultado local / exit code |
+| --- | --- |
+| Raíz→intermedio→nieto que ignora TERM, mismo PGID | 31; nieto gone/Z (inactivo) después de cleanup |
+| setsid con pipes heredados | 125 y diagnóstico; descendiente S todavía vivo: **RED** |
+| Doble fork + setsid + stdio redirigido | 0 pese a descendiente S todavía vivo: **RED, falso positivo si se infiere limpieza por exit 0** |
+| Timeout corto sintético 1 s, TERM→KILL | 137; descendiente inactivo |
+| Binario no UTF-8, stdout+stderr, código no cero | 23; conteo exacto de 5 bytes por canal, texto con reemplazos |
+| 16 MiB simultáneos en stdout y stderr | 19; 16.777.216 B por canal; contenido retenido 32.000 B por canal |
+| Barrera local de 1, 2, 4 y 10 procesos | salidas 0..N-1, marcadores de cwd correctos, sin cruce detectable en la prueba |
+| O_NOFOLLOW y rutas dist | symlink final/intermedio, traversal y /bundle rechazados, lectura autorizada exacta |
+| Hardlink entre dist de dos proyectos en UN filesystem local | lectura ajena permitida por hardlink: **RED de supuesto aislamiento same-FS** |
+| Lectura no destructiva de cgroup local | cgroup2 detectado, /sys/fs/cgroup no writable en este entorno |
+
+**Tiempo y memoria del fixture local:** RSS inicial 56.422.400 B, máximo RSS muestreado 86.306.816 B, heapUsed pico 13.941.232 B, duración 7.708 ms; muestreo cada 15 ms del **test Node padre**, no agrega procesos hijos y no mide workerd/DO/Cloudflare. Ninguna cifra demuestra memoria del Container ni el coste de diez ejecuciones reales. Barreras 1/2/4/10 prueban procesos Linux que esperaron antes de liberar una marca local, NO agentes OpenCode ni inferencias simultáneas.
+
+**Pruebas R2 reutilizadas, no copiadas:** scripts/f0-c10/t06-r2-process-fixtures.mjs (PGID, setsid, 16MiB, 10 directorios) y scripts/f0-c10/t06-r2-output-disconnect.test.mjs (stdout/stderr EPIPE) se conservan. El nuevo workflow ejecuta esos tests y los R3, además de regresión Bun/typecheck/build.
+
+### 4. O_NOFOLLOW, paths, archivos compartidos y límites de confianza
+
+El lector REAL de src/task-artifact-source.ts (superficie T09, sin cambios R3) valida proyecto y ruta relativa bajo dist, realpath de root/proyecto/dist, abre con O_RDONLY | O_NOFOLLOW | O_NONBLOCK y comprueba /proc/self/fd/N después de abrir, fstat de archivo regular y máximo 32 KiB, retornando base64 con SHA-256. Son controles positivos verificados en fixture.
+
+**Límite importante:** O_NOFOLLOW detiene symlinks del componente final, NO hardlinks. Cuando DOS proyectos artificiales comparten el mismo filesystem POSIX local, puede crearse un hardlink dentro de dist al inode de otro proyecto y el lector lo acepta: su fd realpath presenta el dentry bajo el directorio permitido. Esto es un **contraejemplo de aislamiento por path en un mismo filesystem**, NO evidencia de que los Containers aislados por DO de Cloudflare compartan inodes o de que el acceso real sea explotable entre ellos. El shell del proyecto sigue sin sandbox filesystem adicional dentro de su propio Container. Mitigación propuesta para dueño T09/T11: revisar si el contrato permite hardlinks (st_nlink>1), readback de identidad y propiedad por tarea, y demostrar separación efectiva por Container antes de cambiar lector. No cambiar automáticamente código de T09 desde T06.
+
+El test actual NO certifica que un comando Bash no pueda salir de su cwd. CWD diferente ≠ filesystem privado; la garantía depende del mapeo real project-v1 a distintas instancias y del runtime.
+
+### 5. Cgroup y alcance de procesos: STOP real
+
+**Solo Linux local:** /proc/self/cgroup contiene 0::/ y /sys/fs/cgroup usa cgroup2fs; el mount observado es de solo lectura y test -w del root del cgroup es false. El test NO escribió cgroup.procs, cgroup.kill, cgroup.subtree_control ni ejecutó systemd-run/unshare. Por tanto **este entorno no demuestra una jerarquía cgroup delegada utilizable**, ni un kill de setsid fuera del PGID.
+
+**Cloudflare Containers managed:** la API pública ctx.container.exec documenta kill() del proceso raíz, no de un árbol/scope del usuario; wait/exitCode no garantiza desaparición de descendientes; cancelar RPC no mata los procesos. La documentación no acredita que la imagen managed cloudflare/debian-trixie con scheduling_policy: durable_object exponga cgroup v2 writable/delegado por comando. **No se ejecutó ningún probe en Container Staging ni desechable; resultado Container = UNKNOWN / STOP.** No asumir cgroups por la existencia de Linux o Firecracker, ni añadir cgroup.kill, systemd-run, killall, pkill, scans globales de PIDs o destroy() de una instancia compartida.
+
+Además, src/dev-container.ts solicita instance: "basic" mediante ctx.container.start(). En la documentación específica de política durable_object, basic NO se acepta actualmente, pero el documento de migración todavía enumera basic como opción. **Conflicto de documentación, no fallo de Staging demostrado**: revalidar en preflight aislado antes de desplegar; no cambiar el tamaño sin precio/capacidad y rollback revisados.
+
+Fuentes públicas: https://developers.cloudflare.com/containers/guides/execute-commands/ ; https://developers.cloudflare.com/containers/api/durable-object-container/ ; https://developers.cloudflare.com/containers/configuration/scheduling-policy/ ; https://developers.cloudflare.com/containers/guides/migrate-to-durable-object-scheduling-policy/ .
+
+**Lista exacta para T11 en un lote posterior autorizado:**
+1. Reservar Container NUEVO, desechable y no compartido, identidad/version SHA, llave de aislamiento, gasto con corte real y rollback; nunca usar Container de proyecto existente.
+2. Verificar image Node/GNU timeout, instance basic u opción aceptada, política e imagen efectiva, sin ajustes implícitos del precio.
+3. Realizar lecturas solamente de /proc/self/cgroup, mountinfo de cgroup, statfs, test -w, identidad de PID 1 y puertos; comprobar si existe jerarquía **delegada por tarea** antes de cualquier escritura.
+4. Solo si la delegación se demuestra, crear scope privado a partir de ownership comprobable en ese Container descartable; insertar hijo setsid con stdio redirigido, probar TERM/KILL/cgroup.kill limitado al scope y leer proc/cgroup.events hasta quedar vacío. No ejecutar esta fase en la imagen actual sin su preflight.
+5. Probar cancelación, timeout, SIGKILL de supervisor, reinicio del DO, aislamiento por diez Container IDs (escalando únicamente con autorización y política de gasto), recuperación de 10 archivos/hash y memoria efectiva del DO+Container. Medir huérfanos, RSS, cuotas y coste; establecer STOP en OOM o efecto ambiguo.
+
+### 6. Comparación DeepSeek Harness fijada y compatibilidad
+
+Repo https://github.com/deepseek-ai/deepseek-harness, commit INMUTABLE **4b399c39a6d1479cd84ca591b4d7c88e24d38a96**; licencia **MIT** en LICENSE (copyright 2026 DeepSeek) y packages/subprocess/subprocess-local/package.json. Código y docs leídos en ese commit: packages/subprocess/subprocess-local/src/index.ts, src/linux-scope.ts y README.md, packages/shell/bash-local/src/index.ts y README.md. DeepSeek usa rangos de proceso gestionados, user-systemd scopes en Linux compatible, join y limpieza al disponer recursos, collectors bounded con spill opcional y un fallback que NO garantiza detectar todos los setsid/reparent. Su Bash local ejecuta con la autoridad del host y **no es sandbox**. Las APIs usan Node/host y no son importables automáticamente en workerd/DO; Node dentro del Container no demuestra que systemd user-scope esté disponible. No se copió código, no se añadieron dependencias.
+
+### 7. Registro de permisos, CI, costes y entrega
+
+**Acciones:** lectura GitHub, Cloudflare GET y docs públicas; pruebas descartables Linux LOCAL; código y docs en rama R3; PR draft y GitHub Actions autorizadas. **No OpenCode Remote start/cancel/continue**, inferencia, cambios Cloudflare, merge, despliegue, Producción, main, secretos, DO, Containers compartidos, Access o migraciones. El total monetario de GitHub Actions, costes de cuenta, Cloudflare y almacenamiento **NO MEDIDO**; cero operaciones de inferencia iniciadas por este encargo, no costo cero global.
+
+**G-C10-B:** la suite local R3 contiene 12/12 aserciones pasadas, donde dos casos setsid y uno hardlink siguen RED en seguridad. Bun/typecheck/build/invariantes requieren CI sobre HEAD exacto de esta PR. **G-C10-C/D/E NO VERIFICADOS**: no hay ejecución Cloudflare E2E ni auditoría binaria autenticada. Issue #90 sigue abierto con 0/10 en el fallo histórico.
+
+**Handoff único a T11:** integrar exclusivamente este diff incremental de bootstrap + tests + informe desde la base exacta #145, no agregar #121/#132/#140/#137 otra vez. STOP para prometer cero huérfanos: resolver ownership de processes con Container descartable y test real. Coordinar hardlink como descubrimiento de T09. No iniciar nueva ronda T06 ni declarar COMPLETE PASS.
