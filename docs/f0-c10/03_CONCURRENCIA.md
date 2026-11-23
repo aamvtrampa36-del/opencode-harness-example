@@ -98,7 +98,7 @@ stateDiagram-v2
 
 `scripts/f0-c10-t03/admission.mjs` es un **modelo de referencia offline in-memory**, no código usado por el supervisor. Serializa transacciones sintéticas, aplica fingerprint y conflictos, FIFO, backlog, claims con capacidad configurable (10 default), operación determinista, `unknown` sin autorreintento, progresos secuenciales y `finished` verificado. Token de claim `claim-N` es solo un fixture; **no fencing real para producción**.
 
-`node --test scripts/f0-c10-t03/admission.test.mjs` (Node 22.16.0): **12 PASS / 0 FAIL / exit 0**. Cubre 10 admitidos concurrentes, 100 retries idénticos, huella diferente, FIFO, backlog completo, límites 2/10, pérdida de respuesta, OOM, `not_found`, conflicto de claim, secuencia de progreso y escalera 1→2→4→10. Que 10 claim reciban progreso sintético NO es evidencia de diez procesos reales.
+`node --test scripts/f0-c10-t03/admission.test.mjs` (Node 22.16.0): **13 PASS / 0 FAIL / exit 0**. Cubre 10 admitidos concurrentes, 100 retries idénticos, huella diferente, FIFO, backlog completo, límites 2/10, pérdida de respuesta, OOM, `not_found`, conflicto de claim, recibo done no verificado, secuencia de progreso y escalera 1→2→4→10. Que 10 claim reciban progreso sintético NO es evidencia de diez procesos reales.
 
 `node --test scripts/f0-c10-t03/known-red.red.mjs` (ejecución separada): **2 FAIL esperados / exit 1**. Simula (1) crash después de `sessions.create` y antes de guardar sesión: dos sesiones en vez de una; (2) lock vencido 60s con efecto anterior vivo: `peak=2` starters para un ID. **Son simulaciones source-shaped**, no pruebas del Durable Object. El fichero `.red.mjs` se ejecuta deliberadamente fuera de la suite verde.
 
@@ -112,7 +112,7 @@ Exigir diez intervalos de **actividad instrumentada real** de ejecutores distint
 
 ## 8. Validación progresiva y STOP
 
-1. **Offline, hecho para modelo:** 12/12 GREEN, 2/2 RED esperados. A continuación tests de integración sobre DO real: inyectar fallo antes/después de cada `await` de branch/session/submit y verificar journal + unicidad tras restore sin segunda operación.
+1. **Offline, hecho para modelo:** 13/13 GREEN, 2/2 RED esperados. A continuación tests de integración sobre DO real: inyectar fallo antes/después de cada `await` de branch/session/submit y verificar journal + unicidad tras restore sin segunda operación.
 2. **PR/CI:** `bun test`, `bun run typecheck`, `bun run build`, invariantes del HEAD y revisión de cambios T02/T04. RED separado no se debe confundir con suite verde.
 3. **Staging 1→2:** posterior lote que verifique reserva atómica exclusiva, coste con corte efectivo, SHA/source↔deployed, memoria; este T03 no realizó tareas Remote por falta de esas precondiciones.
 4. **Staging 4→10:** solo en integración autorizada, instrumentar diez verdaderamente activos, tres rondas con 10/10 resultados, sin OOM/huérfanos/duplicados, incluyendo errores negativos y recuperación. El gate no admite limitación permanente a dos.
@@ -135,4 +135,4 @@ No se copió código de terceros ni se agregaron dependencias.
 
 **PASS T03** solo con adaptador productivo durable y fencing real, pruebas de fallos RED→GREEN reproducibles de admisión/reconciliación, CI del HEAD, sin tareas inaccesibles o duplicadas. Actualmente **`PARTIAL`**. **`COMPLETE PASS` global** requiere además E2E autorizado diez actividades verdaderamente solapadas y outputs verificados, 3 rondas, métricas/costes e integridad.
 
-**Recibo maestro:** `F0-C10/T03 | PARTIAL | Actor ChatGPT | Source 11161dd6f2c4b5237a2da59d7275ff693e0afdbe | Worker 3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb | MCP 196240c0-1052-47b3-aaa7-02cf5baa87f0 | Node offline GREEN 12/12 exit0 | RED sintético 2/2 exit1 | Remote nuevos requestId/sessionId/operationId: ninguno | Inferencia nueva: ninguna | No deploy/merge | Próxima acción: coordinar T04 e integrar journal/claims reales bajo pruebas, antes de lote Stage`.
+**Recibo maestro:** `F0-C10/T03 | PARTIAL | Actor ChatGPT | Source 11161dd6f2c4b5237a2da59d7275ff693e0afdbe | Worker 3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb | MCP 196240c0-1052-47b3-aaa7-02cf5baa87f0 | Node offline GREEN 13/13 exit0 | RED sintético 2/2 exit1 | Remote nuevos requestId/sessionId/operationId: ninguno | Inferencia nueva: ninguna | No deploy/merge | Próxima acción: coordinar T04 e integrar journal/claims reales bajo pruebas, antes de lote Stage`.
