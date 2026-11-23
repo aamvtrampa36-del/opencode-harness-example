@@ -15,10 +15,18 @@ import { armDisposableExternalEffectInTransaction,
 export const COST_KINDS = ["workers_ai","openrouter","workers",
   "durable_objects","containers","github_actions"] as const;
 export type ExpenseKind = typeof COST_KINDS[number];
+/** Owner-approved ceiling for ALL attributable F0-C10 experiment costs.
+ * 2026-11-23 approval: USD 2.00 = 2,000,000 microUSD. This is an
+ * authorization ceiling, NOT a measured balance or provider hard stop.
+ * No per-service allocation or provider dispatch is authorized here.
+ */
+export const F0_C10_APPROVED_MAX_MICRO_USD = 2_000_000 as const;
+export const F0_C10_APPROVED_CURRENCY = "USD" as const;
 export type DisposableCostPolicy = {
   scopeHash:string; policyRevision:string;
-  /** Numeric USD cap supplied explicitly for a future isolated run.
-   * No default exists. Units: one million microUSD equals one USD. */
+  /** Operator-selected ceiling within approved US$2 global maximum.
+   * No implicit per-service allocations; units: microUSD (1e6 = US$1).
+   * This local ledger does not count costs outside this one DO. */
   totalMicroUsd:number;
   maxByServiceMicroUsd:Record<ExpenseKind,number>;
 };
@@ -41,6 +49,8 @@ function requireValid(ok:unknown,label:string):asserts ok {
 function cleanPolicy(p:DisposableCostPolicy):{snapshot:string;policy:DisposableCostPolicy}{
   requireValid(p && HEX64.test(p.scopeHash) && REV.test(p.policyRevision) &&
     isInt(p.totalMicroUsd,1,MAX),"COST_EXPLICIT_USD_CAP_REQUIRED");
+  requireValid(p.totalMicroUsd<=F0_C10_APPROVED_MAX_MICRO_USD,
+    "COST_APPROVED_USD2_CEILING_EXCEEDED");
   const caps=Object.create(null) as Record<ExpenseKind,number>;
   requireValid(p.maxByServiceMicroUsd &&
     Object.keys(p.maxByServiceMicroUsd).length===COST_KINDS.length,
@@ -57,7 +67,7 @@ function cleanPolicy(p:DisposableCostPolicy):{snapshot:string;policy:DisposableC
 function decode(raw:unknown):Row {
   const r=raw as Row;
   requireValid(r && r.version===1 && typeof r.policySnapshot==="string" &&
-    isInt(r.totalMicroUsd,1,MAX) &&
+    isInt(r.totalMicroUsd,1,F0_C10_APPROVED_MAX_MICRO_USD) &&
     isInt(r.exposureMicroUsd,0,r.totalMicroUsd),
     "COST_LEDGER_CORRUPT");
   for(const kind of COST_KINDS){
@@ -107,7 +117,8 @@ export async function reserveDisposableExpense(storage:DurableObjectStorage,
   grant:PreflightLeaseGrant,policy:DisposableCostPolicy,
   intent:{operationId:string;kind:ExpenseKind;maxMicroUsd:number},now:number) {
   requireValid(OP.test(intent.operationId) && COST_KINDS.includes(intent.kind) &&
-    isInt(intent.maxMicroUsd,1,MAX),"COST_INTENT_INVALID");
+    isInt(intent.maxMicroUsd,1,F0_C10_APPROVED_MAX_MICRO_USD),
+    "COST_INTENT_INVALID");
   return storage.transaction(async tx=>{
     await verifyDisposableLeaseInTransaction(tx,grant,now);
     const ledger=await getLedger(tx,policy);
