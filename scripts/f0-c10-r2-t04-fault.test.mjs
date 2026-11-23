@@ -2,7 +2,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   r2SessionId, r2TurnJournalKey, r2TurnAdmission,
-  r2CancelledByReceipt, r2StatusWriteAllowed, r2TerminalNativeReceipt
+  r2CancelledByReceipt, r2StatusWriteAllowed, r2TerminalNativeReceipt, r2PendingTurnReconcileAllowed
 } from "../src/supervisor-r2.ts";
 
 /** Disposable deterministic transaction model, NOT Cloudflare DO/SQLite.
@@ -157,6 +157,17 @@ describe("R2-T04 fault-injection with disposable transactional model", () => {
     assert.equal(r2TerminalNativeReceipt({status:"unanswered",reason:"not_found"}),false);
     assert.equal(r2TerminalNativeReceipt({status:"unanswered"}),false);
     assert.equal(r2TerminalNativeReceipt(undefined),false);
+  });
+
+  test("lost continuation reply reconciles only after exact native receipt", () => {
+    const op="rc-turn-"+rid+"-"+turn;
+    const task={...base(),operationId:op,pendingTurn:{turnId:turn,operationId:op}};
+    assert.equal(r2PendingTurnReconcileAllowed(task,op,undefined),false);
+    assert.equal(r2PendingTurnReconcileAllowed(task,op,{status:"unanswered",reason:"not_found"}),false);
+    assert.equal(r2PendingTurnReconcileAllowed(task,"rc-start-"+rid,{status:"done"}),false);
+    assert.equal(r2PendingTurnReconcileAllowed(task,op,{status:"done"}),true);
+    assert.equal(r2PendingTurnReconcileAllowed({...task,cancelAmbiguous:true},op,{status:"done"}),false);
+    assert.equal(r2PendingTurnReconcileAllowed({...task,status:"cancel_requested"},op,{status:"unanswered",reason:"interrupted"}),false);
   });
 
 });
