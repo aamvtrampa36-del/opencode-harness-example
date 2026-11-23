@@ -75,7 +75,7 @@ import {
 
 import { r2SessionId, r2TurnJournalKey, r2TurnAdmission,
   r2CancelledByReceipt, r2StatusWriteAllowed, r2TerminalNativeReceipt,
-  r2PendingTurnReconcileAllowed, type R2TurnJournal } from "./supervisor-r2";
+  r2PendingTurnReconcileAllowed, r3IsNativeSessionNotFound, type R2TurnJournal } from "./supervisor-r2";
 
 export const MODEL_ID = MODEL_PRESETS.cloudflare.id;
 
@@ -158,9 +158,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
             } catch (error) {
               // The pinned embedded SDK returns a tagged not-found;
               // *other* errors never prove absence and never trigger create.
-              if (error && typeof error === "object" &&
-                  "_tag" in error && error._tag === "SessionNotFoundError")
-                return false;
+              if (r3IsNativeSessionNotFound(error)) return false;
               throw error;
             }
           });
