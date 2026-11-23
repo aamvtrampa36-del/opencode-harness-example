@@ -135,3 +135,18 @@ async function send(g, r) {
   const x = await restarted.settle(r.requestId, r.callId, r.attemptId, { receiptId: 'old-price', usage: { inputTokens: 100, outputTokens: 100 } });
   assert.equal(x.chargeMicroUsd, 150);
 });
+
+ test('RED: same inference identity remains reusable after price policy revision, price stays pinned', async () => {
+  const g = gate(), r = req();
+  await g.reserve(r, claim);
+  const changed = gate({ prices: { ['cloudflare|' + model]: { inputMicroUsdPerMillion: 900000, outputMicroUsdPerMillion: 1800000, revision: 'new' } }, snapshot: g.snapshot() });
+  const result = await changed.reserve(r, claim);
+  assert.equal(result.created, false);
+  assert.equal(result.reserveMicroUsd, 1500);
+  assert.equal((await changed.dispatch(r.requestId, r.callId, r.attemptId, claim)).proceed, true);
+});
+
+ test('RED: operationId must match exact start or turn digest; arbitrary suffix rejected', async () => {
+  const g = gate();
+  await assert.rejects(g.reserve(req(1, { operationId: 'rc-start-' + id(1) + '-spoof' }), claim), /INVALID_IDENTITY/);
+});
