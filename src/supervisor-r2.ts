@@ -75,3 +75,18 @@ export function r2TerminalNativeReceipt(
   return receipt?.status === "done" || (receipt?.status === "unanswered" &&
     ["failed", "interrupted", "aborted"].includes(receipt.reason ?? ""));
 }
+
+/** A pending turn can leave the journal only upon a matching native
+ * terminal receipt, never after a timeout, not_found, or another operation.
+ * A concurrent cancelled turn is intentionally not auto-finalized. */
+export function r2PendingTurnReconcileAllowed(
+  task: R2TaskView,
+  operationId: string | undefined,
+  receipt: { status: "done" | "unanswered"; reason?: string } | undefined
+): boolean {
+  return Boolean(operationId &&
+    task.pendingTurn?.operationId === operationId &&
+    task.operationId === operationId &&
+    !task.cancelAmbiguous && r2TerminalNativeReceipt(receipt) &&
+    task.status !== "cancelled" && task.status !== "cancel_requested");
+}
