@@ -378,41 +378,87 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (typeof v.turnId !== "string" || !/^[a-f0-9]{16}$/.test(v.turnId)) throw new Error("turnId inválido");
     if (typeof v.prompt !== "string" || v.prompt.trim().length < 12 || v.prompt.length > 5000)
       throw new Error("Instrucción inválida");
-    const task = await this.supervisedRecord(id);
-    if (!task.session || ["cancel_requested", "cancelled"].includes(task.status)) throw new Error("Tarea no disponible");
-    const key = "supervisor:turn:" + id + ":" + v.turnId;
+    const key = r2TurnJournalKey(id, v.turnId);
+    const taskKey = supervisorTaskKey(id);
     const data = new TextEncoder().encode(v.prompt.trim());
     const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", data)),
       b => b.toString(16).padStart(2, "0")).join("");
     const operationId = supervisorTurnOperationId(id, v.turnId);
-    const reserved = await this.ctx.storage.transaction(async tx => {
-      const prior = await tx.get<{ hash: string; operationId: string }>(key);
-      if (prior) return prior;
-      const record = { hash, operationId };
-      await tx.put(key, record);
-      return record;
+
+    // Atomically journal intent, operation ID, and the newest task cursor
+    // BEFORE making an SDK call. This is per-task arbitration, not T03's scheduler.
+    const reservation = await this.ctx.storage.transaction(async tx => {
+      const task = await tx.get<SupervisorTask>(taskKey);
+      if (!task?.session) throw new Error("Tarea no disponible");
+      const previous = await tx.get<R2TurnJournal>(key);
+      if (previous && (previous.hash !== hash || previous.session !== task.session ||
+          previous.operationId !== operationId)) throw new Error("turnId reutilizado con otra instrucción");
+      if (previous && !task.pendingTurn) {
+        // One native operationId already exists or the task has moved on.
+        // Do not submit a second time from a stale HTTP retry.
+        return { kind: "existing" as const, task, previous };
+      }
+      const decision = r2TurnAdmission(task, operationId);
+      if (decision === "denied") throw new Error("SUPERVISOR_TURN_DENIED_TERMINAL_OR_CANCEL");
+      if (decision === "busy") throw new Error("SUPERVISOR_TURN_IN_FLIGHT");
+      if (!previous) {
+        const journal: R2TurnJournal = { hash, operationId, session: task.session,
+          phase: "intent", revision: (task.revision ?? 0) + 1 };
+        await tx.put(key, journal);
+        const updated: SupervisorTask = { ...task,
+          pendingTurn: { turnId: v.turnId as string, operationId },
+          operationId, status: "running", revision: journal.revision, updatedAt: Date.now() };
+        await tx.put(taskKey, updated);
+        return { kind: "submit" as const, task: updated, journal };
+      }
+      return { kind: "submit" as const, task, journal: previous };
     });
-    if (reserved.hash !== hash) throw new Error("turnId reutilizado con otra instrucción");
-    const handle = this.harness.session(task.session);
-    try {
-      // A steer can correct a running task; OpenCode deduplicates this receipt by operationId.
-      const receipt = await handle.submit(v.prompt.trim(), { operationId, whenBusy: "steer" });
-      task.operationId = operationId;
-      task.status = "running";
-      task.error = undefined;
-      task.updatedAt = Date.now();
-      await this.ctx.storage.put(supervisorTaskKey(id), task);
-      return { taskId: id, session: task.session, operationId, status: "submitted",
-        accepted: receipt.accepted, reused: !receipt.accepted };
-    } catch (error) {
-      task.operationId = operationId;
-      task.status = "unknown";
-      task.error = error instanceof Error ? error.message.slice(0, 240) : "No confirmado";
-      task.updatedAt = Date.now();
-      await this.ctx.storage.put(supervisorTaskKey(id), task);
-      return { taskId: id, session: task.session, operationId, status: "unknown", reused: true,
-        error: task.error };
+    if (reservation.kind === "existing") {
+      return { taskId: id, operationId, session: reservation.task.session,
+        status: reservation.task.status, reused: true, confirmed: false,
+        journalPhase: reservation.previous.phase };
     }
+    // Cancellation may win just after the transaction; never deliberately
+    // send a queued steer after observing the cancellation intent.
+    const current = await this.supervisedRecord(id);
+    if (current.status === "cancel_requested" || current.status === "cancelled" ||
+        current.pendingTurn?.operationId !== operationId) {
+      return { taskId: id, operationId, status: "unknown", confirmed: false,
+        reason: "SUPERVISOR_TURN_FENCED_BEFORE_SUBMIT" };
+    }
+    let accepted: boolean | undefined;
+    let sendError: string | undefined;
+    try {
+      const receipt = await this.harness.session(reservation.task.session!).submit(
+        v.prompt.trim(), { operationId, whenBusy: "steer" });
+      accepted = receipt.accepted;
+    } catch (error) {
+      sendError = error instanceof Error ? error.message.slice(0, 240) : "No confirmado";
+    }
+    const persisted = await this.ctx.storage.transaction(async tx => {
+      const journal = await tx.get<R2TurnJournal>(key);
+      const fresh = await tx.get<SupervisorTask>(taskKey);
+      if (!journal || !fresh || journal.operationId !== operationId)
+        throw new Error("SUPERVISOR_TURN_JOURNAL_MISSING");
+      await tx.put(key, { ...journal, phase: sendError ? "unknown" as const : "accepted" as const });
+      if (fresh.pendingTurn?.operationId !== operationId) return fresh;
+      // Never overwrite cancellation or erase its ambiguous concurrent steer.
+      if (fresh.status === "cancel_requested" || fresh.cancelAmbiguous) return fresh;
+      const updated: SupervisorTask = { ...fresh,
+        ...(sendError ? { status: "unknown" as const, error: sendError } :
+          { status: "running" as const, error: undefined }),
+        pendingTurn: undefined, revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
+      await tx.put(taskKey, updated);
+      return updated;
+    });
+    if (persisted.status === "cancel_requested" || persisted.cancelAmbiguous) {
+      return { taskId: id, session: persisted.session, operationId,
+        status: "cancel_requested", confirmed: false, accepted,
+        reason: "CONCURRENT_CANCEL_RECONCILIATION_REQUIRED" };
+    }
+    return { taskId: id, session: persisted.session, operationId,
+      status: sendError ? "unknown" : "submitted", accepted, reused: accepted === false,
+      confirmed: false, ...(sendError ? { error: sendError } : {}) };
   }
 
   async remoteSupervisorInspect(id: string): Promise<unknown> {
