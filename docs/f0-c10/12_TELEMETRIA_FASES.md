@@ -90,3 +90,23 @@ Documentos de referencia: [PR #129](../../pull/129), [#126](../../pull/126), [#1
 **EVIDENCIA:** ver la PR draft R3 y CI del HEAD. Pruebas comprueban que no sale información sensible por marcadores y que el código base compila; sin inferencia nueva.
 **BLOQUEANTE:** no existe perfil de memoria por fase del isolate/SDK desplegado ni test E2E autenticado; lease/corte de gasto, carga y despliegue deben aprobarse fuera de esta PR.
 **PRÓXIMA ACCIÓN:** auditoría T02/T05 del diff R3 y plan operativo/telemetría de isolate; ejecución real solo tras garantías de presupuesto, exclusividad y autorización de despliegue/carga. Revertir el cambio fuente elimina logging de instrumentación, **no revierte estado de DO ni Containers**.
+
+
+## 7. Evidencia CI, fallo corregido y despliegues (corte 2026-11-23 ~01:50 UTC)
+
+**Run GitHub Actions verificado en código R3:** [#45096740391](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45096740391), HEAD fuente `02c86f68e3955946d3977401e146810b6c2f5059`, `completed/success`. **Job:** `phase-trace` #137438131967; todos los pasos terminaron `success` (código de salida 0 en cada comando). Evidencia extraída de logs:
+
+| Prueba del HEAD R3 | Resultado |
+|---|---|
+| `bun test src/supervisor-phase-telemetry.test.ts` | **6/6 pass, 0 fail, exit 0** |
+| `bun test` | **528/528 pass en 75 archivos, 0 fail, exit 0** |
+| `bun run typecheck` | **pass, exit 0** |
+| `bun run build` | **pass, exit 0**; build local de candidato, NO deploy |
+| `bun scripts/check-invariants.mjs` | **pass, exit 0**; estos invariantes no reemplazan E2E |
+| `node --test scripts/f0-c10/phase-memory-profile.test.mjs` | **5/5 pass, 0 fail, exit 0** |
+
+**Incidente de CI preservado:** primer run [#45096539067](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45096539067) fue `failure`, con `TS18048` (identidad de sesión legado posiblemente indefinida) y `TS2345` (sesión/commit de submit en callback diferido posiblemente indefinidos). Corrección de narrowing sin cambiar semántica en commit `186979bf32b38496d17bc37d8d93cf48fde1f864`. Los runs #45096648813 y #45096689686 finalizaron **cancelled** por `concurrency.cancel-in-progress` al llegar nuevos commits; no se cuentan como GREEN.
+
+**Cloudflare GET read-only tras abrir PR:** principal Staging sigue en deployment `36ef84b3-0f99-4dd4-ab8e-c11ee450dd23`, version `3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb` al 100%; MCP `9fdaf22d-beeb-44a0-ab68-77ecd5745fa1`, version `196240c0-1052-47b3-aaa7-02cf5baa87f0` al 100%. **Estos binarios no incluyen marcadores R3.**
+
+Esta incorporación documental genera un HEAD posterior al verificado arriba; cotejar **run del HEAD final** antes de declarar terminada la entrega. Los hashes de commit verifican fuente, no equivalencia binaria de Cloudflare ni E2E de diez tareas.
