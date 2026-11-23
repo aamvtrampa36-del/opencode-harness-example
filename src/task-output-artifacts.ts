@@ -94,17 +94,28 @@ export async function captureInspectedArtifact(args: {
 }): Promise<StoredTaskArtifact> {
   assertTaskId(args.requestId);
   const req = validateCaptureRequest(args.request);
-  const x = args.inspected as { path?: unknown; size?: unknown; contents?: unknown } | null;
+  const x = args.inspected as { path?: unknown; byteSize?: unknown; base64?: unknown; sha256?: unknown } | null;
   assert(x !== null && typeof x === "object" && x.path === req.path &&
-    typeof x.contents === "string" && Number.isSafeInteger(x.size) &&
-    (x.size as number) >= 0 && (x.size as number) <= TASK_ARTIFACT_MAX_BYTES, "UNVERIFIED_SOURCE_READ");
-  const bytes = new TextEncoder().encode(x!.contents);
-  assert(bytes.byteLength === x!.size, "SOURCE_UTF8_BYTE_MISMATCH");
+    Number.isSafeInteger(x.byteSize) && (x.byteSize as number) >= 0 &&
+    (x.byteSize as number) <= TASK_ARTIFACT_MAX_BYTES &&
+    typeof x.base64 === "string" && x.base64.length <= 44_000 &&
+    /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(x.base64) &&
+    typeof x.sha256 === "string" && /^[a-f0-9]{64}$/.test(x.sha256), "UNVERIFIED_SOURCE_READ");
+  // Decode the exact bytes emitted by a trusted, read-only Container process.
+  // A UTF-8 text read alone could replace malformed bytes with U+FFFD without
+  // changing byte length; that would create a false checksum of invented bytes.
+  const bytes = Uint8Array.from(atob(x.base64), c => c.charCodeAt(0));
+  assert(bytes.byteLength === x.byteSize && bytes.byteLength <= TASK_ARTIFACT_MAX_BYTES,
+    "SOURCE_BYTE_COUNT_MISMATCH");
+  assert((await shaHex(bytes)) === x.sha256, "SOURCE_BYTE_HASH_MISMATCH");
+  let contents: string;
+  try { contents = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { throw new Error("NON_UTF8_ARTIFACT"); }
   assert(/^[a-z][a-z0-9-]{0,39}$/.test(args.ownerProject) &&
     /^ses[A-Za-z0-9_]{1,64}$/.test(args.ownerSession) &&
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(args.repository), "INVALID_OWNER_SCOPE");
   if (req.mime === "application/json") {
-    try { JSON.parse(x!.contents); } catch { throw new Error("INVALID_JSON_ARTIFACT"); }
+    try { JSON.parse(contents); } catch { throw new Error("INVALID_JSON_ARTIFACT"); }
   }
   const sha256 = await shaHex(bytes);
   const fingerprint = new TextEncoder().encode([args.requestId, req.path, req.name, req.mime, sha256].join("\n"));
