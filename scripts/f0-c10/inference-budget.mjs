@@ -73,7 +73,96 @@ export class InferenceBudgetReference {
   async reserve(input, proof) {
     const { requestId, operationId, callId, attemptId, provider, model, inputTokenCap, outputTokenCap } = input;
     if (!TASK_ID.test(requestId) || typeof operationId !== 'string' ||
-        !operationId.startsWith('rc-start-' + requestId) && !operationId.startsWith('rc-turn-' + requestId + '-') ||
+        !(operationId === 'rc-start-' + requestId || new RegExp('^rc-turn-' + requestId + '-[a-f0-9]{16}
+        !CALL_ID.test(callId) || !CALL_ID.test(attemptId) ||
+        typeof provider !== 'string' || typeof model !== 'string') throw new Error('INVALID_IDENTITY');
+    const price = this.prices[provider + '|' + model];
+    if (!price) throw new Error('MODEL_NOT_AUTHORIZED');
+    const reserveMicroUsd = worstCaseMicroUsd(inputTokenCap, outputTokenCap, price);
+    const identity = JSON.stringify({ requestId, operationId, callId, provider, model, inputTokenCap, outputTokenCap });
+    return this.atomic(async () => {
+      await this.authorize(proof, requestId, operationId);
+      const key = keyOf(requestId, callId), existing = this.records.get(key);
+      if ([...this.records.values()].some(x => x.requestId === requestId && (x.provider !== provider || x.model !== model)))
+        throw new Error('UNAUTHORIZED_FALLBACK');
+      if (existing) {
+        if (existing.identity !== identity) throw new Error('FINGERPRINT_CONFLICT');
+        if (existing.attemptId === attemptId) return { created: false, state: existing.state, reserveMicroUsd: existing.reserveMicroUsd };
+        if (existing.state === 'completed') throw new Error('ALREADY_COMPLETED');
+        if (existing.state === 'unknown' || existing.state === 'sent' || existing.state === 'reserved')
+          throw new Error('AMBIGUOUS_UPSTREAM_EFFECT');
+        if (existing.reason === '402') throw new Error('PAYMENT_BLOCKED');
+        if (existing.attempts >= this.policy.maxAttempts) throw new Error('RETRY_LIMIT');
+        if (existing.previousAttemptIds.includes(attemptId)) throw new Error('ATTEMPT_REPLAY');
+      }
+      const current = this.summary(), taskExposure = current.perTask[requestId] ?? 0;
+      if (current.exposureMicroUsd + reserveMicroUsd > this.policy.budgetMicroUsd ||
+          taskExposure + reserveMicroUsd > this.policy.taskBudgetMicroUsd) throw new Error('BUDGET_EXHAUSTED');
+      const row = { requestId, operationId, callId, attemptId, provider, model, identity,
+        inputTokenCap, outputTokenCap, reserveMicroUsd, price: clone(price), state: 'reserved',
+        attempts: (existing?.attempts ?? 0) + 1, previousAttemptIds: [...(existing?.previousAttemptIds ?? []), attemptId] };
+      this.records.set(key, row);
+      return { created: true, state: 'reserved', reserveMicroUsd };
+    });
+  }
+  async dispatch(requestId, callId, attemptId, proof) {
+    return this.atomic(async () => {
+      const x = this.record(requestId, callId, attemptId);
+      await this.authorize(proof, requestId, x.operationId);
+      if (x.state !== 'reserved') return { proceed: false, state: x.state };
+      // Durable implementation commits 'sent' before handing control to SDK.
+      // A crash after this write MAY prevent a request; no blind replay.
+      x.state = 'sent';
+      return { proceed: true, state: x.state };
+    });
+  }
+  async markUnknown(requestId, callId, attemptId, { reason }) {
+    return this.atomic(() => {
+      const x = this.record(requestId, callId, attemptId);
+      if (x.state === 'unknown') return { state: 'unknown', reused: true };
+      if (x.state !== 'sent') throw new Error('NOT_DISPATCHED');
+      if (typeof reason !== 'string' || !reason) throw new Error('UNKNOWN_REASON_REQUIRED');
+      x.state = 'unknown'; x.reason = reason;
+      return { state: 'unknown', reused: false };
+    });
+  }
+  async rejectBeforeGeneration(requestId, callId, attemptId, { reason, proof }) {
+    return this.atomic(() => {
+      const x = this.record(requestId, callId, attemptId);
+      if (proof !== 'provider-pre-generation') throw new Error('PROVIDER_PROOF_REQUIRED');
+      if (x.state === 'rejected' && x.reason === reason) return { reused: true };
+      if (x.state !== 'sent') throw new Error('NOT_DISPATCHED');
+      if (!['429', '3040', '402'].includes(reason)) throw new Error('NOT_A_DEFINITE_REJECTION');
+      x.state = 'rejected'; x.reason = reason; x.reserveMicroUsd = 0;
+      return { reused: false, released: true };
+    });
+  }
+  async settle(requestId, callId, attemptId, { receiptId, usage }) {
+    return this.atomic(() => {
+      const x = this.record(requestId, callId, attemptId);
+      if (!CALL_ID.test(receiptId) || !usage ||
+          !safeInteger(usage.inputTokens, 0, MAX_TOKENS) || !safeInteger(usage.outputTokens, 0, MAX_TOKENS))
+        throw new Error('INVALID_USAGE_RECEIPT');
+      if (x.state === 'completed') {
+        if (x.receiptId !== receiptId || x.inputTokens !== usage.inputTokens || x.outputTokens !== usage.outputTokens)
+          throw new Error('RECEIPT_CONFLICT');
+        return { reused: true, chargeMicroUsd: x.chargeMicroUsd };
+      }
+      if (!['sent', 'unknown'].includes(x.state)) throw new Error('NOT_DISPATCHED');
+      if (usage.inputTokens > x.inputTokenCap || usage.outputTokens > x.outputTokenCap)
+        throw new Error('USAGE_EXCEEDS_CAP');
+      const price = x.price;
+      const chargeMicroUsd = Math.ceil((usage.inputTokens * price.inputMicroUsdPerMillion +
+        usage.outputTokens * price.outputMicroUsdPerMillion) / 1_000_000);
+      if (chargeMicroUsd > x.reserveMicroUsd) throw new Error('COST_EXCEEDS_RESERVATION');
+      x.state = 'completed'; x.chargeMicroUsd = chargeMicroUsd;
+      x.receiptId = receiptId; x.inputTokens = usage.inputTokens;
+      x.outputTokens = usage.outputTokens;
+      return { reused: false, chargeMicroUsd };
+    });
+  }
+}
+).test(operationId)) ||
         !CALL_ID.test(callId) || !CALL_ID.test(attemptId) ||
         typeof provider !== 'string' || typeof model !== 'string') throw new Error('INVALID_IDENTITY');
     const price = this.prices[provider + '|' + model];
