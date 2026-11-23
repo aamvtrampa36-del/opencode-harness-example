@@ -92,7 +92,10 @@ export function assertSupervisedPublicationScope(
 export class DurableGitHubPublicationGate implements GitHubPrPublicationGate {
   constructor(
     private readonly storage: DurableObjectStorage,
-    private readonly clock: () => number = Date.now
+    private readonly clock: () => number = Date.now,
+    private readonly validateOwner?: (
+      tx: DurableObjectTransaction, intent: GitHubPrPublicationScope
+    ) => Promise<void>
   ) {}
 
   async withExclusive<T>(
@@ -114,6 +117,7 @@ export class DurableGitHubPublicationGate implements GitHubPrPublicationGate {
 
     // Atomic admission and permanent per-branch intent. No HTTP inside tx.
     const claim = await this.storage.transaction(async tx => {
+      if (this.validateOwner) await this.validateOwner(tx, intent);
       const ledger = readLedger(await tx.get<Ledger>(key));
       const receipt = readReceipt(await tx.get<Receipt>(receiptKey));
       if (receipt && receipt.intentHash !== intentHash)
@@ -144,6 +148,9 @@ export class DurableGitHubPublicationGate implements GitHubPrPublicationGate {
       beginExternalEffect: async () => {
         if (claim.retryOnly) throw Error("PR_PUBLISH_UNKNOWN");
         await this.storage.transaction(async tx => {
+          // Cancellation/branch ownership may have changed during HTTP preflight.
+          // Check within the same durable tx as the publishing marker.
+          if (this.validateOwner) await this.validateOwner(tx, intent);
           const ledger = readLedger(await tx.get<Ledger>(key));
           const a = ledger.active;
           if (!a || a.intentHash !== intentHash || a.token !== claim.token ||
