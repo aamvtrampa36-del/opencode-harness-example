@@ -292,7 +292,7 @@ describe("OpenCode staging MCP server", () => {
         status: "unknown", passed: false, verified: false
       });
       supervisor.remoteSupervisorTaskStatusSnapshot = snapshotRpc;
-      expect(defaultSupervisorCalls).toBe(defaultCallsBeforeTaskStatus + 1);
+      expect(defaultSupervisorCalls).toBe(defaultCallsBeforeTaskStatus + 2);
       expect(customSupervisorCalls).toBe(1);
       const progress = await client.callTool({ name: "staging_task_progress", arguments: { id: "a1234567890bcdef", after: 0 } });
       expect(JSON.parse(textContent(progress))).toMatchObject({ targetWorker: STAGING_WORKER, events: [], nextAfter: 0 });
