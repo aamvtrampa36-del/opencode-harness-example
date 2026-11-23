@@ -21,7 +21,8 @@ import { projectSupervisorProgress } from "./supervisor-progress";
 import {
   reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot,
-  hasSupervisorAdmissionSlot, reconcileSupervisorSubmittedEffect, type StartGrant
+  hasSupervisorAdmissionSlot, supervisorAdmissionAllowsContinuation,
+  reconcileSupervisorSubmittedEffect, type StartGrant
 } from "./supervisor-admission";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
@@ -451,7 +452,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (typeof v.prompt !== "string" || v.prompt.trim().length < 12 || v.prompt.length > 5000)
       throw new Error("Instrucción inválida");
     const admission = await supervisorAdmissionSlot(this.ctx.storage, id);
-    if (admission?.phase === "effect_unknown" || admission?.phase === "reserved")
+    if (!supervisorAdmissionAllowsContinuation(admission))
       throw new Error("SUPERVISOR_INITIAL_EFFECT_NOT_SETTLED");
     const key = r2TurnJournalKey(id, v.turnId);
     const taskKey = supervisorTaskKey(id);
