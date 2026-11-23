@@ -1,0 +1,34 @@
+name: F0-C10 R3 T08 stateful GitHub writer verification
+on:
+  push:
+    branches: [f0-c10/r3-t08-multiwriter-20261123]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: f0-c10-r3-t08-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert checked out SHA
+        run: test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: R3-T08 mutation/PR stateful and durable race tests
+        run: bun test src/github-publication-durable.test.ts src/github.test.ts src/github-pr-conflicts.test.ts
+      - name: All Bun unit tests
+        run: bun test
+      - name: Real preview smoke
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build both Workers and web client
+        run: bun run build
+      - name: Validate security and project invariants
+        run: bun scripts/check-invariants.mjs
