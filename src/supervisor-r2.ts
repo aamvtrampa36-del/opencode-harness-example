@@ -16,6 +16,7 @@ export type R2TaskView = {
   status: R2Status;
   operationId?: string;
   pendingTurn?: R2PendingTurn;
+  cancelAmbiguous?: boolean;
 };
 
 const REQUEST_ID = /^[a-f0-9]{16}$/;
@@ -34,7 +35,8 @@ export function r2TurnJournalKey(taskId: string, turnId: string): string {
  * This is NOT global backpressure/fencing; T03 owns the scheduler. */
 export function r2TurnAdmission(task: R2TaskView, operationId: string):
   "reserve" | "retry" | "busy" | "denied" {
-  if (["cancel_requested", "cancelled", "failed", "unanswered"].includes(task.status))
+  if (task.cancelAmbiguous ||
+      ["cancel_requested", "cancelled", "failed", "unanswered"].includes(task.status))
     return "denied";
   if (task.pendingTurn) {
     return task.pendingTurn.operationId === operationId ? "retry" : "busy";
@@ -50,7 +52,7 @@ export function r2CancelledByReceipt(
 ): boolean {
   return task.status === "cancel_requested" &&
     task.operationId === operationId &&
-    !task.pendingTurn &&
+    !task.pendingTurn && !task.cancelAmbiguous &&
     receipt?.status === "unanswered" && receipt.reason === "interrupted";
 }
 
