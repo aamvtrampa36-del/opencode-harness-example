@@ -15,7 +15,7 @@ const keys = Object.fromEntries(EVIDENCE_ROLES.map((role) => {
   }];
 }));
 const trust = Object.fromEntries(EVIDENCE_ROLES.map((role) => [role, keys[role].publicKey]));
-const limits = { ...LIVE_LIMITS, maxCostUsd: 1 };
+const limits = { ...LIVE_LIMITS, maxCostUsd: 1, maxCampaignCostUsd: 3 };
 
 function reseal(trace) {
   trace.attestations = Object.fromEntries(EVIDENCE_ROLES.map((role) =>
@@ -187,4 +187,34 @@ test('CLI without externally supplied trust and limits exits 2 without Remote ca
   const probe = spawnSync(process.execPath, ['scripts/f0-c10/verify-live.mjs'], { encoding: 'utf8', timeout: 5000 });
   assert.equal(probe.status, 2);
   assert.match(probe.stderr, /FAIL-CLOSED/);
+});
+
+test('RED Cloudflare OOM observation rejects signed trace even if agent reports success', async () => {
+  const trace = await attestedFixture();
+  trace.telemetry[0].outcome = 'exceededMemory';
+  reseal(trace);
+  const report = evaluateTrace(trace, { mode: 'live', trustedKeys: trust, limits });
+  assert.ok(report.failures.some((f) => f.code === 'CLOUDFLARE_OOM_OR_RESET'));
+});
+test('RED status reads outside ten-way overlap are not enough', async () => {
+  const trace = await attestedFixture();
+  for (const task of trace.tasks) {
+    const start = trace.events.find((e) => e.requestId === task.requestId && e.type === 'tool_start');
+    const probe = trace.events.find((e) => e.requestId === task.requestId && e.type === 'status_probe');
+    if (start && probe) probe.atMs = start.atMs + 1;
+  }
+  reseal(trace);
+  const report = evaluateTrace(trace, { mode: 'live', trustedKeys: trust, limits });
+  assert.ok(report.failures.some((f) => f.code === 'NO_TEN_WAY_STATUS_PROBE'));
+});
+test('RED three individually affordable rounds cannot exceed a predeclared campaign cap', async () => {
+  const strict = { ...limits, maxCampaignCostUsd: 0.003 };
+  const rounds = await Promise.all([1, 2, 3].map((round) => attestedFixture({ round })));
+  for (const trace of rounds) {
+    trace.metadata.limitsSha256 = digest(strict);
+    reseal(trace);
+  }
+  const report = evaluateCampaign(rounds, strict, { trustedKeys: trust });
+  assert.equal(report.pass, false);
+  assert.equal(report.code, 'CAMPAIGN_COST_UNKNOWN_OR_OVER_CAP');
 });
