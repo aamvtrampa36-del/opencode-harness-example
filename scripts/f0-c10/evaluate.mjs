@@ -149,7 +149,7 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     for (const e of stream) {
       if (!Number.isFinite(e.seq) || !Number.isFinite(e.atMs)) fail('INVALID_EVENT_CLOCK', task.requestId);
       if (e.sessionId !== task.sessionId || e.operationId !== task.operationId || e.projectId !== task.projectId || e.executorId !== task.executorId) fail('CROSS_SESSION_EVENT', task.requestId);
-      if (mode === 'live' && e.source !== 'runtime' && e.source !== 'telemetry') fail('UNTRUSTED_LIVE_EVENT', task.requestId);
+      if (mode === 'live' && (e.type === 'artifact_readback' ? e.source !== 'artifact-collector' : (e.source !== 'runtime' && e.source !== 'telemetry'))) fail('UNTRUSTED_LIVE_EVENT', task.requestId);
       const eventKey = task.requestId + ':' + e.seq;
       if (seenEvents.has(eventKey)) fail('DUPLICATE_EVENT_SEQUENCE', eventKey);
       seenEvents.add(eventKey);
