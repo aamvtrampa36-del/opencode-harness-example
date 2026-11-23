@@ -176,3 +176,47 @@ describe("T08 bounded concurrent-writer exposure",()=>{
     expect(posts).toBe(2); // Known TOCTOU defect; not a claim of safe arbitration.
   });
 });
+
+describe("T08 ten independent synthetic branches",()=>{
+  test("keeps ten disjoint PR intents separate with no cross-file overlap",async()=>{
+    const names=Array.from({length:10},(_,i)=>"opencode/synthetic-t"+String(i).padStart(2,"0"));
+    const opened:Array<{number:number;branch:string;file:string}>=[];
+    let posts=0;
+    const mock=async(url:unknown,init:RequestInit={})=>{
+      const u=new URL(String(url)),method=init.method||"GET",path=u.pathname+u.search;
+      if(method==="GET" && path===api)return Response.json({default_branch:source});
+      if(method==="GET" && path.startsWith(api+"/git/ref/heads/"))
+        return Response.json({object:{sha:path.endsWith("/main")?shaB:shaA}});
+      if(method==="GET" && path.startsWith(api+"/compare/")){
+        const entry=names.find(name=>decodeURIComponent(path).endsWith("..."+name));
+        if(!entry)throw new Error("Unexpected compare branch: "+path);
+        return Response.json({total_commits:1,ahead_by:1,
+          files:[{filename:"docs/f0-c10/synthetic/"+entry.split("/")[1]+".json"}]});
+      }
+      if(method==="GET" && path.startsWith(api+"/pulls?"))
+        return Response.json(opened.map(item=>({number:item.number,base:{ref:source},
+          head:{ref:item.branch}})));
+      if(method==="GET" && /\/pulls\/\d+\/files\?/.test(path)){
+        const number=Number(/\/pulls\/(\d+)\/files/.exec(path)?.[1]);
+        const found=opened.find(item=>item.number===number);
+        return Response.json(found?[{filename:found.file}]:[]);
+      }
+      if(method==="POST" && path===api+"/pulls"){
+        const payload=JSON.parse(String(init.body));
+        const number=200+(++posts);
+        opened.push({number,branch:payload.head,
+          file:"docs/f0-c10/synthetic/"+payload.head.split("/")[1]+".json"});
+        return Response.json({number,html_url:"https://github.com/"+repo+"/pull/"+number,draft:true},{status:201});
+      }
+      return Response.json({message:"unexpected request"},{status:404});
+    };
+    const bridge=new GitHubBridge("synthetic-test",mock as typeof fetch);
+    const receipts:any[]=[];
+    for(const name of names)
+      receipts.push(await bridge.execute({action:"pr",repo,branch:name,title:"Synthetic "+name}));
+    expect(receipts.map(r=>r.head)).toEqual(names);
+    expect(new Set(receipts.map(r=>r.number)).size).toBe(10);
+    expect(new Set(opened.map(p=>p.file)).size).toBe(10);
+    expect(posts).toBe(10);
+  });
+});
