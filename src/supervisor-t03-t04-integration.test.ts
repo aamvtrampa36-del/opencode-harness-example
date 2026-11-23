@@ -85,7 +85,26 @@ describe("F0-C10/R2-T11 T03 admission + T04 recovery contract (OFFLINE)", () => 
     expect(supervisorAdmissionAllowsContinuation(await supervisorAdmissionSlot(db.asDO(),id(2)))).toBe(false);
     await supervisorConfirmExternalEffect(db.asDO(),g,"submit",{confirmed:true},1104);
     expect(supervisorAdmissionAllowsContinuation(await supervisorAdmissionSlot(db.asDO(),id(2)))).toBe(true);
-    expect(supervisorAdmissionAllowsContinuation(undefined)).toBe(true); // legacy path compatibility
+    expect(supervisorAdmissionAllowsContinuation(undefined)).toBe(true); // legacy compatibility
+    expect(supervisorAdmissionAllowsContinuation(undefined, true)).toBe(false); // T03 managed slot lost
+  });
+
+  test("reclaimed terminal slot cannot reactivate a managed task without capacity", async () => {
+    const db = new FakeDO(), g = await grant(db,1);
+    for (const effect of ["github_branch","session_create","configure","submit"] as const) {
+      await supervisorBeginExternalEffect(db.asDO(),g,effect,1101);
+      await supervisorConfirmExternalEffect(db.asDO(),g,effect,{confirmed:true},1102);
+    }
+    const key = "supervisor:task:"+id(1);
+    await db.transaction(async tx => {
+      const first = await tx.get<SupervisorTask>(key);
+      await tx.put(key, {...first!, status:"finished", session:r2SessionId(id(1))});
+    });
+    await grant(db,2); // T03 atomically reclaims terminal slot 1
+    const oldSlot = await supervisorAdmissionSlot(db.asDO(),id(1));
+    expect(oldSlot).toBeUndefined();
+    expect(supervisorAdmissionAllowsContinuation(oldSlot,true)).toBe(false);
+    expect(supervisorAdmissionAllowsContinuation(oldSlot,false)).toBe(true);
   });
 
   test("cancellation of a task with active admission slot cannot claim no session effect", async () => {
@@ -127,6 +146,7 @@ describe("F0-C10/R2-T11 T03 admission + T04 recovery contract (OFFLINE)", () => 
       "SUPERVISOR_FORK_IDEMPOTENCY_UNSUPPORTED", "this.harness.create({ id: sessionId })",
       "publishSupervisedGithubDraft", "supervisedArtifactCapture"
     ]) expect(source.includes(symbol)).toBe(true);
+    expect(source.includes("supervisorAdmissionSlot(tx, id)")).toBe(true);
     const begin = source.indexOf('supervisorBeginExternalEffect(this.ctx.storage, grant, "session_create")');
     const create = source.indexOf("this.harness.create({ id: sessionId })");
     expect(begin).toBeGreaterThan(-1);
