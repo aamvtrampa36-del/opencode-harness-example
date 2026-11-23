@@ -13,19 +13,19 @@ const git = body("private async ensureGitAvailable(", "private async ensureBunAv
 const bun = body("private async ensureBunAvailable(", "/** Durable Object alarm:");
 for (const [name, code] of [["git", git], ["bun", bun]]) {
   test(name + " bootstrap drains stdout, stderr and exitCode concurrently", () => {
-    assert.doesNotMatch(code, /\\.output\\s*\\(/, "unbounded output() reintroduced");
-    assert.match(code, /Promise\\.all\\s*\\(\\s*\\[/);
-    assert.match(code, /captureBoundedOutput\\(\\s*\\w+\\.stdout\\s*,\\s*MAX_SHELL_OUTPUT\\)/);
-    assert.match(code, /captureBoundedOutput\\(\\s*\\w+\\.stderr\\s*,\\s*MAX_SHELL_OUTPUT\\)/);
-    assert.match(code, /\\w+\\.exitCode/);
-    assert.match(code, /if \\(exitCode !== 0\\)/, "must preserve nonzero result");
+    assert.doesNotMatch(code, /\.output\s*\(/, "unbounded output() reintroduced");
+    assert.match(code, /Promise\.all\s*\(\s*\[/);
+    assert.match(code, /captureBoundedOutput\(\s*\w+\.stdout\s*,\s*MAX_SHELL_OUTPUT\)/);
+    assert.match(code, /captureBoundedOutput\(\s*\w+\.stderr\s*,\s*MAX_SHELL_OUTPUT\)/);
+    assert.match(code, /\w+\.exitCode/);
+    assert.match(code, /if \(exitCode !== 0\)/, "must preserve nonzero result");
   });
 }
 test("primary Linux command retains scoped PGID and pre-existing bounded collector", () => {
   const section = body("private async runExclusive(", "private async ensureGitAvailable(");
-  assert.match(section, /Promise\\.all/);
-  assert.match(section, /captureBoundedOutput\\(process\\.stdout/);
-  assert.match(section, /captureBoundedOutput\\(process\\.stderr/);
+  assert.match(section, /Promise\.all/);
+  assert.match(section, /captureBoundedOutput\(process\.stdout/);
+  assert.match(section, /captureBoundedOutput\(process\.stderr/);
   assert.match(source, /detached: true/);
-  assert.match(source, /process\\.kill\\(-child\\.pid/);
+  assert.match(source, /process\.kill\(-child\.pid/);
 });
