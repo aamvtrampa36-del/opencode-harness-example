@@ -1,0 +1,42 @@
+name: F0-C10 R3 phase telemetry offline CI
+
+on:
+  push:
+    branches:
+      - f0-c10/r3-phase-telemetry-t01-t02-t05-20261122
+  pull_request:
+    branches:
+      - f0-c10/r2-t01-phase-memory-20261122
+
+permissions:
+  contents: read
+
+concurrency:
+  group: f0-c10-r3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phase-trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install offline dependencies
+        run: bun install --frozen-lockfile
+      - name: Phase telemetry unit tests
+        run: bun test src/supervisor-phase-telemetry.test.ts
+      - name: Existing source unit tests
+        run: bun test
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build Worker and client candidate (NO DEPLOY)
+        run: bun run build
+      - name: Check security and project invariants
+        run: bun scripts/check-invariants.mjs
+      - name: Prior R2 memory fixture remains valid
+        run: node --test scripts/f0-c10/phase-memory-profile.test.mjs
