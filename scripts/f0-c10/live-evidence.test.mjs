@@ -198,10 +198,10 @@ test('RED Cloudflare OOM observation rejects signed trace even if agent reports 
 });
 test('RED status reads outside ten-way overlap are not enough', async () => {
   const trace = await attestedFixture();
-  for (const task of trace.tasks) {
-    const start = trace.events.find((e) => e.requestId === task.requestId && e.type === 'tool_start');
-    const probe = trace.events.find((e) => e.requestId === task.requestId && e.type === 'status_probe');
-    if (start && probe) probe.atMs = start.atMs + 1;
+  const lastToolEnd = Math.max(...trace.events.filter((e) => e.type === 'tool_end').map((e) => e.atMs));
+  // Deterministically put every status read after the entire ten-way window.
+  for (const event of trace.events) {
+    if (event.type === 'status_probe') event.atMs = lastToolEnd + 1000;
   }
   reseal(trace);
   const report = evaluateTrace(trace, { mode: 'live', trustedKeys: trust, limits });
