@@ -24,8 +24,21 @@ jobs:
           bun-version: 1.4.4
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
+      - name: Complete repository Bun unit suite
+        run: bun test
       - name: Fenced admission and T04 recovery tests (no Remote)
         run: bun test src/supervisor-admission.test.ts src/supervisor-recovery.test.ts src/supervisor-control.test.ts
+      - name: R1 synthetic GREEN baseline
+        run: node --test scripts/f0-c10-t03/admission.test.mjs
+      - name: Known RED synthetic reproductions remain RED (negative fixture only)
+        shell: bash
+        run: |
+          set +e
+          node --test scripts/f0-c10-t03/known-red.red.mjs > /tmp/r2-t03-known-red.log 2>&1
+          status=$?
+          set -e
+          test "$status" -eq 1
+          grep -q '# fail 2' /tmp/r2-t03-known-red.log
       - name: Repository typecheck
         run: bun run typecheck
       - name: Worker and client build (not deploy)
