@@ -249,3 +249,21 @@ Documentación oficial: [memoria por isolate y filtro DO](https://developers.clo
 ### R2.7 CI offline comprobada tras abrir la PR
 
 El workflow acotado `.github/workflows/f0-c10-r2-t01-memory.yml` fue ejecutado automáticamente en la rama R2: [run 45095992905](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45095992905) y [run 45095988003](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45095988003), ambos **completed/success** en el HEAD `1ddb34de9c9842346ccd83ce3b4761c6b95a1b6e`. El job `offline-memory` #137435798031 aprobó checkout, Node, tests RED/GREEN y validación de `exit 1` esperado/`exit 0` correcto. Esta incorporación documental genera **un nuevo HEAD**; volver a cotejar el CI de ese SHA para la aceptación definitiva. La prueba no ejecuta Bun, build de Workers ni Staging, y no modifica el diagnóstico causal de `PARTIAL`.
+
+
+---
+
+## R3 — Implementación instrumentada (T01 ↔ T02/T05), sin publicación
+
+**Actor:** ChatGPT (GitHub, revisión de código, CI Node/Bun); no ejecución de OpenCode Remote. **Base:** PR #129 @ `c8afb5302252d7edce18332b602d6d4e72755d58`, sobre integración candidata PR #126 @ `1268ba22f26330d619b046fcf551ca846cb69d0f`; rama R3 `f0-c10/r3-phase-telemetry-t01-t02-t05-20261122`. **Estado:** `PARTIAL / SOURCE_INSTRUMENTED / LIVE_ALLOCATOR_UNVERIFIED`.
+
+[Informe técnico exhaustivo y transferencia a T02/T05](12_TELEMETRIA_FASES.md). Incluye prueba, esquema cerrado de logs, fases con cobertura real, ausencia de `onAlarm`, protocolo futuro de correlación Cloudflare e identidad de las fuentes.
+
+- **Implementado, sin desplegar:** `src/supervisor-phase-telemetry.ts`, integrado exclusivamente en los métodos supervisados de `src/server.ts` para emitir `supervisor.phase.v1` con nombre de fase y operación, borde `begin/end`, resultado `ok/error`, milisegundos y UUID efímero por RPC. Sin `requestId`, `sessionId`, prompts, tokens, errores crudos ni stack en telemetry. Los errores se relanzan idénticos; no hay escritura durable del marcador. Marcadores por operación de `admit`, `create/fork`, `setModel`, `submit`, `status` y partes de `recover`. La fase `alarm` carece de hook seguro en `OpenCodeAgent`; no se inventa instrumentación.
+- **T02:** estudiar `create/fork` (incluida `sessions.list()` de sourceLookup), `setModel`, `submit`, referencias persistentes de Harness y cuantiles `memoryUsageBytesP50..P999` de isolate **compartido**. Los marcadores NO contienen bytes de heap.
+- **T05:** estudiar `status:wait`, `status:foldLog`, `status:progress`, tamaño de **evento SDK de entrada**, `runConnector(event.transcript)` y serializaciones MCP. Se conservan las guardas #106 y los límites #114; no se expone ningún transcript para investigar memoria.
+- **Pruebas:** `src/supervisor-phase-telemetry.test.ts` prueba esquema limitado, privacidad, invariantes de retorno, errores sin fuga, tolerancia de logger y begin/end. CI del código con Bun, `typecheck`, build de Worker/cliente sin deploy, invariantes y fixture R2.
+- **Fallo de integración reconocido:** primer workflow `45096539067` **failure** en `typecheck` por dos estrechamientos de TypeScript perdidos dentro de closures (líneas `src/server.ts(85,88)` y `(237,58)`). Se preservó la semántica y se corrigió capturando identidades estrechadas antes de `phase.run()`, commit `186979bf32b38496d17bc37d8d93cf48fde1f864`. **No se descartó ni ocultó el RED del compilador**.
+- **Vigencia:** sin nuevo `staging_start_task`, sin inferencia, deploy, merge, producción ni escritura en DO/Containers. Se desconoce coste marginal de CI; no se afirma gasto global 0. El kit offline **NO mide memoria real**, **NO prueba diez tareas** y **NO implica autorización de despliegue**.
+
+Para atribuir causa se necesita que el binario con estos markers esté publicado **en otro lote autorizado**, capturar `begin/end` y cuantiles de isolate por versión/DO y, si es seguro, un heap profile aislado. El marcador sin cierre no es evidencia suficiente de asignación responsable. **F0-C10: NO COMPLETE PASS**.
