@@ -1,0 +1,81 @@
+name: F0-C10 PREFLIGHT-02 — fenced disposable lease and local spend STOP (NO LIVE)
+
+on:
+  push:
+    branches: [f0-c10/preflight-02-cutoff-lease-20261123]
+  pull_request:
+    branches: [f0-c10/preflight-01-operational-stop-20261123]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: f0-c10-preflight-02-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lease-and-spend-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Attest HEAD
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: bun install --frozen-lockfile
+      - name: F0-C10 disposable DO lease and six-service exposure GREEN
+        run: bun test src/preflight-exclusive-lease.test.ts src/preflight-disposable-cost.test.ts
+      - name: Historical TTL and per-DO budget RED (must fail deliberately)
+        shell: bash
+        run: |
+          set +e
+          node --test scripts/f0-c10/preflight-02-known-red.red.mjs > /tmp/f0-c10-preflight-02-red.log 2>&1
+          code=$?
+          set -e
+          test "$code" -eq 1
+          grep -q "fail 2" /tmp/f0-c10-preflight-02-red.log
+      - name: Previous operational STOP must remain STOP
+        shell: bash
+        run: |
+          node --test scripts/f0-c10/operational-preflight.test.mjs
+          set +e
+          node scripts/f0-c10/operational-preflight.mjs --snapshot docs/f0-c10/preflight-01-observed-20261123.json > /tmp/f0-c10-stop.json
+          status=$?
+          set -e
+          test "$status" -eq 2
+          node -e "let x=require('/tmp/f0-c10-stop.json');if(x.decision!=='STOP'||x.liveLoadAuthorizedByThisArtifact!==false)process.exit(1);"
+  complete-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Attest HEAD
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: Full Bun regression
+        run: bun test
+      - name: Static preview
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build Workers and web (NO DEPLOY)
+        run: bun run build
+      - name: Invariants
+        run: bun scripts/check-invariants.mjs
