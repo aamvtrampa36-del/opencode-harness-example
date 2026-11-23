@@ -35,6 +35,9 @@ export class R3RecoveryLab extends DurableObject<LocalEnv> {
     })
   });
   readonly lifecycle = Lifecycle.install(this).use(this.harness);
+  // Local fixture only: deliberately keep an original request in flight
+  // AFTER the native SDK has persisted its session, BEFORE supervisor commit.
+  private releaseCreator?: () => void;
 
   private async nativeGet(sessionID: string):
     Promise<{ found: boolean; id?: string; errorTag?: string }> {
@@ -116,6 +119,38 @@ export class R3RecoveryLab extends DurableObject<LocalEnv> {
             simulatedLostReply: true, committed: false, before, after
           }, 503);
           return send({ nativeId, before, after });
+        }
+        case "/held": return send({ held: Boolean(this.releaseCreator) });
+        case "/release-held": {
+          const release = this.releaseCreator;
+          if (!release) return send({ error: "NO_CREATOR_HELD" }, 409);
+          this.releaseCreator = undefined;
+          release();
+          return send({ released: true });
+        }
+        case "/create-held": {
+          const grant = input.grant as StartGrant;
+          const nativeId = await this.harness.create({ id: sid });
+          if (nativeId !== sid) throw Error("SDK_SESSION_ID_MISMATCH");
+          await new Promise<void>(resolve => { this.releaseCreator = resolve; });
+          // Original request is now DELIBERATELY LATE. Optionally inject an
+          // SDK-ish failure not labeled ADMISSION_FENCE_REJECTED to validate
+          // the production catch's transactional token+generation guard.
+          try {
+            if (input.injectError === true) throw Error("SDK_ERROR_AFTER_SESSION_ROW_PERSISTED");
+            await supervisorCommitCreatedSession(this.ctx.storage, grant, sid);
+            return send({ kind: "committed", state: await this.state(id) });
+          } catch (error) {
+            const verdict = await this.ctx.storage.transaction(async tx => {
+              const task = await tx.get<SupervisorTask>(supervisorTaskKey(id));
+              if (!task) throw Error("TASK_MISSING");
+              if (!await supervisorGrantStillOwned(tx, grant)) return "fenced";
+              await tx.put(supervisorTaskKey(id), { ...task, status: "failed" as const });
+              return "WRITTEN_BY_OLD_CREATOR";
+            });
+            return send({ kind: verdict, error: errorString(error),
+              state: await this.state(id) });
+          }
         }
         case "/reconcile": {
           const native = await this.nativeGet(sid);
