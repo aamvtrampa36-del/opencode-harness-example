@@ -17,6 +17,7 @@ import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
 import { collectSupervisorDirectory, supervisorTaskCount } from "./supervisor-directory";
 import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
+import { projectSupervisorProgress } from "./supervisor-progress";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
 import { createDynamicMcpHost } from "./dynamic-mcp-bridge";
@@ -51,10 +52,13 @@ import {
   supervisorBaseCommit, supervisorBranch, supervisorFingerprint, supervisorProject,
   supervisorPrompt, supervisorResponse, supervisorTaskKey, supervisorStartOperationId,
   supervisorTurnOperationId, classifySupervisorOperation, isUntrackedLegacySupervisorOperation,
+  supervisorSessionCreationDisposition, canConfirmSupervisorPreSessionCancellation,
   validateSupervisorStart, type SupervisorTask
 } from "./supervisor-control";
 
 export const MODEL_ID = MODEL_PRESETS.cloudflare.id;
+
+const SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED = "SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED";
 
 /** A playable OpenCode instance backed by one Durable Object. */
 export class OpenCodeAgent extends DurableObject<Env> {
@@ -100,6 +104,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       id: start.requestId, repository: start.repository,
       project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId, start.repository),
       fingerprint, createdAt: old?.createdAt ?? Date.now(), status: "preparing",
+      sessionCreationAttempted: false,
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
     if (!old) {
@@ -165,20 +170,32 @@ export class OpenCodeAgent extends DurableObject<Env> {
         await this.ctx.storage.put(key, job);
       }
       if (!job.session) {
-        let created;
+        // create/fork has no caller-supplied idempotency key. An interrupted
+        // response can hide a successfully created session; never blindly replay.
+        if (supervisorSessionCreationDisposition(job) !== "create") {
+          job.status = "unknown";
+          job.error = "SUPERVISOR_SESSION_CREATION_UNCONFIRMED";
+          job.updatedAt = Date.now();
+          await this.ctx.storage.put(key, job);
+          return this.supervisorTaskReceipt(job, reused);
+        }
         if (start.sourceSession) {
           const exists = (await this.harness.sessions.list()).some(item => item.id === start.sourceSession);
           if (!exists) throw new Error("La sesión de origen ya no existe en este workspace");
-          created = await this.harness.sessions.fork(start.sourceSession);
-        } else {
-          created = await this.harness.sessions.create();
         }
-        await this.bindSessionScope(created.id, { project: job.project, repository: job.repository });
-        // The model may not create a second branch, or write outside its branch.
-        await this.ctx.storage.put("supervisor:session:" + created.id, job.id);
+        job.sessionCreationAttempted = true;
+        job.updatedAt = Date.now();
+        await this.ctx.storage.put(key, job);
+        const created = start.sourceSession
+          ? await this.harness.sessions.fork(start.sourceSession)
+          : await this.harness.sessions.create();
+        // Persist the returned identity before doing scope/index work.
         job.session = created.id;
         job.updatedAt = Date.now();
         await this.ctx.storage.put(key, job);
+        await this.bindSessionScope(created.id, { project: job.project, repository: job.repository });
+        // The model may not create a second branch, or write outside its branch.
+        await this.ctx.storage.put("supervisor:session:" + created.id, job.id);
       }
       await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
       const handle = this.harness.session(job.session!);
@@ -193,8 +210,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
         await this.ctx.storage.put(key, job);
       }
     } catch (error) {
-      job.status = "failed";
-      job.error = error instanceof Error ? error.message.slice(0, 230) : "No se pudo iniciar la tarea";
+      const uncertainCreate = job.sessionCreationAttempted === true && !job.session;
+      job.status = uncertainCreate ? "unknown" : "failed";
+      const detail = error instanceof Error ? error.message.slice(0, 180) : "No se pudo iniciar la tarea";
+      job.error = uncertainCreate ? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED: " + detail : detail;
       job.updatedAt = Date.now();
       await this.ctx.storage.put(key, job);
     }
@@ -309,18 +328,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async remoteSupervisorInspectSession(id: string): Promise<unknown> {
     this.assertStagingRemote();
     if (!/^ses[A-Za-z0-9_]{1,64}$/.test(id)) throw new Error("Identificador de sesión inválido");
-    const sessionInfo = (await this.harness.sessions.list()).find(item => item.id === id);
-    if (!sessionInfo) throw new Error("La sesión no existe en este workspace Staging");
-    const [history, project] = await Promise.all([this.harness.session(id).history(), this.sessionProject(id)]);
-    const repository = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(id));
-    const markdown = renderConversationMarkdown(id, {
-      messages: history, project: project || undefined, repository: repository?.repository
-    });
-    return { environment: "staging", session: id, busy: sessionInfo.busy,
-      ...(sessionInfo.parent ? { parent: sessionInfo.parent } : {}),
-      ...(sessionInfo.title ? { title: sessionInfo.title.slice(0, 160) } : {}),
-      ...(project ? { project } : {}), ...(repository?.repository ? { repository: repository.repository } : {}),
-      transcriptExcerpt: markdown.slice(-12_000), truncated: markdown.length > 12_000 };
+    // No byte-bounded transcript API is available in agents@0.33.0.
+    // Refuse this read before materializing any session history.
+    throw new Error(SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED);
   }
 
   private async supervisorModel(model: unknown): Promise<{ providerID: string; id: string; selection: ModelSelectionID }> {
@@ -399,14 +409,22 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   async remoteSupervisorInspect(id: string): Promise<unknown> {
     this.assertStagingRemote();
-    const status = await this.supervisedTaskStatus(id);
+    // Durable supervisor ledger snapshot only: not a live OpenCode operation result.
     const task = await this.supervisedRecord(id);
-    if (!task.session) return { status };
-    const [transcript, progress] = await Promise.all([
-      this.supervisedTaskTranscript(id), this.remoteSupervisorProgress(id, 0)
-    ]);
-    return { status, progress, transcriptExcerpt: transcript.slice(-16_000),
-      truncated: transcript.length > 16_000, reviewRequired: true };
+    return {
+      status: {
+        id: task.id, repository: task.repository, project: task.project,
+        branch: task.branch, baseCommit: task.baseCommit, session: task.session,
+        operationId: task.operationId, model: task.model,
+        startedAt: task.createdAt, updatedAt: task.updatedAt,
+        status: task.status, error: task.error,
+        snapshot: true, source: "supervisor-task-ledger",
+        reviewRequired: true, passed: false, verified: false
+      },
+      snapshot: true, transcriptAvailable: false,
+      transcriptError: SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED,
+      progressAvailableViaCursor: true, reviewRequired: true
+    };
   }
 
   async remoteSupervisorMcpServers(): Promise<unknown> {
@@ -457,7 +475,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
       branch: job.branch, baseCommit: job.baseCommit, session: job.session, startedAt: job.createdAt,
       updatedAt: job.updatedAt, operationId: job.operationId, model: job.model, error: job.error,
       ...(job.forkedFrom ? { forkedFrom: job.forkedFrom } : {}) };
-    if (!job.session || ["cancelled", "failed", "preparing"].includes(job.status))
+    if (!job.session) {
+      const uncertain = job.sessionCreationAttempted === true;
+      return { ...base, status: uncertain ? "unknown" : job.status,
+        error: uncertain ? (job.error ?? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED") : job.error,
+        reviewRequired: true, passed: false, verified: false };
+    }
+    // A stored "failed" with a native operationId can still have a later
+    // completion receipt: reconcile instead of hiding it as terminal.
+    if (["cancelled", "failed", "preparing"].includes(job.status) && !job.operationId)
       return { ...base, status: job.status, reviewRequired: true, passed: false, verified: false };
     const handle = this.harness.session(job.session);
     const waitController = new AbortController();
@@ -523,37 +549,48 @@ export class OpenCodeAgent extends DurableObject<Env> {
     this.assertStagingRemote();
     if (!Number.isSafeInteger(after) || after < 0) throw new Error("Cursor de eventos inválido");
     const task = await this.supervisedRecord(id);
-    if (!task.session) return { taskId: id, events: [], nextAfter: after, status: task.status };
-    const events: Array<{ seq?: number; type: string }> = [];
-    let nextAfter = after;
-    let truncated = false;
-    for await (const value of this.harness.session(task.session).log({ after, follow: false })) {
-      const event = value as unknown as Record<string, unknown>;
-      const durable = event.durable && typeof event.durable === "object"
-        ? event.durable as Record<string, unknown> : {};
-      const data = event.data && typeof event.data === "object"
-        ? event.data as Record<string, unknown> : {};
-      const eventType = String(event.type ?? data.type ?? "event").slice(0, 100);
-      if (/reasoning/i.test(eventType)) continue;
-      const rawSeq = durable.seq ?? event.seq;
-      const seq = typeof rawSeq === "number" && Number.isSafeInteger(rawSeq) ? rawSeq : undefined;
-      if (seq !== undefined) nextAfter = Math.max(nextAfter, seq);
-      if (events.length >= 100) { truncated = true; break; }
-      events.push({ ...(seq !== undefined ? { seq } : {}), type: eventType });
-    }
-    return { taskId: id, session: task.session, status: task.status, events, nextAfter, truncated };
+    if (!task.session) return { taskId: id, events: [], nextAfter: after,
+      status: task.status, truncated: false, gapDetected: false, scanned: 0 };
+    // Reads at most 128 raw records; filtered reasoning records also advance
+    // the durable cursor. No history() call or post-hoc transcript slicing.
+    const page = await projectSupervisorProgress(
+      this.harness.session(task.session).log({ after, follow: false }), after);
+    return { taskId: id, session: task.session, status: task.status, ...page };
   }
 
   async cancelSupervisedTask(id: string): Promise<unknown> {
     this.assertStagingRemote();
-    const job = await this.supervisedRecord(id);
+    let job = await this.supervisedRecord(id);
     if (["cancelled", "failed", "finished", "unanswered"].includes(job.status))
       return { id, status: job.status };
     if (!job.session) {
-      job.status = "cancelled";
-      job.updatedAt = Date.now();
-      await this.ctx.storage.put(supervisorTaskKey(id), job);
-      return { id, status: "cancelled", confirmed: true, reason: "no OpenCode session had started" };
+      // Serialize the no-session decision with the durable start lease and
+      // task record. A missing session ID alone proves nothing after a reset.
+      const outcome = await this.ctx.storage.transaction(async tx => {
+        const key = supervisorTaskKey(id);
+        const fresh = await tx.get<SupervisorTask>(key);
+        if (!fresh) throw new Error("Tarea del supervisor inexistente");
+        const lock = await tx.get<{ token: string }>("supervisor:lock:" + id);
+        if (fresh.session) return { kind: "bound" as const, task: fresh };
+        if (!canConfirmSupervisorPreSessionCancellation(fresh, Boolean(lock))) {
+          return { kind: "uncertain" as const, task: fresh };
+        }
+        if (["cancelled", "failed", "finished", "unanswered"].includes(fresh.status)) {
+          return { kind: "terminal" as const, task: fresh };
+        }
+        const stopped = { ...fresh, status: "cancelled" as const, updatedAt: Date.now() };
+        await tx.put(key, stopped);
+        return { kind: "confirmed" as const, task: stopped };
+      });
+      if (outcome.kind === "confirmed") {
+        return { id, status: "cancelled", confirmed: true, reason: "start not entered; no session creation attempted" };
+      }
+      if (outcome.kind === "uncertain") {
+        return { id, status: "unknown", confirmed: false,
+          recordedStatus: outcome.task.status, reason: "SUPERVISOR_SESSION_START_UNCONFIRMED" };
+      }
+      job = outcome.task;
+      if (outcome.kind === "terminal") return { id, status: job.status };
     }
     if (!job.operationId) {
       // A legacy session may still be running; without its operation id we
@@ -580,7 +617,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     this.assertStagingRemote();
     const job = await this.supervisedRecord(id);
     if (!job.session) throw new Error("La tarea todavía no tiene sesión");
-    return this.exportSessionData(job.session);
+    // Clipping a full history afterward does not bound memory usage.
+    throw new Error(SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED);
   }
 
   async supervisedTaskReview(id: string): Promise<unknown> {
