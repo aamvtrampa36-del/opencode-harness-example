@@ -114,12 +114,15 @@ try{
     for(const name of ['dist/badlink.txt','dist/bad-directory/private.txt','dist/../private.txt','../'+two+'/dist/private.txt','/bundle/private.txt']){
       const r=await probe(name);assert.notEqual(r.exitCode,0);assert.equal(r.stdout.text,'');
     }
-    // Hardlinks are not symlinks: fd realpath remains under dist. This is a
-    // documented limitation of an on-the-same-filesystem local fixture; NOT
-    // proof of shared inodes between distinct Cloudflare project Containers.
-    const hard=await probe('dist/hardlink.txt');assert.equal(hard.exitCode,0);
-    assert.equal(Buffer.from(JSON.parse(hard.stdout.text).base64,'base64').toString(),'project-2');
-    caseReport('artifact-paths-and-hardlink-RED',{O_NOFOLLOW_symlinkDenied:true,intermediateSymlinkDenied:true,hardlinkSameFilesystemLeak:true,cloudflareFilesystemOverlap:'not tested'});
+    // T06 originally detected a hardlink RED; R3-T09 now denies
+    // multi-link inodes. This is an expected GREEN regression of the
+    // integrated source, NOT proof of Cloudflare Container isolation.
+    const hard=await probe('dist/hardlink.txt');
+    assert.notEqual(hard.exitCode,0);
+    assert.equal(hard.stdout.text,'');
+    caseReport('artifact-paths-and-hardlink-R3-GREEN',{
+      O_NOFOLLOW_symlinkDenied:true,intermediateSymlinkDenied:true,
+      hardlinkSameFilesystemLeak:false,cloudflareFilesystemOverlap:'not tested'});
  });
  // Read-only mount/cgroup capability inventory; no writes or isolation claims.
  await test('read-only local cgroup capability report (not Cloudflare)',()=>{
