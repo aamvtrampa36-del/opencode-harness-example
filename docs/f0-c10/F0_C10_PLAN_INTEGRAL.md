@@ -2,8 +2,9 @@
 
 **Proyecto:** OpenCode Cloud — Desarrollo y Autonomía  
 **Preparado:** 22 de noviembre de 2026 (America/Sao_Paulo)  
-**Actualización R2:** 22 de noviembre de 2026; ver PARTE II, apartados 22–30, que prevalece para el estado posterior a T11  
-**Estado del documento:** plan operativo actualizado para segunda ronda; **PR #126 candidata con CI verde, sin despliegue; F0-C10 PARTIAL, no autoriza por sí sola acciones**  
+**Actualización R2:** 22 de noviembre de 2026; ver PARTE II, apartados 22–31.
+**Actualización R3:** 23 de noviembre de 2026; ver PARTE III, apartados 32–39, que prevalece para el estado posterior a PR #145  
+**Estado del documento (histórico R2):** plan operativo actualizado para segunda ronda; **PR #126 candidata con CI verde, sin despliegue; F0-C10 PARTIAL, no autoriza por sí sola acciones**  
 **Repositorio:** https://github.com/aamvtrampa36-del/opencode-harness-example  
 **Issue de referencia:** https://github.com/aamvtrampa36-del/opencode-harness-example/issues/90
 
@@ -304,3 +305,64 @@ Este plan actualiza solamente **F0-C10**. No autoriza iniciar fases #66/#65, cam
 Se recuperaron PR R2 #128–#142. La nueva rama `f0-c10/r2-t11-master-integration-20261123` parte de la PR #138, que ya incorpora T03 #135 y el publicador durable T08 a partir de #130. Se integraron de forma aislada los instrumentos T01 #129 y T02 #128, T07 #142 y T10 #141, mejoras MCP T05 #139, Linux T06 #140, y endpoints artefactos T09 #133 reconciliando el código del supervisor y MCP. Los detalles, SHAs y el resultado del CI del conjunto están en `docs/f0-c10/11_CONSOLIDACION_R2.md` y la PR draft de esta rama.
 
 **Bloqueos conservados:** T04 #136 modifica el mismo flujo de inicio que T03 #135; no confundir su CI individual con compatibilidad combinada. Instrumentación T01 R3 #134 no se activó en runtime. La capacidad live, aislamiento cloud, corte de gasto y despliegue permanecen sin demostrar. La rama es un candidato fuente NO desplegado, y no autoriza carga de diez sesiones. Cualquier veredicto posterior deberá basarse en el HEAD exacto, CI y pruebas reales autorizadas.
+
+# PARTE III — Estado posterior a PR #145 y preparación de la tercera ronda (R3; 23-11-2026)
+
+**Regla de precedencia:** esta Parte III actualiza el estado de PR/código/gates de las Partes I–II. No modifica su historia, sus pruebas ni sus límites. La documentación de los apartados 1–31 no constituye un despliegue. Ver `docs/f0-c10/00_COORDINACION.md` (sección R3), `15_RETROSPECTIVA_Y_CONTROLES_R3.md` y `16_RONDA_3_PROMPTS.md`.
+
+## 32. Fotografías revalidadas y fuentes
+
+- Issue #90 abierto; ensayo del 22 de noviembre: diez starts, seis errores OOM, **0/10 resultados auténticamente verificados**; no se atribuye una causa única al isolate.
+- Cadena de código candidata y no fusionada: PR #126 (`1268ba22f26330d619b046fcf551ca846cb69d0f`) → #143 (`160eafbb0e4842063e37c71425f1a5c2e08b18b2`) → #144 (`baebc30a71dbaa8abca722c0780d4d658e2192c8`) → #145 (`a49e985909cb56bb42c609c9cd5cb4250a620169`). Sus bases son apiladas; no fusionar cada PR como si fuese independiente. Todas verificadas draft/open/no merge en el corte.
+- HEAD #145: GitHub Actions #45106083359 `completed/success` (focal T03/T04, inyección de fallos local, Bun, preview, typecheck, Workers/web build, invariantes). Las pruebas de SDK/DO real y E2E **no se efectuaron**.
+- Cloudflare: `opencode-g1-staging` versión `3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb` deployment `36ef84b3-0f99-4dd4-ab8e-c11ee450dd23`; `opencode-staging-control-mcp` versión `196240c0-1052-47b3-aaa7-02cf5baa87f0` deployment `9fdaf22d-beeb-44a0-ab68-77ecd5745fa1`, ambos 100%. No hay evidencia de estos candidatos publicados.
+- Remote de lectura: `ready=true`, mínimo 96 sesiones registradas, inventario `supervisedCountComplete=false`. **96 registradas no equivale a 96 activas**.
+- GitHub aloja el plan actualizado candidato en el árbol de #145 (copiado desde PR #127 por #143); la PR documental #127 permanece abierta por separado. El archivo de prompts R2 `12_RONDA_2_PROMPTS.md` sigue fuera del árbol #145. Los adjuntos del Proyecto y Biblioteca no se sincronizan solos con GitHub.
+
+## 33. Contratos candidatos de memoria, arquitectura, Linux, Remote/MCP y resultados
+
+**Memoria/aislamiento:** T01 #129 correlaciona fases sintéticas; T02 #128 hace bench offline 1/2/4/10; la instrumentación #134 no se incorporó por conflicto de estructura. No hay perfil de heap workerd/DO bajo diez agentes. Varios DO pueden compartir isolate. Criterio R3: T01 observa, T02 decide contención/aislamiento según mediciones, sin migraciones especulativas.
+
+**Linux/Container:** #140 acumula PGID/TERM/KILL y guardas EPIPE; `setsid`/procesos detached, cgroups, aislamiento real y `ctx.container.start` no están cerrados. T06 debe probar negativos de descendientes en entorno descartable, no matar procesos ajenos.
+
+**Remote/MCP:** #139 introduce límites/cursos y export legacy fail-closed. El SDK aún puede materializar eventos grandes antes de que el usuario reciba una página. T05 debe medir límite previo a serialización y representar `unknown/not_found/cancel_requested` sin `passed=true` inventado, manteniendo compatibilidad entre Workers.
+
+**GitHub:** #138 usa publicador durable y exclusión T03; faltan efectos reales de diez escritores, conflictos de un mismo archivo, 503 después de POST y seguridad de CAS/fencing tras reinicio. T08 conserva el puente GitHub propio; el conector ChatGPT solo investiga/verifica.
+
+**Outputs/Android:** #133 propuso captura/descarga autenticada limitada a 32 KiB y readback; falta prueba ACL multitenant, expiración, accesibilidad Android, archivo grande y diez resultados reales. Un path como `/bundle/file.txt` nunca es descarga suficiente. T09 colabora con T10 en hashes y procedencia.
+
+## 34. Única autoridad de admisión, recuperación y nueva readmisión
+
+- T03 `supervisor-admission.ts` posee el ledger `supervisor:admission:v1`, máximo **diez slots** de tareas nuevas, token+generation y estados `reserved/effect_unknown/running`; un TTL nunca resuelve un efecto desconocido. `capacity=10` no prueba diez ejecuciones realmente en paralelo.
+- #144 incorporó T04: política `deterministic-v1` para tareas nuevas normales, `r2SessionId(requestId)`, journal `turnId+hash`, cancelar/continuar/status mediante transacción y negativa a repetir `fork` sin ID idempotente. Las tareas legacy no se migran automáticamente.
+- #145 comprueba `opencode.sessions.get({sessionID: 'ses_r2_'+requestId})` por ID exacto al reconciliar `session_create/effect_unknown`. **GET positivo** transfiere generación/fencing y vincula session/owner de forma transaccional; GET negativo/error deja `unknown` y no ejecuta otra creación. No prueba que todos los side effects del creador anterior hayan cesado.
+- #145 readmite una tarea `finished` bajo el mismo ledger de diez en la transacción que crea el nuevo journal de turno; registra `turn_submit/effect_unknown` antes del RPC. Un resultado de admisión no es finalización; `not_found` nunca libera el efecto; recibo nativo terminal verificable es necesario.
+- STOP abierto: sesiones legacy sin slot pueden ejecutar fuera de la capacidad; recuperación del creador tardío sin pruebas reales DO; seguridad de `create({id})` bajo caída real; readmisión/cancelación y fork bajo garantías nativas; coste y memoria no medidos. R3-T03 y T04 tienen propiedad separada (capacidad vs. reconstrucción SDK).
+
+## 35. Coste, inferencia y prueba final auténtica
+
+T07 #142 conserva un contrato offline de presupuesto, **no** un interceptor de todas las llamadas ni un hard stop aplicado a Workers AI/OpenRouter/Workers/DO/Containers/CI; tarifa visible y AI Gateway no prueban corte efectivo. T10 #141 dispone de validador de firmas/trazas sintéticas, no de colector live independiente. La campaña real exige dos Workers versionados y con rollback, autorización separada, lease atómico exclusivo, corte de gasto medido, telemetría externa, fuente/binario, negativa ante OOM/unknown, tareas aisladas y diez readbacks.
+
+**Aceptación F0-C10:** tres campañas independientes 1→2→4→10 que terminan con **diez intervalos realmente solapados** de herramienta/inferencia por campaña, **diez salidas verificadas** con hash/readback y aislamiento, cero OOM/duplicados/huérfanos, recuperación y gastos auditables. CI, mock, `busy`, número de sesiones o prompts no sustituyen estos hechos.
+
+## 36. Retrospectiva de T11 — evidencias y cambios aplicables
+
+Retrospectiva detallada en `docs/f0-c10/15_RETROSPECTIVA_Y_CONTROLES_R3.md`. Decisiones verificadas: PR #143 acumuló 78 commits de comparación desde #126 y 56 archivos cambiados (incluye ancestros y trabajo de especialistas, **no** 78 commits adjudicados al integrador); se aplicaron hunks por coincidencia de contexto textual antes de pruebas semánticas; PR #144 requirió conciliación especial y un segundo ajuste de readmisión tras el primer CI; #145 precisó otra ronda de journaling/fencing. La evidencia indica **integración evolutiva y controles tardíos**, no demuestra que todas las reparaciones anteriores fuesen incorrectas. Las dos propuestas iniciales de panel copiador no cumplieron el contrato de equivalencia con el archivo canónico: HTML separado y UI acortada.
+
+**Reglas R3:** (a) fijar árbol base+dependencias; (b) comprobar SDK/contratos antes de codificar; (c) definir RED/STOP antes de escribir; (d) un solo dueño por ledger/fuente; (e) probar carreras y falsos PASS; (f) integrar por comportamiento, no solo por hunk aplicable; (g) minimizar commits/workflows redundantes, validar CI HEAD final y costes desconocidos; (h) exigir atribución real OpenCode vs ChatGPT; (i) verificar recibos de Biblioteca; (j) **QA exacta de los once botones** frente al prompt Markdown, sin HTML simulado ni resúmenes.
+
+## 37. Mandatos de tercera ronda y handoff único
+
+Los diez especialistas vuelven a sus mismos chats, no crean seguimientos independientes. Propietarios: T01 OOM/medición; T02 aislamiento DO/Container; T03 capacidad + legacy; T04 recuperación SDK/DO y fencing; T05 Remote/MCP; T06 Linux; T07 inferencia/coste; T08 GitHub escrituras; T09 artefactos/Android; T10 E2E y trazas. R3-T11 consolidará solo después de recibir handoffs.
+
+Cada T tiene lote de lecturas, pruebas offline, rama propia, commits/PR draft, CI HEAD y publicación documental GitHub; Biblioteca solo tras pruebas y con recibo. Los diez entregan una sección `HANDOFF A F0-C10/R3-T11`: PASS/PARTIAL/BLOCKED/FAIL, SHAs, rama, PR, archivos, actor, pruebas/exit code/CI, métricas, costes, riesgos, solapes, copia confirmada y recomendación de integración. **Ninguno genera un prompt de seguimiento propio**, ni inicia Staging, despliega o hace merges.
+
+## 38. Integración R3-T11 y precedencia de PR
+
+R3-T11 recupera las diez PR, evidencia y archivos, revalida base/HEAD, rechaza duplicados de PR apiladas y elige el mínimo conjunto compatible con T03/T04/T08 y contratos de outputs. Implementa en su propia rama aislada; exige suite Bun, build de dos Workers y cliente, typecheck, invariantes, negativos y CI final HEAD. Documenta en `11_CONSOLIDACION_R3.md`. Aunque todas las PR tengan CI, **no** está autorizado un deploy o carga sin lote operativo específico. No abrir otra ronda automática de diez encargos.
+
+## 39. Reglas de autorización y parada (R3)
+
+En este lote de **planificación/documentación**: lecturas GitHub/Cloudflare/Remote, nueva rama documental, archivos Markdown, PR draft, CI de documentos y copias personales de Biblioteca con recibo; no ejecutar anticipadamente T01–T10 ni T11. Los futuros prompts autorizan únicamente sus respectivos lotes offline. Prohibidos `main`, Producción, merges, despliegues, mutaciones DO/Containers, secretos, Access, cambios de bindings, cancelaciones ajenas y gasto de inferencia sin gate técnico. READ de Remote no debe confundirse con una operación que muta storage.
+
+**Resultado actual:** `PARTIAL / NO COMPLETE PASS`. El siguiente movimiento del propietario es pegar diez prompts R3 en sus chats originales. Cuando terminen sus PR/handoffs, pegar R3-T11 aquí; la coordinación mecánica entre GitHub, documentación y Biblioteca corresponde al ejecutor, no al propietario.

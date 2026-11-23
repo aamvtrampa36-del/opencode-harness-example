@@ -1,0 +1,72 @@
+{
+  "source": "F0_C10_PROMPTS_R3_T01_T11.md",
+  "base_ref": "a49e985909cb56bb42c609c9cd5cb4250a620169",
+  "prompts": [
+    {
+      "id": "T01",
+      "title": "OOM y memoria",
+      "characters": 5175,
+      "sha256": "77295461cf7b79d06650cddeff647043cf2de32c202377df4e66b5817493568c"
+    },
+    {
+      "id": "T02",
+      "title": "DO e aislamiento",
+      "characters": 4870,
+      "sha256": "b57e27a3a568624fc3812d3007589c52fc4cf43d19e46446240ce7670df72e9e"
+    },
+    {
+      "id": "T03",
+      "title": "Admisión y legado",
+      "characters": 4982,
+      "sha256": "ff622bd13b31b56f11f4d94adacde1f76d82009b82243d199710315c86d2dd79"
+    },
+    {
+      "id": "T04",
+      "title": "SDK y recuperación",
+      "characters": 5154,
+      "sha256": "fdb7dd0a97239d75662677229b2032d3d4e6172baec4245372d0d236f3baf521"
+    },
+    {
+      "id": "T05",
+      "title": "Remote, MCP y progreso",
+      "characters": 4781,
+      "sha256": "31e1b27f8f60ffc5347f0d1fa0d773ff609afbe7b53848707d1da4ea9ecc3635"
+    },
+    {
+      "id": "T06",
+      "title": "Linux y procesos",
+      "characters": 4802,
+      "sha256": "4c2d53951cab0f71a2b0632952188f41ac143d470c0a838be475afbbafe13597"
+    },
+    {
+      "id": "T07",
+      "title": "Inferencia y presupuestos",
+      "characters": 4851,
+      "sha256": "a477734aa22cb87441ad08c97cc79b1ec6a3b8aee0c2211860d8a47f11ce7451"
+    },
+    {
+      "id": "T08",
+      "title": "GitHub multiwriter",
+      "characters": 4758,
+      "sha256": "0e48b6bb754fcf154edcb0b783fcf696bd6d9b2acf8b70e3f4bbd1bf30e63032"
+    },
+    {
+      "id": "T09",
+      "title": "Artefactos y Android",
+      "characters": 4793,
+      "sha256": "f9df296c7a5ec131d296990ff142f83eeeab705bf835cce59eef3e64ca271c77"
+    },
+    {
+      "id": "T10",
+      "title": "E2E real y criterios",
+      "characters": 4849,
+      "sha256": "8b72cec6f810dbab7664cb64b5098f476dcc1983f16a70fde889d80cd653f9ba"
+    },
+    {
+      "id": "T11",
+      "title": "Consolidación",
+      "characters": 4836,
+      "sha256": "b061bbd787ea8b52c2a584ca761e26c25a1b73a05859f36ca441c4231e54da2f"
+    }
+  ]
+}
