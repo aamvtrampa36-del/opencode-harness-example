@@ -206,6 +206,14 @@ export class OpenCodeAgent extends DurableObject<Env> {
         await this.bindSessionScope(sessionId, { project: job.project, repository: job.repository });
         await this.ctx.storage.put("supervisor:session:" + sessionId, job.id);
       }
+      // The previous invocation may have lost its response after binding the
+      // task session but before storing its scope. The scope method is a
+      // transactional same-scope check, so this is a safe idempotent repair.
+      if (job.sessionIdPolicy === "deterministic-v1") {
+        await this.bindSessionScope(job.session!, {
+          project: job.project, repository: job.repository
+        });
+      }
       await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
       const handle = this.harness.session(job.session!);
       if (!job.operationId) {
@@ -220,7 +228,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       }
     } catch (error) {
       const uncertainCreate = job.sessionCreationAttempted === true && !job.session;
-      job.status = uncertainCreate ? "unknown" : "failed";
+      // A transient failure while re-binding a deterministic session or
+      // configuring the agent/model is recoverable on the same session ID.
+      const safeReplaySetup = job.sessionIdPolicy === "deterministic-v1" &&
+        Boolean(job.session) && !job.operationId;
+      job.status = uncertainCreate || safeReplaySetup ? "unknown" : "failed";
       const detail = error instanceof Error ? error.message.slice(0, 180) : "No se pudo iniciar la tarea";
       job.error = uncertainCreate ? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED: " + detail : detail;
       job.updatedAt = Date.now();
