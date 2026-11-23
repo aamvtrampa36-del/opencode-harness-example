@@ -123,3 +123,82 @@ El lock de 60 segundos actual **no es fencing token externo**: el hecho de expir
 **T04 parcial:** hay una guarda concreta contra duplicación de creación de sesión tras respuesta perdida, pero **no** una garantía universal de conciliación ni un terminal seguro para todos los `not_found`. El cierre de T04 requiere pruebas del código real, CI del HEAD, fixture DO de interrupciones y cancelación cruzada, correlación unívoca de `requestId/sessionId/operationId`, resolución o fallo auténtico de sesiones sin recibo, y cobertura de GitHub/continuaciones.
 
 **Próximo paso sin permisos adicionales de despliegue:** revisar CI y el diff de [PR #120](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/120); añadir CAS/journal de `turnId` y pruebas de carreras de `continue/cancel` sobre almacenamiento simulado, manteniendo la PR draft. Un E2E autenticado en Stage y la promoción deben quedar para otro lote, después del gate de memoria y presupuesto.
+
+---
+
+# R2-T04 — Ventanas de sesión/operación con ID estable y journal local (23-11-2026 UTC)
+
+**Naturaleza:** actualización incremental del informe original, NO sustitución retroactiva de sus observaciones. **Estado:** candidato de código, validación offline/CI; sin deploy ni prueba E2E autenticada. Actor: **ChatGPT conector GitHub + fixtures sintéticos**; OpenCode Remote no ha ejecutado tareas de escritura/inferencia de este lote. Rama `f0-c10/r2-t04-durable-recovery-20261123` desde el HEAD de integración PR #126 (`1268ba22f26330d619b046fcf551ca846cb69d0f`); el PR draft R2 y su HEAD/CI se anotan en su descripción.
+
+## R2.1 Descubrimiento exacto del SDK y su límite
+
+En **`cloudflare/agents` etiqueta `agents@0.33.0`**, `packages/agents/src/harness/opencode/harness.ts` expone `OpenCodeHarness.create({id?})` (método de bajo nivel marcado `@internal`, por tanto requiere pin de versión) y envía `id` a `opencode.sessions.create({id})`. En **`anomalyco/opencode` etiqueta `v2.0.24`**, `packages/core/src/session.ts` recibe `input.id`, consulta `store.get(sessionID)` y devuelve el registro si ya existe; el esquema `packages/schema/src/session-id.ts` requiere prefijo `ses`. Verificar estas etiquetas y no inferir compatibilidad con versiones nuevas.
+
+Fuentes:
+- https://github.com/cloudflare/agents/blob/agents%400.33.0/packages/agents/src/harness/opencode/harness.ts
+- https://github.com/anomalyco/opencode/blob/v2.0.24/packages/core/src/session.ts
+- https://github.com/anomalyco/opencode/blob/v2.0.24/packages/schema/src/session-id.ts
+- https://developers.cloudflare.com/agents/harnesses/opencode/
+
+**Decisión:** para tareas nuevas **sin `sourceSession`**, calcular `sessionId=ses_r2_<requestId>` y registrar `sessionIdPolicy=deterministic-v1` al reservar el task. La creación es `harness.create({id:sessionId})`, no `harness.sessions.create()`. Si se pierde la respuesta entre el commit nativo y la actualización del task, la siguiente invocación usa **el mismo ID**, no genera otro. Un task histórico que carece de `sessionIdPolicy` **no** se promueve a este protocolo: puede contener ya una sesión aleatoria creada antes del cambio y seguirá `unknown`.
+
+**Bifurcaciones:** `OpenCodeSessions.fork(from)` llama a `opencode.sessions.fork({sessionID:from})` sin ID configurable; `ForkInput` de OpenCode 2.0.24 tampoco ofrece `id`. Por seguridad, **nuevas bifurcaciones supervisadas se rechazan antes de crear rama/sesión** con `SUPERVISOR_FORK_IDEMPOTENCY_UNSUPPORTED`. Las bifurcaciones con `sessionId` ya vinculado siguen pudiendo consultarse. No sustituir `fork` por un `create` con `parentID`: no demuestra conservar la misma semántica de copia de conversación. La desactivación temporal es una regresión funcional conocida y requiere posterior soporte de ID en el SDK o reconciliación de fork autenticada y acotada.
+
+## R2.2 Contrato de almacenamiento por tarea (sin scheduler nuevo)
+
+| Clave/campo | Autoridad y escritura | Invariante |
+|---|---|---|
+| `supervisor:task:<requestId>` | DO actual; transacciones locales | Fingerprint no cambia; `sessionIdPolicy` evita que un registro heredado se considere nuevo; `revision` es cursor **local** |
+| `supervisor:task.session` | `harness.create({id})` seguido de persistencia | Siempre `ses_r2_<requestId>` si `sessionIdPolicy=deterministic-v1`; no se sustituye una sesión ajena |
+| `supervisor:task.operationId` | Intent de inicio `rc-start-ID` o último turn `rc-turn-ID-turnId` | El cursor no retrocede tras respuesta tardía |
+| `supervisor:task.pendingTurn` | Transacción de admisión de una continuación | Máximo **una** continuación ambigua por tarea, sin imponer límite global de ejecución |
+| `supervisor:turn:<requestId>:<turnId>` | Journal en misma transacción que `pendingTurn` y `operationId` | `hash,operationId,session,revision,phase=intent/accepted/unknown`; `turnId` reutilizado con otra instrucción se rechaza |
+| `supervisor:task.cancelAmbiguous` | Transacción de cancelación cuando hay `pendingTurn` | Marca *sticky*: prohibe confirmación terminal de `cancelled` y nuevas continuaciones hasta reconciliar ambas operaciones |
+| SDK inbox/receipt | Harness/OpenCode, storage nativo prefijado | La dedupe por `operationId` es nativa y de ámbito **sesión**, no de GitHub/Container |
+
+No se cambia la clase DO, migraciones, binding ni scheduler. T03 es propietario del límite de admisión, el lease global y el fencing de ejecutor. `revision` de R2 protege lecturas/escrituras tardías **de una tarea** en la misma instancia de DO, pero no es token de fencing entregado a Workers AI, GitHub o Linux. No confundirlo con protección global de T03.
+
+## R2.3 Tabla de transiciones y recibos exigidos
+
+| Transición | Intent journal durable | Efecto | Recibo aceptable | Si falta respuesta |
+|---|---|---|---|---|
+| Nuevo task → `preparing` | Task, fingerprint, `deterministic-v1` | Reserva transaccional | Task existente o nuevo | `requestId` idéntico recupera el mismo task |
+| `preparing` → creación nativa | `sessionCreationAttempted=true`, ID derivable | `harness.create({id})` | ID exactamente igual al derivado | Recrear **por el mismo ID** solo para tareas R2; el SDK devuelve la misma sesión |
+| Nueva bifurcación | Sin intent ni efectos | Ninguno | Error `FORK_IDEMPOTENCY_UNSUPPORTED` | No intentar `fork` |
+| Sesión vinculada → inicio | `rc-start-ID` guardado antes del submit | `submit(...,operationId)` | `accepted` o recibo consultable | Reintento exacto con clave idéntica; no repetir herramientas arbitrarias |
+| Continuación → intent | `turnId`, hash, `operationId`, `pendingTurn` y task cursor en **una transacción** | Todavía ninguno | Registro journal `intent` | Repetir el mismo turno reusa el mismo ID; distinto turno se bloquea hasta resolver |
+| Intent → `submitted` | Mismo journal `accepted` | `submit(...,whenBusy=steer)` | Receipt `accepted`/deduplicado | Journal `unknown`, task `unknown`; **no** cambio a passed/verified |
+| Continuación ↔ cancelación | Cambio transaccional de task a `cancel_requested` | `abort(operationId)` opcional sobre operación identificada | `unanswered/interrupted` **y ninguna continuación ambigua** | Si hay `pendingTurn`, `cancelAmbiguous=true`, no confirmar cancelled |
+| Status sondeado antes de otro turno | Snapshot local + cursor antiguo | `wait` y `busy` read-only | Solo recibo de operación que sigue siendo `operationId` actual | Transaction re-lee cursor: nunca sobrescribir cancel/new turn |
+| `not_found` | Ninguno concluyente | `wait` | **No** es recibo de éxito o cancelación | `unknown`, `passed=false`, `verified=false` |
+| `done` o `unanswered(reason=failed)` | Operación exacta identificada | Resultado nativo | `finished` o `failed` (NO PASS funcional) | Prohibir promoción por texto del agente |
+
+**Límite deliberado:** cuando `cancelAmbiguous=true`, incluso un `interrupted` del último turno no certifica que un inicio anterior/otra herramienta se haya detenido; se conserva `unknown` hasta un reconciliador multirrecibo posterior. Tampoco se asegura ejecución exactamente una vez de llamadas GitHub/Container, ya que sus efectos no comparten transacción con el DO.
+
+## R2.4 Ventanas y tests de fallo
+
+Instrumento versionado en `scripts/f0-c10-r2-t04-fault.test.mjs`: simula `DurableObjectStorage.transaction` con commit de mapa serializado + snapshots de reinicio, y un SDK falso con sesiones deterministas e inbox deduplicado. Importa los **helpers reales** de `src/supervisor-r2.ts`. **Evidencia: simulación fiel de fronteras y decisiones puras, NO DO/SQLite Cloudflare real, ni OpenCodeWorkerd real.**
+
+| Corte inyectado | Control RED anterior | GREEN esperado de R2 |
+|---|---|---|
+| SDK `create` efectúa pero respuesta perdida | Nuevo ID aleatorio produce dos sesiones | ID `ses_r2_ID` siempre recuperable, 1 sesión lógica |
+| Fallo de transacción antes de commit | Reserva inestable | Ninguna escritura parcial sobrevive |
+| `submit` encola, pierde respuesta | Resubmisión sin clave repetiría operación | Un `operationId` nativo; `accepted=false` en repetición |
+| Cancelación gana antes del turn | Steer tardío reviviría tarea | `r2TurnAdmission=denied`; sin envío nuevo |
+| Turn intent gana antes de cancel | Cancelación no detecta steer concurrente | `cancelAmbiguous=true`, prohibido terminal |
+| Abort reporta true, pero falta recibo | `cancelled` falso | Mantener no confirmado |
+| `not_found` | Podría confundirse con terminal | `unknown` siempre |
+| Status obsoleto espera antes de un nuevo turn | `storage.put` antiguo borra cancelación/cursor | Releer con transacción; prohibir escritura con `operationId` viejo |
+| Reinicio sintético con mismos registros | Se perdería `pendingTurn` | Journal e IDs recuperados desde nuevo objeto de simulación |
+
+Control negativo explícito `scripts/f0-c10-r2-t04-known-red.red.mjs` falla por diseño ante ID aleatorio y `storage.put` obsoleto. Ejecutar **solo** con `node --test`; su filename no termina en `.test.mjs` para excluirlo del CI verde. Los fallos RED son demostraciones del modelo anterior, no ejecución de un reinicio real.
+
+## R2.5 Reversión, riesgos y gate
+
+Cambios: `src/supervisor-control.ts`, `src/server.ts`, `src/supervisor-r2.ts`, `scripts/f0-c10-r2-t04-fault.test.mjs`, `scripts/f0-c10-r2-t04-known-red.red.mjs`, este documento. La nueva rama nace de la integración **no fusionada** #126; ninguna escritura en #120, #125, #126, main, producción ni recursos persistentes.
+
+**Bloqueos no escondidos:** 1) `harness.create({id})` está marcado `@internal`; fijar versión y revalidar al actualizar SDK. 2) `fork` nuevo deshabilitado temporalmente, no se resolvió semántica de fork idempotente. 3) Las transacciones locales no pueden impedir un submit que ya cruzó el límite de E/S cuando cancel se escribió; solo pueden impedir confirmar cancel falsamente. 4) `cancelAmbiguous` no tiene todavía reconciliador de múltiples recibos; tarea puede quedar `unknown` hasta intervención posterior. 5) La confirmación de efectos externos, modelo de costes, lock 60s sin fencing externo y OOM de memoria quedan fuera de este PR. 6) Ningún test sintético prueba comportamiento real bajo tres rondas de 10 activos.
+
+**Reversión:** cerrar draft PR o revertir commits de esta rama, sin desplegar; antes de cualquier despliegue autorizado habría que registrar version/diff/rollback y la compatibilidad del campo `sessionIdPolicy`. Revertir Worker **no restaura** storage de sesiones/turnos.
+
+**Evidencia a completar**: SHA HEAD de PR R2, workflow del mismo SHA, número de pruebas, exit codes RED/GREEN. La documentación del commit de evidencia se interpretará con el CI posterior de su HEAD.
