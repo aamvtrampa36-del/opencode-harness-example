@@ -501,9 +501,19 @@ export class OpenCodeAgent extends DurableObject<Env> {
         return existing;
       }
       const index = (await tx.get<string[]>(indexKey)) ?? [];
-      if (index.length >= TASK_ARTIFACT_MAX_PER_TASK) throw new Error("ARTIFACT_TASK_LIMIT");
+      if (!Array.isArray(index) || index.length > TASK_ARTIFACT_MAX_PER_TASK)
+        throw new Error("ARTIFACT_INDEX_INVALID");
+      const live: string[] = [];
+      const now = Date.now();
+      for (const priorId of index) {
+        const key = artifactKey(id, priorId);
+        const value = await tx.get<StoredTaskArtifact>(key);
+        if (value && artifactIsOwnedBy(value, task, now)) live.push(priorId);
+        else await tx.delete(key); // Opportunistic retention cleanup.
+      }
+      if (live.length >= TASK_ARTIFACT_MAX_PER_TASK) throw new Error("ARTIFACT_TASK_LIMIT");
       await tx.put(idKey, prepared);
-      await tx.put(indexKey, [...index, prepared.artifactId]);
+      await tx.put(indexKey, [...live, prepared.artifactId]);
       return prepared;
     });
     return artifactView(saved);
