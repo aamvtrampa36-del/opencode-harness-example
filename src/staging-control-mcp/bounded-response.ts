@@ -32,6 +32,19 @@ function bounded(value:unknown, budget:Budget,depth:number):unknown {
     return redactMcpString(value);
   }
   if(typeof value!=="object"){budget.truncated=true;return "[valor no serializable]";}
+  // Bytes belong to the authenticated T09 HTTP download, not MCP tools/call.
+  // An ArrayBuffer/Blob may already be allocated by RPC; never enumerate,
+  // coerce or stringify its contents or falsely preserve verified=true.
+  if(ArrayBuffer.isView(value)||value instanceof ArrayBuffer||
+    (typeof Blob!=="undefined"&&value instanceof Blob)){
+    budget.truncated=true;return "[BINARY_PAYLOAD_UNAVAILABLE_OVER_MCP]";
+  }
+  if(!Array.isArray(value)){
+    const prototype=Object.getPrototypeOf(value);
+    if(prototype!==Object.prototype&&prototype!==null){
+      budget.truncated=true;return "[non-plain object omitted]";
+    }
+  }
   if(budget.seen.has(value)){budget.truncated=true;return "[referencia repetida]";}
   budget.seen.add(value);
   if(Array.isArray(value)){
@@ -59,7 +72,7 @@ function bounded(value:unknown, budget:Budget,depth:number):unknown {
 
 /** Returns a small JSON string, or a conservative error record, never a giant
  * full transcript. maxChars is a second-stage OUTPUT cap, not the input budget. */
-export function boundedMcpJsonText(value:unknown,maxChars=16_000,targetWorker?:string):string{
+export function boundedMcpJsonText(value:unknown,maxChars=16_000,targetWorker?:string,supervisorTask=false):string{
   const cap=Number.isSafeInteger(maxChars)&&maxChars>=256?Math.min(maxChars,64_000):16_000;
   const budget:Budget={nodes:0,remainingChars:Math.min(cap,MAX_TOTAL_CHARS),truncated:false,seen:new WeakSet()};
   let payload=bounded(value,budget,0);
@@ -67,6 +80,18 @@ export function boundedMcpJsonText(value:unknown,maxChars=16_000,targetWorker?:s
     payload={result:payload};
   const record=payload as Record<string,unknown>;
   if(targetWorker)record.targetWorker=targetWorker;
+  // MCP task control is a receipt/snapshot, not a native task acceptance
+  // proof. The backend can report finished, but cannot grant "verified".
+  if(supervisorTask){
+    record.passed=false;
+    record.verified=false;
+    record.reviewRequired=true;
+    if(record.status==="not_found"){
+      record.status="unknown";
+      record.nativeResult="not_found";
+      record.error="SUPERVISOR_NATIVE_NOT_FOUND";
+    }
+  }
   if(budget.truncated){
     record._responseTruncated=true;
     record.passed=false;record.verified=false;

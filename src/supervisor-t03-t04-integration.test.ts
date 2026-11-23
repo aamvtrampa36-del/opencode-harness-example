@@ -4,13 +4,13 @@ import {
   reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot,
   supervisorAdmissionAllowsContinuation, hasSupervisorAdmissionSlot,
-  reconcileSupervisorCreatedSession, supervisorCommitCreatedSession,
+  reconcileSupervisorCreatedSession, supervisorCommitCreatedSession, supervisorGrantStillOwned,
   reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
   reconcileSupervisorTurnEffect
 } from "./supervisor-admission";
 import {
   r2SessionId, r2TurnAdmission, r2CancelledByReceipt,
-  r2StatusWriteAllowed, r2PendingTurnReconcileAllowed
+  r2StatusWriteAllowed, r2PendingTurnReconcileAllowed, r3IsNativeSessionNotFound
 } from "./supervisor-r2";
 import { canConfirmSupervisorPreSessionCancellation, type SupervisorTask } from "./supervisor-control";
 
@@ -24,6 +24,14 @@ class FakeDO {
     return value === undefined ? undefined : structuredClone(value) as T;
   }
   async put<T>(key: string, value: T): Promise<void> { this.rows.set(key, structuredClone(value)); }
+  async list<T>(opts: {prefix?:string;limit?:number} = {}):Promise<Map<string,T>> {
+    const entries = [...this.rows.entries()]
+      .filter(([key])=>key.startsWith(opts.prefix ?? ""))
+      .sort(([a],[b])=>a.localeCompare(b))
+      .slice(0,opts.limit ?? Infinity)
+      .map(([key,value])=>[key,structuredClone(value)] as [string,T]);
+    return new Map(entries);
+  }
   async transaction<T>(callback: (tx: FakeDO) => Promise<T>): Promise<T> {
     const previous = this.tail;
     let unlock!: () => void;
@@ -88,7 +96,7 @@ describe("F0-C10/R2-T11 T03 admission + T04 recovery contract (OFFLINE)", () => 
     expect(supervisorAdmissionAllowsContinuation(await supervisorAdmissionSlot(db.asDO(),id(2)))).toBe(false);
     await supervisorConfirmExternalEffect(db.asDO(),g,"submit",{confirmed:true},1104);
     expect(supervisorAdmissionAllowsContinuation(await supervisorAdmissionSlot(db.asDO(),id(2)))).toBe(true);
-    expect(supervisorAdmissionAllowsContinuation(undefined)).toBe(true); // legacy compatibility
+    expect(supervisorAdmissionAllowsContinuation(undefined)).toBe(false); // legacy STOP
     expect(supervisorAdmissionAllowsContinuation(undefined, true)).toBe(false); // T03 managed slot lost
   });
 
@@ -107,7 +115,7 @@ describe("F0-C10/R2-T11 T03 admission + T04 recovery contract (OFFLINE)", () => 
     const oldSlot = await supervisorAdmissionSlot(db.asDO(),id(1));
     expect(oldSlot).toBeUndefined();
     expect(supervisorAdmissionAllowsContinuation(oldSlot,true)).toBe(false);
-    expect(supervisorAdmissionAllowsContinuation(oldSlot,false)).toBe(true);
+    expect(supervisorAdmissionAllowsContinuation(oldSlot,false)).toBe(false);
   });
 
   test("cancellation of a task with active admission slot cannot claim no session effect", async () => {
@@ -286,6 +294,48 @@ describe("F0-C10/R2-T11 T03 admission + T04 recovery contract (OFFLINE)", () => 
     expect((await supervisorAdmissionSlot(db.asDO(),id(71)))?.phase).toBe("effect_unknown");
     expect(await reconcileSupervisorTurnEffect(db.asDO(),id(71),op,{status:"done"})).toBe(true);
     expect((await supervisorAdmissionSlot(db.asDO(),id(71)))?.phase).toBe("running");
+  });
+
+  test("R3 RED/GREEN: late original SDK failure cannot overwrite transferred grant", async () => {
+    const db = new FakeDO();
+    const original = await grant(db, 81), session = r2SessionId(id(81));
+    await supervisorBeginExternalEffect(db.asDO(), original, "session_create", 1_101);
+    const key = "supervisor:task:" + id(81);
+    await db.transaction(async tx => {
+      const task = await tx.get<SupervisorTask>(key);
+      await tx.put(key, { ...task!, sessionCreationAttempted: true });
+    });
+    const before = (await supervisorAdmissionSlot(db.asDO(), id(81)))!;
+    const recovery = await reconcileSupervisorCreatedSession(
+      db.asDO(), id(81), session, before, 1_102);
+    expect(recovery.kind).toBe("recovered");
+    expect(await db.transaction(tx => supervisorGrantStillOwned(tx.asDO() as any, original)))
+      .toBe(false);
+    if (recovery.kind !== "recovered") return;
+    // Mirrors advanceSupervisedTask's guarded catch, with a real transactional
+    // read of the ledger under the original grant.
+    const staleWriter = async () => db.transaction(async tx => {
+      const fresh = await tx.get<SupervisorTask>(key);
+      if (!await supervisorGrantStillOwned(tx.asDO() as any, original)) return fresh;
+      await tx.put(key, { ...fresh!, status: "failed" });
+      return { ...fresh!, status: "failed" };
+    });
+    const settled = await staleWriter();
+    expect(settled?.status).toBe("preparing");
+    expect((await db.get<SupervisorTask>(key))?.session).toBe(session);
+    expect((await db.get<SupervisorTask>(key))?.status).toBe("preparing");
+    expect(await db.transaction(tx => supervisorGrantStillOwned(tx.asDO() as any, recovery.grant)))
+      .toBe(true);
+    await expect(supervisorCommitCreatedSession(db.asDO(), original, session, 1_103))
+      .rejects.toThrow("ADMISSION_FENCE_REJECTED");
+  });
+
+  test("R3 native get classification recognizes exact core/client tags, not transient errors", () => {
+    expect(r3IsNativeSessionNotFound({ _tag: "Session.NotFoundError" })).toBe(true);
+    expect(r3IsNativeSessionNotFound({ _tag: "SessionNotFoundError" })).toBe(true);
+    for (const input of [undefined, new Error("not found"), {status:404},
+      {_tag:"TransientNetworkError"}, {_tag:"not_found"}, {_tag:"Session.NotFoundError2"}])
+      expect(r3IsNativeSessionNotFound(input)).toBe(false);
   });
 
 });

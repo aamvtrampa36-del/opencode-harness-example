@@ -1,0 +1,139 @@
+{
+  "scope": "local Node/Linux (NOT Cloudflare, NOT remote)",
+  "version": "v22.16.0",
+  "fixture": "/mnt/data/r3t06_local/scripts/f0-c10/t06-r3-tree-child.cjs",
+  "cases": [
+    {
+      "name": "tree-grandchild-same-PGID",
+      "pass": true,
+      "exit": 31,
+      "descendantState": "Z"
+    },
+    {
+      "name": "setsid-inherited-pipes-RED",
+      "pass": true,
+      "exit": 125,
+      "descendantActive": true
+    },
+    {
+      "name": "double-fork-setsid-silent-RED",
+      "pass": true,
+      "exit": 0,
+      "descendantActive": true
+    },
+    {
+      "name": "timeout-kill",
+      "pass": true,
+      "exit": 137,
+      "descendantActive": false
+    },
+    {
+      "name": "binary-stderr",
+      "pass": true,
+      "exit": 23,
+      "stdoutBytes": 5,
+      "stderrBytes": 5
+    },
+    {
+      "name": "massive-bounded",
+      "pass": true,
+      "exit": 19,
+      "stdoutBytes": 16777216,
+      "stderrBytes": 16777216,
+      "retainedPerChannel": 32000
+    },
+    {
+      "name": "local-barrier-1",
+      "pass": true,
+      "count": 1,
+      "exitCodes": [
+        0
+      ],
+      "releaseToCompleteMs": 262
+    },
+    {
+      "name": "local-barrier-2",
+      "pass": true,
+      "count": 2,
+      "exitCodes": [
+        0,
+        1
+      ],
+      "releaseToCompleteMs": 273
+    },
+    {
+      "name": "local-barrier-4",
+      "pass": true,
+      "count": 4,
+      "exitCodes": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "releaseToCompleteMs": 273
+    },
+    {
+      "name": "local-barrier-10",
+      "pass": true,
+      "count": 10,
+      "exitCodes": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "releaseToCompleteMs": 279
+    },
+    {
+      "name": "artifact-paths-and-hardlink-RED",
+      "pass": true,
+      "O_NOFOLLOW_symlinkDenied": true,
+      "intermediateSymlinkDenied": true,
+      "hardlinkSameFilesystemLeak": true,
+      "cloudflareFilesystemOverlap": "not tested"
+    },
+    {
+      "name": "local-cgroup-read-only",
+      "pass": true,
+      "writable": false
+    }
+  ],
+  "limits": [
+    "setsid/double-fork descendants intentionally survive root; cleanup done only by fixture",
+    "hardlink escape on same local filesystem; real project Container isolation unverified",
+    "local cgroup introspection cannot certify Cloudflare cgroup delegation",
+    "no Cloudflare Container or Remote execution"
+  ],
+  "metrics": {
+    "rssInitialBytes": 56422400,
+    "rssPeakSampledBytes": 86306816,
+    "heapPeakSampledBytes": 13941232,
+    "elapsedMs": 7708
+  },
+  "cgroup": {
+    "self": "0::/",
+    "mounts": [
+      "cgroup2 cgroup2 rw,nsdelegate"
+    ],
+    "writable": false,
+    "scope": "this local test only; no Cloudflare evidence"
+  },
+  "status": "PASS_WITH_EXPLICIT_RED_LIMITS",
+  "tapiSummary": {
+    "tests": 12,
+    "pass": 12,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0
+  },
+  "evidenceKind": "local-fixture; no Cloudflare",
+  "sourceCommit": "a49e985909cb56bb42c609c9cd5cb4250a620169 (GitHub base); local runner mirror transcribed, exact source tested separately by CI",
+  "runtime": "Node v22.16.0; Linux local; synthetic tempdirs"
+}

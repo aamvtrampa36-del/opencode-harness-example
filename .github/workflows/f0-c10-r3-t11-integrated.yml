@@ -1,0 +1,118 @@
+name: F0-C10 R3-T11 integrated source gate (OFFLINE; NO DEPLOY)
+
+on:
+  push:
+    branches: [f0-c10/r3-t11-integration-20261123]
+  pull_request:
+    branches: [f0-c10/r3-t01-oom-memory-20261123]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: f0-c10-r3-t11-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Exact HEAD attestation
+        env:
+          PIN: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$PIN"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install pinned dependencies (NO PUBLISH)
+        run: bun install --frozen-lockfile
+      - name: Bun full regression T01–T10
+        run: bun test
+      - name: Web static preview
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build both Workers and web (NO DEPLOY)
+        run: bun run build
+      - name: Security invariants
+        run: bun scripts/check-invariants.mjs
+
+  fault-injection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    env:
+      WRANGLER_SEND_METRICS: "false"
+      CLOUDFLARE_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Exact HEAD attestation
+        env:
+          PIN: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$PIN"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install locked SDK and Wrangler
+        run: bun install --frozen-lockfile
+      - name: R3 T01 synthetic OOM RED/GREEN
+        run: node --test scripts/f0-c10/r3-memory-baseline.test.mjs
+      - name: R3 T02 residency synthetic lifecycle
+        run: node --test scripts/f0-c10/r3-t02-lifecycle.test.mjs
+      - name: R3 T04 pinned SDK and disposable local workerd restart
+        run: node scripts/f0-c10/r3-t04-workerd-probe.mjs
+      - name: R3 T04 historical stale writer RED must fail
+        shell: bash
+        run: |
+          set +e
+          node --test scripts/f0-c10/r3-t04-stale-writer.red.mjs >/tmp/stale-red.log 2>&1
+          code=$?
+          set -e
+          test "$code" -eq 1
+          grep -q 'fail 1' /tmp/stale-red.log
+      - name: R3 T06 process trees, EPIPE, hardlink and cgroup STOP cases
+        run: node --experimental-strip-types --test scripts/f0-c10/t06-r3-linux.test.mjs scripts/f0-c10/t06-r3-source-contract.test.mjs
+      - name: R3 T07 durable budget, replays and paid-preflight STOP
+        run: node --experimental-strip-types --test scripts/f0-c10/inference-durable.test.mjs
+
+  e2e-offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Exact HEAD attestation
+        env:
+          PIN: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$PIN"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: R3 T10 attested observer and output negative tests
+        run: node --test scripts/f0-c10/evaluate.test.mjs scripts/f0-c10/live-evidence.test.mjs
+      - name: Historical OOM / forged live / ten-agent synthetic acceptance
+        run: node scripts/f0-c10/run-offline.mjs --suite --out f0-c10-r3-t11-offline.json
+      - name: Assert synthetic results do NOT claim Staging
+        run: node -e "let x=require('./f0-c10-r3-t11-offline.json');if(!x.pass||x.realStagingTested)process.exit(1)"
+      - name: Verify missing trust fails closed (expected exit 2)
+        shell: bash
+        run: |
+          set +e
+          node scripts/f0-c10/verify-live.mjs >/tmp/verify-out.log 2>/tmp/verify-error.log
+          code=$?
+          set -e
+          test "$code" -eq 2
+          grep -q 'FAIL-CLOSED' /tmp/verify-error.log

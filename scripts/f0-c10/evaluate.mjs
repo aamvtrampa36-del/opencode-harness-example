@@ -1,6 +1,7 @@
 import { TASKS, verifyArtifact } from './tasks.mjs';
 import { createHash } from 'node:crypto';
 import { verifyLiveEvidence, digest } from './live-evidence.mjs';
+import { verifyObservedJournal } from './observed-journal.mjs';
 
 // Preset registered BEFORE live sampling. Monetary cap is intentionally unset: no live run
 // is eligible until a measured provider-side spend stop and a run-specific cap are proven.
@@ -59,9 +60,12 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     return { pass: false, failures: [{ code: 'INVALID_TRACE', detail: 'missing tasks/events' }] };
   }
   const { tasks, events } = trace;
+  let journalEvidence = null;
   if (mode === 'live') {
     const attestation = verifyLiveEvidence(trace, trustedKeys, limits);
     for (const issue of attestation.failures) fail(issue.code, issue.detail);
+    journalEvidence = verifyObservedJournal(trace, trustedKeys, limits);
+    for (const issue of journalEvidence.errors) fail(issue.code, issue.detail);
   }
   const size = tasks.length;
   if (![1, 2, 4, 10].includes(size)) fail('INVALID_SIZE', size);
@@ -175,7 +179,8 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
   if (events.some((e) => !ids.has(e.requestId))) fail('UNKNOWN_REQUEST_EVENTS', 'event without declared task');
   if (!trace.metadata?.experimentId || !/^[a-f0-9]{40}$/.test(trace.metadata?.sourceSha || '')) fail('MISSING_EXPERIMENT_SHA', 'attribution not established');
   const overlap = measureOverlap(intervals, size);
-  if (overlap.maxActive !== size || overlap.longestFullMs < limits.minOverlapMs) fail('INSUFFICIENT_REAL_OVERLAP', overlap);
+  const requiredOverlapMs = limits.minOverlapMs + (mode === 'live' ? (journalEvidence?.clockUncertaintyMs ?? Infinity) : 0);
+  if (overlap.maxActive !== size || overlap.longestFullMs < requiredOverlapMs) fail('INSUFFICIENT_REAL_OVERLAP', { ...overlap, requiredOverlapMs });
   if (mode === 'live' && overlap.fullStart !== null) {
     const overlapEnd = overlap.fullStart + overlap.longestFullMs;
     for (const task of tasks) {
@@ -219,6 +224,8 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
       p95DurationMs: percentile(durations, 95), peakIsolateMiB: maxIsolateMiB,
       oom, orphans, unexpectedFailures, bytes, observedActivityIntervals: intervals.length,
       source: mode,
+      verifiedObservationCount: mode === 'live' ? journalEvidence?.witnessedCount ?? 0 : null,
+      clockUncertaintyMs: mode === 'live' ? journalEvidence?.clockUncertaintyMs ?? null : null,
     },
   };
 }

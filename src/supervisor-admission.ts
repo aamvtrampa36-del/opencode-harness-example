@@ -1,4 +1,6 @@
 import { supervisorTaskKey, type SupervisorTask } from "./supervisor-control";
+import { auditLegacyCapacity, type AdmissionCapacityEvidence,
+  type LegacyCapacityStop } from "./supervisor-legacy-capacity";
 import { r2TurnAdmission, r2SessionId, r2TurnJournalKey, r2TerminalNativeReceipt, type R2TurnJournal } from "./supervisor-r2";
 import { scopeStorageKey, type ProjectScope } from "./project-scope";
 
@@ -23,7 +25,7 @@ export type StartGrant = { id: string; token: string; generation: number };
 export type AdmissionDecision =
   | { kind: "granted"; task: SupervisorTask; grant: StartGrant; reused: boolean }
   | { kind: "reused"; task: SupervisorTask; reason: string; slot?: AdmissionSlot }
-  | { kind: "capacity"; reason: "CAPACITY_EXHAUSTED"; retryAfterMs: number };
+  | { kind: "capacity"; reason: "CAPACITY_EXHAUSTED" | LegacyCapacityStop; retryAfterMs: number };
 
 const terminal = (status: SupervisorTask["status"]) =>
   ["finished", "failed", "cancelled", "unanswered"].includes(status);
@@ -86,13 +88,24 @@ export async function reserveSupervisorAdmission(
           reason: slot.phase === "effect_unknown" ? "EFFECT_UNCONFIRMED" :
             slot.phase === "running" ? "ALREADY_RUNNING" : "LEASE_HELD", slot };
       }
-      // A pre-effect reservation can be reclaimed only when its TTL expired.
+      // A pre-effect lease can be reclaimed only when old unmetered work
+      // cannot silently consume more capacity. Check in the SAME transaction.
+      const census = await auditLegacyCapacity(tx, ledger.slots);
+      if (census.stopReason) {
+        if (changed) await tx.put(LEDGER_KEY, ledger);
+        return { kind: "reused" as const, task: old, reason: census.stopReason, slot };
+      }
       // The old owner is fenced by token+generation on every external transition.
       const next = newGrant(candidate.id, slot.generation + 1, now);
       ledger.slots[candidate.id] = next;
       await tx.put(LEDGER_KEY, ledger);
       return { kind: "granted", task: old,
         grant: { id: candidate.id, token: next.token, generation: next.generation }, reused: true };
+    }
+    const census = await auditLegacyCapacity(tx, ledger.slots);
+    if (census.stopReason) {
+      if (changed) await tx.put(LEDGER_KEY, ledger);
+      return {kind:"capacity" as const, reason:census.stopReason, retryAfterMs:0};
     }
     if (Object.keys(ledger.slots).length >= DEFAULT_CAPACITY) {
       if (changed) await tx.put(LEDGER_KEY, ledger);
@@ -196,10 +209,9 @@ export async function reconcileSupervisorSubmittedEffect(
 export function supervisorAdmissionAllowsContinuation(
   slot: AdmissionSlot | undefined, managedByAdmission = false
 ): boolean {
-  // A T03-managed task whose terminal slot was reclaimed must not start
-  // a new turn without re-reserving global capacity. Legacy no-slot tasks
-  // retain previous behavior until migrated under an explicit policy.
-  return slot?.phase === "running" || (slot === undefined && !managedByAdmission);
+  // No new native turn is safe for unmetered legacy (no slot), regardless
+  // of the old status string. T04 may still READ/reconcile prior receipts.
+  return slot?.phase === "running";
 }
 
 /** The bounded authoritative SDK lookup is performed by the caller outside
@@ -244,6 +256,18 @@ export async function reconcileSupervisorCreatedSession(
   });
 }
 
+/** Check a stale caller's original grant INSIDE the same transaction that
+ * would modify the task after any external SDK failure. An earlier GET or a
+ * local lock TTL does not fence a writer after session_create recovery. */
+export async function supervisorGrantStillOwned(
+  tx: Pick<DurableObjectTransaction, "get">, grant: StartGrant
+): Promise<boolean> {
+  const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
+  const slot = ledger.slots[grant.id];
+  return Boolean(slot && slot.token === grant.token &&
+    slot.generation === grant.generation);
+}
+
 /** Original creator must commit its receipt under the exact initial fence.
  * A reconciler transferring ownership makes late creator receipts stale. */
 export async function supervisorCommitCreatedSession(
@@ -281,7 +305,7 @@ export async function supervisorCommitCreatedSession(
 export type TurnReservation =
   | { kind: "submit"; task: SupervisorTask; journal: R2TurnJournal }
   | { kind: "existing"; task: SupervisorTask; journal: R2TurnJournal }
-  | { kind: "capacity"; reason: "CAPACITY_EXHAUSTED"; retryAfterMs: number };
+  | { kind: "capacity"; reason: "CAPACITY_EXHAUSTED" | LegacyCapacityStop; retryAfterMs: number };
 
 /** Reserve capacity and a continuation intent in ONE DO transaction.
  * No turn RPC is allowed between a separate capacity preflight and journal.
@@ -304,11 +328,18 @@ export async function reserveSupervisorContinuation(
     // Once a native call could have escaped, *any* duplicate HTTP request
     // returns a receipt for reconciliation, never replays the side effect.
     if (previous) return {kind:"existing" as const, task, journal:previous};
+    // Preserve legacy journals without allowing another native submit.
+    if (task.sessionIdPolicy !== "deterministic-v1")
+      throw Error("SUPERVISOR_LEGACY_QUARANTINED");
     const decision = r2TurnAdmission(task, operationId);
     if (decision === "denied") throw Error("SUPERVISOR_TURN_DENIED_TERMINAL_OR_CANCEL");
     if (decision === "busy") throw Error("SUPERVISOR_TURN_IN_FLIGHT");
     if (task.sessionIdPolicy === "deterministic-v1") {
       const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
+      const census = await auditLegacyCapacity(tx, ledger.slots);
+      if (census.stopReason) {
+        return {kind:"capacity" as const,reason:census.stopReason,retryAfterMs:0};
+      }
       // Bounded at ten slots. Only terminal records with *confirmed* no
       // in-flight effect are released. Never reclaim effect_unknown on TTL.
       for (const [owner, slot] of Object.entries(ledger.slots)) {
@@ -407,4 +438,14 @@ export async function reconcileSupervisorTurnEffect(
   slot.phase="running";slot.effect=undefined;
   await tx.put(LEDGER_KEY,ledger);
   return true;
+}
+
+/** Bounded status-only evidence: not a native execution metric. */
+export async function inspectSupervisorAdmissionCapacity(
+  storage: DurableObjectStorage
+): Promise<AdmissionCapacityEvidence> {
+  return storage.transaction(async tx => {
+    const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
+    return auditLegacyCapacity(tx, ledger.slots);
+  });
 }

@@ -2,9 +2,9 @@ name: OpenCode validation
 
 on:
   push:
-    branches: [feat/staging-conversation-markdown-export-20261111, feat/staging-supervisor-control-20261111, feat/opencode-staging-base-20261112, feat/opencode-staging-mcp-final-20261118, staging/opencode-g1-20261118, fix/opencode-rpc-compatible-triage-20261120, staging/opencode-g1-rpc-safe-20261120]
+    branches: [feat/staging-conversation-markdown-export-20261111, feat/staging-supervisor-control-20261111, feat/opencode-staging-base-20261112, feat/opencode-staging-mcp-final-20261118, staging/opencode-g1-20261118, fix/opencode-rpc-compatible-triage-20261120, staging/opencode-g1-rpc-safe-20261120, f0-c10/r3-t11-integration-20261123]
   pull_request:
-    branches: [main, staging/opencode-g1-20261118, staging/opencode-g1-rpc-safe-20261120, f0-c10/t11-integration-20261122]
+    branches: [main, staging/opencode-g1-20261118, staging/opencode-g1-rpc-safe-20261120, f0-c10/t11-integration-20261122, f0-c10/r3-t01-oom-memory-20261123]
   workflow_dispatch:
 
 permissions:

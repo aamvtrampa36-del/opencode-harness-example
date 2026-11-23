@@ -13,10 +13,12 @@ const branchA = "opencode/synthetic-a", branchB = "opencode/synthetic-b";
 class MemoryGate implements GitHubPrPublicationGate {
   private tails = new Map<string, Promise<void>>();
   private unknown = new Map<string, string>();
+  private proofs = new Map<string, {baseSha:string; headSha:string}>();
   private generation = 0;
   invalidateOnBegin = false;
   async withExclusive<T>(intent: GitHubPrPublicationScope, fn: (permit: {
-    fencingToken: string; retryOnly: boolean; beginExternalEffect(): Promise<void>
+    fencingToken: string; retryOnly: boolean; expectedProof?: {baseSha:string;headSha:string};
+    beginExternalEffect(proof:{baseSha:string;headSha:string}): Promise<void>
   }) => Promise<T>): Promise<T> {
     const scope = intent.repo + "\n" + intent.base;
     const intentKey = JSON.stringify(intent);
@@ -35,12 +37,13 @@ class MemoryGate implements GitHubPrPublicationGate {
     const retryOnly = unknown === intentKey;
     try {
       const result = await fn({
-        fencingToken: token, retryOnly,
-        beginExternalEffect: async () => {
+        fencingToken: token, retryOnly, expectedProof: this.proofs.get(scope),
+        beginExternalEffect: async proof => {
           if (retryOnly) throw Error("PR_PUBLISH_UNKNOWN");
           if (this.invalidateOnBegin) throw Error("PR_FENCE_STALE");
           begun = true; // model of a durable journal *before* external POST
           this.unknown.set(scope, intentKey);
+          this.proofs.set(scope, proof);
         }
       });
       this.unknown.delete(scope);
@@ -90,7 +93,8 @@ function server(options: { samePath?: boolean; loseFirstPost?: boolean; moveHead
         title: body.title, body: body.body, draft: true });
       if (options.loseFirstPost && posts === 1)
         return Response.json({ message: "response lost after successful POST" }, { status: 503 });
-      return Response.json({ number, html_url: opened.at(-1).html_url, draft: true }, { status: 201 });
+      return Response.json({ number, html_url: opened.at(-1).html_url, draft: true,
+        head: {ref:body.head,sha:A}, base: {ref:body.base,sha:B} }, { status: 201 });
     }
     return Response.json({ message: "unexpected route " + method + " " + path }, { status: 404 });
   }) as typeof fetch;

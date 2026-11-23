@@ -17,15 +17,16 @@ import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
 import { collectSupervisorDirectory, supervisorTaskCount } from "./supervisor-directory";
 import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
-import { projectSupervisorProgress } from "./supervisor-progress";
+// Progress is read from the bounded supervisor ledger, never raw SDK log().
+import { requireMeteredDiagnosticAdmission } from "./supervisor-legacy-capacity";
 import {
   reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot,
   hasSupervisorAdmissionSlot, supervisorAdmissionAllowsContinuation,
   reconcileSupervisorCreatedSession, supervisorCommitCreatedSession,
   reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
-  reconcileSupervisorTurnEffect,
-  reconcileSupervisorSubmittedEffect, type StartGrant
+  reconcileSupervisorTurnEffect, inspectSupervisorAdmissionCapacity,
+  reconcileSupervisorSubmittedEffect, supervisorGrantStillOwned, type StartGrant
 } from "./supervisor-admission";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
@@ -77,7 +78,7 @@ import { createSupervisorMemoryProbe, type PhaseProbe } from "./supervisor-phase
 
 import { r2SessionId, r2TurnJournalKey, r2TurnAdmission,
   r2CancelledByReceipt, r2StatusWriteAllowed, r2TerminalNativeReceipt,
-  r2PendingTurnReconcileAllowed, type R2TurnJournal } from "./supervisor-r2";
+  r2PendingTurnReconcileAllowed, r3IsNativeSessionNotFound, type R2TurnJournal } from "./supervisor-r2";
 
 export const MODEL_ID = MODEL_PRESETS.cloudflare.id;
 
@@ -146,7 +147,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const admission = await trace.run("admission", "reserve", () =>
       reserveSupervisorAdmission(this.ctx.storage, job));
     if (admission.kind === "capacity") {
-      return { id: start.requestId, accepted: false, status: "capacity_rejected",
+      return { id: start.requestId, accepted: false,
+        status: admission.reason === "CAPACITY_EXHAUSTED" ? "capacity_rejected" : "admission_stopped",
+        stop: admission.reason !== "CAPACITY_EXHAUSTED",
         reason: admission.reason, retryAfterMs: admission.retryAfterMs, capacity: 10 };
     }
     if (admission.kind === "reused") {
@@ -170,9 +173,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
             } catch (error) {
               // The pinned embedded SDK returns a tagged not-found;
               // *other* errors never prove absence and never trigger create.
-              if (error && typeof error === "object" &&
-                  "_tag" in error && error._tag === "SessionNotFoundError")
-                return false;
+              if (r3IsNativeSessionNotFound(error)) return false;
               throw error;
             }
           }));
@@ -331,6 +332,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
       job = await this.ctx.storage.transaction(async tx => {
         const fresh = await tx.get<SupervisorTask>(key);
         if (!fresh) throw new Error("SUPERVISOR_TASK_MISSING_AFTER_FAILURE");
+        // A positive exact-ID GET may transfer token+generation while the
+        // original native create call is still in flight. Its later SDK
+        // failure must NOT write 'failed' on the new owner's task.
+        if (!await supervisorGrantStillOwned(tx, grant)) return fresh;
         if (fresh.status === "cancel_requested" || fresh.status === "cancelled" ||
             fresh.pendingTurn || (fresh.operationId && fresh.operationId !== job.operationId))
           return fresh;
@@ -403,8 +408,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
       prefix: "supervisor:task:", limit: 101
     });
     const count = supervisorTaskCount(index, 100);
+    const admissionCapacity = await inspectSupervisorAdmissionCapacity(this.ctx.storage);
     return {
       environment: "staging", worker: "opencode-g1-staging", ready: true,
+      admissionCapacity,
       schema: "opencode.staging-control.v2",
       supervisedSessions: count.supervisedSessions,
       supervisedCountComplete: count.countComplete,
@@ -529,7 +536,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const reservation = await trace.run("admission", "reserve", () =>
       reserveSupervisorContinuation(this.ctx.storage, id, turnId, hash, operationId));
     if (reservation.kind === "capacity") {
-      return { taskId: id, accepted: false, status: "capacity_rejected",
+      return { taskId: id, accepted: false,
+        status: reservation.reason === "CAPACITY_EXHAUSTED" ? "capacity_rejected" : "admission_stopped",
+        stop: reservation.reason !== "CAPACITY_EXHAUSTED",
         reason: reservation.reason, retryAfterMs: reservation.retryAfterMs };
     }
     if (reservation.kind === "existing") {
@@ -578,13 +587,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
         branch: task.branch, baseCommit: task.baseCommit, session: task.session,
         operationId: task.operationId, model: task.model,
         startedAt: task.createdAt, updatedAt: task.updatedAt,
-        status: task.status, error: task.error,
+        status: task.status, error: task.error?.slice(0, 200),
         snapshot: true, source: "supervisor-task-ledger",
         reviewRequired: true, passed: false, verified: false
       },
       snapshot: true, transcriptAvailable: false,
       transcriptError: SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED,
-      progressAvailableViaCursor: true, reviewRequired: true
+      progressAvailableViaCursor: false,
+      progressError: "SUPERVISOR_PROGRESS_UNAVAILABLE_UNBOUNDED_SDK",
+      reviewRequired: true
     };
   }
 
@@ -697,7 +708,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
   /** A bounded manifest: no transcript, raw paths, stored bytes or credentials. */
   async supervisedTaskArtifacts(id: string): Promise<unknown> {
     const task = await this.scopedArtifactTask(id);
-    const status = await this.supervisedTaskStatus(id) as { status?: string; operationId?: string };
+    // Artifact manifest GET must not reconcile an operation or inspect SDK logs.
+    const status = await this.remoteSupervisorTaskStatusSnapshot(id) as { status?: string; operationId?: string };
     const index = (await this.ctx.storage.get<string[]>(artifactIndexKey(id))) ?? [];
     if (!Array.isArray(index) || index.length > TASK_ARTIFACT_MAX_PER_TASK) {
       throw new Error("ARTIFACT_INDEX_INVALID");
@@ -732,6 +744,27 @@ export class OpenCodeAgent extends DurableObject<Env> {
         !artifactIsOwnedBy(record, task)) return artifactErrorResponse("ARTIFACT_NOT_FOUND", 404);
     return await trace.run("cleanup", "artifactVerify", () => verifiedArtifactDownload(record));
   }
+
+  async remoteSupervisorTaskStatusSnapshot(id: string): Promise<unknown> {
+    this.assertStagingRemote();
+    if (!/^[a-f0-9]{16}$/.test(id)) throw new Error("SUPERVISOR_TASK_ID_INVALID");
+    const task = await this.supervisedRecord(id);
+    const slot = await supervisorAdmissionSlot(this.ctx.storage, id);
+    return {
+      id: task.id, repository: task.repository, project: task.project,
+      branch: task.branch, session: task.session, operationId: task.operationId,
+      status: task.status, recordedStatus: task.status, error: task.error?.slice(0, 200),
+      updatedAt: task.updatedAt, asOf: task.updatedAt, source: "supervisor-task-ledger",
+      admissionState: slot?.phase ?? "legacy_or_released",
+      ...(slot?.effect ? { admissionEffect: slot.effect } : {}),
+      snapshot: true, nativeReconciled: false,
+      pendingTurn: Boolean(task.pendingTurn),
+      cancelAmbiguous: Boolean(task.cancelAmbiguous),
+      toolCalls: null, toolCountsComplete: false,
+      reviewRequired: true, passed: false, verified: false
+    };
+  }
+
 
   async supervisedTaskStatus(id: string): Promise<unknown> {
     this.assertStagingRemote();
@@ -852,7 +885,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       completedTools: toolCounts?.completedTools ?? null,
       failedTools: toolCounts?.failedTools ?? null,
       toolCountsComplete, toolCountsError, reviewRequired: true,
-      operationReason: reconciled.operationId === job.operationId ? operation?.reason : undefined,
+      operationReason: reconciled.operationId === job.operationId ? operation?.reason?.slice(0, 240) : undefined,
       operationAnswerAvailable: reconciled.operationId === job.operationId && Boolean(operation?.text),
       waitError: reconciled.operationId === job.operationId ? waitError : "STALE_OPERATION_CURSOR",
       passed: false, verified: false };
@@ -860,16 +893,22 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   async remoteSupervisorProgress(id: string, after = 0): Promise<unknown> {
     this.assertStagingRemote();
-    const trace = this.phaseProbe();
-    if (!Number.isSafeInteger(after) || after < 0) throw new Error("Cursor de eventos inválido");
-    const task = await this.supervisedRecord(id);
-    if (!task.session) return { taskId: id, events: [], nextAfter: after,
-      status: task.status, truncated: false, gapDetected: false, scanned: 0 };
-    // Reads at most 128 raw records; filtered reasoning records also advance
-    // the durable cursor. No history() call or post-hoc transcript slicing.
-    const page = await trace.run("status", "progress", () => projectSupervisorProgress(
-      this.harness.session(task.session!).log({ after, follow: false }), after));
-    return { taskId: id, session: task.session, status: task.status, ...page };
+    if (!Number.isSafeInteger(after) || after < 0)
+      throw new Error("SUPERVISOR_PROGRESS_CURSOR_INVALID");
+    const snapshot = await this.remoteSupervisorTaskStatusSnapshot(id) as {
+      status: string; session?: string; operationId?: string;
+      admissionState?: string; admissionEffect?: string; updatedAt?: number;
+    };
+    return {
+      taskId: id, session: snapshot.session, operationId: snapshot.operationId,
+      status: snapshot.status, admissionState: snapshot.admissionState,
+      admissionEffect: snapshot.admissionEffect, asOf: snapshot.updatedAt,
+      source: "supervisor-task-ledger", snapshot: true,
+      events: [], nextAfter: after, truncated: true, gapDetected: false,
+      scanned: 0, pageAvailable: false, complete: false,
+      error: "SUPERVISOR_PROGRESS_UNAVAILABLE_UNBOUNDED_SDK",
+      reviewRequired: true, passed: false, verified: false
+    };
   }
 
   async cancelSupervisedTask(id: string): Promise<unknown> {
@@ -1185,6 +1224,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
    * Repeated clicks reuse the saved attempt rather than spending more tokens.
    */
   async startG8LiveReview(): Promise<{ status: string; message?: string }> {
+    // Legacy G8 creates two sessions without T03 slots; disable only on Staging.
+    requireMeteredDiagnosticAdmission(
+      (this.env as Env & { OPENCODE_SUPERVISOR_ENABLED?: string }).OPENCODE_SUPERVISOR_ENABLED === "true");
     const existing = await this.ctx.storage.get<G8LiveCheck>("g8-live-agent-v1");
     if (existing?.version === G8_LIVE_CHECK_VERSION) {
       return { status: "existing", message: "La prueba G8 ya fue iniciada. Consulta su resultado." };
@@ -1278,6 +1320,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
    * credit for a subsequent GitHub source edit and draft PR.
    */
   async startG9SelfDev(): Promise<{status:string;reason?:string;session?:string}> {
+    // G9 has side effects before writing its own state: no unmetered start.
+    requireMeteredDiagnosticAdmission(
+      (this.env as Env & { OPENCODE_SUPERVISOR_ENABLED?: string }).OPENCODE_SUPERVISOR_ENABLED === "true");
     const allowed = await this.personalConfig.getAllowedRepositories();
     if (!allowed.some(name => name.toLowerCase() === G9_REPO.toLowerCase())) {
       return {status:"rejected",reason:"Autoriza el repositorio OpenCode Cloud en Configuración de GitHub."};
@@ -1493,6 +1538,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
   /** Explicit owner-initiated real-model/tool test, never a recurring cron. */
   async startAgentCheck(model: unknown = "cloudflare", kind: unknown = "repair", scope?: "openrouter"): Promise<{ status: string; session?: string; project?: string; model?: string; kind?: string; providerID?: string; providerModel?: string; message?: string }> {
+    // Both MCP and /api/dev/agent-check (including custom workspace) can
+    // create real sessions bypassing the supervisor ledger. Fail closed on Staging.
+    requireMeteredDiagnosticAdmission(
+      (this.env as Env & { OPENCODE_SUPERVISOR_ENABLED?: string }).OPENCODE_SUPERVISOR_ENABLED === "true");
     if (!isAgentCheckModel(model)) {
       return { status: "rejected", message: "Solo se permiten modelos económicos en la autoprueba." };
     }
