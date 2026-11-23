@@ -31,7 +31,8 @@ import { assertOpenRouterImageModel, generateOpenRouterImage, getOpenRouterImage
 import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import { GitHubBridge } from "./github";
 import { r2SessionId, r2TurnJournalKey, r2TurnAdmission, r2CancelledByReceipt,
-  r2StatusWriteAllowed, r2TerminalNativeReceipt, type R2TurnJournal } from "./supervisor-r2";
+  r2StatusWriteAllowed, r2TerminalNativeReceipt,
+  r2PendingTurnReconcileAllowed, type R2TurnJournal } from "./supervisor-r2";
 import { verifyG8Proofs, G8_PROOFS } from "./g8-smoke";
 import { assessG8LiveHistory, g8LivePrompt, G8_LIVE_CHECK_VERSION, type G8LiveCheck } from "./g8-live-agent";
 import { G9_PROOF_VERSION, G9_REPO, G9_BRANCH, G9_PROJECT, G9_SOURCE, G9_TEST_PATH, G9_BROKEN, G9_FIXED, G9_TEST_SOURCE, assessG9History, g9AgentPrompt, assertG9BoundGitHubOperation, type G9ProofState } from "./g9-selfdev";
@@ -593,7 +594,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const reconciled = await this.ctx.storage.transaction(async tx => {
       const fresh = await tx.get<SupervisorTask>(supervisorTaskKey(id));
       if (!fresh) throw new Error("Tarea del supervisor inexistente");
-      if (!r2StatusWriteAllowed(fresh, job.operationId)) return fresh;
+      if (!job.operationId || fresh.operationId !== job.operationId ||
+          fresh.status === "cancelled") return fresh;
       // Persist an authentic SDK terminal receipt with the turn journal.
       // not_found and timeouts are explicitly NOT settled outcomes.
       const turnPrefix = "rc-turn-" + id + "-";
@@ -609,17 +611,21 @@ export class OpenCodeAgent extends DurableObject<Env> {
           }
         }
       }
-      let status = classifySupervisorOperation(fresh, busy, operation);
+      const settlePending = r2PendingTurnReconcileAllowed(fresh, job.operationId, operation);
+      if (fresh.pendingTurn && !settlePending) return fresh;
+      if (!settlePending && !r2StatusWriteAllowed(fresh, job.operationId)) return fresh;
+      const state = settlePending ? { ...fresh, pendingTurn: undefined } : fresh;
+      let status = classifySupervisorOperation(state, busy, operation);
       if (status === "cancelled" &&
-          (!r2CancelledByReceipt(fresh, job.operationId!, operation) || fresh.cancelAmbiguous)) {
+          (!r2CancelledByReceipt(state, job.operationId, operation) || state.cancelAmbiguous)) {
         status = "unknown"; // no false terminal for an ambiguous concurrent steer
       }
-      if (fresh.cancelAmbiguous && status === "finished") status = "unknown";
+      if (state.cancelAmbiguous && status === "finished") status = "unknown";
       const nextError = operation?.status === "unanswered"
         ? operation.reason?.slice(0, 240)
-        : operation?.status === "done" ? undefined : fresh.error;
-      if (status === fresh.status && nextError === fresh.error) return fresh;
-      const next: SupervisorTask = { ...fresh, status, error: nextError,
+        : operation?.status === "done" ? undefined : state.error;
+      if (!settlePending && status === state.status && nextError === state.error) return fresh;
+      const next: SupervisorTask = { ...state, status, error: nextError,
         revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
       await tx.put(supervisorTaskKey(id), next);
       return next;
@@ -692,7 +698,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         return { kind: "terminal" as const, task: fresh };
       if (!fresh.session || !fresh.operationId) {
         const uncertain: SupervisorTask = { ...fresh, status: "unknown",
-          error: "SUPERVISOR_OPERATION_ID_UNCONFIRMED",
+          error: "OpenCode operation id missing",
           revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
         await tx.put(supervisorTaskKey(id), uncertain);
         return { kind: "uncertain" as const, task: uncertain };
