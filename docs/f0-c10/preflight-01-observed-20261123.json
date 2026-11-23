@@ -1,0 +1,105 @@
+{
+  "schema": "f0-c10.preflight-readonly.v1",
+  "evidenceClass": "read_only_connector_snapshot",
+  "observedDate": "2026-11-23",
+  "collection": "Authenticated GitHub, Cloudflare API and OpenCode Remote read-only calls; unsigned snapshots, no live effects",
+  "source": {
+    "repository": "aamvtrampa36-del/opencode-harness-example",
+    "candidatePr": 157,
+    "candidateSha": "304145eca71a5ffcf6d9c235e67a8065718c6ae5",
+    "ci": [
+      {
+        "runId": 45115974272,
+        "headSha": "304145eca71a5ffcf6d9c235e67a8065718c6ae5",
+        "status": "completed",
+        "conclusion": "success",
+        "kind": "Bun/preview/typecheck/both Workers/web/invariants"
+      },
+      {
+        "runId": 45115974218,
+        "headSha": "304145eca71a5ffcf6d9c235e67a8065718c6ae5",
+        "status": "completed",
+        "conclusion": "success",
+        "kind": "R3-T11 source/faults/offline-e2e"
+      }
+    ]
+  },
+  "cloudflare": {
+    "deployments": {
+      "principal": {
+        "script": "opencode-g1-staging",
+        "deploymentId": "36ef84b3-0f99-4dd4-ab8e-c11ee450dd23",
+        "versionId": "3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb",
+        "percentage": 100
+      },
+      "mcp": {
+        "script": "opencode-staging-control-mcp",
+        "deploymentId": "9fdaf22d-beeb-44a0-ab68-77ecd5745fa1",
+        "versionId": "196240c0-1052-47b3-aaa7-02cf5baa87f0",
+        "percentage": 100
+      }
+    },
+    "aiGateway": {
+      "id": "default",
+      "legacySpendingLimitEnabled": false,
+      "legacyApiDeprecated": true,
+      "rateLimit": null,
+      "spendRulesIndependentVerification": false
+    },
+    "modelRoutes": {
+      "workersAIBindingConfigured": true,
+      "openRouterConfigured": true,
+      "nonGatewayBypassExcluded": false
+    },
+    "tracing": {
+      "principal": false,
+      "mcp": false,
+      "logsEnabled": true
+    },
+    "containers": {
+      "reportedInstantaneousInstances": 0,
+      "reportedInstantaneousVcpus": 0,
+      "isolatedOwnerAndHardBudgetProven": false
+    },
+    "workers": {
+      "principalCompatibilityDate": "2026-06-11",
+      "mcpCompatibilityDate": "2026-11-17",
+      "durableObjectBindingsPresent": true,
+      "rollbackStorageIndependent": true
+    }
+  },
+  "remote": {
+    "ready": true,
+    "supervisedCountAtLeast": 96,
+    "supervisedCountComplete": false,
+    "activelyConcurrentVerified": false
+  },
+  "r3": {
+    "legacyFailClosedCode": true,
+    "disposableWorkerdTestsPassed": true,
+    "fullProductionOomRootCauseVerified": false,
+    "detachedProcessesCleanedInContainer": false,
+    "artifactPrincipalACLVerified": false,
+    "androidRealReadbackVerified": false,
+    "externalSignedRuntimeObserver": false
+  },
+  "controls": {
+    "workerSourceBundleDigestAttested": false,
+    "mcpSourceBundleDigestAttested": false,
+    "assetsAndBindingsAttested": false,
+    "exclusiveFencedIsolatedLeaseAttested": false,
+    "legacyNativeOperationsCensused": false,
+    "actualMemoryHeadroomMeasured": false,
+    "sdkInferenceInterceptorVerified": false,
+    "allSixServiceCutoffsAttested": false,
+    "principalAuthorizationProven": false,
+    "independentSignedCollectorVerified": false,
+    "workerDoContainerRollbackDrilled": false
+  },
+  "recordingNotes": [
+    "No account identifiers, payment details, API keys, prompts, task identifiers or user data are stored",
+    "Snapshot reflects a read-only point-in-time sample; it does not prove absence of background instances",
+    "Cloudflare legacy AI Gateway spending-limit endpoint is deprecated; its disabled state is not a complete inventory of modern gateway spend-limit rules",
+    "100 percent version routing is not a digest-level source-to-binary attestation"
+  ]
+}
