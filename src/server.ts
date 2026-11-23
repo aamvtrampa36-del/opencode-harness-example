@@ -109,6 +109,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (old && ["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(old.status)) {
       return this.supervisorTaskReceipt(old, true);
     }
+    if (!old && start.sourceSession) {
+      // Pinned Harness create({id}) is idempotent; fork(from) has no caller ID.
+      // Reject unsupported new forks before durable reservation or any external effect.
+      throw new Error("SUPERVISOR_FORK_IDEMPOTENCY_UNSUPPORTED");
+    }
     if (!old) {
       const selection = start.model ?? "economy";
       const model = resolveModelSelection(selection);
@@ -121,7 +126,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       id: start.requestId, repository: start.repository,
       project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId, start.repository),
       fingerprint, createdAt: old?.createdAt ?? Date.now(), status: "preparing",
-      sessionCreationAttempted: false,
+      sessionCreationAttempted: false, sessionIdPolicy: "deterministic-v1", revision: 0,
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
     const admission = await reserveSupervisorAdmission(this.ctx.storage, job);
@@ -139,7 +144,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return this.withSupervisorStartLock(start.requestId, async () => {
       const saved = await this.ctx.storage.get<SupervisorTask>(key);
       if (!saved) throw new Error("La reserva de la tarea desapareció");
-      if (["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(saved.status)) {
+      if (["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(saved.status) ||
+          saved.pendingTurn || (saved.operationId &&
+          saved.operationId !== supervisorStartOperationId(saved.id))) {
+        // Replaying requestId may never resubmit the initial prompt after a turn.
         return this.supervisorTaskReceipt(saved, true);
       }
       return this.advanceSupervisedTask(saved, start, reused, admission.grant);
@@ -191,34 +199,38 @@ export class OpenCodeAgent extends DurableObject<Env> {
         await this.ctx.storage.put(key, job);
       }
       if (!job.session) {
-        // create/fork has no caller-supplied idempotency key. An interrupted
-        // response can hide a successfully created session; never blindly replay.
-        if (supervisorSessionCreationDisposition(job) !== "create") {
+        if (job.sessionIdPolicy !== "deterministic-v1" || start.sourceSession ||
+            supervisorSessionCreationDisposition(job) !== "create") {
+          // Legacy random-id and interrupted fork effects are never replayed.
           job.status = "unknown";
-          job.error = "SUPERVISOR_SESSION_CREATION_UNCONFIRMED";
+          job.error = "SUPERVISOR_LEGACY_OR_SESSION_CREATION_UNCONFIRMED";
           job.updatedAt = Date.now();
           await this.ctx.storage.put(key, job);
           return this.supervisorTaskReceipt(job, reused);
         }
-        if (start.sourceSession) {
-          const exists = (await this.harness.sessions.list()).some(item => item.id === start.sourceSession);
-          if (!exists) throw new Error("La sesión de origen ya no existe en este workspace");
-        }
+        // T03 writes a fenced intent before the external effect. The ID is
+        // derived solely from the immutable task ID; a lost SDK reply cannot
+        // generate another random session. Never release an ambiguous lease.
+        const sessionId = r2SessionId(job.id);
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "session_create");
         job.sessionCreationAttempted = true;
         job.updatedAt = Date.now();
         await this.ctx.storage.put(key, job);
-        const created = start.sourceSession
-          ? await this.harness.sessions.fork(start.sourceSession)
-          : await this.harness.sessions.create();
-        // Persist receipt before releasing the effect fence.
-        job.session = created.id;
+        const createdId = await this.harness.create({ id: sessionId });
+        if (createdId !== sessionId) throw new Error("SUPERVISOR_SESSION_ID_MISMATCH");
+        job.session = sessionId;
         job.updatedAt = Date.now();
         await this.ctx.storage.put(key, job);
         await supervisorConfirmExternalEffect(this.ctx.storage, grant, "session_create", { confirmed: true });
-        await this.bindSessionScope(created.id, { project: job.project, repository: job.repository });
-        // The model may not create a second branch, or write outside its branch.
-        await this.ctx.storage.put("supervisor:session:" + created.id, job.id);
+        await this.bindSessionScope(sessionId, { project: job.project, repository: job.repository });
+        await this.ctx.storage.put("supervisor:session:" + sessionId, job.id);
+      }
+      // A lost reply may interrupt a prior bind. Rechecking the same-scope
+      // mapping is safe; it must never widen a session's project permissions.
+      if (job.sessionIdPolicy === "deterministic-v1") {
+        await this.bindSessionScope(job.session!, {
+          project: job.project, repository: job.repository
+        });
       }
       await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
       const handle = this.harness.session(job.session!);
