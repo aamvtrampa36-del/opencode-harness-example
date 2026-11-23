@@ -1,0 +1,14 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "r3-t04-disposable-workerd-test-only",
+  "main": "./r3-t04-workerd.ts",
+  "compatibility_date": "2026-06-11",
+  "compatibility_flags": ["nodejs_compat", "durable_object_io_tasks_prevent_eviction"],
+  "durable_objects": {
+    "bindings": [{ "name": "R3_LAB", "class_name": "R3RecoveryLab" }]
+  },
+  "migrations": [
+    { "tag": "r3-t04-local-fixture-v1", "new_sqlite_classes": ["R3RecoveryLab"] }
+  ],
+  "observability": { "enabled": false }
+}

@@ -244,6 +244,18 @@ export async function reconcileSupervisorCreatedSession(
   });
 }
 
+/** Check a stale caller's original grant INSIDE the same transaction that
+ * would modify the task after any external SDK failure. An earlier GET or a
+ * local lock TTL does not fence a writer after session_create recovery. */
+export async function supervisorGrantStillOwned(
+  tx: Pick<DurableObjectTransaction, "get">, grant: StartGrant
+): Promise<boolean> {
+  const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
+  const slot = ledger.slots[grant.id];
+  return Boolean(slot && slot.token === grant.token &&
+    slot.generation === grant.generation);
+}
+
 /** Original creator must commit its receipt under the exact initial fence.
  * A reconciler transferring ownership makes late creator receipts stale. */
 export async function supervisorCommitCreatedSession(

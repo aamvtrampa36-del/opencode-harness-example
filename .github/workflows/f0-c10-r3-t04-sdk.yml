@@ -1,0 +1,65 @@
+name: F0-C10 R3 T04 SDK recovery (LOCAL, NO DEPLOY)
+
+on:
+  pull_request:
+    branches: [docs/f0-c10-r3-docs-20261123]
+    paths:
+      - 'src/supervisor-admission.ts'
+      - 'src/supervisor-r2.ts'
+      - 'src/server.ts'
+      - 'src/supervisor-t03-t04-integration.test.ts'
+      - 'scripts/f0-c10/r3-t04-*'
+      - 'docs/f0-c10/04_RECUPERACION.md'
+      - '.github/workflows/f0-c10-r3-t04-sdk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sdk-recovery-local:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    env:
+      WRANGLER_SEND_METRICS: "false"
+      CLOUDFLARE_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert HEAD matches PR ref
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned dependencies
+        run: bun install --frozen-lockfile
+      - name: RED control (historical stale writer must fail as expected)
+        shell: bash
+        run: |
+          set +e
+          node --test scripts/f0-c10/r3-t04-stale-writer.red.mjs > /tmp/r3-t04-red.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/r3-t04-red.log
+          test "$status" -eq 1
+          grep -q 'fail 1' /tmp/r3-t04-red.log
+      - name: Native SDK + local workerd SQLite restart and fencing (NO INFERENCE)
+        run: node scripts/f0-c10/r3-t04-workerd-probe.mjs
+      - name: Real T03/T04 helpers in synthetic transaction races
+        run: bun test src/supervisor-t03-t04-integration.test.ts src/supervisor-admission.test.ts
+      - name: Full Bun suite
+        run: bun test
+      - name: Static preview regression
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build both Workers and web client (NO DEPLOY)
+        run: bun run build
+      - name: Security and project invariants
+        run: bun scripts/check-invariants.mjs
