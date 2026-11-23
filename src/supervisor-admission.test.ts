@@ -27,6 +27,15 @@ class DurableFake {
   async get<T>(key: string): Promise<T | undefined> { return this.rows.get(key) as T | undefined; }
   async put<T>(key: string, value: T): Promise<void> { this.rows.set(key, structuredClone(value)); }
   async delete(key: string) { return this.rows.delete(key); }
+  async list<T>(opts: {prefix?:string;limit?:number} = {}):Promise<Map<string,T>> {
+    const entries = [...this.rows.entries()]
+      .filter(([key])=>key.startsWith(opts.prefix ?? ""))
+      .sort(([a],[b])=>a.localeCompare(b))
+      .slice(0,opts.limit ?? Infinity)
+      .map(([key,value])=>[key,structuredClone(value)] as [string,T]);
+    return new Map(entries);
+  }
+
   snapshot() { return structuredClone([...this.rows]); }
   restore(snapshot: [string, unknown][]) { this.rows = new Map(structuredClone(snapshot)); }
   asDO() { return this as unknown as DurableObjectStorage; }
@@ -35,7 +44,7 @@ const id = (n: number) => n.toString(16).padStart(16, "0");
 const task = (n: number, fingerprint = "a".repeat(64)): SupervisorTask => ({
   id: id(n), repository: "aamvtrampa36-del/opencode-harness-example",
   project: "supervised-" + id(n), branch: "opencode/staging-" + id(n),
-  fingerprint, createdAt: 100, status: "preparing", sessionCreationAttempted: false
+  fingerprint, createdAt: 100, status: "preparing", sessionCreationAttempted: false, sessionIdPolicy: "deterministic-v1"
 });
 const granted = (v: Awaited<ReturnType<typeof reserveSupervisorAdmission>>): StartGrant => {
   if (v.kind !== "granted") throw Error("test fixture expected grant");
