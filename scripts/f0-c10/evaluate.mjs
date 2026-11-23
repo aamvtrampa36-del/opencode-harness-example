@@ -17,6 +17,7 @@ export const LIVE_LIMITS = Object.freeze({
   maxUnexpectedFailures: 0,
   maxResponseBytes: 8192,
   maxCostUsd: null,
+  maxCampaignCostUsd: null,
 });
 export const OFFLINE_LIMITS = Object.freeze({ ...LIVE_LIMITS, minOverlapMs: 50 });
 
@@ -175,6 +176,15 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
   if (!trace.metadata?.experimentId || !/^[a-f0-9]{40}$/.test(trace.metadata?.sourceSha || '')) fail('MISSING_EXPERIMENT_SHA', 'attribution not established');
   const overlap = measureOverlap(intervals, size);
   if (overlap.maxActive !== size || overlap.longestFullMs < limits.minOverlapMs) fail('INSUFFICIENT_REAL_OVERLAP', overlap);
+  if (mode === 'live' && overlap.fullStart !== null) {
+    const overlapEnd = overlap.fullStart + overlap.longestFullMs;
+    for (const task of tasks) {
+      if (!events.some((e) => e.requestId === task.requestId && e.type === 'status_probe' &&
+          e.status === 'ok' && e.underLoad === true && e.atMs >= overlap.fullStart && e.atMs <= overlapEnd)) {
+        fail('NO_TEN_WAY_STATUS_PROBE', task.requestId);
+      }
+    }
+  }
   if (oom > limits.maxOom) fail('OOM', oom);
   if (orphans > limits.maxOrphans) fail('ORPHANS', orphans);
   if (unexpectedFailures > limits.maxUnexpectedFailures) fail('UNEXPECTED_FAILURES', unexpectedFailures);
@@ -190,6 +200,7 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     // Do not accept a self-declared memory field from an OpenCode task event.
     const samples = Array.isArray(trace.telemetry) ? trace.telemetry : [];
     const validSamples = samples.filter((s) => s.source === 'cloudflare' && s.service === 'opencode-g1-staging' && s.workerVersion === trace.metadata?.workerVersion && Number.isFinite(s.atMs) && Number.isFinite(s.isolateMiB) && s.isolateMiB >= 0);
+    if (samples.some((s) => s.outcome === 'exceededMemory' || s.code === 'exceededMemory' || s.isolateReset === true)) fail('CLOUDFLARE_OOM_OR_RESET', 'observed reset/oom in collector samples');
     for (const s of validSamples) maxIsolateMiB = Math.max(maxIsolateMiB ?? 0, s.isolateMiB);
     if (!validSamples.some((s) => s.atMs >= overlap.fullStart && s.atMs <= overlap.fullStart + overlap.longestFullMs)) fail('MISSING_MEMORY_TELEMETRY', 'Cloudflare isolate sample required during ten-way overlap');
     if (maxIsolateMiB !== null && maxIsolateMiB > limits.maxPeakIsolateMiB) fail('MEMORY_HEADROOM', maxIsolateMiB);
@@ -225,5 +236,10 @@ export function evaluateCampaign(rounds, limits = LIVE_LIMITS, { trustedKeys } =
       allRequests.add(task.requestId);
     }
   }
-  return { pass: reports.every((r) => r.pass), reports };
+  const observedCost = rounds.reduce((total, t) => total + (Number.isFinite(t.budget?.totalUsd) ? t.budget.totalUsd : Infinity), 0);
+  if (!(Number.isFinite(limits.maxCampaignCostUsd) && limits.maxCampaignCostUsd > 0) ||
+      !Number.isFinite(observedCost) || observedCost > limits.maxCampaignCostUsd) {
+    return { pass: false, code: 'CAMPAIGN_COST_UNKNOWN_OR_OVER_CAP', reports, observedCostUsd: observedCost };
+  }
+  return { pass: reports.every((r) => r.pass), reports, observedCostUsd: observedCost };
 }
