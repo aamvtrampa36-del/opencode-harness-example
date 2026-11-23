@@ -77,7 +77,7 @@ export function assertSupervisedPublicationScope(
   task: { id: string; repository: string; branch: string; project: string;
     session?: string; status: string } | undefined
 ): void {
-  const match = /^opencode\\/staging-([a-f0-9]{16})$/.exec(input.branch);
+  const match = /^opencode\/staging-([a-f0-9]{16})$/.exec(input.branch);
   if (input.action !== "pr" || !match || !task ||
       task.id !== match[1] || task.branch !== input.branch ||
       task.repository.toLowerCase() !== input.repo.toLowerCase() ||
