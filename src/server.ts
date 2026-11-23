@@ -658,24 +658,46 @@ export class OpenCodeAgent extends DurableObject<Env> {
       job = outcome.task;
       if (outcome.kind === "terminal") return { id, status: job.status };
     }
-    if (!job.operationId) {
-      // A legacy session may still be running; without its operation id we
-      // cannot ask OpenCode to abort it or claim cancellation was confirmed.
-      job.status = "unknown";
-      job.error = "OpenCode operation id missing";
-      job.updatedAt = Date.now();
-      await this.ctx.storage.put(supervisorTaskKey(id), job);
-      return { id, status: "unknown", confirmed: false, reason: job.error };
-    }
-    job.status = "cancel_requested";
-    job.updatedAt = Date.now();
-    await this.ctx.storage.put(supervisorTaskKey(id), job);
+    // Cancellation intent and turn-journal read share one task transaction.
+    // A simultaneous steer is therefore visible as an unresolved effect.
+    const intent = await this.ctx.storage.transaction(async tx => {
+      const fresh = await tx.get<SupervisorTask>(supervisorTaskKey(id));
+      if (!fresh) throw new Error("Tarea del supervisor inexistente");
+      if (["cancelled", "failed", "finished", "unanswered"].includes(fresh.status))
+        return { kind: "terminal" as const, task: fresh };
+      if (!fresh.session || !fresh.operationId) {
+        const uncertain: SupervisorTask = { ...fresh, status: "unknown",
+          error: "SUPERVISOR_OPERATION_ID_UNCONFIRMED",
+          revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
+        await tx.put(supervisorTaskKey(id), uncertain);
+        return { kind: "uncertain" as const, task: uncertain };
+      }
+      if (fresh.status === "cancel_requested")
+        return { kind: "existing" as const, task: fresh };
+      const next: SupervisorTask = { ...fresh, status: "cancel_requested",
+        cancelAmbiguous: Boolean(fresh.cancelAmbiguous || fresh.pendingTurn),
+        revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
+      await tx.put(supervisorTaskKey(id), next);
+      return { kind: "abort" as const, task: next };
+    });
+    if (intent.kind === "terminal") return { id, status: intent.task.status };
+    if (intent.kind === "uncertain") return { id, status: "unknown",
+      confirmed: false, reason: intent.task.error };
+    if (intent.kind === "existing") return { id, status: "cancel_requested",
+      confirmed: false, reason: "ABORT_RECEIPT_RECONCILIATION_PENDING" };
     let abortAccepted = false;
     let abortError: string | undefined;
-    try { abortAccepted = await this.harness.session(job.session).abort(job.operationId); }
-    catch (error) { abortError = error instanceof Error ? error.message.slice(0, 200) : "Abort failed"; }
-    const current = await this.supervisedTaskStatus(id) as { status?: string; operationReason?: string };
-    return { id, status: current.status ?? "cancel_requested", confirmed: current.status === "cancelled",
+    try {
+      abortAccepted = await this.harness.session(intent.task.session!).abort(intent.task.operationId!);
+    } catch (error) {
+      abortError = error instanceof Error ? error.message.slice(0, 200) : "Abort failed";
+    }
+    const current = await this.supervisedTaskStatus(id) as {
+      status?: string; operationReason?: string;
+    };
+    // An abort RPC boolean is never a terminal cancellation receipt.
+    return { id, status: current.status ?? "cancel_requested",
+      confirmed: current.status === "cancelled" && !intent.task.cancelAmbiguous,
       abortAccepted, abortError, operationReason: current.operationReason };
   }
 
