@@ -124,12 +124,33 @@ function fromBase64(value: string): string {
 
 type GitHubFetch = typeof fetch;
 
+/** T08: contract for ONE shared durable publisher per (repo, base).
+ * T03 must provide transactional ownership and monotonic fencing. Acquiring
+ * inside one JS isolate is insufficient; a pending/unknown POST blocks release.
+ */
+export type GitHubPrPublicationScope = {
+  repo: string; base: string; branch: string; title: string; body: string;
+};
+export type GitHubPrPublicationPermit = {
+  readonly fencingToken: string;
+  readonly retryOnly: boolean;
+  /** Durable "publishing" journal + token validation BEFORE HTTP POST. */
+  beginExternalEffect(): Promise<void>;
+};
+export interface GitHubPrPublicationGate {
+  withExclusive<T>(
+    intent: GitHubPrPublicationScope,
+    execute: (permit: GitHubPrPublicationPermit) => Promise<T>
+  ): Promise<T>;
+}
+
 export class GitHubBridge {
   private readonly allowed: ReadonlySet<string>;
   constructor(
     private readonly token: string,
     private readonly http: GitHubFetch = fetch,
-    allowedRepos: readonly string[] = ALLOWED_REPOS
+    allowedRepos: readonly string[] = ALLOWED_REPOS,
+    private readonly publicationGate?: GitHubPrPublicationGate
   ) {
     if (!token) throw new Error("GITHUB_TOKEN is not configured in Cloudflare Secrets");
     this.allowed = new Set(allowedRepos.map(normalizeOwnedRepository));
@@ -315,8 +336,20 @@ export class GitHubBridge {
     if (typeof commit.sha !== "string" || !/^[0-9a-f]{40}$/.test(commit.sha)) {
       throw new Error("GitHub did not return a valid replacement commit");
     }
-    const updatedRef = await this.api("PATCH",
-      base + "/git/refs/heads/" + encodeURIComponent(branch), { sha: commit.sha, force: false });
+    const updateRoute = base + "/git/refs/heads/" + encodeURIComponent(branch);
+    let updatedRef: any;
+    try {
+      updatedRef = await this.api("PATCH", updateRoute, { sha: commit.sha, force: false });
+    } catch {
+      // A lost response is not permission to replay PATCH. Reconcile read-only.
+      let observed: any;
+      try { observed = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(branch)); }
+      catch { throw new Error("GITHUB_REF_UPDATE_UNKNOWN: readback failed; no retry"); }
+      if (observed?.object?.sha !== commit.sha)
+        throw new Error("GITHUB_REF_UPDATE_UNKNOWN: exact commit not confirmed; no retry");
+      return { repo, branch, path, commitSha: commit.sha, fileSha: blob.sha,
+        expectedHead, mode: "replacement", reconciled: true };
+    }
     if (updatedRef.object?.sha !== commit.sha) {
       throw new Error("GitHub did not confirm the replacement branch HEAD");
     }
@@ -552,6 +585,8 @@ export class GitHubBridge {
         }
         const info = await this.api("GET", base);
         const source = reviewedBase(repo, branch, info.default_branch);
+        const desiredBody = (input.body || "").slice(0, 5000);
+        const attempt = async (permit?: GitHubPrPublicationPermit): Promise<unknown> => {
         // Automatic fail-closed preflight at the *actual agent PR creation*
         // boundary, not merely advisory instructions in AGENTS.md. GitHub's
         // native branch rules remain responsible for enforcing external merges.
@@ -591,7 +626,7 @@ export class GitHubBridge {
           encodeURIComponent(source) + "&per_page=100&page=1");
         if (!Array.isArray(existing) || existing.length >= 100)
           throw new Error("PR_PREFLIGHT_INCOMPLETE: open PR list missing or truncated");
-        const desiredBody = (input.body || "").slice(0, 5000);
+
         for (const item of existing) {
           if (!Number.isSafeInteger(item?.number) || item.number < 1 ||
               item?.base?.ref !== source || typeof item?.head?.ref !== "string")
@@ -636,11 +671,17 @@ export class GitHubBridge {
         const [baseShaNow, headShaNow] = await Promise.all([getHead(source), getHead(branch)]);
         if (baseShaNow !== baseSha || headShaNow !== headSha)
           throw new Error("PR_PREFLIGHT_STALE: branch moved during collision preflight");
+        if (permit?.retryOnly) throw new Error("PR_PUBLISH_UNKNOWN: same intent previously attempted; no second POST");
+        if (permit) await permit.beginExternalEffect();
         const created = await this.api("POST", base + "/pulls", {
           title: input.title, body: desiredBody,
           head: branch, base: source, draft: true
         });
         return { repo, number: created.number, url: created.html_url, draft: created.draft, base: source, head: branch };
+        };
+        return this.publicationGate
+          ? this.publicationGate.withExclusive({ repo, base: source, branch, title: input.title, body: desiredBody }, attempt)
+          : attempt();
       }
       default:
         throw new Error("Unsupported GitHub action");
