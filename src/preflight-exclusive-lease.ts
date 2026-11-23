@@ -168,26 +168,32 @@ export async function verifyDisposableLeaseInTransaction(
 /** MUST be committed before a native external call. First attempt only.
  * A duplicate requestId/effectId is never a second permission to dispatch.
  */
+export async function armDisposableExternalEffectInTransaction(
+  tx: Pick<DurableObjectStorage,"get"|"put">,
+  grant:PreflightLeaseGrant,effectId:string,now:number
+):Promise<{mayDispatch:boolean;state:"effect_unknown"}> {
+  validateGrant(grant);
+  check(EFFECT.test(effectId),"PREFLIGHT_EFFECT_ID_INVALID");
+  verifyScope(await tx.get<Scope>(PREFIX),grant.scopeHash);
+  const row=decodeRow(await tx.get<Row>(LEASE));
+  current(row,grant);clock(now,row);
+  if(row.state==="effect_unknown"){
+    check(row.attemptedEffectId===effectId,
+      "PREFLIGHT_DIFFERENT_EFFECT_IN_QUARANTINE");
+    return {mayDispatch:false,state:"effect_unknown" as const};
+  }
+  check(row.state==="held" && now<row.expiresAt,
+    "PREFLIGHT_LEASE_NOT_ACTIVE");
+  row.state="effect_unknown";row.attemptedEffectId=effectId;row.lastAt=now;
+  await tx.put(LEASE,row);
+  return {mayDispatch:true,state:"effect_unknown" as const};
+}
+
 export async function armDisposableExternalEffect(storage:DurableObjectStorage,
   grant:PreflightLeaseGrant,effectId:string,now:number):
   Promise<{mayDispatch:boolean;state:"effect_unknown"}> {
-  validateGrant(grant);
-  check(EFFECT.test(effectId),"PREFLIGHT_EFFECT_ID_INVALID");
-  return storage.transaction(async tx=>{
-    verifyScope(await tx.get<Scope>(PREFIX),grant.scopeHash);
-    const row=decodeRow(await tx.get(LEASE));
-    current(row,grant);clock(now,row);
-    if(row.state==="effect_unknown"){
-      check(row.attemptedEffectId===effectId,
-        "PREFLIGHT_DIFFERENT_EFFECT_IN_QUARANTINE");
-      return {mayDispatch:false,state:"effect_unknown" as const};
-    }
-    check(row.state==="held" && now<row.expiresAt,
-      "PREFLIGHT_LEASE_NOT_ACTIVE");
-    row.state="effect_unknown";row.attemptedEffectId=effectId;row.lastAt=now;
-    await tx.put(LEASE,row);
-    return {mayDispatch:true,state:"effect_unknown" as const};
-  });
+  return storage.transaction(tx =>
+    armDisposableExternalEffectInTransaction(tx,grant,effectId,now));
 }
 
 /** No effect may be in flight when relinquishing a lease. A terminal string,
