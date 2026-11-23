@@ -2,7 +2,7 @@ name: F0-C10 offline harness (no Staging)
 
 on:
   pull_request:
-    branches: [staging/opencode-g1-rpc-safe-20261120]
+    branches: [staging/opencode-g1-rpc-safe-20261120, f0-c10/t11-integration-20261122]
     paths:
       - 'scripts/f0-c10/**'
       - 'docs/f0-c10/10_PRUEBAS_E2E.md'
@@ -15,9 +15,15 @@ permissions:
 jobs:
   offline:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact candidate HEAD
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Node built-in tests (no credentials, no network calls)
         run: node --test scripts/f0-c10/evaluate.test.mjs scripts/f0-c10/live-evidence.test.mjs
       - name: Matrix and negative fault suite
@@ -32,3 +38,30 @@ jobs:
           grep -q 'FAIL-CLOSED' /tmp/f0-c10-cli-stderr.log
       - name: Inspect bounded JSON evidence
         run: node -e "const x=require('./f0-c10-offline-evidence.json'); if (!x.pass || x.realStagingTested) process.exit(1)"
+
+  project-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact candidate HEAD
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Frozen installation
+        run: bun install --frozen-lockfile
+      - name: Existing unit regression
+        run: bun test
+      - name: Existing preview regression
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build
+        run: bun run build
+      - name: Invariants
+        run: bun scripts/check-invariants.mjs
