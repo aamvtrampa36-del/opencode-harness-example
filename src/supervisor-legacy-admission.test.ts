@@ -164,4 +164,18 @@ describe("F0-C10/R3-T03 legacy admission RED → GREEN (offline)",()=>{
       .rejects.toThrow("SUPERVISOR_TURN_DENIED_TERMINAL_OR_CANCEL");
     expect((await supervisorAdmissionSlot(db.asDO(),id(1)))?.effect).toBe("turn_submit");
   });
+
+  test("cached legacy finished is not native proof; known pre-create cancellation is exempt",async()=>{
+    const unknownTerminal=new MemoryDO();
+    await unknownTerminal.put("supervisor:task:"+id(90),task(90,"finished",false));
+    expect(await admit(unknownTerminal,1)).toMatchObject({
+      kind:"capacity",reason:"LEGACY_UNGOVERNED"
+    });
+    const safeNoEffect=new MemoryDO();
+    await safeNoEffect.put("supervisor:task:"+id(90),{
+      ...task(90,"cancelled",false),session:undefined,operationId:undefined,
+      sessionCreationAttempted:false
+    });
+    expect((await admit(safeNoEffect,1)).kind).toBe("granted");
+  });
 });
