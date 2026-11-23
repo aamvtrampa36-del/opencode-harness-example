@@ -52,6 +52,12 @@ export async function auditLegacyCapacity(
 ): Promise<AdmissionCapacityEvidence> {
   const indexed = await tx.list<SupervisorTask>({prefix:"supervisor:task:",limit:LIMIT});
   const inventoryComplete = indexed.size < LIMIT;
+  // Status reads, not only mutations, must reject an orphaned slot rather
+  // than advertise it as a safely accounted native execution.
+  for (const id of Object.keys(slots)) {
+    const owner = await tx.get<SupervisorTask>("supervisor:task:" + id);
+    if (!owner || owner.id !== id) throw Error("ADMISSION_ORPHAN_SLOT");
+  }
   let possibleLegacyExecutions=0, untrackedManagedTasks=0;
   for (const [key, task] of indexed) {
     const id = key.slice("supervisor:task:".length);

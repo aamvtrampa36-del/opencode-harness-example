@@ -178,4 +178,14 @@ describe("F0-C10/R3-T03 legacy admission RED → GREEN (offline)",()=>{
     });
     expect((await admit(safeNoEffect,1)).kind).toBe("granted");
   });
+
+  test("orphan ledger slot is never advertised as accounted execution",async()=>{
+    const db=new MemoryDO();
+    await db.put("supervisor:admission:v1",{version:1,slots:{
+      [id(1)]:{token:"11111111-1111-4111-8111-111111111111",
+               generation:1,expiresAt:60000,phase:"running"}
+    }});
+    await expect(inspectSupervisorAdmissionCapacity(db.asDO()))
+      .rejects.toThrow("ADMISSION_ORPHAN_SLOT");
+  });
 });
