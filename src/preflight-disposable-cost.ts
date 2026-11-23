@@ -29,7 +29,11 @@ type Row = {version:1; policySnapshot:string;
   exposureMicroUsd:number;byServiceMicroUsd:Record<ExpenseKind,number>};
 const LEDGER="preflight:cost:ledger:v1";
 const KEY=(id:string)=>"preflight:cost:op:"+id;
-const MAX=1_000_000_000_000;
+/** User-authorized F0-C10 experiment ceiling: US$2 across ALL attributable
+ * services. An internal reservation is not a provider-side financial cutoff.
+ */
+export const F0_C10_GLOBAL_APPROVED_MICRO_USD = 2_000_000;
+const MAX=F0_C10_GLOBAL_APPROVED_MICRO_USD;
 const HEX64=/^[a-f0-9]{64}$/;
 const OP=/^[a-z][a-z0-9_-]{0,63}$/;
 const REV=/^[a-z][a-z0-9._-]{0,63}$/;
@@ -40,7 +44,7 @@ function requireValid(ok:unknown,label:string):asserts ok {
 }
 function cleanPolicy(p:DisposableCostPolicy):{snapshot:string;policy:DisposableCostPolicy}{
   requireValid(p && HEX64.test(p.scopeHash) && REV.test(p.policyRevision) &&
-    isInt(p.totalMicroUsd,1,MAX),"COST_EXPLICIT_USD_CAP_REQUIRED");
+    isInt(p.totalMicroUsd,1,MAX),"COST_EXPLICIT_USD_CAP_REQUIRED_OR_OVER_USD2");
   const caps=Object.create(null) as Record<ExpenseKind,number>;
   requireValid(p.maxByServiceMicroUsd &&
     Object.keys(p.maxByServiceMicroUsd).length===COST_KINDS.length,

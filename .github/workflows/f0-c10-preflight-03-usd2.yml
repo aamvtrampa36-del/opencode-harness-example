@@ -1,0 +1,87 @@
+name: F0-C10 PREFLIGHT-03 — USD2 strict global offline STOP (NO LIVE)
+
+on:
+  push:
+    branches: [f0-c10/preflight-03-usd2-20261123]
+  pull_request:
+    branches: [f0-c10/preflight-02-cutoff-lease-20261123]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: f0-c10-preflight-03-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  usd2-gate-offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Exact HEAD check
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: Enforce USD2, six-provider single ledger and all overhead costs
+        run: bun test src/preflight-usd2-quote.test.ts src/preflight-disposable-cost.test.ts src/preflight-exclusive-lease.test.ts
+      - name: Confirm authorization receipt cannot generate GO or claim billing access
+        run: node --test scripts/f0-c10/preflight-03-usd2.test.mjs
+      - name: Historical per-provider overspend and zeroed overhead RED (must fail twice)
+        shell: bash
+        run: |
+          set +e
+          node --test scripts/f0-c10/preflight-03-usd2-known-red.red.mjs >/tmp/preflight03-red.txt 2>&1
+          status=$?
+          set -e
+          test "$status" -eq 1
+          grep -q 'fail 2' /tmp/preflight03-red.txt
+      - name: Valid authorization still exits 2 STOP (not live dispatch)
+        shell: bash
+        run: |
+          set +e
+          node scripts/f0-c10/preflight-03-usd2.mjs --manifest docs/f0-c10/PREFLIGHT_03_USD2_AUTHORIZATION.json > /tmp/usd2-status.json
+          status=$?
+          set -e
+          test "$status" -eq 2
+          node -e "const p=require('/tmp/usd2-status.json');if(p.decision!=='STOP'||p.totalCapMicroUsd!==2000000||p.liveDispatchAuthorized!==false)process.exit(1)"
+      - name: Previous PREFLIGHT-01/02 safeguards remain in force
+        run: |
+          node --test scripts/f0-c10/operational-preflight.test.mjs
+          bun test src/preflight-exclusive-lease.test.ts src/preflight-disposable-cost.test.ts
+
+  full-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Exact HEAD check
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: Bun all tests
+        run: bun test
+      - name: Static preview
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build both Workers and web — NO DEPLOY
+        run: bun run build
+      - name: Invariants
+        run: bun scripts/check-invariants.mjs
