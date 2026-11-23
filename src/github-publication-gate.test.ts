@@ -192,3 +192,54 @@ describe("R2 T08 durable GitHub draft publication", () => {
     expect(h.requests).toHaveLength(0);
   });
 });
+
+
+describe("R2 T08 ambiguous exact replacement ref update",()=>{
+  for(const applied of [true,false]){
+    test(applied ? "PATCH applied but HTTP reply lost returns one reconciled commit"
+      : "PATCH not applied but HTTP reply lost remains UNKNOWN without replay",async()=>{
+      const branch="opencode/staging-a1234567890bcdef",head="d".repeat(40);
+      const tree="e".repeat(40),sub="4".repeat(40),blob="f".repeat(40);
+      const newTree="1".repeat(40),commit="2".repeat(40);
+      let patchCount=0,refReads=0;
+      const source="export const value = 1;\n";
+      const http=(async(url:unknown,init:RequestInit={})=>{
+        const route=String(url).toLowerCase(),method=init.method || "GET";
+        if(method==="GET" && route.includes("/git/ref/heads/")){
+          refReads++;
+          return Response.json({object:{sha:refReads>1 && applied?commit:head}});
+        }
+        if(method==="GET" && route.includes("/contents/src/value.ts?ref="))
+          return Response.json({type:"file",encoding:"base64",content:btoa(source),size:source.length});
+        if(method==="GET" && route.endsWith("/git/commits/"+head))
+          return Response.json({tree:{sha:tree}});
+        if(method==="GET" && route.endsWith("/git/trees/"+tree))
+          return Response.json({tree:[{path:"src",type:"tree",sha:sub}]});
+        if(method==="GET" && route.endsWith("/git/trees/"+sub))
+          return Response.json({tree:[{path:"value.ts",type:"blob",mode:"100644"}]});
+        if(method==="POST" && route.endsWith("/git/blobs"))
+          return Response.json({sha:blob},{status:201});
+        if(method==="POST" && route.endsWith("/git/trees"))
+          return Response.json({sha:newTree},{status:201});
+        if(method==="POST" && route.endsWith("/git/commits"))
+          return Response.json({sha:commit},{status:201});
+        if(method==="PATCH" && route.includes("/git/refs/heads/")){
+          patchCount++;
+          return Response.json({message:"lost response after PATCH"},{status:503});
+        }
+        return Response.json({message:"Unexpected request "+route},{status:404});
+      }) as typeof fetch;
+      const op={action:"write" as const,repo,branch,path:"src/value.ts",
+        expectedHead:head,oldText:"value = 1",newText:"value = 2"};
+      const bridge=new GitHubBridge("synthetic-token",http);
+      if(applied){
+        const result:any=await bridge.execute(op);
+        expect(result).toMatchObject({commitSha:commit,reconciled:true});
+      }else{
+        await expect(bridge.execute(op)).rejects.toThrow("GITHUB_REF_UPDATE_UNKNOWN");
+      }
+      expect(patchCount).toBe(1);
+      expect(refReads).toBe(2);
+    });
+  }
+});
