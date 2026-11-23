@@ -83,6 +83,11 @@ test('Large source rejects at 32KiB instead of truncating and announcing 200',as
 
 test('Invalid UTF-8 readback accounting is a hard failure',async()=>{
   await assert.rejects(capture(T1,'hello',{inspected:{...text('hello'),byteSize:1}}),/SOURCE_BYTE_COUNT_MISMATCH/);
+  const malformed=Buffer.from([0xc3,0x28]);
+  await assert.rejects(capture(T1,'unused',{inspected:{
+    path:'dist/report.txt', byteSize:malformed.length, base64:malformed.toString('base64'),
+    sha256:createHash('sha256').update(malformed).digest('hex')
+  }}),/NON_UTF8_ARTIFACT/);
 });
 
 test('Expired bytes never receive attachment headers',async()=>{
