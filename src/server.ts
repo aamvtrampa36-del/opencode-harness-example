@@ -787,6 +787,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
           const turnKey = r2TurnJournalKey(id, turnId);
           const journal = await tx.get<R2TurnJournal>(turnKey);
           if (journal?.operationId === fresh.operationId && journal.phase !== "settled") {
+            // Native terminal evidence also reconciles a prior lost
+            // continuation-submit receipt in T03's global capacity ledger.
+            await reconcileSupervisorTurnEffect(tx, id, job.operationId, operation!);
             await tx.put(turnKey, { ...journal, phase: "settled" as const,
               receiptStatus: operation!.status, receiptReason: operation!.reason?.slice(0, 120),
               settledAt: Date.now() });
