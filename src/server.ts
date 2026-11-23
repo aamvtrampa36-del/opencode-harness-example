@@ -82,7 +82,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (old && old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
     if (old && isUntrackedLegacySupervisorOperation(old)) {
       let busy: boolean | undefined;
-      try { busy = await phase.run("recover", "legacyBusy", () => this.harness.session(old.session!).busy()); }
+      try { busy = await phase.run("recover", "legacyBusy", () => this.harness.session(old!.session!).busy()); }
       catch { busy = undefined; }
       const legacy = { ...old,
         status: busy ? "running" as const : "unknown" as const,
@@ -232,10 +232,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (job.status === "failed" || !job.session || !job.operationId || !job.baseCommit) {
       return this.supervisorTaskReceipt(job, reused);
     }
+    const submittedSession = job.session;
+    const submittedCommit = job.baseCommit;
+    const submittedOperation = job.operationId;
     try {
-      const receipt = await phase.run("submit", "dispatch", () => this.harness.session(job.session).submit(
-        supervisorPrompt(start, job.branch, job.project, job.baseCommit),
-        { operationId: job.operationId, whenBusy: "followUp" }
+      const receipt = await phase.run("submit", "dispatch", () => this.harness.session(submittedSession).submit(
+        supervisorPrompt(start, job.branch, job.project, submittedCommit),
+        { operationId: submittedOperation, whenBusy: "followUp" }
       ));
       job.status = "running";
       job.error = undefined;
