@@ -244,3 +244,8 @@ Documentación oficial: [memoria por isolate y filtro DO](https://developers.clo
 **Coste/seguridad:** no se hicieron nuevos starts, inferencia ni Containers Cloudflare. Solo consultas de observabilidad y GitHub, tests Node y CI del PR draft. Facturación específica de Cloudflare/GitHub **no medida**; no afirmar US$0. Lease global y límite real de costes para Remote siguen **no verificados**; no emitir tareas pagadas ni `staging_agent_check`. Cualquier merge/deploy necesita lote distinto.
 
 **Criterio de salida R2:** `PARTIAL` — fase que retiene memoria demostrada en el fixture y código para reproducirla, **sin evidencia de allocador exacto en el DO real ni GREEN del runtime**. CI del HEAD de esta rama deberá registrarse al abrir la PR; GitHub Actions puede confirmar tests/compatibilidad de código, no uso real de memoria de Staging. **F0-C10 permanece NOT VERIFIED / NO COMPLETE PASS**.
+
+
+### R2.7 CI offline comprobada tras abrir la PR
+
+El workflow acotado `.github/workflows/f0-c10-r2-t01-memory.yml` fue ejecutado automáticamente en la rama R2: [run 45095992905](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45095992905) y [run 45095988003](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45095988003), ambos **completed/success** en el HEAD `1ddb34de9c9842346ccd83ce3b4761c6b95a1b6e`. El job `offline-memory` #137435798031 aprobó checkout, Node, tests RED/GREEN y validación de `exit 1` esperado/`exit 0` correcto. Esta incorporación documental genera **un nuevo HEAD**; volver a cotejar el CI de ese SHA para la aceptación definitiva. La prueba no ejecuta Bun, build de Workers ni Staging, y no modifica el diagnóstico causal de `PARTIAL`.
