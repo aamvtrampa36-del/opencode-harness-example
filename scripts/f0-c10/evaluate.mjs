@@ -1,4 +1,6 @@
 import { TASKS, verifyArtifact } from './tasks.mjs';
+import { createHash } from 'node:crypto';
+import { verifyLiveEvidence, digest } from './live-evidence.mjs';
 
 // Preset registered BEFORE live sampling. Monetary cap is intentionally unset: no live run
 // is eligible until a measured provider-side spend stop and a run-specific cap are proven.
@@ -15,6 +17,7 @@ export const LIVE_LIMITS = Object.freeze({
   maxUnexpectedFailures: 0,
   maxResponseBytes: 8192,
   maxCostUsd: null,
+  maxCampaignCostUsd: null,
 });
 export const OFFLINE_LIMITS = Object.freeze({ ...LIVE_LIMITS, minOverlapMs: 50 });
 
@@ -49,13 +52,17 @@ export function measureOverlap(intervals, size) {
   return { maxActive, longestFullMs, fullStart };
 }
 
-export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live' ? LIVE_LIMITS : OFFLINE_LIMITS } = {}) {
+export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live' ? LIVE_LIMITS : OFFLINE_LIMITS, trustedKeys } = {}) {
   const failures = [];
   const fail = (code, detail) => failures.push({ code, detail });
   if (!trace || !Array.isArray(trace.events) || !Array.isArray(trace.tasks)) {
     return { pass: false, failures: [{ code: 'INVALID_TRACE', detail: 'missing tasks/events' }] };
   }
   const { tasks, events } = trace;
+  if (mode === 'live') {
+    const attestation = verifyLiveEvidence(trace, trustedKeys, limits);
+    for (const issue of attestation.failures) fail(issue.code, issue.detail);
+  }
   const size = tasks.length;
   if (![1, 2, 4, 10].includes(size)) fail('INVALID_SIZE', size);
   if (trace.mode !== mode) fail('MODE_MISMATCH', { expected: mode, actual: trace.mode });
@@ -74,6 +81,7 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     }
     if (identity.some((x) => typeof x !== 'string' || !x.length)) continue;
     const stream = events.filter((e) => e.requestId === task.requestId).sort((a, b) => a.seq - b.seq);
+    if (task.experimentId !== trace.metadata?.experimentId || task.sourceSha !== trace.metadata?.sourceSha) fail('TASK_SCOPE_MISMATCH', task.requestId);
     const types = stream.map((e) => e.type);
     for (const required of ['received', 'admitted', 'persisted', 'execution_start', 'output', 'completed']) {
       if (types.filter((t) => t === required).length !== 1) fail('MISSING_OR_DUPLICATE_' + required.toUpperCase(), task.requestId);
@@ -117,6 +125,7 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
           artifact.projectId !== task.projectId ||
           artifact.content !== original.content ||
           artifact.sha256 !== original.sha256 ||
+          (mode === 'live' && (typeof artifact.bytesBase64 !== 'string' || !artifact.retrievedAtMs)) ||
           !verifyArtifact(task, artifact)) {
         fail('ARTIFACT_READBACK_MISMATCH', task.requestId);
       }
@@ -128,12 +137,16 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     }
     const open = new Map();
     for (const e of stream) {
-      if (e.type === 'tool_start' || e.type === 'inference_start') open.set(e.type + ':' + e.callId, e);
+      if (e.type === 'tool_start' || e.type === 'inference_start') {
+        const callKey = e.type + ':' + e.callId;
+        if (!e.callId || open.has(callKey)) fail('DUPLICATE_ACTIVITY_START', task.requestId);
+        else open.set(callKey, e);
+      }
       if (e.type === 'tool_end' || e.type === 'inference_end') {
         const startType = e.type === 'tool_end' ? 'tool_start' : 'inference_start';
         const item = open.get(startType + ':' + e.callId);
         if (!item || e.atMs <= item.atMs || item.atMs < start.atMs || e.atMs > done.atMs) fail('INVALID_ACTIVITY_INTERVAL', task.requestId);
-        else if (item.source === (mode === 'live' ? 'runtime' : 'mock') && e.source === item.source && e.toolName === item.toolName && e.exitCode === 0) intervals.push({ requestId: task.requestId, start: item.atMs, end: e.atMs });
+        else if (item.source === (mode === 'live' ? 'runtime' : 'mock') && e.source === item.source && e.toolName === item.toolName && (e.type === 'tool_end' ? e.exitCode === 0 : e.outcome === 'success')) intervals.push({ requestId: task.requestId, start: item.atMs, end: e.atMs });
         else fail('UNTRUSTED_ACTIVITY', task.requestId);
         open.delete(startType + ':' + e.callId);
       }
@@ -149,6 +162,7 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     for (const e of stream) {
       if (!Number.isFinite(e.seq) || !Number.isFinite(e.atMs)) fail('INVALID_EVENT_CLOCK', task.requestId);
       if (e.sessionId !== task.sessionId || e.operationId !== task.operationId || e.projectId !== task.projectId || e.executorId !== task.executorId) fail('CROSS_SESSION_EVENT', task.requestId);
+      if (e.experimentId !== trace.metadata?.experimentId || e.sourceSha !== trace.metadata?.sourceSha) fail('CROSS_EXPERIMENT_OR_SHA', task.requestId);
       if (mode === 'live' && (e.type === 'artifact_readback' ? e.source !== 'artifact-collector' : (e.source !== 'runtime' && e.source !== 'telemetry'))) fail('UNTRUSTED_LIVE_EVENT', task.requestId);
       const eventKey = task.requestId + ':' + e.seq;
       if (seenEvents.has(eventKey)) fail('DUPLICATE_EVENT_SEQUENCE', eventKey);
@@ -159,8 +173,18 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     }
   }
   if (events.some((e) => !ids.has(e.requestId))) fail('UNKNOWN_REQUEST_EVENTS', 'event without declared task');
+  if (!trace.metadata?.experimentId || !/^[a-f0-9]{40}$/.test(trace.metadata?.sourceSha || '')) fail('MISSING_EXPERIMENT_SHA', 'attribution not established');
   const overlap = measureOverlap(intervals, size);
   if (overlap.maxActive !== size || overlap.longestFullMs < limits.minOverlapMs) fail('INSUFFICIENT_REAL_OVERLAP', overlap);
+  if (mode === 'live' && overlap.fullStart !== null) {
+    const overlapEnd = overlap.fullStart + overlap.longestFullMs;
+    for (const task of tasks) {
+      if (!events.some((e) => e.requestId === task.requestId && e.type === 'status_probe' &&
+          e.status === 'ok' && e.underLoad === true && e.atMs >= overlap.fullStart && e.atMs <= overlapEnd)) {
+        fail('NO_TEN_WAY_STATUS_PROBE', task.requestId);
+      }
+    }
+  }
   if (oom > limits.maxOom) fail('OOM', oom);
   if (orphans > limits.maxOrphans) fail('ORPHANS', orphans);
   if (unexpectedFailures > limits.maxUnexpectedFailures) fail('UNEXPECTED_FAILURES', unexpectedFailures);
@@ -169,13 +193,14 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
   if (p95StatusMs === null || p95StatusMs > limits.maxStatusP95Ms) fail('STATUS_P95', p95StatusMs);
   if (mode === 'live') {
     for (const field of ['workerVersion', 'mcpVersion', 'sourceSha', 'gitBaseSha', 'environment', 'leaseId', 'clockSyncMaxSkewMs']) {
-      if (!trace.metadata?.[field]) fail('MISSING_LIVE_PROVENANCE', field);
+      if (trace.metadata?.[field] === undefined || trace.metadata?.[field] === null || trace.metadata?.[field] === '') fail('MISSING_LIVE_PROVENANCE', field);
     }
-    if ((trace.metadata?.clockSyncMaxSkewMs ?? Infinity) > 250) fail('CLOCK_SKEW', trace.metadata?.clockSyncMaxSkewMs);
+    if (!Number.isFinite(trace.metadata?.clockSyncMaxSkewMs) || trace.metadata.clockSyncMaxSkewMs < 0 || trace.metadata.clockSyncMaxSkewMs > 250) fail('CLOCK_SKEW', trace.metadata?.clockSyncMaxSkewMs);
     // Cloudflare samples belong to an isolate, never to an individual task.
     // Do not accept a self-declared memory field from an OpenCode task event.
     const samples = Array.isArray(trace.telemetry) ? trace.telemetry : [];
     const validSamples = samples.filter((s) => s.source === 'cloudflare' && s.service === 'opencode-g1-staging' && s.workerVersion === trace.metadata?.workerVersion && Number.isFinite(s.atMs) && Number.isFinite(s.isolateMiB) && s.isolateMiB >= 0);
+    if (samples.some((s) => s.outcome === 'exceededMemory' || s.code === 'exceededMemory' || s.isolateReset === true)) fail('CLOUDFLARE_OOM_OR_RESET', 'observed reset/oom in collector samples');
     for (const s of validSamples) maxIsolateMiB = Math.max(maxIsolateMiB ?? 0, s.isolateMiB);
     if (!validSamples.some((s) => s.atMs >= overlap.fullStart && s.atMs <= overlap.fullStart + overlap.longestFullMs)) fail('MISSING_MEMORY_TELEMETRY', 'Cloudflare isolate sample required during ten-way overlap');
     if (maxIsolateMiB !== null && maxIsolateMiB > limits.maxPeakIsolateMiB) fail('MEMORY_HEADROOM', maxIsolateMiB);
@@ -185,7 +210,8 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     if (!trace.metadata?.observabilityQueryId) fail('MISSING_CLOUDFLARE_QUERY', 'independent query receipt required');
     if (trace.metadata?.sourceClock !== 'server') fail('CLOCK_UNTRUSTED', trace.metadata?.sourceClock);
     if (trace.metadata?.evidenceOrigin !== 'independent_runtime') fail('PROVENANCE_UNTRUSTED', trace.metadata?.evidenceOrigin);
-    if (!trace.metadata?.exclusiveLeaseAtomicVerified) fail('LEASE_UNVERIFIED', 'atomic lease + fencing token required');
+    if (!trace.metadata?.exclusiveLeaseAtomicVerified || !trace.metadata?.fencingToken) fail('LEASE_UNVERIFIED', 'atomic lease + fencing token required');
+    if (trace.metadata?.limitsSha256 !== digest(limits)) fail('LIMITS_NOT_PREDECLARED', 'out-of-band run limits changed');
   }
   return {
     pass: failures.length === 0, size, failures, metrics: {
@@ -197,14 +223,23 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
   };
 }
 
-export function evaluateCampaign(rounds, limits = LIVE_LIMITS) {
+export function evaluateCampaign(rounds, limits = LIVE_LIMITS, { trustedKeys } = {}) {
   if (!Array.isArray(rounds) || rounds.length < limits.minRounds) return { pass: false, code: 'TOO_FEW_ROUNDS' };
-  const ids = new Set();
-  const reports = rounds.map((trace) => evaluateTrace(trace, { mode: 'live', limits }));
+  const ids = new Set(), allRequests = new Set();
+  const reports = rounds.map((trace) => evaluateTrace(trace, { mode: 'live', limits, trustedKeys }));
   for (const trace of rounds) {
     if (trace.tasks?.length !== 10) return { pass: false, code: 'NOT_TEN_TASKS', reports };
     if (!trace.metadata?.experimentId || ids.has(trace.metadata.experimentId)) return { pass: false, code: 'DUPLICATE_EXPERIMENT', reports };
     ids.add(trace.metadata.experimentId);
+    for (const task of trace.tasks) {
+      if (allRequests.has(task.requestId)) return { pass: false, code: 'REUSED_REQUEST_BETWEEN_ROUNDS', reports };
+      allRequests.add(task.requestId);
+    }
   }
-  return { pass: reports.every((r) => r.pass), reports };
+  const observedCost = rounds.reduce((total, t) => total + (Number.isFinite(t.budget?.totalUsd) ? t.budget.totalUsd : Infinity), 0);
+  if (!(Number.isFinite(limits.maxCampaignCostUsd) && limits.maxCampaignCostUsd > 0) ||
+      !Number.isFinite(observedCost) || observedCost > limits.maxCampaignCostUsd) {
+    return { pass: false, code: 'CAMPAIGN_COST_UNKNOWN_OR_OVER_CAP', reports, observedCostUsd: observedCost };
+  }
+  return { pass: reports.every((r) => r.pass), reports, observedCostUsd: observedCost };
 }

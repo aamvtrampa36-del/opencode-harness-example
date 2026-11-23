@@ -6,9 +6,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export async function runMock({ size = 10, fault = null } = {}) {
   if (![1, 2, 4, 10].includes(size)) throw new Error('size must be 1, 2, 4 or 10');
   const experimentId = 'offline-' + size + '-' + (fault || 'green');
+  const sourceSha = 'f'.repeat(40);
   const tasks = TASKS.slice(0, size).map((task) => {
     const requestId = (0xf0c1000000000000n + BigInt(task.slot)).toString(16);
     return { kind: task.kind, name: task.name, prompt: task.payload, requestId,
+      experimentId, sourceSha,
       sessionId: 'ses_mock_' + requestId, operationId: 'op_mock_' + requestId,
       projectId: 'synthetic-' + requestId, executorId: 'mock-' + requestId };
   });
@@ -16,7 +18,7 @@ export async function runMock({ size = 10, fault = null } = {}) {
   function emitter(task) {
     let seq = 0;
     return (type, more = {}) => events.push({ type, seq: ++seq, atMs: Date.now(),
-      requestId: task.requestId, sessionId: task.sessionId, operationId: task.operationId,
+      experimentId, sourceSha, requestId: task.requestId, sessionId: task.sessionId, operationId: task.operationId,
       projectId: task.projectId, executorId: task.executorId, source: 'mock', ...more });
   }
   await Promise.all(tasks.map(async (task, index) => {
@@ -67,5 +69,5 @@ export async function runMock({ size = 10, fault = null } = {}) {
   // Preserve per-stream sequence order; cross-stream order is by collection timestamp.
   if (fault === 'duplicate-request' && tasks.length > 1) tasks[1].requestId = tasks[0].requestId;
   if (fault === 'client-only') for (const e of events) if (e.type === 'tool_start') e.source = 'client';
-  return { mode: 'offline', metadata: { experimentId, simulated: true }, tasks, events };
+  return { mode: 'offline', metadata: { experimentId, sourceSha, simulated: true }, tasks, events };
 }
