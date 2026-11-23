@@ -166,7 +166,8 @@ export function verifyObservedJournal(trace, trustedKeys, limits) {
     if (!observed || !same(event, observed)) fail('OBSERVED_EVENT_MISMATCH', id);
   }
   for (const origin of OBSERVER_ORIGINS) {
-    if (!stream.has(origin)) fail('OBSERVER_SOURCE_UNOBSERVED', origin);
+    const required = origin === 'do' || (trace.events || []).some((e) => roleFor(e.type) === origin);
+    if (required && !stream.has(origin)) fail('OBSERVER_SOURCE_UNOBSERVED', origin);
   }
   // A time window remains valid only after subtracting worst-case clock drift.
   return { pass: errors.length === 0, errors, witnessedCount:witnessed.size,
