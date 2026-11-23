@@ -1,4 +1,5 @@
 import { boundedMcpJsonText, redactMcpString } from "./bounded-response";
+import { createSupervisorMemoryProbe } from "../supervisor-phase-telemetry";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { MODEL_PRESETS } from "../model-presets";
@@ -42,6 +43,8 @@ export interface StagingSupervisor {
 }
 
 export interface StagingControlBindings {
+  /** Optional: never enable phase telemetry unless both workers are explicitly configured. */
+  phaseTelemetryEnabled?: boolean;
   readHealth(): Promise<Response>;
   supervisor(workspace?: string): StagingSupervisor;
 }
@@ -66,6 +69,8 @@ function failed(error: unknown) {
 
 export function createStagingControlServer(bindings: StagingControlBindings): McpServer {
   const server = new McpServer({ name: "opencode-staging-control", version: "2.0.0" });
+  const callTask = (operation: () => Promise<unknown>, maxChars?: number) =>
+    callTaskWithProbe(operation, maxChars, bindings.phaseTelemetryEnabled === true);
 
   server.registerTool("staging_status", {
     description: "Lee el estado HTTP de OpenCode Staging. Solo consulta opencode-g1-staging; no inicia tareas.",
@@ -328,12 +333,14 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
   return server;
 }
 
-async function callTask(operation: () => Promise<unknown>, maxChars?: number) {
+async function callTaskWithProbe(operation: () => Promise<unknown>, maxChars?: number, enabled = false) {
+  const trace = createSupervisorMemoryProbe(enabled);
   try {
-    // Project the original RPC value before copying/spreading or stringifying it.
-    // The target is attached to the small projected object, never to the full source.
-    return { content: [{ type: "text" as const,
-      text: boundedMcpJsonText(await operation(), maxChars, STAGING_WORKER) }] };
+    // The RPC value may already be allocated: this measures boundaries only.
+    const value = await trace.run("mcp", "rpc", operation);
+    const text = await trace.run("mcp", "serialize", () =>
+      boundedMcpJsonText(value, maxChars, STAGING_WORKER));
+    return { content: [{ type: "text" as const, text }] };
   } catch (error) {
     return failed(error);
   }

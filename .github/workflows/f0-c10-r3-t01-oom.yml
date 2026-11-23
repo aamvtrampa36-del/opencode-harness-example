@@ -1,0 +1,50 @@
+name: F0-C10 R3-T01 bounded OOM instrumentation (offline only)
+
+on:
+  push:
+    branches: [f0-c10/r3-t01-oom-memory-20261123]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r3-t01-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  t01-offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact HEAD
+        uses: actions/checkout@v4
+      - name: Verify workflow HEAD is the code actually tested
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Focused phase tracer and MCP unit tests
+        run: bun test src/supervisor-phase-telemetry.test.ts src/staging-control-mcp/server.test.ts
+      - name: Synthetic RED and GREEN 1 2 4 10 plus invalid count
+        run: node --test scripts/f0-c10/r3-memory-baseline.test.mjs
+      - name: Previous R2 memory fixture regression
+        run: node --test scripts/f0-c10/phase-memory-profile.test.mjs
+      - name: T03 and T04 interleaving/fencing regression
+        run: bun test src/supervisor-admission.test.ts src/supervisor-t03-t04-integration.test.ts src/supervisor-recovery.test.ts
+      - name: Full Bun suite
+        run: bun test
+      - name: Preview smoke without Staging
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build Workers and web client - NO DEPLOY
+        run: bun run build
+      - name: Invariants
+        run: bun scripts/check-invariants.mjs

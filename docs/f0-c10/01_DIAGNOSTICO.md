@@ -249,3 +249,97 @@ Documentación oficial: [memoria por isolate y filtro DO](https://developers.clo
 ### R2.7 CI offline comprobada tras abrir la PR
 
 El workflow acotado `.github/workflows/f0-c10-r2-t01-memory.yml` fue ejecutado automáticamente en la rama R2: [run 45095992905](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45095992905) y [run 45095988003](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45095988003), ambos **completed/success** en el HEAD `1ddb34de9c9842346ccd83ce3b4761c6b95a1b6e`. El job `offline-memory` #137435798031 aprobó checkout, Node, tests RED/GREEN y validación de `exit 1` esperado/`exit 0` correcto. Esta incorporación documental genera **un nuevo HEAD**; volver a cotejar el CI de ese SHA para la aceptación definitiva. La prueba no ejecuta Bun, build de Workers ni Staging, y no modifica el diagnóstico causal de `PARTIAL`.
+
+
+---
+
+## R3-T01 — Memoria en supervisor con admisión cercada (#145) y fuente candidata #146
+
+**Corte:** 2026-11-23 UTC. **RESULTADO de especialidad:** `PARTIAL / INSTRUMENTATION_SOURCE_CANDIDATE / ROOT_CAUSE_UNVERIFIED`. **Actor:** ChatGPT con lecturas GitHub/Cloudflare y pruebas Node locales, GitHub Actions para Bun/build; **no OpenCode Remote**, no Codex. Las operaciones de Staging con efectos, deploy, merge, ejecución de 1→2→4→10 real y cambios de DO/Container no están autorizadas. **No cerrar #90**.
+
+### R3.1 Revalidación de autoridad y fuentes
+
+- [PR #146](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/146) **open/draft/no merge**, HEAD **`05da68fd1644f92578588c62a4586d561c418c49`**, añade documentos R3 sobre el código #145. La rama única R3-T01 parte **exactamente de ese SHA**, no de `main`, Staging ni una rama anterior.
+- Cadena de código no fusionada **#126 `1268ba22f...` → #143 `160eafbb...` → #144 `baebc30a...` → #145 `a49e985909cb56bb42c609c9cd5cb4250a620169`**; #145 CI offline [#45106083359](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45106083359) `completed/success`. PR históricas T01 [#116](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/116), [#129](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/129) y [#134](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/134) continúan **open/draft**, sin merge. **#134 no se incorpora literalmente**: sus puntos de `sessions.create/fork` preceden a T03/T04/145.
+- Base R3 del repositorio consultada: `00_COORDINACION.md`, `14_SESSION_RECOVERY_READMISSION.md`, `15_RETROSPECTIVA_Y_CONTROLES_R3.md`, `F0_C10_PLAN_INTEGRAL.md` §§32–39 y este diagnóstico. El documento histórico T01/R2 se conserva arriba, pero sus rutas pre-145 no representan el código nuevo.
+- Cloudflare API GET **solo lectura**: `opencode-g1-staging` deployment `36ef84b3-0f99-4dd4-ab8e-c11ee450dd23`, versión `3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb`, **100%**; `opencode-staging-control-mcp` deployment `9fdaf22d-beeb-44a0-ab68-77ecd5745fa1`, versión `196240c0-1052-47b3-aaa7-02cf5baa87f0`, **100%**. Ninguno es #145/#146 ni esta rama R3. El incidente #90 (seis resets en arranque, diez starts concurrentes, **0/10 outputs auténticamente verificados**) sigue sin un allocator demostrado.
+- Dependencias fuente `agents@0.33.0`, `@opencode/sdk@2.0.24`, `@opencode/plugin@2.0.24` fijadas en [package.json](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/05da68fd1644f92578588c62a4586d561c418c49/package.json), blob `b00505500ac64a36bc9e1be0fc81facf50bdafe9`.
+- Código OSS verificado: [cloudflare/agents `agents@0.33.0`](https://github.com/cloudflare/agents/blob/5684e278e44abfb592a6ae6ef3e2f5250feacd8c/packages/agents/src/harness/opencode/harness.ts), commit `5684e278e44abfb592a6ae6ef3e2f5250feacd8c`, blob `60a53571e9ab23f012a4fedbf5aed5255fad773e`, [LICENSE MIT](https://github.com/cloudflare/agents/blob/5684e278e44abfb592a6ae6ef3e2f5250feacd8c/LICENSE). No se copió código de terceros. Fuente propia #145: `src/server.ts` blob `afb1c2021919ebf12f5c43de851c5a6e90c907dc`; `src/supervisor-admission.ts` blob `e2a7dc472ae63cc01abf49618b7fb1090802d8d8`; `src/staging-control-mcp/bounded-response.ts` blob `fc996e35de051bb02ad5c9bed173e544327fa117`; `src/task-output-artifacts.ts` blob `cbc12d89e80c158ae7e79f4c5181f14fdc51c661`.
+- Restricción oficial Cloudflare: **128 MB por V8 isolate**, varios DO potencialmente co-residentes. Los percentiles `durableObjectsPeriodicGroups.quantiles.memoryUsageBytesP50..P999` (si se consultan con acceso autorizado) siguen midiendo el isolate aun con filtro de DO ID. [Metrics](https://developers.cloudflare.com/durable-objects/observability/metrics-and-analytics/); [profiling production](https://developers.cloudflare.com/workers/observability/profiling-in-production/); [lifecycle](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/). El perfil heap de una instancia real puede contener información sensible y mantiene trabajo activo: exige lote operativo aparte.
+
+### R3.2 Defecto/RED antes de parche
+
+La lógica original de la PR #134 instrumentaba `harness.sessions.create/fork`, un lock local de inicio y un cursor de operación anterior. En **#145** existe `reserveSupervisorAdmission`, con grant/token/generation/fencing, `harness.create({id:ses_r2_...})` con journal durable y `reconcileSupervisorCreatedSession` tras consulta nativa por ID exacto. Un parche textual de #134 perdería la medición de creación nueva y podría ocultar una ventana de recepción perdida. **Defecto de instrumentación demostrado por diferencia estructural**, **no** allocator de OOM identificado.
+
+**RED del fixture offline:** una versión que conserva `JSON.stringify()` de todos los eventos por sesión **antes** de recortar la respuesta retiene una copia por sesión; el resultado transmite solo 37 bytes, pero materializa 531.495 bytes **por sesión** (256 registros sintéticos de 2048 caracteres). El RED termina deliberadamente `exitCode=1` y no representa el código productivo #145 ni una memoria real de workerd. Un logger que emite 2 líneas por fase sin límite también crece con cada status/poll; criterio GREEN: **máximo 32 eventos por probe** sin identificadores de usuario, aunque se soliciten 250 spans. Prueba de carrera: dos operaciones pendientes no cambian identidad/resultado y registran begin/end sin crear recibos falsos.
+
+### R3.3 Cambios focalizados y puntos exactos
+
+**Rama única:** `f0-c10/r3-t01-oom-memory-20261123`, base SHA #146 exacto. No se ha modificado ninguna PR ajena. Código añadido: `src/supervisor-phase-telemetry.ts` + `src/supervisor-phase-telemetry.test.ts`; fixture `scripts/f0-c10/r3-memory-baseline.mjs` + `.test.mjs`. Código adaptado: `src/server.ts`, `src/staging-control-mcp/server.ts` y `src/staging-control-mcp/worker.ts`.
+
+**Bandera de entrada estricta:** `OPENCODE_SUPERVISOR_PHASE_TELEMETRY === "true"` en **cada Worker**, evaluada en fuente. La variable no aparece en Wrangler y **no se añade ningún binding en este lote**: permanece **OFF por defecto**, sin emisión de logs ni lectura de reloj. Su activación futura necesita autorización de despliegue/configuración. La clase de eventos es fija (`f0_c10_phase_v1`): `phase`, `operation`, `edge`, `outcome` y **bucket categórico** de duración; **sin UUID por sesión/RPC**, ids, prompts, branch, nombre de modelo, contenido, excepción ni stack. **Cap de 32 registros por objeto probe/solicitud**, con reserva atómica de begin/end de cada span; el logger no puede cambiar resultado ni relanzar efectos. Un `begin` sin `end` por reset o muestreo **no prueba** qué asignó memoria. Para correlación real se necesitan metadatos externos de Cloudflare por tiempo/trace, no fabricar identificadores personales en logs.
+
+| Frontera en código #145 | Punto antes/después con probe | Capacidad medida y no medida |
+|---|---|---|
+| **admission** | `validateSupervisorStart`, `reserveSupervisorAdmission`, `reconcileSupervisorCreatedSession`, `reserveSupervisorContinuation` | Tiempo de consulta/reserva/transferencia de grant; no heap ni lista de slots privada |
+| **github_branch** | `ensureSupervisorBranch` tras `supervisorBeginExternalEffect("github_branch")` | Duración efecto externo; no medir GitHub bytes internos |
+| **session_create/reconcile** | `harness.use(...sessions.get({sessionID}))`, `harness.create({id})`, `supervisorCommitCreatedSession`, `bindSessionScope` | Tiempo de SDK y ledger. Sin `sessions.list()`, `history()` ni reintentos |
+| **configure** | `handle.setAgent("build")`, `handle.setModel(model)` separados | Dos tiempos observables. No guardar nombre/clave del modelo |
+| **submit/continue** | `handle.submit(...whenBusy:"followUp")`, `handle.submit(...whenBusy:"steer")` tras journal existente | Duración, no tokens ni resultado de inferencia; conserva operationId/fencing |
+| **status/progress** | `handle.wait`, `busy`, `foldSupervisorToolLog(...256)`, `projectSupervisorProgress(...128)` | Tiempo de lectura/proyección; SDK puede materializar un **evento gigante antes** del límite de salida |
+| **cleanup + artifacts** | `DevContainer.readTaskArtifact`, `captureInspectedArtifact`, lectura de blob SQLite, `verifiedArtifactDownload` | Tiempo y límites existentes 32 KiB por archivo, máximo 8 por tarea; no se leen ficheros reales |
+| **MCP** | `remote RPC` y `boundedMcpJsonText` en la envoltura `callTask` del Worker MCP | Tiempo antes/después de proyección; **el resultado RPC ya puede estar asignado** antes de que el MCP lo reciba |
+| **alarm/retención del Harness** | Solo inferencia indirecta de las fases anteriores | Sin hook `onAlarm` seguro en `OpenCodeAgent` ni memoria del SDK en vivo |
+
+La instrumentación **no altera** el journal T03/T04, estado `unknown`, permisos, deduplicación, límites T05, rutas seguras T09, identidad de sesión ni persistencia. No añade colas ni cachés ni serialización del historial para medir.
+
+### R3.4 Baseline sintético con el mismo tracer, 1/2/4/10
+
+**Reproducción offline local (Node 22.16.0)**: fixture `r3-memory-baseline.mjs` y **el mismo módulo TS del tracer** (hash de blob Git verificado; helper `8fbb6b01e8a5271c71649faa919285b04b60986c`, fixture `fcfafad4611215cc5bb51d99ca3ad340ca5226cf`). Ejecuté **3 subprocesos independientes por N/modo** con `--experimental-strip-types --expose-gc` y GC entre estado inicial/final. Etiqueta `SYNTHETIC_NODE_ONLY`, sin red ni SDK, sin carga real ni Container. Cada escenario usa **256 eventos sintéticos/sesión**, contenido ficticio de 2048 caracteres/evento, y **el mismo probe** con catálogo cerrado.
+
+Comando de reproducción:
+
+```sh
+node --experimental-strip-types --expose-gc scripts/f0-c10/r3-memory-baseline.mjs --count 10 --mode red    # exit 1 esperado
+node --experimental-strip-types --expose-gc scripts/f0-c10/r3-memory-baseline.mjs --count 10 --mode green  # exit 0
+node --test scripts/f0-c10/r3-memory-baseline.test.mjs
+```
+
+| N sesiones | RED mediana Δ heap V8 **Node** | GREEN mediana Δ heap V8 **Node** | Bytes serializados RED / GREEN | Marcadores / bytes MCP wire |
+|---|---:|---:|---:|---:|
+| 1 | **1.193.192 B** | 137.968 B | 531.495 / 129 | 14 / 37 |
+| 2 | **2.261.064 B** | 165.056 B | 1.062.990 / 258 | 14 / 37 |
+| 4 | **4.427.128 B** | 219.232 B | 2.125.980 / 516 | 14 / 37 |
+| 10 | **10.925.640 B** | 382.168 B | 5.314.950 / 1.290 | 14 / 37 |
+
+Resultados de los 24 procesos Node (1/2/4/10 × 2 modos × 3 repeticiones): RED `exit 1` **deliberado** en los 12 casos; GREEN `exit 0` en 12. Mediana de RSS Node a N=10: RED **17.825.792 B**, GREEN **3.670.016 B**. Estos valores son **deltas**, no RSS absolutos ni picos máximos. En todos los casos `cloudflareIsolateBytes=null`, `cloudflareContainerBytes=null`, `cloudflareWorkerMcpHeapBytes=null`: ausencia de medición, nunca cero. Los marcadores y el tamaño de wire son idénticos en RED/GREEN, de modo que **una respuesta MCP pequeña no establece baja memoria de proceso**. GC/JIT, string sharing y diferencias de implementación impiden extrapolar números Node a 128 MB de workerd.
+
+**Pruebas de regresión del código candidato a comprobar en CI HEAD final**: tests Bun del probe (OFF, cap32, fallo aislado, privacidad, etiquetas, carreras), `bun test` completo, `bun run typecheck`, `bun run build`, `bun scripts/check-invariants.mjs`, tests Node 1/2/4/10 y tests previos R2. Un PASS de esas herramientas certifica **fuente**, no DO live ni 10 activos. El run y exit codes se registrarán en la **PR draft T01** de este mismo HEAD, evitando un commit documental adicional solo para añadir CI.
+
+### R3.5 Hipótesis falsables sobre el allocator de #90
+
+| Hipótesis | Dictamen actual | Prueba futura que la confirmaría o descartaría |
+|---|---|---|
+| H1: historia no acotada del supervisor previo | **Defecto histórico demostrado, mitigado en candidato**; no raíz causal única del lote | Confirmar que todas las rutas del runtime activo evitan full `history()`; no concluir sin despliegue |
+| H2: residencia de Harness/SDK al admitir 10 trabajos | **Fuente verificada, presión plausible, fuga NO demostrada**. `OpenCodeHarness` tiene `#waits: Map<session,Promise>`, `#admitting: Map<session,number>`, `#leases`, `#opening`; el SDK elimina `#waits` en `.finally`, `#admitting` en `finally`, intenta cerrar host tras **30s idle** sin jobs/leases/actividad | Heap profile de DO autorizado en entorno seguro y medición tras idle/cierre; comparar referencias retenidas y GC; distinguir memoria viva legítima de fuga |
+| H3: `sessions.get` de recuperación y `create({id})` causan picos en arranque/restart | **Abierta**; #145 evita `sessions.list` y lee ID exacto, pero SDK abre OpenCode para `use()` | Muestras pre/post fase y heap profile local/Stage aislado; consulta positiva vs negativa con misma identidad y sin efectos duplicados |
+| H4: MCP serialización completa antes de recorte | **Mitigada parcialmente en #139**: `boundedMcpJsonText` proyecta antes de serializar, pero **el RPC de origen** puede producir un objeto grande previamente | Medir RPC frente a proyección con carga sintética y memory source confiable; no usar transcripts privados |
+| H5: lectura de artefactos o Container como allocator del isolate | **Separación arquitectónica confirmada; causalidad OOM no probada.** Lectura 32 KiB y máximo 8 artefactos por tarea, buffers/serialización pueden duplicar bytes en Worker. Container Linux usa otra memoria | Métricas Container **por separado** y perfil de V8 isolate durante lectura de artefactos de prueba, con tamaños y hashes |
+| H6: última RPC `startSupervisedTask` es el allocator | **DESCARTADA como inferencia causal**: solo localiza dónde se manifestó `exceededMemory` | Relación con marcadores, cuantiles y heap profile, no adjudicación por nombre RPC |
+
+La instrumentación no expone estructuras privadas `#waits`/ `#leases` de la librería. No se afirma que `dispose` sea seguro sin comprobar vida de operaciones; no se llamó a `close()` ni se redujeron recursos artificialmente.
+
+### R3.6 STOP y handoff técnico T02/T05/T11
+
+**Umbrales STOP propuestos para futuro lote live, NO aplicados ahora**:
+
+1. **STOP inmediato** ante cualquier `exceededMemory`, mezcla de IDs/ramas, fallo de autenticación, pérdida de fencing, intento de replay de efecto `unknown`, cambio de deployment no autorizado o exposición de dato sensible en logs.
+2. **STOP preventivo antes de escalar:** si P99 de `memoryUsageBytes` del isolate observado alcanza **96 MiB (100.663.296 B)**, se dispone de menos de **32 MiB** de margen nominal hasta el límite de 128 MiB; no lanzar nivel 2/4/10. Esto es una **política preventiva propuesta** (75% del límite), **no** un límite Cloudflare ni una medición observada.
+3. **STOP de aceptación** si no se puede correlacionar cada tramo con versión de binario, DO y trace/timestamp, si se pierden markers por muestreo, o si no hay métricas cuantitativas de isolate/Container y gasto. Ausencia de evidencia no equivale a ausencia de OOM.
+4. **STOP de coste** si lease exclusivo y mecanismo de corte proveedor/DO/Containers/CI no están demostrados: ni siquiera arranque de una tarea pagada de prueba bajo este encargo.
+
+**T02** recibe `session_create:exactIdLookup/create/commit/bind` y `configure:setAgent/setModel`, contrastables con isolate P50/P99/P999 y referencias del SDK; no proponer sharding hasta medir. **T05** recibe `status:wait/busy/logFold/progress`, `mcp:rpc/serialize` y pruebas de bytes de entrada pre-proyección; revisar que el nuevo código no eleve cardinalidad ni convierta `unknown` en PASS. **T09** conserva propiedad funcional de artefactos; T01 solo mide límites sin alterar alcance. **T11** debe revisar diff de esta rama directa desde #146 y **no incorporar #134 a la vez**, porque sus hunks de inicio quedan obsoletos; #145 y #146 son ancestros, no merges separados.
+
+**Riesgo operacional:** `OPENCODE_SUPERVISOR_PHASE_TELEMETRY` requiere un cambio de configuración/despliegue **separado y autorizado** para activarse; no se cambió Wrangler, bindings ni Worker real. El logging tiene costes marginales de CPU/Observability indeterminados. No existe presupuesto monetario medido para este lote: afirmar ausencia de inferencia nueva no equivale a US$0 total. El perfil de producción (Cloudflare) también puede afectar residencia del DO y contener datos sensibles; no realizarlo sin controles y autorización.
+
+**Cierre T01 único hacia T11:** `PARTIAL` por falta de muestras del isolate y de causalidad; instrumento y RED/GREEN offline preparados. Las evidencias de CI del HEAD exacto, PR draft y copia Biblioteca se documentan en la PR final y en el handoff, sin iniciar nueva ronda T01 ni prompt de seguimiento.
