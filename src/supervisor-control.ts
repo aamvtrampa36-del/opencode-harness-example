@@ -1,5 +1,6 @@
 import { normalizeOwnedRepository, OPENCODE_STAGING_BASE } from "./github";
 import { isModelSelection, type ModelSelectionID } from "./model-presets";
+import type { R2PendingTurn } from "./supervisor-r2";
 
 /**
  * The remote MCP authenticates at Cloudflare Access. Every Durable Object
@@ -31,6 +32,14 @@ export type SupervisorTask = {
   /** Durable write-ahead marker. If a session creation RPC lost its response,
    * never invoke create/fork again without independent reconciliation. */
   sessionCreationAttempted?: boolean;
+  /** Only newly reserved R2 tasks are allowed to reconcile by pinned SDK ID.
+   * Legacy random-ID create/fork attempts MUST remain unknown. */
+  sessionIdPolicy?: "deterministic-v1";
+  /** Task-local operation journal cursor. T03 owns global admission/fencing. */
+  revision?: number;
+  pendingTurn?: R2PendingTurn;
+  /** Sticky negative fact: a cancelled task had an ambiguous concurrent steer. */
+  cancelAmbiguous?: boolean;
   createdAt: number;
   status: "preparing" | "running" | "finished" | "unanswered" | "failed" |
     "cancel_requested" | "cancelled" | "unknown";
