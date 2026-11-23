@@ -180,3 +180,14 @@ Correr `bun test src/github-publication-gate.test.ts src/github-pr-conflicts.tes
 **EVIDENCIA:** commits/diff de rama R2, prueba RED de carrera previa, nuevos tests y CI del HEAD (ver PR draft para estado final).  
 **BLOQUEANTE:** inyección de storage de DO común + strict mode + recuperación de `unknown`/T03; aún sin prueba E2E de Cloudflare ni control de coste.  
 **PRÓXIMA ACCIÓN:** integrar interfaz con T03 en lote T11 y ejecutar test de dos writers en Staging únicamente tras permiso/preflight de gastos, luego escalar a diez.
+
+
+## R2.7 Reconciliación con la PR paralela #130 y validación exacta
+
+Tras preparar este candidato se observó [PR #130](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/130), otra rama R2-T08 **draft** partiendo de la misma #126. No se editó esa rama ni su PR. Su cambio complementario consistía en reconciliar `PATCH /git/refs` de `replaceExact` tras error ambiguo; se incorporó en **esta rama R2 exclusiva** una versión focalizada: al producirse error de PATCH realiza un solo GET de ref, devuelve `reconciled:true` solo si HEAD es exactamente el commit deseado, y en cualquier otro caso `GITHUB_REF_UPDATE_UNKNOWN` **sin segundo PATCH**. Dos casos sintéticos nuevos prueban aplicado/no aplicado.
+
+Las implementaciones de arbitraje de #130 y #131 **son alternativas**, no deben fusionarse las dos ni duplicar contratos de `GitHubPrPublicationGate` y `GitHubPublicationGate`. Esta PR #131 aporta una clase con contrato de almacén transaccional y estado `unknown`; #130 aporta un *seam* de interfaz más pequeño, ambos pendientes de inyección T03. T11 debe elegir la integración mínima compatible, conservar las pruebas negativas y no elevar los dos schedulers a producción.
+
+Para que CI corra sobre la PR R2 **basada en #126** (base no incluida en los filtros de `.github/workflows/ci.yml`), la rama añade **solo a la rama propia** `.github/workflows/f0-c10-r2-t08.yml`: workflow temporal de `push` que reproduce Bun, preview, typecheck, build e invariantes **sin despliegue**. T11 debe excluir este workflow temporal de la integración final o decidir su mantenimiento por separado. La creación de un workflow en una rama de revisión no altera los workflows activos de main/Staging. El SHA exacto y la ejecución final están en la PR draft #131; un workflow cancelado por el siguiente push no es un fallo de código.
+
+**Dependencia no resuelta:** tanto #130 como #131 dejan el puente en modo legacy sin cableado a storage durable común; **no existe todavía exclusión live**. El siguiente gate técnico no es generar otra PR de T08 sino integración T03/T11 con pruebas de recuperación real y permisos.
