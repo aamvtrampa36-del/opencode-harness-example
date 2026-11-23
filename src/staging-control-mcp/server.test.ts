@@ -44,7 +44,7 @@ describe("OpenCode staging MCP server", () => {
     const operations: string[] = [];
     const supervisor: StagingSupervisor = {
       async remoteSupervisorStatus() { return { ready: true, defaultModel: "economy" }; },
-      async remoteSupervisorProgress(id, after = 0) { operations.push(`progress:${id}:${after}`); return { events: [], nextAfter: after }; },
+      async remoteSupervisorProgress(id, after = 0) { operations.push(`progress:${id}:${after}`); return { events: [], nextAfter: after, status: "unknown", pageAvailable: false, error: "SUPERVISOR_PROGRESS_UNAVAILABLE_UNBOUNDED_SDK", passed: true, verified: true }; },
       async remoteSupervisorContinue(input) { operations.push("continue"); return { status: "submitted", ...(input as object) }; },
       async remoteSupervisorSelectModel(id, model) { operations.push(`select:${id}:${model}`); return { id, model }; },
       async remoteSupervisorModels() { operations.push("models"); return { models: [{ selection: "economy" }] }; },
@@ -85,6 +85,7 @@ describe("OpenCode staging MCP server", () => {
         return { id: "a1234567890bcdef", status: "running", reused: false,
           branch: "opencode/staging-a1234567890bcdef" };
       },
+      async remoteSupervisorTaskStatusSnapshot(id) { operations.push("status:" + id); return { id, status: "running", session: "sesAbc123", snapshot: true, nativeReconciled: false, passed: true, verified: true }; },
       async supervisedTaskStatus(id) { operations.push("status:" + id); return { id, status: "running", session: "sesAbc123" }; },
       async cancelSupervisedTask(id) { operations.push("cancel:" + id); return { id, status: "cancelled" }; },
       async supervisedTaskReview(id) { operations.push("review:" + id); return { id, reviewRequired: true, approved: false }; },
@@ -279,20 +280,51 @@ describe("OpenCode staging MCP server", () => {
       const defaultCallsBeforeTaskStatus = defaultSupervisorCalls;
       const taskStatus = await client.callTool({ name: "staging_task_status", arguments: { id: "a1234567890bcdef" } });
       expect(JSON.parse(textContent(taskStatus))).toMatchObject({ targetWorker: STAGING_WORKER, status: "running" });
-      expect(defaultSupervisorCalls).toBe(defaultCallsBeforeTaskStatus + 1);
+      const snapshot = JSON.parse(textContent(taskStatus));
+      expect(snapshot).toMatchObject({ snapshot: true, nativeReconciled: false, passed: false, verified: false });
+      const snapshotRpc = supervisor.remoteSupervisorTaskStatusSnapshot;
+      // Backward-compatible pairing fails CLOSED; never downgrade to effectful status.
+      delete supervisor.remoteSupervisorTaskStatusSnapshot;
+      const incompatible = await client.callTool({ name: "staging_task_status", arguments: { id: "a1234567890bcdef" } });
+      expect(incompatible.isError).toBe(true);
+      expect(JSON.parse(textContent(incompatible))).toMatchObject({
+        code: "SUPERVISOR_STATUS_SNAPSHOT_UNAVAILABLE_OLD_WORKER",
+        status: "unknown", passed: false, verified: false
+      });
+      supervisor.remoteSupervisorTaskStatusSnapshot = snapshotRpc;
+      supervisor.remoteSupervisorTaskStatusSnapshot = async () => ({
+        id: "a1234567890bcdef", status: "not_found", passed: true, verified: true
+      });
+      const missingNative = await client.callTool({
+        name: "staging_task_status", arguments: { id: "a1234567890bcdef" }
+      });
+      expect(missingNative.isError).toBe(true);
+      expect(JSON.parse(textContent(missingNative))).toMatchObject({
+        status: "unknown", nativeResult: "not_found",
+        error: "SUPERVISOR_NATIVE_NOT_FOUND", passed: false, verified: false
+      });
+      supervisor.remoteSupervisorTaskStatusSnapshot = snapshotRpc;
+      expect(defaultSupervisorCalls).toBe(defaultCallsBeforeTaskStatus + 3);
       expect(customSupervisorCalls).toBe(1);
       const progress = await client.callTool({ name: "staging_task_progress", arguments: { id: "a1234567890bcdef", after: 0 } });
       expect(JSON.parse(textContent(progress))).toMatchObject({ targetWorker: STAGING_WORKER, events: [], nextAfter: 0 });
+      expect(progress.isError).toBe(true);
+      expect(JSON.parse(textContent(progress))).toMatchObject({
+        status: "unknown", pageAvailable: false, passed: false, verified: false,
+        error: "SUPERVISOR_PROGRESS_UNAVAILABLE_UNBOUNDED_SDK"
+      });
       const continued = await client.callTool({ name: "staging_task_continue", arguments: {
         id: "a1234567890bcdef", turnId: "b1234567890cdefa", prompt: "Corrige el rumbo y repite la verificación"
       } });
       expect(JSON.parse(textContent(continued))).toMatchObject({ targetWorker: STAGING_WORKER, status: "submitted" });
+      expect(JSON.parse(textContent(continued))).toMatchObject({ passed: false, verified: false, reviewRequired: true });
       const selected = await client.callTool({ name: "staging_task_select_model", arguments: {
         id: "a1234567890bcdef", model: "economy"
       } });
       expect(JSON.parse(textContent(selected))).toMatchObject({ targetWorker: STAGING_WORKER, model: "economy" });
       const cancellation = await client.callTool({ name: "staging_cancel_task", arguments: { id: "a1234567890bcdef" } });
       expect(JSON.parse(textContent(cancellation))).toMatchObject({ targetWorker: STAGING_WORKER, status: "cancelled" });
+      expect(JSON.parse(textContent(cancellation))).toMatchObject({ passed: false, verified: false, reviewRequired: true });
       const review = await client.callTool({ name: "staging_review_task", arguments: { id: "a1234567890bcdef" } });
       expect(JSON.parse(textContent(review))).toMatchObject({ targetWorker: STAGING_WORKER, reviewRequired: true, approved: false });
 
