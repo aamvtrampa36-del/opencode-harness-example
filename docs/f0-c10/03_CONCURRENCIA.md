@@ -136,3 +136,84 @@ No se copió código de terceros ni se agregaron dependencias.
 **PASS T03** solo con adaptador productivo durable y fencing real, pruebas de fallos RED→GREEN reproducibles de admisión/reconciliación, CI del HEAD, sin tareas inaccesibles o duplicadas. Actualmente **`PARTIAL`**. **`COMPLETE PASS` global** requiere además E2E autorizado diez actividades verdaderamente solapadas y outputs verificados, 3 rondas, métricas/costes e integridad.
 
 **Recibo maestro:** `F0-C10/T03 | PARTIAL | Actor ChatGPT | Source 11161dd6f2c4b5237a2da59d7275ff693e0afdbe | Worker 3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb | MCP 196240c0-1052-47b3-aaa7-02cf5baa87f0 | Node offline GREEN 13/13 exit0 | RED sintético 2/2 exit1 | Remote nuevos requestId/sessionId/operationId: ninguno | Inferencia nueva: ninguna | No deploy/merge | Próxima acción: coordinar T04 e integrar journal/claims reales bajo pruebas, antes de lote Stage`.
+
+
+---
+
+# R2-T03 — Admisión durable y fencing integrado en candidato (2026-11-22/23)
+
+**Autor:** ChatGPT mediante GitHub. **Origen de comparación:** PR #126, HEAD `1268ba22f26330d619b046fcf551ca846cb69d0f` (draft/no desplegada). **Entrega R2:** [PR #135](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/135), rama propia `f0-c10/r2-t03-durable-admission-20261122`, apilada sobre #126 (no modificar su rama). **Estado:** candidato integrable, `PARTIAL / NOT RUNTIME VERIFIED`.
+
+## R2-A. Decisión de diseño y superficie de código
+
+Se implementa un **único registro de admisión**, `src/supervisor-admission.ts`, en `ctx.storage.transaction` del **mismo** Durable Object supervisor. No se añade Cloudflare Queues, otro DO scheduler, Workflow ni proveedor. El límite de protección del candidato es **10 reservas concurrentes** (constante local `DEFAULT_CAPACITY=10`), NO un límite permanente de dos y NO prueba de diez inferencias ejecutándose. La política de proveedor/presupuesto pertenece a T07 y debe consultar el mismo `requestId` y estado, sin reserva separada de trabajos.
+
+Se extiende `src/server.ts` en los puntos de entrada: `reserveSupervisorAdmission` reemplaza la reserva sin contador; los cuatro efectos externos relevantes quedan protegidos con escritura de intención **anterior a RPC** y acuse explícito: `github_branch`, `session_create`, `configure`, `submit`. El lock local por ID existente continúa como exclusión de llamada; la **autoridad de fencing** es el registro persistido, no la vigencia de ese lock de 60 s. Se rechazan generaciones/tokens antiguos incluso si el lock se ha liberado o vencido. No se exponen tokens en recibos públicos.
+
+El ledger `supervisor:admission:v1` es **acotado a diez slots**, mantiene solo solicitudes que ocupan capacidad; la identidad/digest permanente permanece en `supervisor:task:<id>`. La reserva transaccional guarda simultáneamente tarea y slot. Un onceavo ID recibe `accepted:false,status:capacity_rejected,reason:CAPACITY_EXHAUSTED,retryAfterMs:1000`, **sin crear** registro ni efecto; el cliente puede reintentar con el **mismo** ID. La capacidad solo se libera si un estado terminal ya está persistido y el slot no permanece `effect_unknown`. Los estados ambiguos consumen capacidad visiblemente: no se reciclan silenciosamente.
+
+**Caveat:** esta primera integración **no** sustituye el trabajo pendiente de T04: un `session_create` que devolvió error tras crear una sesión puede permanecer `effect_unknown` hasta reconciliación externa. Una espera indefinite evita doble gasto pero puede bloquear capacidad; es intencional y se señala como incidente operativo, no se denomina recuperación completa. El candidato tampoco cuenta en su ledger inicial las tareas legacy anteriores: su reentrada queda conservadoramente bloqueada (`LEGACY_RECONCILE_REQUIRED`). Un rollout real exige plan de bootstrap/migración sin modificar DO existentes bajo esta autorización.
+
+## R2-B. Contrato de identidad y flujo
+
+```mermaid
+flowchart TD
+  A[staging_start_task requestId] --> B[Validación allowlist + SHA256 fingerprint]
+  B --> C{Transacción ledger y task}
+  C -->|mismo id huella distinta| X[Conflict sin efecto]
+  C -->|mismo id existente| R[Receipt previo / UNKNOWN]
+  C -->|slots 10| P[capacity_rejected sin tarea]
+  C -->|slot libre| D[task preparing + grant token generation]
+  D --> E[Start lock auxiliar]
+  E --> F[beginEffect durable]
+  F --> G[GitHub / session SDK / configure / submit]
+  G -->|recibo positivo| H[ackEffect durable]
+  G -->|crash timeout sin recibo| U[effect_unknown conservado]
+  H --> I[Próxima etapa con el mismo grant]
+  I --> F
+  H --> J[submit confirmado - running]
+  J --> K[status/progress y receipt nativo]
+  K -->|done / respuesta real| L[terminal persistido; slot liberable]
+  K -->|not_found| U
+```
+
+**Máquina del control de admisión:** `reserved → effect_unknown → reserved` para GitHub/session/configure acreditados; `effect_unknown(submit) → running` solo tras receipt de `submit` o `wait` nativo inequívoco, nunca con `not_found`. `running → terminal` se refleja en la tarea T04/supervisor y se recoge al admitir la siguiente solicitud. `reserved` no usado puede reclamarse al vencer lease con **generación aumentada**; el viejo actor pierde el derecho a comenzar nuevos efectos. `effect_unknown` **nunca se reclama por TTL**. El cierre de tarea observable sigue la máquina T04, no nace una máquina de resultados separada.
+
+**Fingerprint (sin cambio):** SHA-256 de repositorio normalizado, prompt recortado, selección de modelo (`economy` por defecto) y sesión origen. Mismo `requestId`+huella devuelve registro anterior, nunca reenvía el submit si la operación es dudosa. Mismo ID con huella distinta = error. `operationId=rc-start-<requestId>` no reemplaza la prueba de recibo nativo.
+
+**Interfaces propuestas a T04:** `reserveSupervisorAdmission(storage,task,now)`, `supervisorBeginExternalEffect(storage,grant,effect,now)`, `supervisorConfirmExternalEffect(storage,grant,effect,receipt,now)`, `reconcileSupervisorSubmittedEffect(storage,id,operationId,nativeReceipt)`, `hasSupervisorAdmissionSlot(tx,id)` y `supervisorAdmissionSlot(storage,id)`. El primer método mantiene `supervisor:task:<id>` como registro T04 autoritativo, el último devuelve copia de observación; los campos `token/generation` son **internos**, jamás instrucciones de cliente. T04 debe completar la conciliación del `sessionId` perdido y races continue/cancel con estas mismas transacciones, sin un segundo journal de capacidad.
+
+**Interfaz a T07:** consulta de disponibilidad de inferencia y corte de gasto efectivo **antes** de permitir `submit` cuando exista un controlador efectivo. Un límite RPM del proveedor **no** debe cambiar retroactivamente `requestId` ni crear un segundo registro de trabajos. Hasta ese controlador, esta rama no permite validación live pagada.
+
+## R2-C. Casos RED/GREEN
+
+- **RED histórico reproducido, no reinterpretado:** `scripts/f0-c10-t03/known-red.red.mjs` contiene los dos fallos sintéticos originales (2 FAIL esperados): sesión duplicada tras crash entre creación y persistencia; dos starters activos por TTL del lock viejo. Siguen siendo tests de la ruta anterior y no se incluyen en la suite verde estándar.
+- **GREEN de referencia R1:** `scripts/f0-c10-t03/admission.test.mjs` 13/13 PASS offline (in-memory; no DO).
+- **GREEN de unidad R2 en candidata:** `src/supervisor-admission.test.ts` usa store sintético serializado con rollback de transacciones y ejercita 14 casos: 10 reservas + rechazo del 11.º, dos solicitantes del mismo ID, 100 retries y huella diferente, expiración sin efecto con nuevo fencing, TTL con efecto incierto inamovible, reinicio/restauración de storage, etapas con ack, acuse falso, liberación tras terminal, ausencia de slot legacy, cancelación, ledger corrupto, 1→2→4→10 y `not_found` sin reconciliación frente a `done` positivo. **La ejecución CI del HEAD debe verificarse aparte**: escribir estos tests no es afirmar que ya pasaron.
+- **Limitación:** el test dobla la interfaz `DurableObjectStorage.transaction` pero **no** ejecuta workerd, SQL real, Harness ni diez operaciones de inferencia. La integración `src/server.ts` todavía necesita pruebas de fallo inyectado en la propia ruta de RPC y análisis de T04/T07. No se infiere la causa OOM.
+
+## R2-D. Investigación de código abierto (código y licencia verificados)
+
+Los siguientes repositorios fueron leídos en commits **anclados** con sus archivos de licencia; se **reutilizó el patrón**, no se copió su código ni se añadieron paquetes.
+
+| Proyecto / commit y código | Licencia observada | Patrón y límites |
+| --- | --- | --- |
+| [BullMQ `20e2abb0daa434c3a56ad9b07b8a61d09a16bfe6`](https://github.com/taskforcesh/bullmq/tree/20e2abb0daa434c3a56ad9b07b8a61d09a16bfe6), `src/classes/worker.ts`, `src/commands/moveToActive-11.lua` | MIT, archivo `LICENSE` leído en ese SHA | Operación de mover a activo y lock en Lua/Redis; lock vencido no prueba exactly-once de GitHub/LLM. No incorporar Redis. |
+| [Graphile Worker `b4f1b41c7abd747586879bf68a46a5a22897fa96`](https://github.com/graphile/worker/tree/b4f1b41c7abd747586879bf68a46a5a22897fa96), `src/runner.ts` | MIT, `LICENSE.md` leído | Worker pool con captura transaccional de jobs; depende de PostgreSQL/Node; no compatible directamente con DO. |
+| [Temporal TypeScript `f5107ac96256c217cccf98cff278175bfa35b21e`](https://github.com/temporalio/sdk-typescript/tree/f5107ac96256c217cccf98cff278175bfa35b21e), `packages/worker/src/worker-options.ts` | MIT, `LICENSE` leído | Separa límites de tareas/workers, ejecución y pollers. Su worker Node nativo no se traslada a workerd sin una plataforma nueva. |
+| [Cloudflare Durable Object transaction rules](https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/) | Documentación de plataforma, no código incorporado | Input/output gates y transacción; await de red permite intercalado y exige fencing antes de side effects. |
+
+## R2-E. Riesgos restantes, gates y no autorización
+
+1. **Typecheck/CI**: aceptación de esta rama solo con resultados de Actions cuyo `head_sha` coincida con la última revisión y pruebas focales nuevas. Un CI verde en #126 no valida automáticamente R2.
+2. **E2E de fallos:** inyectar reinicios entre `beginEffect`/SDK/ack, comprobar el almacenamiento de la sesión y una única ejecución real; **no** efectuado en este encargo.
+3. **T04:** reconciliar sesiones creadas sin identificador persistido, señal de aborto y `continue` bajo el mismo grant, evitar cancel falso, añadir limpieza/recuperación autorizada. `effect_unknown` consume slot hasta prueba positiva.
+4. **T07:** límite de proveedor, presupuesto y corte efectivo; no se activó inferencia ni se gastó en Remote.
+5. **Memoria T01/T02:** diez reservas técnicas no demuestran que diez SDK sessions quepan en el isolate. La observación de diez actividades reales y resultados finales pertenece a T10 y al gate E2E global.
+6. **Integración T11:** revisar conflicto potencial con R2 T04/T05 y R2 T08 (fencing de PR en `src/github.ts`). No se alteraron esas ramas.
+
+**Resultado a comunicar al maestro:** `R2-T03 PARTIAL; PR #135 draft desde #126; durable admission + fencing integrado en candidata; CI HEAD pendiente; Stage sin cambios; zero starts/remote inference; presupuesto sin corte; falta E2E/T04/T07`. **No MERGE / NO DEPLOY / NO COMPLETE PASS.**
+
+**CI R2 focal:** workflow `.github/workflows/f0-c10-r2-t03-admission.yml`, permisos `contents:read`, solo Bun 1.4.4, suites de admisión/T04, typecheck/build e invariantes, sin Cloudflare/Remote. La PR puede apuntarse temporalmente a Staging para disparar CI de revisión, pero debe volver a base #126 antes de entregar; ningún resultado será declarado sin run y SHA exactos.
+
+**Evidencia CI focal verificada (commit anterior):** [run #45097034304](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45097034304), HEAD `416dc1209d4ca3bbcfe4014b44a3897ffadd7b83`, `completed/success`; 30/30 pruebas Bun focales, `typecheck`, build Worker/cliente e invariantes PASS. Después se amplió el workflow de validación para incluir `bun test` completo, R1 GREEN 13/13 y la expectativa explícita de RED sintéticos 2/2; **exige un nuevo run del último HEAD**. No hay inferencia ni cambio del runtime remoto.

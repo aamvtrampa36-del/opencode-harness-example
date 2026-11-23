@@ -18,6 +18,11 @@ import { OpenCodeSessionSockets } from "./sockets";
 import { collectSupervisorDirectory, supervisorTaskCount } from "./supervisor-directory";
 import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
 import { projectSupervisorProgress } from "./supervisor-progress";
+import {
+  reserveSupervisorAdmission, supervisorBeginExternalEffect,
+  supervisorConfirmExternalEffect, supervisorAdmissionSlot,
+  hasSupervisorAdmissionSlot, reconcileSupervisorSubmittedEffect, type StartGrant
+} from "./supervisor-admission";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
 import { createDynamicMcpHost } from "./dynamic-mcp-bridge";
@@ -107,25 +112,25 @@ export class OpenCodeAgent extends DurableObject<Env> {
       sessionCreationAttempted: false,
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
-    if (!old) {
-      // Atomic reservation prevents duplicate branches and duplicate model spending.
-      const reservation = await this.ctx.storage.transaction(async tx => {
-        const current = await tx.get<SupervisorTask>(key);
-        if (current) return { task: current, created: false };
-        await tx.put(key, job);
-        return { task: job, created: true };
-      });
-      old = reservation.task;
-      reused = !reservation.created;
-      if (old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
+    const admission = await reserveSupervisorAdmission(this.ctx.storage, job);
+    if (admission.kind === "capacity") {
+      return { id: start.requestId, accepted: false, status: "capacity_rejected",
+        reason: admission.reason, retryAfterMs: admission.retryAfterMs, capacity: 10 };
     }
+    if (admission.kind === "reused") {
+      return { ...this.supervisorTaskReceipt(admission.task, true), admitted: true,
+        admissionState: admission.slot?.phase ?? "legacy_reconcile_required",
+        admissionReason: admission.reason };
+    }
+    old = admission.task;
+    reused = admission.reused;
     return this.withSupervisorStartLock(start.requestId, async () => {
       const saved = await this.ctx.storage.get<SupervisorTask>(key);
       if (!saved) throw new Error("La reserva de la tarea desapareció");
       if (["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(saved.status)) {
         return this.supervisorTaskReceipt(saved, true);
       }
-      return this.advanceSupervisedTask(saved, start, reused);
+      return this.advanceSupervisedTask(saved, start, reused, admission.grant);
     }, old);
   }
 
@@ -158,14 +163,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   private async advanceSupervisedTask(
-    job: SupervisorTask, start: ReturnType<typeof validateSupervisorStart>, reused: boolean
+    job: SupervisorTask, start: ReturnType<typeof validateSupervisorStart>, reused: boolean,
+    grant: StartGrant
   ) {
     const key = supervisorTaskKey(job.id);
     try {
       if (!job.baseCommit) {
         // The deterministic branch reservation safely recovers after a lost GitHub response.
+        await supervisorBeginExternalEffect(this.ctx.storage, grant, "github_branch");
         const branchResult = await this.githubRunner.ensureSupervisorBranch(job.repository, job.branch);
-        job.baseCommit = supervisorBaseCommit(branchResult, job.repository);
+        const sha = supervisorBaseCommit(branchResult, job.repository);
+        await supervisorConfirmExternalEffect(this.ctx.storage, grant, "github_branch", { confirmed: true });
+        job.baseCommit = sha;
         job.updatedAt = Date.now();
         await this.ctx.storage.put(key, job);
       }
@@ -183,16 +192,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
           const exists = (await this.harness.sessions.list()).some(item => item.id === start.sourceSession);
           if (!exists) throw new Error("La sesión de origen ya no existe en este workspace");
         }
+        await supervisorBeginExternalEffect(this.ctx.storage, grant, "session_create");
         job.sessionCreationAttempted = true;
         job.updatedAt = Date.now();
         await this.ctx.storage.put(key, job);
         const created = start.sourceSession
           ? await this.harness.sessions.fork(start.sourceSession)
           : await this.harness.sessions.create();
-        // Persist the returned identity before doing scope/index work.
+        // Persist receipt before releasing the effect fence.
         job.session = created.id;
         job.updatedAt = Date.now();
         await this.ctx.storage.put(key, job);
+        await supervisorConfirmExternalEffect(this.ctx.storage, grant, "session_create", { confirmed: true });
         await this.bindSessionScope(created.id, { project: job.project, repository: job.repository });
         // The model may not create a second branch, or write outside its branch.
         await this.ctx.storage.put("supervisor:session:" + created.id, job.id);
@@ -200,9 +211,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
       const handle = this.harness.session(job.session!);
       if (!job.operationId) {
+        await supervisorBeginExternalEffect(this.ctx.storage, grant, "configure");
         await handle.setAgent("build");
         const model = resolveModelSelection(job.model ?? "economy");
         await handle.setModel(model);
+        await supervisorConfirmExternalEffect(this.ctx.storage, grant, "configure", { confirmed: true });
         job.operationId = supervisorStartOperationId(job.id);
         job.status = "running";
         job.updatedAt = Date.now();
@@ -210,10 +223,17 @@ export class OpenCodeAgent extends DurableObject<Env> {
         await this.ctx.storage.put(key, job);
       }
     } catch (error) {
+      if (error instanceof Error && error.message === "ADMISSION_FENCE_REJECTED") {
+        // A fenced-out stale starter cannot overwrite the new owner's record.
+        return this.supervisorTaskReceipt(await this.supervisedRecord(job.id), true);
+      }
+      const slot = await supervisorAdmissionSlot(this.ctx.storage, job.id);
+      const uncertainEffect = slot?.phase === "effect_unknown";
       const uncertainCreate = job.sessionCreationAttempted === true && !job.session;
-      job.status = uncertainCreate ? "unknown" : "failed";
+      job.status = uncertainEffect || uncertainCreate ? "unknown" : "failed";
       const detail = error instanceof Error ? error.message.slice(0, 180) : "No se pudo iniciar la tarea";
-      job.error = uncertainCreate ? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED: " + detail : detail;
+      job.error = uncertainCreate ? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED: " + detail :
+        uncertainEffect ? "ADMISSION_EXTERNAL_EFFECT_UNCONFIRMED: " + detail : detail;
       job.updatedAt = Date.now();
       await this.ctx.storage.put(key, job);
     }
@@ -221,10 +241,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
       return this.supervisorTaskReceipt(job, reused);
     }
     try {
+      await supervisorBeginExternalEffect(this.ctx.storage, grant, "submit");
       const receipt = await this.harness.session(job.session).submit(
         supervisorPrompt(start, job.branch, job.project, job.baseCommit),
         { operationId: job.operationId, whenBusy: "followUp" }
       );
+      await supervisorConfirmExternalEffect(this.ctx.storage, grant, "submit",
+        { confirmed: typeof receipt.accepted === "boolean" });
       job.status = "running";
       job.error = undefined;
       job.updatedAt = Date.now();
@@ -471,12 +494,16 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async supervisedTaskStatus(id: string): Promise<unknown> {
     this.assertStagingRemote();
     const job = await this.supervisedRecord(id);
+    const admission = await supervisorAdmissionSlot(this.ctx.storage, id);
     const base = { id: job.id, repository: job.repository, project: job.project,
+      admissionState: admission?.phase ?? "legacy_or_released",
+      ...(admission?.effect ? { admissionEffect: admission.effect } : {}),
       branch: job.branch, baseCommit: job.baseCommit, session: job.session, startedAt: job.createdAt,
       updatedAt: job.updatedAt, operationId: job.operationId, model: job.model, error: job.error,
       ...(job.forkedFrom ? { forkedFrom: job.forkedFrom } : {}) };
     if (!job.session) {
-      const uncertain = job.sessionCreationAttempted === true;
+      const uncertain = job.sessionCreationAttempted === true ||
+        admission?.phase === "effect_unknown";
       return { ...base, status: uncertain ? "unknown" : job.status,
         error: uncertain ? (job.error ?? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED") : job.error,
         reviewRequired: true, passed: false, verified: false };
@@ -496,6 +523,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (!waitController.signal.aborted) waitError = error instanceof Error ? error.message.slice(0, 200) : "No se pudo esperar la operación";
     } finally {
       clearTimeout(waitTimer);
+    }
+    if (job.operationId && operation &&
+        (operation.status === "done" ||
+          operation.status === "unanswered" && operation.reason !== "not_found")) {
+      await reconcileSupervisorSubmittedEffect(this.ctx.storage, id, job.operationId, operation);
     }
     // Never materialize a complete tool transcript in the supervisor's
     // memory-constrained Durable Object on every status poll. The durable
@@ -571,8 +603,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
         const fresh = await tx.get<SupervisorTask>(key);
         if (!fresh) throw new Error("Tarea del supervisor inexistente");
         const lock = await tx.get<{ token: string }>("supervisor:lock:" + id);
+        const admissionActive = await hasSupervisorAdmissionSlot(tx, id);
         if (fresh.session) return { kind: "bound" as const, task: fresh };
-        if (!canConfirmSupervisorPreSessionCancellation(fresh, Boolean(lock))) {
+        if (!canConfirmSupervisorPreSessionCancellation(fresh, Boolean(lock) || admissionActive)) {
           return { kind: "uncertain" as const, task: fresh };
         }
         if (["cancelled", "failed", "finished", "unanswered"].includes(fresh.status)) {
