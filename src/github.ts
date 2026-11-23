@@ -580,6 +580,11 @@ export class GitHubBridge {
       }
       case "pr": {
         const branch = branchChecked(input.branch);
+        // Every supervised Staging draft must use one durable publication
+        // authority. Legacy/uncoordinated writers fail closed for this scope.
+        if (repo.toLowerCase() === OPENCODE_REPO.toLowerCase() &&
+            STAGING_REVIEW.test(branch) && !this.publicationGate)
+          throw new Error("PR_PUBLICATION_COORDINATOR_REQUIRED");
         if (typeof input.title !== "string" || !input.title.trim() || input.title.length > 160) {
           throw new Error("Pull request title must be between 1 and 160 characters");
         }
@@ -644,7 +649,7 @@ export class GitHubBridge {
               typeof item.html_url === "string" && item.html_url.length > 0;
             if (exactIntent) {
               return { repo, number: item.number, url: item.html_url, draft: true,
-                base: source, head: branch, headSha, reconciled: true };
+                base: source, head: branch, baseSha, headSha, reconciled: true };
             }
             throw new Error("PR_ALREADY_OPEN: same branch with different or unverifiable intent");
           }
@@ -677,7 +682,8 @@ export class GitHubBridge {
           title: input.title, body: desiredBody,
           head: branch, base: source, draft: true
         });
-        return { repo, number: created.number, url: created.html_url, draft: created.draft, base: source, head: branch };
+        return { repo, number: created.number, url: created.html_url, draft: created.draft,
+          base: source, head: branch, baseSha, headSha };
         };
         return this.publicationGate
           ? this.publicationGate.withExclusive({ repo, base: source, branch, title: input.title, body: desiredBody }, attempt)
