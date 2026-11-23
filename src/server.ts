@@ -1622,6 +1622,7 @@ export default {
         // Clients must send the bearer in a header, never in the URL.
         const artifact = url.pathname.match(/^\/api\/supervisor\/v1\/tasks\/([a-f0-9]{16})\/artifacts(?:\/([a-f0-9]{32}))?$/);
         if (artifact) {
+          if (url.search) return supervisorResponse({ error: "ARTIFACT_QUERY_NOT_ALLOWED" }, 400);
           try {
             if (!artifact[2] && request.method === "GET")
               return supervisorResponse(await host.supervisedTaskArtifacts(artifact[1]));
