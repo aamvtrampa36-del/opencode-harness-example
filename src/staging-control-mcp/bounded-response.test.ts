@@ -60,6 +60,17 @@ describe("F0-C10/R2-T05 bounded MCP serialization", () => {
     expect(result.passed).toBe(false);
     expect(result.verified).toBe(false);
   });
+  test("partial count projections never advertise full verification", () => {
+    const text=boundedMcpJsonText({status:"passed",toolCountsComplete:true,
+      supervisedCountComplete:true,passed:true,verified:true,extra:"x".repeat(2_000_000)});
+    const page=JSON.parse(text);
+    expect(page._responseTruncated).toBe(true);
+    expect(page.toolCountsComplete).toBe(false);
+    expect(page.supervisedCountComplete).toBe(false);
+    expect(page.passed).toBe(false);
+    expect(page.verified).toBe(false);
+  });
+
   test("ten interleaved MCP projections do not mix task IDs", async () => {
     const pages=await Promise.all(Array.from({length:10},async(_,i)=>{
       const id=i.toString(16).padStart(16,"0");
