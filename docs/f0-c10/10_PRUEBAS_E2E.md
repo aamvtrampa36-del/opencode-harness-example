@@ -166,3 +166,65 @@ La CI de esta PR confirma únicamente el verificador offline y las pruebas de re
 
 
 **R2-contrapruebas adicionales:** El análisis de CI detectó y corrigió una comprobación que confundía `clockSyncMaxSkewMs:0` con ausencia; el primer run RED tuvo 39 PASS y 2 FAIL del fixture firmado, ambos por esa condición. El HEAD `a9e663d15d8acc1b7267697f5e49afdc451b24d3` pasó 41/41 pruebas Node (`exit=0`), la suite 18/18 (`exit=0`) y las regresiones de Bun, build, preview, typecheck e invariantes, así como el workflow T09. Recibos: [offline #45100382647](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45100382647), [general #45100382645](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45100382645), [T09 #45100382687](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45100382687). **Esa evidencia corresponde al HEAD anterior; los tres negativos de OOM/sondeo/presupuesto agregado incorporados posteriormente requieren CI nuevo del HEAD final.** El coste monetario de las ejecuciones de GitHub Actions no se ha conciliado: no declararlo cero. Inferecia pagada sobre Staging: ninguna.
+
+
+---
+
+## PARTE R3 — T10: oráculo de observaciones y handoff único a T11 (23-11-2026)
+
+**Criterio RED antes del parche:** las firmas Ed25519 de #141 cubrían JSON reconstruido por un test `runMock()` y los valores `source='runtime'`. Un test sintético con claves efímeras podía devolver `pass:true` en el modo `live` porque no había una segunda fuente de **observación primaria de la llamada**. El informe R2 reconocía el riesgo; la implementación actual no instalaba ningún colector real. La meta de R3 es cerrar ese falso positivo por ausencia de recibo primario y entregar a T11 un contrato único, sin carga real.
+
+**Fuente de partida:** cadena apilada #126 → #143 → #144 → #145, HEAD de código #145 `a49e985909cb56bb42c609c9cd5cb4250a620169`. Documentación R3 de #146 `05da68fd1644f92578588c62a4586d561c418c49`, utilizada como base exacta del parche. #145 y #146 siguen draft, no fusionadas. El informe `14_SESSION_RECOVERY_READMISSION.md` confirma ledger T03 `supervisor:admission:v1`, claves `token+generation`, GET por sesión exacta y estados `effect_unknown`; esto NO es observación de tool/inference. El issue #90 continúa OPEN con 0/10 resultados verificados en el episodio histórico, seis inicios con OOM, y ninguna ventana de diez trabajos probada.
+
+### 1. Contrato implementado, sin nuevas dependencias ni recursos
+
+`scripts/f0-c10/observed-journal.mjs` verifica un diario de observaciones que debe proceder de tres **fuentes distintas fuera del modelo**. Todo registro contiene `origin` (`do`, `container`, `provider`), `collectorId`, `deploymentId`, `clockProofId`, `sourceSha`, `workerVersion`, `experimentId`, `fencingToken`, `seq`, `epoch`, `prevHash`, `observedAtMs` y el evento observado (con `requestId`, `sessionId`, `operationId`, `projectId`, `executorId`, `atMs`, `seq` y el resto del contrato T10). Para herramientas se exigen además `containerId`, hash del comando, `callId` y `exitCode`; para inferencia, `providerRequestId`, modelo, `callId` y resultado. Los marcadores de admisión/estado/output deben proceder del observador DO; `test_result` y salidas de comando del Container; las parejas de inferencia del observador proveedor. No se infiere actividad a partir de `busy=true`, de diez HTTP iniciados o de `finished`.
+
+Cada observación va firmada por su propio colector Ed25519 con dominio `OPEN-CODE/F0-C10/OBSERVED-JOURNAL/V1`; se valida una cadena hash por fuente, numeración contigua, `epoch` y `prevHash`, sin ordenar en silencio eventos ausentes o repetidos. Un `observer_resume` firmado con hash de último evento permite pasar a la siguiente época; las parejas start/end no pueden cruzar una época reiniciada sin un recibo final auténtico. Se permiten eventos entremezclados entre DO, Container y proveedor. **Ningún test crea archivos de claves de producción, hace deploy o toca DO.**
+
+El operador de T11 proporciona **fuera de la traza** el trust store con claves públicas específicas `runtime/artifact/telemetry/budget` heredadas de #141, tres claves distintas de observadores y **una aprobación Ed25519 adicional firmada por una raíz de operador**. La aprobación vincula huellas públicas de cada observador, IDs/deployments, fuente SHA, versiones, lease, fencing y recibo externo de sincronización de reloj. La firma del modelo, una clave incrustada en su propia salida o cambiar `source` a `runtime` no reemplazan esas credenciales. Las pruebas generan claves **únicamente efímeras y en memoria**; cualquier fixture en modo `live` es solo un ensayo del verificador, nunca prueba de producción. Las firmas autentican a un *firmante*, no certifican por sí solas que un API auténtico fue consultado: el propietario de cada colector debe auditar implementación, secretos, ACL, infraestructura y ruta de despliegue.
+
+`evaluateTrace()` exige que **cada evento no-artifact_readback** coincida byteestructuralmente con un registro primario firmado, incluyendo identidades y fencing, y comprueba que toda pareja de actividad tiene begin/end con mismo `callId` y mismo ciclo del observador. Las lecturas de archivos siguen la atestación separada T09 con GET autenticado, SHA-256 calculado sobre bytes, tamaño, propiedad de tarea y oráculo determinista. El solapamiento exigido se evalúa de forma conservadora: **10 intervalos + >=1000ms después de descontar 2× el máximo error de reloj aprobado**; la cota de incertidumbre debe ser <=250ms por reloj y comprobada con recibo independiente, no un número autodeclarado. Las muestras de isolate se atribuyen a Cloudflare y su versión, nunca a una sola sesión sin evidencia.
+
+**Lo que R3 implementa:** consumidor/verificador offline de un diario firmado, anclaje de claves, detección de huecos/replays/reinicios, comparación de eventos y solapamiento conservador. **Lo que NO implementa:** emisores efectivos en workerd/Container/inferencia, raíz de operador real, consulta de Cloudflare con queryId, GET autenticado de bytes en Staging, verificación de reloj independiente ni presupuestos/gates efectivos. No afirmar `LIVE_ACCEPTED` cuando faltan.
+
+### 2. RED/GREEN obligatorio (solo offline)
+
+Ejecutar desde el checkout exacto, Node >=20/Bun 1.4.4:
+
+```sh
+node --test scripts/f0-c10/evaluate.test.mjs scripts/f0-c10/live-evidence.test.mjs
+node scripts/f0-c10/run-offline.mjs --suite --out f0-c10-offline-evidence.json
+bun test
+bun scripts/test-preview.mjs
+bun run typecheck
+bun run build
+bun scripts/check-invariants.mjs
+```
+
+El workflow existente `.github/workflows/f0-c10-offline.yml` verifica el HEAD y ejecuta las pruebas; no se ha añadido un segundo workflow. El CLI `verify-live.mjs` solo verifica archivos `--traces/--trust/--limits` suministrados por el operador, no crea traces ni infiere; su ausencia de datos sale con exit `2`. Los negativos deben salir `RED` (verificador rechaza) mientras **el test unitario sale 0**, nunca convertir un rechazo esperado en fallo de CI.
+
+Casos prioritarios: #90 perfil histórico *sintético* (no volcado crudo); diez solicitudes y cero herramientas; diez `busy`; start/end inventados después de firmar; reloj alterado; salida de otro proyecto; respuesta `completed` ausente; OOM reportado por runtime o Cloudflare; cancel; huérfano `not_found`; coste parcial/inexistente; firma del propio modelo; raíz de operador ajena; cambio de deployment/SHA; clave de observador reutilizada; duplicación/replay de secuencias; corte de cadena hash; cambio de época sin `observer_resume`; inference sin recibo proveedor; interleaving normal de diez tasks y reanudación firmada de DO sin efectos a medias. Se admite GREEN de **formato firmado** bajo claves efímeras de test, nunca GREEN de Staging.
+
+### 3. Receta preregistrada para T11 — STOP antes de pagar
+
+**Preflight sin inferencia (todos obligatorios):**
+
+1. **T01:** fuente instrumentada con queryId Cloudflare/Observability, versión exacta, métricas OOM/reset y memoria del isolate; confirmar traza bajo cada deployment, distinguir DOs que comparten isolate. Un `supervisor.phase.v1` agregado sin IDs personales no demuestra correlación con diez `requestId`; necesita ruta protegida del coletor autorizado.
+2. **T02:** demostrar headroom medido de isolate/Container y que diez trabajos no migran ni interfieren. Medir la cota <=102.4MiB por isolate que realmente interviene, sin asignar 128MiB independientes a diez DO. Si no hay muestras durante la ventana real, STOP.
+3. **T03/T04:** admisión durable con fence real, lease atómico y exclusión en Staging, diez slots controlados incluyendo rutas legacy; recuperación de `effect_unknown` sin otro `create`/submit; nunca liberar reserva por TTL solo. Confirmar origen SHA↔binario, estados, reversión y permisos server-side.
+4. **T07:** tarifa/modelo/proveedor realmente habilitados, cuota, rate limits, reservas y medición reconciliable, corte técnico **total** (inferencia + Workers + DO + Containers + observabilidad + CI + egress) y `maxCostUsd` y `maxCampaignCostUsd` positivos **antes de comenzar**. Una constante de presupuesto o `maxCostUsd:null` es STOP.
+5. **T09:** GET real autenticado de artefactos por tarea/owner con ACL y lectura byte-exact de los diez resultados; retención/caducidad; `403/404/409/410` pertinentes y prueba Android cuando el gate la requiera. Paths internos y `file` declarado por modelo no cuentan.
+6. **T10/infra:** colectores DO, Container, proveedor, artefacto, Cloudflare y presupuesto con claves separadas aprobadas por operador, versión del colector/release, IDs reales, prueba de reloj común y hash encadenado a través de reinicio; control de acceso al trust store fuera de la traza. Si cualquiera es mock o no está autenticado, STOP sin inferencia.
+
+**Ejecución real futura (no autorizada aquí):** bloquear el lease con fence y comparar workers/HEAD↔artefacto publicados, registrar control de gasto y condiciones de aborto; empezar **1→2→4→10**, con status leído durante actividad y pruebas acotadas de recuperación/cancelación. Solo si cada escalón entrega N/N readbacks correctos sin OOM/huérfanos/mezclas, realizar **3 campañas independientes de diez**. Exigir por ronda diez `tool/inference start/end` auténticos, ventana común real >=1s descontada incertidumbre de reloj, 10/10 artefactos recuperados byte-exact, p95 admisión <=10s, p95 status <=5s, duración <=180s, <=1 retry por tarea, memoria <=102.4 MiB por isolate, 0 OOM/reset/huérfanos/duplicados/cancelaciones inesperadas, costes por ronda y acumulados por debajo de topes técnicos. Pre-registrar tolerancia de precio/tokens y no cambiar umbrales después de un resultado RED.
+
+**Abort inmediato:** fallo de lease/fence, desalineación SHA/source, clock sync no demostrable, pérdida/hueco del diario firmado, inicios sin salida correlacionada, evento sin fuente autenticada, OOM/reset, mezcla de proyectos, output ilegible, coste desconocido o reserva insuficiente, provider 402 o efecto de cobro `UNKNOWN`, reintento potencialmente duplicado, permisos/ACL ambiguos o estado Staging ajeno activo. Detener sin cancelar tareas ajenas ni convertir `unknown/not_found` en PASS.
+
+### 4. Integración, licencias y procedencia
+
+El cambio se limita a `scripts/f0-c10/` y este informe, sin alterar scheduler, Worker/MCP, DO, Access, middleware, claves ni la PR #145/#146. Se reutilizó el patrón existente de `node:crypto` y los oráculos de #119/#141, sin copiar módulos externos. Referencias comparadas anteriormente: [DeepSeek Harness @ 4b399c39…](https://github.com/deepseek-ai/deepseek-harness/commit/4b399c39a6d1479cd84ca591b4d7c88e24d38a96), [OpenHands SDK @ ebec01b3…](https://github.com/OpenHands/software-agent-sdk/commit/ebec01b3893696c2f5454762eb44796c71bb391a), [SWE-agent @ 3ea751c0…](https://github.com/SWE-agent/SWE-agent/commit/3ea751c087f32b16e039a2233dd6eefecef325d5); licencias MIT verificadas en el encargo anterior, no se ha integrado nada de sus repos. El código nuevo es JavaScript nativo Node/Bun sin paquetes instalados ni costes de inferencia.
+
+**Autoría real:** ChatGPT vía GitHub y GitHub Actions, no OpenCode Remote, no Codex. Lecturas Cloudflare GET y Remote `staging_status` sin efectos; Worker `3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb` 100 % y MCP `196240c0-1052-47b3-aaa7-02cf5baa87f0` 100 %, desplegados antes de la PR, NO procedentes de R3. Remote solo devolvió `ready=true`, recuento >=96 sesiones incompleto: NO es actividad probada. Coste monetario exacto de GitHub Actions, llamadas GET y observabilidad: **desconocido**; coste de inferencia nueva en Staging: no hubo llamadas de generación. Estado global: `PARTIAL / NO COMPLETE PASS`.
+
+**Única entrega:** entregar PR draft R3 de esta rama a T11, con test/CI del HEAD exacto y copia de documentación no sensible en Biblioteca con recibo si es posible. No crear cuarta ronda R3 de especialistas ni repetir experimentos históricos.
