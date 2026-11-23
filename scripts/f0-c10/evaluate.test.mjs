@@ -44,6 +44,18 @@ test('flag verified=true cannot override absent artifact', async () => {
   const result = evaluateTrace(trace);
   assert.ok(result.failures.some((f) => f.code === 'OUTPUT_ISOLATION'));
 });
+test('producer output cannot pass without separate artifact retrieval', async () => {
+  const trace = await runMock({ size: 10, fault: 'missing-readback' });
+  const report = evaluateTrace(trace);
+  assert.equal(report.pass, false);
+  assert.ok(report.failures.some((f) => f.code === 'ARTIFACT_READBACK_MISSING'));
+});
+test('valid producer output with corrupted readback must fail', async () => {
+  const trace = await runMock({ size: 10, fault: 'corrupt-readback' });
+  const report = evaluateTrace(trace);
+  assert.equal(report.pass, false);
+  assert.ok(report.failures.some((f) => f.code === 'ARTIFACT_READBACK_MISMATCH'));
+});
 test('invalid TDD tool evidence is rejected', async () => {
   const trace = await runMock({ size: 10 });
   trace.events.find((e) => e.type === 'test_result' && e.phase === 'red').exitCode = 0;
