@@ -106,6 +106,11 @@ try {
   // Destroy only the local Wrangler process. Recreate exactly the same
   // SQLite data directory: proves get() is a real durable read after restart.
   await stop();start();await ready();
+  const interruptedMarker = await get(3,"state");
+  assert.equal(interruptedMarker.task.sessionCreationAttempted,false);
+  assert.equal(interruptedMarker.slot.phase,"effect_unknown");
+  assert.equal((await get(3,"get")).found,false);
+  note("pre-create intent survives LOCAL restart without inventing native session");
   const recoveredRow=await get(4,"get");
   assert.equal(recoveredRow.found,true);
   assert.equal(recoveredRow.id,sid(ID));
@@ -162,6 +167,13 @@ try {
   const [turnA,turnB]=await Promise.all([post(7,"readmit"),post(7,"readmit")]);
   assert.deepEqual([turnA.kind,turnB.kind].sort(),["existing","submit"]);
   assert.equal(turnA.state.slot.phase,"effect_unknown");
+  const notFound=await post(7,"turn-receipt",{status:"unanswered",reason:"not_found"});
+  assert.equal(notFound.accepted,false);
+  assert.equal(notFound.state.slot.phase,"effect_unknown");
+  const done=await post(7,"turn-receipt",{status:"done"});
+  assert.equal(done.accepted,true);
+  assert.equal(done.state.slot.phase,"running");
+  note("native-operation receipt UNKNOWN/not_found cannot release slot; synthetic terminal receipt can");
   note("finished readmission single-slot atomic; duplicate turn never double-submitted");
   process.stdout.write(JSON.stringify({schema:"f0-c10.r3-t04.workerd.v1",
     status:"PASS",cases:passed,pinned:{agents:"0.33.0",sdk:"2.0.24"},
