@@ -121,10 +121,10 @@ describe("OpenCode staging MCP server", () => {
       const { tools } = await client.listTools();
       expect(tools.map(tool => tool.name).sort()).toEqual([
         "staging_agent_check", "staging_agent_check_status", "staging_cancel_task",
-        "staging_diagnostics", "staging_mcp_call", "staging_mcp_servers", "staging_mcp_tools",
+        "staging_capture_task_artifact", "staging_diagnostics", "staging_mcp_call", "staging_mcp_servers", "staging_mcp_tools",
         "staging_models", "staging_openrouter_check", "staging_openrouter_check_status",
         "staging_repositories", "staging_review_task", "staging_session_inspect", "staging_sessions",
-        "staging_start_task", "staging_status", "staging_task_continue", "staging_task_progress", "staging_task_select_model",
+        "staging_start_task", "staging_status", "staging_task_artifacts", "staging_task_continue", "staging_task_progress", "staging_task_select_model",
         "staging_task_status", "staging_task_transcript"
       ]);
       const taskStatusTool = tools.find(tool => tool.name === "staging_task_status");
@@ -413,5 +413,65 @@ describe("managed Linux runtime selection", () => {
     expect(commandRequiresBun("bunx wrangler deploy --dry-run")).toBe(true);
     expect(commandRequiresBun("node --version && npm --version")).toBe(false);
     expect(commandRequiresBun("echo bun is a runtime")).toBe(false);
+  });
+});
+
+
+describe("F0-C10 R2 task artifact MCP projection", () => {
+  test("never copies bytes, internal paths or bearer into the manifest", async () => {
+    const id = "0000000000000001";
+    let captured = 0;
+    const stub = {
+      async supervisedTaskArtifacts(taskId: string) {
+        expect(taskId).toBe(id);
+        return {
+          schema: "opencode.task-output.v1", requestId: id,
+          passed: false, verified: false, reviewRequired: true,
+          artifacts: [{
+            requestId: id, artifactId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            name: "relatório.md", mime: "text/markdown", byteSize: 5,
+            sha256: "1".repeat(64),
+            delivery: {
+              kind: "authenticated-route",
+              path: "/api/supervisor/v1/tasks/" + id +
+                "/artifacts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              expiresAt: 1795380000000
+            }
+          }]
+        };
+      },
+      async supervisedArtifactCapture(taskId: string, payload: unknown) {
+        expect(taskId).toBe(id);
+        expect(payload).toEqual({ path: "dist/report.md", name: "relatório.md", mime: "text/markdown" });
+        captured++;
+        return { requestId: id, artifactId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", byteSize: 5 };
+      }
+    } as unknown as StagingSupervisor;
+    const server = createStagingControlServer({
+      async readHealth() { return Response.json({ status: "ok" }); },
+      supervisor: () => stub
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "artifact-mcp-test", version: "1.0.0" });
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const listed = JSON.parse(textContent(await client.callTool({
+        name: "staging_task_artifacts", arguments: { id }
+      })));
+      expect(listed).toMatchObject({ requestId: id, passed: false, verified: false });
+      expect(JSON.stringify(listed)).not.toContain("dist/report.md");
+      expect(JSON.stringify(listed)).not.toContain("/bundle");
+      expect(JSON.stringify(listed)).not.toContain("Bearer");
+      const capturedResult = JSON.parse(textContent(await client.callTool({
+        name: "staging_capture_task_artifact",
+        arguments: { id, path: "dist/report.md", name: "relatório.md", mime: "text/markdown" }
+      })));
+      expect(capturedResult).toMatchObject({ requestId: id, byteSize: 5 });
+      expect(captured).toBe(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 });

@@ -16,7 +16,7 @@ import type { GeneratedImage } from "./openrouter-images";
  * OpenCode's tools that need a local filesystem or process. The Workers
  * profile has neither, so the Workspace's tools replace them.
  */
-export type GitHubRunner = { execute(input: GitHubAction): Promise<unknown> };
+export type GitHubRunner = { execute(input: GitHubAction, sessionID?: string): Promise<unknown> };
 
 export type LinuxRunner = {
   inspect(project: string, action: "list" | "read", relativePath: string, sessionID?: string): Promise<unknown>;
@@ -400,7 +400,7 @@ export function workspacePlugin(
                 ...(["write", "pr", "review", "branch"].includes(action ?? "") ?
                   { branch: (input as { branch?: string }).branch } : {})
               });
-              const result = await github.execute(input as GitHubAction);
+              const result = await github.execute(input as GitHubAction, context.sessionID);
               return { content: JSON.stringify(result) };
             }
           });

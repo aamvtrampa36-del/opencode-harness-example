@@ -1,0 +1,54 @@
+name: F0-C10 R2-T02 offline residency (NO Staging)
+
+on:
+  push:
+    branches:
+      - f0-c10/r2-t02-harness-residency-20261122
+    paths:
+      - 'scripts/f0-c10/harness-residency-bench*'
+      - '.github/workflows/f0-c10-r2-t02-residency.yml'
+      - 'docs/f0-c10/02_DURABLE_OBJECTS.md'
+  pull_request:
+    branches:
+      - f0-c10/t11-integration-20261122
+    paths:
+      - 'scripts/f0-c10/harness-residency-bench*'
+      - '.github/workflows/f0-c10-r2-t02-residency.yml'
+      - 'docs/f0-c10/02_DURABLE_OBJECTS.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-residency:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Node built-in tests 1/2/4/10 (no Cloudflare, no provider credentials)
+        run: node --test scripts/f0-c10/harness-residency-bench.test.mjs
+      - name: Collect 12 isolated synthetic memory cases
+        run: node --expose-gc scripts/f0-c10/harness-residency-bench.mjs > r2-t02-residency-synthetic.json
+      - name: Validate 12 cases and explicit non-runtime provenance
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const x = JSON.parse(readFileSync("r2-t02-residency-synthetic.json", "utf8"));
+            if (x.schema !== "opencode.f0-c10.r2.synthetic-memory.v1" || x.results.length !== 12) process.exit(1);
+            for (const n of [1,2,4,10]) {
+              for (const mode of ["full-history","bounded-tail","coordinator-only"]) {
+                const t = x.results.find(r => r.sessions === n && r.mode === mode);
+                if (!t || t.runtime !== "node-synthetic" || !t.dataNotEquivalentToWorkerd ||
+                    !t.ledgerIntegrity || t.bufferedBeforeIdleClose !== t.expectedBufferCap ||
+                    t.generated !== n * t.messagesPerSession) process.exit(1);
+              }
+            }
+            console.log("12/12 synthetic cases verified; actual workerd ten-active gate NOT evaluated");
+          '
+      - name: Preserve bounded synthetic JSON for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: f0-c10-r2-t02-node-synthetic-${{ github.sha }}
+          path: r2-t02-residency-synthetic.json
+          retention-days: 7

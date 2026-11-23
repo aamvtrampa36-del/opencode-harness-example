@@ -74,6 +74,17 @@ describe("F0-OOM-02 supervisor transcript memory containment", () => {
     expect(calls.history).toBe(0);
   });
 
+
+  test("legacy export fails before sessions.list, history or serialization", async () => {
+    const { agent, calls } = fixture();
+    agent.harness.sessions.list = async () => { throw new Error("UNSAFE_LIST_CALLED"); };
+    await expect(agent.exportSessionData("sesTest")).rejects.toThrow("SESSION_EXPORT_PAGINATION_UNAVAILABLE_LEGACY");
+    await expect(agent.exportSessionData("../bad")).rejects.toThrow("SESSION_EXPORT_ID_INVALID");
+    expect(calls.history).toBe(0);
+    expect(calls.session).toBe(0);
+    expect(calls.wait).toBe(0);
+  });
+
   test("requires supervisor enablement before transcript operations", async () => {
     const { agent, task, calls } = fixture();
     agent.env.OPENCODE_SUPERVISOR_ENABLED = "false";

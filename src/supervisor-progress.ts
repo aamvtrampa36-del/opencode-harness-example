@@ -37,7 +37,10 @@ export async function projectSupervisorProgress(
       throw new Error("SUPERVISOR_EVENT_SEQUENCE_INVALID");
     if(seq<=nextAfter)duplicates++;
     else{
-      if(seq!==nextAfter+1)gapDetected=true;
+      // A missing durable sequence may indicate a pruned log, lost event, or
+      // wrong task cursor. Never acknowledge unseen records with nextAfter.
+      // The caller must reconcile/reset explicitly; don't silently skip.
+      if(seq!==nextAfter+1){gapDetected=true;truncated=true;break;}
       const data=event.data&&typeof event.data==="object"
         ?event.data as Record<string,unknown>:{};
       const eventType=(typeof event.type==="string"?event.type:

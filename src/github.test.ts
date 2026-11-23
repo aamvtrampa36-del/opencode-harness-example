@@ -95,9 +95,12 @@ describe("GitHub scoped permissions",()=>{
     expect(calls.some(x=>x.url.includes("git/ref/heads/staging%2Fopencode-g1-rpc-safe-20261120"))).toBe(true);
     const review:any=await api.execute({action:"review",repo:"aamvtrampa36-del/opencode-harness-example",branch:staged});
     expect(review.base).toBe(source);
-    const pr:any=await api.execute({action:"pr",repo:"aamvtrampa36-del/opencode-harness-example",branch:staged,title:"Staging fix"});
-    expect(pr.base).toBe(source);
-    expect(calls.at(-1)?.body.base).toBe(source);
+    // Staging PRs now fail closed without the shared publication authority.
+    // The guarded positive POST path is exercised in github-publication-durable.test.ts.
+    const readsBefore=calls.length;
+    await expect(api.execute({action:"pr",repo:"aamvtrampa36-del/opencode-harness-example",branch:staged,title:"Staging fix"}))
+      .rejects.toThrow("PR_PUBLICATION_COORDINATOR_REQUIRED");
+    expect(calls.length).toBe(readsBefore);
     calls.length=0;
     await expect(api.execute({action:"branch",repo:"aamvtrampa36-del/cdf-cloud-engine",branch:staged})).rejects.toThrow("OpenCode-only");
     expect(calls.every(x=>x.method==="GET")).toBe(true);

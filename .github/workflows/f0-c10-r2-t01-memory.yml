@@ -1,0 +1,49 @@
+name: F0-C10 R2-T01 offline phase-memory checks
+
+on:
+  push:
+    branches:
+      - f0-c10/r2-t01-phase-memory-20261122
+    paths:
+      - 'scripts/f0-c10/phase-memory-profile*.mjs'
+      - 'docs/f0-c10/01_DIAGNOSTICO.md'
+      - '.github/workflows/f0-c10-r2-t01-memory.yml'
+  pull_request:
+    branches:
+      - f0-c10/t11-integration-20261122
+    paths:
+      - 'scripts/f0-c10/phase-memory-profile*.mjs'
+      - 'docs/f0-c10/01_DIAGNOSTICO.md'
+      - '.github/workflows/f0-c10-r2-t01-memory.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  offline-memory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Checkout exact HEAD/PR merge
+        uses: actions/checkout@v4
+      - name: Node version
+        run: node --version
+      - name: RED/GREEN synthetic tests
+        run: node --test scripts/f0-c10/phase-memory-profile.test.mjs
+      - name: Confirm intentional RED failure and GREEN acceptance
+        shell: bash
+        run: |
+          set +e
+          node --expose-gc scripts/f0-c10/phase-memory-profile.mjs --red > /tmp/f0-c10-red.json
+          red_status=$?
+          set -e
+          test "$red_status" -eq 1
+          node --expose-gc scripts/f0-c10/phase-memory-profile.mjs --bounded > /tmp/f0-c10-green.json
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const red = JSON.parse(fs.readFileSync('/tmp/f0-c10-red.json','utf8'));
+          const green = JSON.parse(fs.readFileSync('/tmp/f0-c10-green.json','utf8'));
+          if (red.status.retainedSessionObjects !== 6 || green.status.retainedSessionObjects !== 0 ||
+              green.status.scanned !== 384 || green.mcp.sentBytes > 4096) process.exit(1);
+          console.log('F0_C10_R2_T01_OFFLINE_RED_GREEN_PASS');
+          NODE

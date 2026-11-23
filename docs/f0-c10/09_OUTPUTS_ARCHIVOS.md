@@ -125,3 +125,74 @@ Se requiere un teléfono Android autenticado real para comprobar, con un usuario
 **Entrega presente:** contrato + fixtures reproducibles y documentación; no cambiaron `src/server.ts`, `src/staging-control-mcp/server.ts`, `src/client.tsx`, Storage, R2, routes reales, permisos, `main` ni Workers. Recomendación para otro lote de integración: (1) agregar en supervisor una proyección durable de artefactos por tarea y estado de disponibilidad; (2) endpoint GET autenticado `/api/tasks/{requestId}/artifacts/{artifactId}` limitado a files permitidos (o almacenamiento aislado aprobado); (3) bytes verificados por streaming y manifest con digest; (4) cliente con estado `disponible/expirado/error` y descarga real, no enlace de texto; (5) pruebas E2E y Android. No efectuar cambios de bucket sin nueva autorización ni incrustar secretes en URL. Auditar posibles conflictos con las otras nueve PR antes de integrar.
 
 **Bloqueantes:** productor real no entrega manifest, no hay endpoint per-task, retención garantizada ni pruebas Android; concurrencia de diez/estabilidad del Worker sigue abierta (#90); presupuesto y corte real de Remote no verificados. Conservar esta PR como draft; no hay permiso de merge/deploy. El CI del HEAD de esta PR debe consultarse tras creación, no inferirse de PR anteriores. Estado F0-C10 completo permanece `NOT VERIFIED`.
+
+
+---
+
+## 10. R2-T09 — Implementación candidata autenticada (no desplegada, 2026-11-22/23 UTC)
+
+**Estado nuevo:** fuente implementada en rama propia `f0-c10/r2-t09-authenticated-artifacts-20261122`, derivada exactamente de la PR #123 en `f70b34fd6cc7b56cee068051184a51b32bb85659`. El texto histórico de las secciones 1–9 corresponde a T09 primera ronda y no debe confundirse con el estado R2. PR #126, `f0-c10/t11-integration-20261122` @ `1268ba22f26330d619b046fcf551ca846cb69d0f`, ya había reconciliado los fixtures originales pero no incluía todavía endpoint real per-task. **Este R2 es una PR apilada sobre #123 y tendrá que ser reconciliada por T11; NO es un binario del Worker publicado.**
+
+### 10.1 Cambios de fuente, actor y alcance
+
+**Actor:** ChatGPT con GitHub; no se inició una ejecución Remote ni se utilizó inferencia. Se crearon:
+- `src/task-output-artifacts.ts`: validación, IDs, `SHA-256`, captura inmutable, metadatos sin ruta interna, respuesta GET binaria con `Content-Disposition`, expiración, MIME y comprobación de bytes.
+- `src/task-output-artifacts.test.mjs`: verificaciones de identidad, Unicode, límites y entrega real de bytes mediante Response; `src/task-artifact-http.test.mjs`: GET HTTP loopback independientes (no Worker); `src/task-artifact-source.ts` y `src/task-artifact-source.test.mjs`: lector binario real del proceso Container y negativas de acceso/symlink, con Bun en CI.
+- `src/server.ts`: en el supervisor existente, métodos `supervisedArtifactCapture`, `supervisedTaskArtifacts`, `supervisedTaskArtifactDownload`; el router añade endpoints bajo el **prefijo de supervisor ya protegido por Cloudflare Access + bearer** (sin URL/token en query). No se modificó el camino de Producción, se mantuvo la guarda `OPENCODE_SUPERVISOR_ENABLED`.
+- `src/staging-control-mcp/server.ts`: herramientas `staging_task_artifacts` (lectura) y `staging_capture_task_artifact` (captura explícita con efecto, no lectura inocua). No se ejecutaron contra el runtime vivo.
+- `src/staging-control-mcp/server.test.ts`: contract test de MCP sin binarios ni rutas internas.
+- `.github/workflows/f0-c10-r2-t09.yml`: tests offline, typecheck, build e invariantes **sin despliegue**.
+
+### 10.2 Recorrido de datos y fronteras de confianza
+
+1. El agente de una tarea supervisada escribe un archivo genuino en su proyecto Linux **aislado**, dentro de `dist/` — por ejemplo, `dist/reporte.txt`. Ni stdout ni la frase “creado /bundle/reporte.txt” bastan para capturar.
+2. Un operador/MCP autenticado solicita captura con `requestId`, ruta relativa `dist/`, nombre y MIME. El backend **no** acepta bytes, URL, proyecto, sesión ni repositorio procedentes de esa solicitud. Recupera `project`, `session` y `repository` del registro durable de la tarea y verifica la vinculación inversa de sesión y el scope de proyecto. Exige estado `finished` comprobado: no supone `passed=true`.
+3. `DevContainer.readTaskArtifact(project, path)` invoca un Node aislado que abre el archivo mediante descriptor (O_NOFOLLOW), coteja el destino efectivo de `/proc/self/fd` con `dist/`, rechaza escapes/symlinks y lee **bytes binarios** de un archivo <=32 KiB. Devuelve `{path,byteSize,base64,sha256}` y nunca una ruta interna descargable. El backend decodifica Base64, compara tamaño y SHA-256 independiente y valida UTF-8 estricto (sin sustituciones silenciosas); JSON se analiza si el MIME es `application/json`. Cualquier discrepancia impide registrar el artefacto.
+4. Captura `SHA-256` del buffer auténtico. `artifactId` se deriva de `requestId + path + name + MIME + sha256`, 32 hex: retry con mismo contenido es idempotente, variación de bytes genera otro ID. La transacción del mismo DO guarda `Uint8Array` y metadatos en almacenamiento durable bajo clave compuesta por `requestId:artifactId`, con máximo **8** por tarea. No se escribió en R2 ni en buckets compartidos.
+5. La lista presenta únicamente `requestId`, `artifactId`, `name`, `mime`, `byteSize`, `sha256`, `createdAt`, `expiresAt` y una ruta relativa autenticada. Oculta `dist/...`, datos, token y Container ID. El GET revalida vínculo proyecto/sesión/tarea, caducidad, longitud y SHA-256 de **los bytes almacenados**, antes de servir `200`.
+6. Entrega `Content-Type` permitido, `Content-Disposition: attachment` con fallback ASCII y `filename*=UTF-8`, `Content-Length`, `Cache-Control: no-store, private`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff` y `Cross-Origin-Resource-Policy: same-origin`.
+
+**Rutas candidatas del Worker Staging (no publicadas):**
+- `POST /api/supervisor/v1/tasks/{requestId}/artifacts`, body JSON exacto `{path,name,mime}` — captura con efecto y respuesta de metadatos. Nunca incrustar bearer en URL.
+- `GET /api/supervisor/v1/tasks/{requestId}/artifacts` — manifiesto recuperable de hasta 8 referencias.
+- `GET /api/supervisor/v1/tasks/{requestId}/artifacts/{artifactId}` — stream HTTP de los bytes persistidos, **solo si autorización y asociación de tarea son válidas**.
+
+La ruta del primer fixture T09 `/api/tasks/{id}/artifacts/{artifactId}` era un **ejemplo de diseño**; el endpoint implementado R2 usa ahora `/api/supervisor/v1` para heredar las guardas existentes. Un `GET` externo sin bearer nunca es una descarga válida.
+
+### 10.3 Alcance de seguridad y límites honestos
+
+- **Tipos admitidos:** exclusivamente `.txt` `text/plain`, `.md` `text/markdown`, `.json` `application/json`. No se admite HTML, SVG, ejecutables, PDF, URL HTTPS arbitraria, `file:`, `/bundle`, path absoluto, traversal, hidden files ni recurso de otra tarea. Nombre Unicode solo en NFC, sin caracteres bidireccionales/control ni separadores.
+- **Tamaño:** límite duro 32 KiB por archivo, máximo 8 por tarea. **Archivos grandes todavía NO son compatibles;** se rechazan, no se anuncian como descarga truncada. No se añadieron dependencias, servicio ni bucket. Para soportar 2–20 MiB de forma fiable hará falta streaming/copia acotada y almacenamiento con retención aislada por tarea; requiere otro gate.
+- **Retención lógica:** 12 horas desde captura. Descargas expiradas devuelven `410` sin `Content-Disposition`; limpieza de datos vencidos se realiza oportunistamente al intentar descargar y al capturar nuevos artefactos. **No existe aún un proceso de borrado por temporizador garantizado**; investigar mecanismo de expiración/limpieza sin interferir con alarmas de Harness antes de prolongar retención.
+- **Alcance de dueño:** este supervisor dispone de un único propietario y un secreto global para su API. El backend comprueba requestId y la sesión/proyecto vinculados al registro; **no demuestra aislamiento entre usuarios multi-tenant**, ni ofrece un token de descarga independiente por destinatario. El cliente web/Android no debe recibir `OPENCODE_SUPERVISOR_TOKEN` embebido.
+- **Almacenamiento:** Durable Object SQLite preserva bytes tras reinicio del proceso del DO; esto es garantía arquitectónica del mecanismo, **NO prueba en Staging** de recuperación tras un reinicio real ni de estabilidad OOM.
+- **Sin falsa certificación:** en manifiestos R2, `passed=false`, `verified=false`, `reviewRequired=true`, y `summary.available=false`; los archivos solo prueban la captura y entrega, no que el trabajo del agente haya aprobado su evaluación.
+- **No hay enlace descargable público:** requiere encabezado Authorization y Cloudflare Access. Una etiqueta de la UI tradicional `<a href=...>` no enviará el bearer; un cliente móvil futuro necesitará `fetch` con credencial delegada/segura y una operación nativa de guardar archivo, sin exponer secretos a JS no confiable.
+
+### 10.4 Pruebas, negativas y evidencia
+
+**Pruebas locales ejecutadas sobre el nuevo núcleo y el lector real de disco**: `node --experimental-strip-types --test task-artifact-source.test.mjs task-output-artifacts.test.mjs task-artifact-http.test.mjs` en el entorno de desarrollo (Node 22.16.0, **21/21 casos PASS**, exit 0). El lector se ejecuta como un proceso Node independiente sobre archivos físicos efímeros: verifica descriptor real, hash, Base64, rechazo de enlaces simbólicos, traversal, archivos >32 KiB y conservación byte a byte de secuencias UTF-8 malformadas (que el backend rehúsa). Comprueban bytes HTTP independientes con checksum, UTF-8/Unicode, JSON válido/inválido, cambios de bytes, caducidad 410, modificación del almacenamiento 502, rechazo de 33 KiB, HTML/SVG/file/../../, MIME falsificado, identidad de sesión/proyecto ajena y 10 tareas finalizadas en orden 7,2,9,1,5,4,0,8,6,3 con bytes exactos para cada una. La autenticación del router se hereda del guard existente y se verificará en CI/workerd; este test local de `Response` **no** equivale a un request HTTP integrado contra el Worker.
+
+**CI del HEAD:** se revalidará después de los commits finales; el workflow `.github/workflows/f0-c10-r2-t09.yml` cubre scripts de fuente binaria, HTTP loopback, las pruebas MCP, fixtures T09 previos, TypeScript, compilación e invariantes sin despliegue. Los éxitos previos `45096828647` y `45096833945` correspondían al SHA intermedio `20bee1a6...` y **no acreditan la revisión binaria del HEAD**. El workflow específico solo ejecuta tests, typecheck, build e invariantes; no tiene autorización para publicar Worker o MCP. Conservar los resultados de la primera ronda T09 como antecedentes y no sumarlos como prueba del runtime R2.
+
+**Contrato con T10 #119:** entregar a su colector externo `requestId`, `sessionId`, `operationId`, `projectId`, `artifactId`, `byteSize` y `sha256`. T10 exige `artifact_readback` independiente tras output, `source='artifact-collector'` y `retrieval='authenticated-byte-read'` en modo live; esos campos son etiquetas observables, no pruebas criptográficas. Solo el colector que hace `GET` autenticado, lee todo y contrasta bytes con oráculo independiente puede emitir el evento. El mapeo de `src/task-output-artifacts.ts` al collector de #119 queda **pendiente de integración**: el test de 10 desordenadas simula tareas, no es una corrida de diez agentes.
+
+### 10.5 Prueba Android auténtica pendiente
+
+En un lote posterior con candidato desplegado y autorización diferenciada: en Android real autenticado, completar una tarea que escriba `dist/report.txt`; capturarla, listar manifiesto tras reiniciar cliente, descargar mediante cliente autorizado con encabezado (nunca secreto en URL), verificar el archivo desde la carpeta Descargas mediante SHA-256 y tamaño; repetir con `.md`, `.json`, nombre Unicode, caducidad, cambio de sesión, conexión interrumpida y permisos denegados. Recoger modelo Android, versión Chrome/WebView o app, versión de Worker/MCP, SHA, ID de tarea, estado HTTP y SHA descargado sin revelar contenido privado. Playwright emulado no sustituye teléfono real. **No probado en este encargo**.
+
+**Gate R2-T09:** código de candidato creado; test unitario local PASS. No se ha demostrado descarga desde Cloudflare/Android ni diez ejecuciones reales. El resultado solo podrá elevarse tras CI en HEAD y pruebas E2E autorizadas; F0-C10 continúa PARTIAL. No fusionar, desplegar ni usar Producción.
+
+
+### 10.6 Cierre de ingeniería R2-T09 — CI confirmado
+
+**HEAD de código completo verificado:** `ff6872c4f9eaef30c69de1e330ab89c0892928fe`. GitHub Actions del SHA exacto, `completed/success`:
+
+- [R2-T09 offline #45097510680](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45097510680).
+- [R2-T09 offline #45097514981](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45097514981).
+
+Estas ejecuciones incorporaron `src/task-artifact-source.test.mjs`, `src/task-output-artifacts.test.mjs`, `src/task-artifact-http.test.mjs`, pruebas MCP, fixture anterior de T09, typecheck, build y validación de invariantes. La función `readTaskArtifact` drena stdout y stderr **con `captureBoundedOutput` concurrente**, topes 45 KiB y 1 KiB; NO utiliza `process.output()` para retener salida arbitraria. Un prefijo/sufijo truncado se considera error, nunca un archivo válido. Esto reusa el mecanismo ya existente de #105 para reducir presión de memoria.
+
+**Contrato de manifiesto final:** `schema`, `requestId`, `status` leído del supervisor, `artifacts[]`, `summary.available=false`, `errors=[]`, `evidence.sessionId/operationId/projectId`, `evidence.collectorVerification='pending'`, `passed=false`, `verified=false`. La proyección no anuncia un resumen textual auténtico si todavía no se ha obtenido; para T10 el colector debe efectuar otro GET y comparar hashes y contenido con oráculo independiente antes de emitir `artifact_readback`. El backend rechaza ID de artefacto inconsistente con la clave de ruta y permite recapturar una versión expirada sin asociarla a bytes de otra tarea.
+
+**Limitaciones finales:** PASS de CI y simulación de recuperación en servidor localhost; **NO** acceso autenticado real por Access contra el Worker publicado, **NO** lectura efectiva de un Container desplegado, **NO** sesión Android, **NO** autenticación multiusuario, **NO** GC periódico ni objetos grandes, **NO** demostración de 10 tareas OpenCode solapadas. El token global existente del supervisor no tiene caducidad individual: las pruebas de "token expirado" simulan un bearer viejo/rotado. Habilitar descarga Android exige un mecanismo de delegación segura de credenciales sin entregar el token del supervisor al JS cliente; esa política requiere otro lote. La PR #133 se mantiene draft, sin merge/deploy.

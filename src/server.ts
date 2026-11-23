@@ -18,6 +18,11 @@ import { OpenCodeSessionSockets } from "./sockets";
 import { collectSupervisorDirectory, supervisorTaskCount } from "./supervisor-directory";
 import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
 import { projectSupervisorProgress } from "./supervisor-progress";
+import {
+  reserveSupervisorAdmission, supervisorBeginExternalEffect,
+  supervisorConfirmExternalEffect, supervisorAdmissionSlot,
+  hasSupervisorAdmissionSlot, reconcileSupervisorSubmittedEffect, type StartGrant
+} from "./supervisor-admission";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
 import { createDynamicMcpHost } from "./dynamic-mcp-bridge";
@@ -29,7 +34,8 @@ import { isModelSelection, MODEL_PRESETS, NATIVE_WORKERS_AI_MODELS, resolveModel
 import { getOpenRouterCatalogue } from "./openrouter-catalog";
 import { assertOpenRouterImageModel, generateOpenRouterImage, getOpenRouterImageModels } from "./openrouter-images";
 import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
-import { GitHubBridge } from "./github";
+import { GitHubBridge, type GitHubAction } from "./github";
+import { DurableGitHubPublicationGate, assertSupervisedPublicationScope } from "./github-publication-durable";
 import { verifyG8Proofs, G8_PROOFS } from "./g8-smoke";
 import { assessG8LiveHistory, g8LivePrompt, G8_LIVE_CHECK_VERSION, type G8LiveCheck } from "./g8-live-agent";
 import { G9_PROOF_VERSION, G9_REPO, G9_BRANCH, G9_PROJECT, G9_SOURCE, G9_TEST_PATH, G9_BROKEN, G9_FIXED, G9_TEST_SOURCE, assessG9History, g9AgentPrompt, assertG9BoundGitHubOperation, type G9ProofState } from "./g9-selfdev";
@@ -55,6 +61,13 @@ import {
   supervisorSessionCreationDisposition, canConfirmSupervisorPreSessionCancellation,
   validateSupervisorStart, type SupervisorTask
 } from "./supervisor-control";
+
+import {
+  validateCaptureRequest, captureInspectedArtifact, artifactKey, artifactIndexKey,
+  artifactView, artifactIsOwnedBy, verifiedArtifactDownload, artifactErrorResponse,
+  assertArtifactId, TASK_ARTIFACT_MAX_PER_TASK, TASK_ARTIFACT_SCHEMA,
+  type StoredTaskArtifact
+} from "./task-output-artifacts";
 
 export const MODEL_ID = MODEL_PRESETS.cloudflare.id;
 
@@ -107,25 +120,25 @@ export class OpenCodeAgent extends DurableObject<Env> {
       sessionCreationAttempted: false,
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
-    if (!old) {
-      // Atomic reservation prevents duplicate branches and duplicate model spending.
-      const reservation = await this.ctx.storage.transaction(async tx => {
-        const current = await tx.get<SupervisorTask>(key);
-        if (current) return { task: current, created: false };
-        await tx.put(key, job);
-        return { task: job, created: true };
-      });
-      old = reservation.task;
-      reused = !reservation.created;
-      if (old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
+    const admission = await reserveSupervisorAdmission(this.ctx.storage, job);
+    if (admission.kind === "capacity") {
+      return { id: start.requestId, accepted: false, status: "capacity_rejected",
+        reason: admission.reason, retryAfterMs: admission.retryAfterMs, capacity: 10 };
     }
+    if (admission.kind === "reused") {
+      return { ...this.supervisorTaskReceipt(admission.task, true), admitted: true,
+        admissionState: admission.slot?.phase ?? "legacy_reconcile_required",
+        admissionReason: admission.reason };
+    }
+    old = admission.task;
+    reused = admission.reused;
     return this.withSupervisorStartLock(start.requestId, async () => {
       const saved = await this.ctx.storage.get<SupervisorTask>(key);
       if (!saved) throw new Error("La reserva de la tarea desapareció");
       if (["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(saved.status)) {
         return this.supervisorTaskReceipt(saved, true);
       }
-      return this.advanceSupervisedTask(saved, start, reused);
+      return this.advanceSupervisedTask(saved, start, reused, admission.grant);
     }, old);
   }
 
@@ -158,14 +171,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   private async advanceSupervisedTask(
-    job: SupervisorTask, start: ReturnType<typeof validateSupervisorStart>, reused: boolean
+    job: SupervisorTask, start: ReturnType<typeof validateSupervisorStart>, reused: boolean,
+    grant: StartGrant
   ) {
     const key = supervisorTaskKey(job.id);
     try {
       if (!job.baseCommit) {
         // The deterministic branch reservation safely recovers after a lost GitHub response.
+        await supervisorBeginExternalEffect(this.ctx.storage, grant, "github_branch");
         const branchResult = await this.githubRunner.ensureSupervisorBranch(job.repository, job.branch);
-        job.baseCommit = supervisorBaseCommit(branchResult, job.repository);
+        const sha = supervisorBaseCommit(branchResult, job.repository);
+        await supervisorConfirmExternalEffect(this.ctx.storage, grant, "github_branch", { confirmed: true });
+        job.baseCommit = sha;
         job.updatedAt = Date.now();
         await this.ctx.storage.put(key, job);
       }
@@ -183,16 +200,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
           const exists = (await this.harness.sessions.list()).some(item => item.id === start.sourceSession);
           if (!exists) throw new Error("La sesión de origen ya no existe en este workspace");
         }
+        await supervisorBeginExternalEffect(this.ctx.storage, grant, "session_create");
         job.sessionCreationAttempted = true;
         job.updatedAt = Date.now();
         await this.ctx.storage.put(key, job);
         const created = start.sourceSession
           ? await this.harness.sessions.fork(start.sourceSession)
           : await this.harness.sessions.create();
-        // Persist the returned identity before doing scope/index work.
+        // Persist receipt before releasing the effect fence.
         job.session = created.id;
         job.updatedAt = Date.now();
         await this.ctx.storage.put(key, job);
+        await supervisorConfirmExternalEffect(this.ctx.storage, grant, "session_create", { confirmed: true });
         await this.bindSessionScope(created.id, { project: job.project, repository: job.repository });
         // The model may not create a second branch, or write outside its branch.
         await this.ctx.storage.put("supervisor:session:" + created.id, job.id);
@@ -200,9 +219,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
       const handle = this.harness.session(job.session!);
       if (!job.operationId) {
+        await supervisorBeginExternalEffect(this.ctx.storage, grant, "configure");
         await handle.setAgent("build");
         const model = resolveModelSelection(job.model ?? "economy");
         await handle.setModel(model);
+        await supervisorConfirmExternalEffect(this.ctx.storage, grant, "configure", { confirmed: true });
         job.operationId = supervisorStartOperationId(job.id);
         job.status = "running";
         job.updatedAt = Date.now();
@@ -210,10 +231,17 @@ export class OpenCodeAgent extends DurableObject<Env> {
         await this.ctx.storage.put(key, job);
       }
     } catch (error) {
+      if (error instanceof Error && error.message === "ADMISSION_FENCE_REJECTED") {
+        // A fenced-out stale starter cannot overwrite the new owner's record.
+        return this.supervisorTaskReceipt(await this.supervisedRecord(job.id), true);
+      }
+      const slot = await supervisorAdmissionSlot(this.ctx.storage, job.id);
+      const uncertainEffect = slot?.phase === "effect_unknown";
       const uncertainCreate = job.sessionCreationAttempted === true && !job.session;
-      job.status = uncertainCreate ? "unknown" : "failed";
+      job.status = uncertainEffect || uncertainCreate ? "unknown" : "failed";
       const detail = error instanceof Error ? error.message.slice(0, 180) : "No se pudo iniciar la tarea";
-      job.error = uncertainCreate ? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED: " + detail : detail;
+      job.error = uncertainCreate ? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED: " + detail :
+        uncertainEffect ? "ADMISSION_EXTERNAL_EFFECT_UNCONFIRMED: " + detail : detail;
       job.updatedAt = Date.now();
       await this.ctx.storage.put(key, job);
     }
@@ -221,10 +249,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
       return this.supervisorTaskReceipt(job, reused);
     }
     try {
+      await supervisorBeginExternalEffect(this.ctx.storage, grant, "submit");
       const receipt = await this.harness.session(job.session).submit(
         supervisorPrompt(start, job.branch, job.project, job.baseCommit),
         { operationId: job.operationId, whenBusy: "followUp" }
       );
+      await supervisorConfirmExternalEffect(this.ctx.storage, grant, "submit",
+        { confirmed: typeof receipt.accepted === "boolean" });
       job.status = "running";
       job.error = undefined;
       job.updatedAt = Date.now();
@@ -468,15 +499,119 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return job;
   }
 
+  /** Server-derived binding: never trust a model-provided project/session. */
+  private async scopedArtifactTask(id: string): Promise<{
+    id: string; project: string; session: string; repository: string
+  }> {
+    this.assertStagingRemote();
+    const job = await this.supervisedRecord(id);
+    const session = job.session;
+    if (!session || job.project !== supervisorProject(id)) throw new Error("ARTIFACT_SCOPE_UNAVAILABLE");
+    const [scope, reverse] = await Promise.all([
+      this.ctx.storage.get<ProjectScope>(scopeStorageKey(session)),
+      this.ctx.storage.get<string>("supervisor:session:" + session)
+    ]);
+    if (reverse !== id || scope?.project !== job.project ||
+        scope.repository?.toLowerCase() !== job.repository.toLowerCase()) {
+      throw new Error("ARTIFACT_SCOPE_UNAVAILABLE");
+    }
+    return { id, project: job.project, session, repository: job.repository };
+  }
+
+  /** Capture only hash-verified bytes from an isolated project's binary reader.
+   * Hard bound: 32 KiB UTF-8, 8 immutable files per task, expires after 12 h.
+   * This never accepts data/file/https URLs, binary blobs, or arbitrary /bundle.
+   */
+  async supervisedArtifactCapture(id: string, raw: unknown): Promise<unknown> {
+    const task = await this.scopedArtifactTask(id);
+    const request = validateCaptureRequest(raw);
+    const state = await this.supervisedTaskStatus(id) as { status?: string };
+    if (state.status !== "finished") throw new Error("ARTIFACT_TASK_NOT_FINISHED");
+    const dev = this.env.DEV.getByName(projectContainerName(task.project));
+    const inspected = await dev.readTaskArtifact(task.project, request.path);
+    const prepared = await captureInspectedArtifact({
+      requestId: task.id, ownerProject: task.project, ownerSession: task.session,
+      repository: task.repository, request, inspected
+    });
+    const idKey = artifactKey(id, prepared.artifactId);
+    const indexKey = artifactIndexKey(id);
+    const saved = await this.ctx.storage.transaction(async tx => {
+      const existing = await tx.get<StoredTaskArtifact>(idKey);
+      if (existing && existing.expiresAt > Date.now()) {
+        if (existing.sha256 !== prepared.sha256 ||
+            !artifactIsOwnedBy(existing, task)) throw new Error("ARTIFACT_CONFLICT");
+        return existing;
+      }
+      if (existing) await tx.delete(idKey);
+      const index = (await tx.get<string[]>(indexKey)) ?? [];
+      if (!Array.isArray(index) || index.length > TASK_ARTIFACT_MAX_PER_TASK)
+        throw new Error("ARTIFACT_INDEX_INVALID");
+      const live: string[] = [];
+      const now = Date.now();
+      for (const priorId of index) {
+        const key = artifactKey(id, priorId);
+        const value = await tx.get<StoredTaskArtifact>(key);
+        if (value && artifactIsOwnedBy(value, task, now)) live.push(priorId);
+        else await tx.delete(key); // Opportunistic retention cleanup.
+      }
+      if (live.length >= TASK_ARTIFACT_MAX_PER_TASK) throw new Error("ARTIFACT_TASK_LIMIT");
+      await tx.put(idKey, prepared);
+      await tx.put(indexKey, [...live, prepared.artifactId]);
+      return prepared;
+    });
+    return artifactView(saved);
+  }
+
+  /** A bounded manifest: no transcript, raw paths, stored bytes or credentials. */
+  async supervisedTaskArtifacts(id: string): Promise<unknown> {
+    const task = await this.scopedArtifactTask(id);
+    const status = await this.supervisedTaskStatus(id) as { status?: string; operationId?: string };
+    const index = (await this.ctx.storage.get<string[]>(artifactIndexKey(id))) ?? [];
+    if (!Array.isArray(index) || index.length > TASK_ARTIFACT_MAX_PER_TASK) {
+      throw new Error("ARTIFACT_INDEX_INVALID");
+    }
+    const records = await Promise.all(index.map(key =>
+      this.ctx.storage.get<StoredTaskArtifact>(artifactKey(id, key))));
+    const now = Date.now();
+    return {
+      schema: TASK_ARTIFACT_SCHEMA, requestId: id, status: status.status ?? "unknown",
+      artifacts: records.filter(x => artifactIsOwnedBy(x, task, now)).map(x => artifactView(x!)),
+      summary: { text: "", available: false, truncated: false },
+      errors: [],
+      evidence: { sessionId: task.session, operationId: status.operationId ?? null,
+        projectId: task.project, byteReadback: "captured", collectorVerification: "pending" },
+      passed: false, verified: false, reviewRequired: true
+    };
+  }
+
+  /** Bytes survive a DO restart (SQLite storage), but expired records fail closed. */
+  async supervisedTaskArtifactDownload(id: string, artifactId: string): Promise<Response> {
+    const task = await this.scopedArtifactTask(id);
+    assertArtifactId(artifactId);
+    const record = await this.ctx.storage.get<StoredTaskArtifact>(artifactKey(id, artifactId));
+    if (!record) return artifactErrorResponse("ARTIFACT_NOT_FOUND", 404);
+    if (Date.now() >= record.expiresAt) {
+      await this.ctx.storage.delete(artifactKey(id, artifactId));
+      return artifactErrorResponse("ARTIFACT_EXPIRED", 410);
+    }
+    if (record.artifactId !== artifactId || record.requestId !== id ||
+        !artifactIsOwnedBy(record, task)) return artifactErrorResponse("ARTIFACT_NOT_FOUND", 404);
+    return await verifiedArtifactDownload(record);
+  }
+
   async supervisedTaskStatus(id: string): Promise<unknown> {
     this.assertStagingRemote();
     const job = await this.supervisedRecord(id);
+    const admission = await supervisorAdmissionSlot(this.ctx.storage, id);
     const base = { id: job.id, repository: job.repository, project: job.project,
+      admissionState: admission?.phase ?? "legacy_or_released",
+      ...(admission?.effect ? { admissionEffect: admission.effect } : {}),
       branch: job.branch, baseCommit: job.baseCommit, session: job.session, startedAt: job.createdAt,
       updatedAt: job.updatedAt, operationId: job.operationId, model: job.model, error: job.error,
       ...(job.forkedFrom ? { forkedFrom: job.forkedFrom } : {}) };
     if (!job.session) {
-      const uncertain = job.sessionCreationAttempted === true;
+      const uncertain = job.sessionCreationAttempted === true ||
+        admission?.phase === "effect_unknown";
       return { ...base, status: uncertain ? "unknown" : job.status,
         error: uncertain ? (job.error ?? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED") : job.error,
         reviewRequired: true, passed: false, verified: false };
@@ -496,6 +631,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (!waitController.signal.aborted) waitError = error instanceof Error ? error.message.slice(0, 200) : "No se pudo esperar la operación";
     } finally {
       clearTimeout(waitTimer);
+    }
+    if (job.operationId && operation &&
+        (operation.status === "done" ||
+          operation.status === "unanswered" && operation.reason !== "not_found")) {
+      await reconcileSupervisorSubmittedEffect(this.ctx.storage, id, job.operationId, operation);
     }
     // Never materialize a complete tool transcript in the supervisor's
     // memory-constrained Durable Object on every status poll. The durable
@@ -571,8 +711,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
         const fresh = await tx.get<SupervisorTask>(key);
         if (!fresh) throw new Error("Tarea del supervisor inexistente");
         const lock = await tx.get<{ token: string }>("supervisor:lock:" + id);
+        const admissionActive = await hasSupervisorAdmissionSlot(tx, id);
         if (fresh.session) return { kind: "bound" as const, task: fresh };
-        if (!canConfirmSupervisorPreSessionCancellation(fresh, Boolean(lock))) {
+        if (!canConfirmSupervisorPreSessionCancellation(fresh, Boolean(lock) || admissionActive)) {
           return { kind: "uncertain" as const, task: fresh };
         }
         if (["cancelled", "failed", "finished", "unanswered"].includes(fresh.status)) {
@@ -685,17 +826,14 @@ export class OpenCodeAgent extends DurableObject<Env> {
       throw error;
     }
   }
-  /** Persisted server-side transcript for the owner's authenticated download. */
-  async exportSessionData(sessionID: string) {
-    const sessions = await this.harness.sessions.list();
-    if (!sessions.some(item => item.id === sessionID)) {
-      throw new Error("La conversación no existe en este espacio");
-    }
-    const [messages, scope] = await Promise.all([
-      this.harness.session(sessionID).history(),
-      this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID))
-    ]);
-    return JSON.stringify({ messages, project: scope?.project, repository: scope?.repository });
+  /** Legacy full export has no SDK byte-bounded paging primitive.
+   * Reject before sessions.list(), history(), or JSON.stringify().
+   * Persisted sessions remain intact; a future indexed export needs its own gate.
+   */
+  async exportSessionData(sessionID: string): Promise<string> {
+    if (!/^ses[A-Za-z0-9_]{1,64}$/.test(sessionID))
+      throw new Error("SESSION_EXPORT_ID_INVALID");
+    throw new Error("SESSION_EXPORT_PAGINATION_UNAVAILABLE_LEGACY");
   }
 
   private sessionModelsKey(sessionID: string): string {
@@ -1091,8 +1229,46 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
   }
 
+  /** One authoritative PR publisher: all Staging supervisor tasks use THIS
+   * named DO, regardless of which OpenCodeAgent instance owns the caller.
+   * Never expose this method as an unauthenticated HTTP endpoint.
+   */
+  async publishSupervisedGithubDraft(
+    input: Extract<GitHubAction, { action: "pr" }>, sessionID: string
+  ): Promise<unknown> {
+    this.assertStagingRemote();
+    if (this.ctx.id.name !== SUPERVISOR_WORKSPACE)
+      throw Error("PR_PUBLICATION_WRONG_AUTHORITY");
+    const match = /^opencode\/staging-([a-f0-9]{16})$/.exec(input.branch);
+    const task = match
+      ? await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(match[1])) : undefined;
+    assertSupervisedPublicationScope(input, sessionID, task);
+    const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
+      || await this.personalConfig.getGitHubKey();
+    if (!key) throw Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
+    return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
+      await this.personalConfig.getAllowedRepositories(),
+      new DurableGitHubPublicationGate(this.ctx.storage, Date.now, async (tx, scope) => {
+        const match = /^opencode\/staging-([a-f0-9]{16})$/.exec(scope.branch);
+        const current = match
+          ? await tx.get<SupervisorTask>(supervisorTaskKey(match[1])) : undefined;
+        assertSupervisedPublicationScope(input, sessionID, current);
+      })).execute(input);
+  }
+
   private readonly githubRunner = {
-    execute: async (input: Parameters<GitHubBridge["execute"]>[0]) => {
+    execute: async (input: Parameters<GitHubBridge["execute"]>[0], sessionID?: string) => {
+      // The shared supervisor DO is the only allowed publisher of its Staging
+      // branches. A project DO cannot create an independent storage lock.
+      if (input.action === "pr" &&
+          input.repo.toLowerCase() === "aamvtrampa36-del/opencode-harness-example" &&
+          /^opencode\/staging-[a-f0-9]{16}$/.test(input.branch)) {
+        if (!sessionID) throw Error("PR_PUBLICATION_SESSION_REQUIRED");
+        if (this.ctx.id.name === SUPERVISOR_WORKSPACE)
+          return this.publishSupervisedGithubDraft(input, sessionID);
+        return this.env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE)
+          .publishSupervisedGithubDraft(input, sessionID);
+      }
       const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
         || await this.personalConfig.getGitHubKey();
       if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
@@ -1553,6 +1729,31 @@ export default {
             return supervisorResponse(await host.startSupervisedTask(JSON.parse(raw)));
           } catch (error) {
             return supervisorResponse({ error: error instanceof Error ? error.message : "Tarea inválida" }, 422);
+          }
+        }
+        // Authorization above is mandatory for *every* task artifact route.
+        // Clients must send the bearer in a header, never in the URL.
+        const artifact = url.pathname.match(/^\/api\/supervisor\/v1\/tasks\/([a-f0-9]{16})\/artifacts(?:\/([a-f0-9]{32}))?$/);
+        if (artifact) {
+          if (url.search) return supervisorResponse({ error: "ARTIFACT_QUERY_NOT_ALLOWED" }, 400);
+          try {
+            if (!artifact[2] && request.method === "GET")
+              return supervisorResponse(await host.supervisedTaskArtifacts(artifact[1]));
+            if (!artifact[2] && request.method === "POST") {
+              if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json"))
+                return supervisorResponse({ error: "JSON obligatorio" }, 415);
+              const input = await request.text();
+              if (input.length > 1_000) return supervisorResponse({ error: "Solicitud demasiado grande" }, 413);
+              return supervisorResponse(await host.supervisedArtifactCapture(artifact[1], JSON.parse(input)));
+            }
+            if (artifact[2] && request.method === "GET")
+              return await host.supervisedTaskArtifactDownload(artifact[1], artifact[2]);
+            return supervisorResponse({ error: "Método no permitido" }, 405);
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : "ARTIFACT_UNAVAILABLE";
+            const status = /TASK_NOT_FINISHED|TASK_LIMIT|CONFLICT/.test(reason) ? 409
+              : /UNSAFE|INVALID|MISMATCH|UNVERIFIED|UNKNOWN/.test(reason) ? 422 : 404;
+            return supervisorResponse({ error: status === 404 ? "ARTIFACT_UNAVAILABLE" : reason.slice(0, 80) }, status);
           }
         }
         const task = url.pathname.match(/^\/api\/supervisor\/v1\/tasks\/([a-f0-9]{16})(?:\/(cancel|review|transcript))?$/);
