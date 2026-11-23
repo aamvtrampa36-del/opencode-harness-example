@@ -160,3 +160,29 @@ export async function hasSupervisorAdmissionSlot(
   const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
   return Boolean(ledger.slots[id]);
 }
+
+
+/** Only a POSITIVE native OpenCode receipt may reconcile an ambiguous submit.
+ * A timeout, missing session or operation.reason=not_found is never enough.
+ * This does not replay submit and does not claim output correctness.
+ */
+export async function reconcileSupervisorSubmittedEffect(
+  storage: DurableObjectStorage, id: string, operationId: string,
+  receipt: { status: "done" | "unanswered"; reason?: string }
+): Promise<boolean> {
+  supervisorTaskKey(id);
+  if (receipt.status !== "done" && receipt.status !== "unanswered" ||
+      receipt.reason === "not_found") return false;
+  return storage.transaction(async tx => {
+    const task = await tx.get<SupervisorTask>(supervisorTaskKey(id));
+    if (!task || task.operationId !== operationId || !/^rc-start-[a-f0-9]{16}$/.test(operationId))
+      return false;
+    const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
+    const slot = ledger.slots[id];
+    if (!slot || slot.phase !== "effect_unknown" || slot.effect !== "submit") return false;
+    slot.phase = "running";
+    slot.effect = undefined;
+    await tx.put(LEDGER_KEY, ledger);
+    return true;
+  });
+}
