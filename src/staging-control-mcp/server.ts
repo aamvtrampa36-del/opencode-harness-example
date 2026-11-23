@@ -19,6 +19,8 @@ export interface StagingSupervisor {
   remoteSupervisorStatus(): Promise<unknown>;
   startSupervisedTask(input: unknown): Promise<unknown>;
   supervisedTaskStatus(id: string): Promise<unknown>;
+  /** Read-only ledger snapshot. Never silently downgrade to the mutating status RPC. */
+  remoteSupervisorTaskStatusSnapshot?(id: string): Promise<unknown>;
   /** Optional during rollout; the Worker remains backward compatible with older supervisor versions. */
   supervisedTaskArtifacts?(id: string): Promise<unknown>;
   supervisedArtifactCapture?(id: string, raw: unknown): Promise<unknown>;
@@ -53,15 +55,19 @@ const workspaceSchema = z.string()
   .optional();
 const sessionIdSchema = z.string().regex(/^ses[A-Za-z0-9_]{1,64}$/);
 
-function result(value: unknown, maxChars?: number) {
-  return { content: [{ type: "text" as const, text: boundedMcpJsonText(value, maxChars) }] };
+function result(value: unknown, maxChars?: number, supervisorTask = false) {
+  return { content: [{ type: "text" as const, text: boundedMcpJsonText(value, maxChars, undefined, supervisorTask) }] };
 }
 
 function failed(error: unknown) {
-  const message = error instanceof Error
-    ? (error.message.length > 500 ? "MCP_ERROR_MESSAGE_TOO_LARGE" : redactMcpString(error.message))
-    : "Error del control de staging";
-  return { content: [{ type: "text" as const, text: message }], isError: true };
+  const raw = error instanceof Error ? error.message : "MCP_OPERATION_FAILED";
+  // Never stringify an arbitrarily large thrown Error or copy a token prefix.
+  const message = raw.length > 500 ? "MCP_ERROR_MESSAGE_TOO_LARGE" : redactMcpString(raw);
+  const code = /^[A-Z][A-Z0-9_]{3,90}$/.test(message) ? message : "MCP_OPERATION_FAILED";
+  return { content: [{ type: "text" as const, text: boundedMcpJsonText({
+    status: "unknown", code, error: code, message, reviewRequired: true,
+    passed: false, verified: false
+  }, 1500, STAGING_WORKER, true) }], isError: true };
 }
 
 export function createStagingControlServer(bindings: StagingControlBindings): McpServer {
@@ -255,16 +261,21 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
         : { ...task };
       if (workspace) payload.workspace = workspace;
       else delete payload.workspace;
-      return result({ ...payload, targetWorker: STAGING_WORKER });
+      return result({ ...payload, targetWorker: STAGING_WORKER }, undefined, true);
     } catch (error) {
       return failed(error);
     }
   });
 
   server.registerTool("staging_task_status", {
-    description: `Consulta una tarea supervisada de Staging por su ID hexadecimal de 16 caracteres. ${WORKSPACE_HINT}`,
+    description: `Snapshot durable de una tarea: SOLO LECTURA, sin espera SDK, no certifica finalización ni PASS. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema.describe("ID de tarea hexadecimal de 16 caracteres"), workspace: workspaceSchema }
-  }, async ({ id, workspace }) => callTask(() => bindings.supervisor(workspace).supervisedTaskStatus(id)));
+  }, async ({ id, workspace }) => callTask(async () => {
+    const supervisor = bindings.supervisor(workspace);
+    if (!supervisor.remoteSupervisorTaskStatusSnapshot)
+      throw new Error("SUPERVISOR_STATUS_SNAPSHOT_UNAVAILABLE_OLD_WORKER");
+    return supervisor.remoteSupervisorTaskStatusSnapshot(id);
+  }, undefined, true));
 
   server.registerTool("staging_task_artifacts", {
     description: "Lista un manifiesto acotado de archivos realmente capturados para una tarea supervisada. No obtiene un transcript ni convierte rutas internas en descargas. La ruta HTTP requiere Cloudflare Access y bearer; no es una URL pública.",
@@ -273,7 +284,7 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
     const supervisor = bindings.supervisor();
     if (!supervisor.supervisedTaskArtifacts) throw new Error("ARTIFACT_BACKEND_UNAVAILABLE");
     return supervisor.supervisedTaskArtifacts(id);
-  }));
+  }, undefined, true));
 
   server.registerTool("staging_capture_task_artifact", {
     description: "CAPTURA CON EFECTO: crea una copia inmutable de un archivo de texto existente del proyecto de una tarea TERMINADA. Ejecuta inspección Linux acotada y persiste <=32 KiB en el DO; no modifica archivos de origen ni buckets. Úsala solo con autorización de captura, nunca para buscar secretos o rutas internas.",
@@ -287,13 +298,13 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
     const supervisor = bindings.supervisor();
     if (!supervisor.supervisedArtifactCapture) throw new Error("ARTIFACT_BACKEND_UNAVAILABLE");
     return supervisor.supervisedArtifactCapture(id, { path, name, mime });
-  }));
+  }, undefined, true));
 
   server.registerTool("staging_task_progress", {
-    description: `Lee eventos duraderos de progreso desde un cursor. Solo devuelve secuencia y tipo de evento; no incluye razonamiento interno. ${WORKSPACE_HINT}`,
+    description: `Progreso detallado temporalmente UNAVAILABLE_UNBOUNDED_SDK por eventos nativos de tamaño no acotado; devuelve snapshot y error explícito sin mover el cursor. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema, workspace: workspaceSchema, after: z.number().int().min(0).default(0) }
   }, async ({ id, workspace, after }) =>
-    callTask(() => bindings.supervisor(workspace).remoteSupervisorProgress(id, after)));
+    callTask(() => bindings.supervisor(workspace).remoteSupervisorProgress(id, after), undefined, true));
 
   server.registerTool("staging_task_continue", {
     description: `Envía una nueva instrucción para continuar o corregir una tarea. turnId hace idempotentes los reintentos; una instrucción sobre una tarea activa se aplica como steer. ${WORKSPACE_HINT}`,
@@ -302,23 +313,23 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
       turnId: z.string().regex(/^[a-f0-9]{16}$/), prompt: z.string().min(12).max(5000)
     }
   }, async ({ id, workspace, turnId, prompt }) =>
-    callTask(() => bindings.supervisor(workspace).remoteSupervisorContinue({ id, turnId, prompt })));
+    callTask(() => bindings.supervisor(workspace).remoteSupervisorContinue({ id, turnId, prompt }), undefined, true));
 
   server.registerTool("staging_task_select_model", {
     description: `Selecciona un modelo del catálogo para los siguientes turnos de una tarea inactiva. El proveedor debe estar configurado en Staging. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema, workspace: workspaceSchema, model: z.string().min(1).max(160) }
   }, async ({ id, workspace, model }) =>
-    callTask(() => bindings.supervisor(workspace).remoteSupervisorSelectModel(id, model)));
+    callTask(() => bindings.supervisor(workspace).remoteSupervisorSelectModel(id, model), undefined, true));
 
   server.registerTool("staging_cancel_task", {
     description: `Solicita la cancelación de una tarea supervisada de Staging por su ID. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema.describe("ID de tarea hexadecimal de 16 caracteres"), workspace: workspaceSchema }
-  }, async ({ id, workspace }) => callTask(() => bindings.supervisor(workspace).cancelSupervisedTask(id)));
+  }, async ({ id, workspace }) => callTask(() => bindings.supervisor(workspace).cancelSupervisedTask(id), undefined, true));
 
   server.registerTool("staging_review_task", {
     description: `Ejecuta la revisión GitHub existente para la rama bloqueada de una tarea de Staging. No aprueba ni fusiona cambios. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema.describe("ID de tarea hexadecimal de 16 caracteres"), workspace: workspaceSchema }
-  }, async ({ id, workspace }) => callTask(() => bindings.supervisor(workspace).supervisedTaskReview(id), 16_000));
+  }, async ({ id, workspace }) => callTask(() => bindings.supervisor(workspace).supervisedTaskReview(id), 16_000, true));
 
   server.registerTool("staging_task_transcript", {
     description: `Transcripción temporalmente no disponible: historial sin límite seguro de memoria en Staging. ${WORKSPACE_HINT}`,
@@ -328,12 +339,18 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
   return server;
 }
 
-async function callTask(operation: () => Promise<unknown>, maxChars?: number) {
+async function callTask(operation: () => Promise<unknown>, maxChars?: number, supervisorTask = false) {
   try {
-    // Project the original RPC value before copying/spreading or stringifying it.
-    // The target is attached to the small projected object, never to the full source.
-    return { content: [{ type: "text" as const,
-      text: boundedMcpJsonText(await operation(), maxChars, STAGING_WORKER) }] };
+    // Safe projection first; never spread/JSON.stringify a giant raw RPC result.
+    const json = boundedMcpJsonText(await operation(), maxChars, STAGING_WORKER, supervisorTask);
+    const page = JSON.parse(json) as { pageAvailable?: boolean; error?: string; status?: string };
+    const unavailable = supervisorTask && (
+      page.pageAvailable === false ||
+      page.error === "SUPERVISOR_PROGRESS_UNAVAILABLE_UNBOUNDED_SDK" ||
+      page.error === "SUPERVISOR_NATIVE_NOT_FOUND"
+    );
+    return { content: [{ type: "text" as const, text: json }],
+      ...(unavailable ? { isError: true } : {}) };
   } catch (error) {
     return failed(error);
   }

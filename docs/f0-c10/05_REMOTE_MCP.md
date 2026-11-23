@@ -160,3 +160,75 @@ R2-T05 puede aceptarse como **PASS técnico acotado** si `bun test`, `typecheck`
 La reconciliación posterior se documenta en [`05_C11_HANDOFF.md`](./05_C11_HANDOFF.md) de esta rama y en la PR #139. Incluye el diff seleccionado de #139, solapamiento concreto con T09 R2 [#133](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/133) y controles del evaluador T10 de #126. **Esta es una entrega al integrador C11, no una integración realizada**; no reescribir #126 ni #133.
 
 Puntos de bloqueo: #133 deriva de #123, no de #126 y conserva funciones heredadas de transcript/exportación que se deben descartar al portar; su manifiesto GET llama a `supervisedTaskStatus` (no está demostrado que sea lectura barata). En `scripts/f0-c10/evaluate.mjs` de #126, el `status_probe` no invalida por sí solo `gapDetected:true` o `_responseTruncated:true`; C11/T10 debe cerrar ese negativo antes de aceptar trazas live. La nueva prueba `bounded-response.test.ts` presenta manifiestos sintéticos de ocho archivos de T09 y salida MCP truncada; no se ha fusionado código T09 en esta rama. Ver CI del HEAD posterior a la entrega, no reaprovechar únicamente los runs históricos.
+
+---
+
+# R3-T05 — Contención segura de progreso y contrato MCP entre Workers
+
+**Corte de trabajo:** 23-11-2026 (America/Sao_Paulo). **Actor:** ChatGPT mediante GitHub y pruebas locales sintéticas, **no** OpenCode Remote ejecutor ni Codex. **Repositorio:** `aamvtrampa36-del/opencode-harness-example`. **Incidente:** issue #90 abierto; el ensayo 22-11 generó 10 starts pero **0/10 outputs verificados y errores OOM**. No se realizaron nuevas tareas Remote ni gastos de inferencia.
+
+**Base de CÓDIGO fijada:** PR #145, `a49e985909cb56bb42c609c9cd5cb4250a620169` (apilada sobre #144→#143→#126), draft y no publicada. PR #146 `05da68fd1644f92578588c62a4586d561c418c49` solo agregó docs R3/retrospectiva; se consultó para plan/autoridad, sin asumir que sus fuentes se hayan desplegado. **Rama propia** `f0-c10/r3-t05-safe-remote-mcp-20261123`. PR R3/CI/HEAD exactos se consignan en el recibo de GitHub y en el cierre de la entrega (no usar los hashes históricos R2 para validar R3).
+
+## 1. RED y decisión técnica
+
+**Defecto reproducible de diseño:** el cursor durable de `agents@0.33.0` en `session.log({after,follow:false})` evita pedir toda la historia, **pero NO garantiza selección de columnas ni límite de bytes antes de materializar una única fila**. Los topes de `projectSupervisorProgress()` sobre `for await` (128/64/8192/50 ms *soft*) se aplican *después* de `next()`; con un evento enorme, el isolate puede superar su memoria antes de proyectar solo `seq/type`. Un timeout externo de 50 ms no preempta una asignación/espera de SDK en curso.
+
+**RED offline:** `node /mnt/data/f0-c10-r3-t05/red-progress.mjs`, Node 22.16, evento sintético de 8 MiB, fuente iterada una vez antes de proyectar; `assert(logCalls===0)` da **exit 1**, `actual:1`. No es OOM Workerd; demuestra la ventana que un post-recorte no evita.
+
+**Resolución de menor riesgo:** sin API SDK con proyección de bytes anterior a `next()`, **NO invocar** `session.log()` en el RPC de progreso accesible por MCP. `remoteSupervisorProgress` devuelve el ledger snapshot con `events:[]`, cursor **sin adelantar**, `pageAvailable:false`, `complete:false`, `truncated:true`, `error:"SUPERVISOR_PROGRESS_UNAVAILABLE_UNBOUNDED_SDK"`, `passed:false`, `verified:false`. MCP expone `isError:true` para ese estado. Se conserva el helper `projectSupervisorProgress` y sus pruebas para fuentes *offline* seguras, pero **NO** está conectado al SDK crudo en producción. Es una **degradación funcional explícita**: el seguimiento detallado por eventos queda temporalmente no disponible. No presentar este cambio como paginación funcional ni medir consumo de heap a partir de unit tests.
+
+`staging_task_status` pasa a consultar un RPC nuevo **solo lectura** `remoteSupervisorTaskStatusSnapshot(id)`, con `supervisor:task:<id>` y ledger de admisión validado (máximo 10 slots). Nunca llama a `wait/busy/log/history`, no escribe DO; devuelve `recordedStatus`, `asOf`, `admissionState/effect`, `pendingTurn` y `cancelAmbiguous`, `nativeReconciled:false`, `passed/verified:false`. Un Worker principal antiguo que no implemente el RPC NO recibe una consulta mutativa de reserva: MCP responde `SUPERVISOR_STATUS_SNAPSHOT_UNAVAILABLE_OLD_WORKER` con `isError:true`. Desplegar solo ambos Workers con la misma versión validada en lote futuro.
+
+`remoteSupervisorInspect` señala `progressAvailableViaCursor:false` y error; transcript/inspect-session y export legacy conservan rechazo ANTES de `history()`/`sessions.list()`/JSON completo (`SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED`, `SESSION_EXPORT_PAGINATION_UNAVAILABLE_LEGACY`).
+
+## 2. Traza real de rutas y efectos (HEAD #145 más parche R3)
+
+| Entrada MCP | RPC principal DO | ¿Efecto? | Garantía y límite R3 |
+|---|---|---|---|
+| `staging_status` | health HTTP + `remoteSupervisorStatus()` | Lectura, índice `storage.list(limit:101)` | Recuento parcial señalado; no 96 activos |
+| `staging_task_status` | `remoteSupervisorTaskStatusSnapshot(id)` | **Lectura durable**, sin native SDK ni `storage.put` | Snapshot histórico, no receipt terminal; `passed/verified:false` |
+| `staging_task_progress` | `remoteSupervisorProgress(id,after)` → snapshot | **Lectura durable**; **NO** SDK `log()` | `isError:true` + `UNAVAILABLE_UNBOUNDED_SDK`; cursor inalterado |
+| `staging_session_inspect` | `remoteSupervisorInspectSession` | Rechazo antes de history | Error de transcript; no ruta completa paginada |
+| `staging_task_transcript` | **sin llamada** backend | Rechazo fail-closed | Error temporal de contenido no paginable |
+| `staging_task_continue` | `remoteSupervisorContinue` | **EFECTO**: journal de `turnId`, admisión, `submit/steer`; puede quedar `effect_unknown/turn_submit` | `submitted` ≠ verificado, reintento no ciego; T03/T04 autoridad |
+| `staging_cancel_task` | `cancelSupervisedTask` | **EFECTO**: journal/estado + `abort()` + posible status nativo | `abortAccepted` ≠ cancelación terminal, `confirmed` nativo |
+| `staging_start_task` / reuso | `startSupervisedTask` + `supervisedTaskStatus` en reutilización | **EFECTO** en inicio; reuso puede reconciliar y escribir | Nunca tratar herramienta como GET segura |
+| `staging_task_artifacts` | `supervisedTaskArtifacts` → snapshot R3 | Lectura de manifest durable, scope+índice máximo 8 | Sin `wait/log` nuevo; `collectorVerification:pending` ≠ resultado |
+| `staging_capture_task_artifact` | `supervisedArtifactCapture` → status nativo, DevContainer read + storage | **EFECTO** (copia persistente hasta 32 KiB) | Requiere permiso explícito; no usar para chequear estado |
+| `/api/supervisor/v1/tasks/:id` REST | `supervisedTaskStatus` nativo | **Puede mutar** reconciliación, `pendingTurn`, métricas, estado | Ruta de T03/T04 **NO** sustituida; leer bajo carga exige revisión T01/T04 |
+| `remoteSupervisorInspect(id)` (RPC directo) | ledger snapshot | Lectura durable | `progressAvailableViaCursor:false`, `verified:false` |
+| `/api/session/export` | `exportSessionData` | Rechazo temprano legacy | No exporta ni borra datos |
+| `staging_mcp_call` | MCP dinámico | **efectos desconocidos** sin contrato tool | Nunca inferir solo lectura por nombre |
+
+**Riesgo vivo no resuelto y propiedad T01/T04:** `supervisedTaskStatus` (llamado por REST y por continue/cancel, captura de artefactos y reuso) aún hace `wait(operationId)` bajo AbortController de 120ms y `foldSupervisorToolLog(handle.log(...), 256)`; un único objeto SDK puede ser gigante antes del `fold`, y `wait` puede acceder internamente al transcript. El parche NO lo elimina por su función central de reconciliación `turn_submit`/#145. **No se certifica memoria segura en esta ruta**. La solución definitiva requiere contrato por índice previo a materialización, o sustituir métricas nativas con recibos durables validados, y pruebas workerd/SDK controladas. Revisar junto con T01/T04 antes del E2E.
+
+## 3. Contratos MCP, errores y archivos móviles
+
+- MCP de control conserva nombres y entradas `id/workspace/after`, `turnId/prompt`; agrega el RPC opcional de snapshot. Para **todas las respuestas de tarea** invocadas mediante `callTask(...,supervisorTask=true)`, la proyección impone `passed:false`, `verified:false` y `reviewRequired:true` incluso si el backend mintiese `passed:true`. `not_found` se degrada a `status:"unknown"`, `nativeResult:"not_found"`, `error:"SUPERVISOR_NATIVE_NOT_FOUND"` con `isError:true`. `effect_unknown/turn_submit` se conservan sin transformarlos en PASS.
+- Excepciones MCP se representan ahora como **JSON pequeño**: `{status:"unknown",code,error,message,targetWorker,reviewRequired:true,passed:false,verified:false}`, y `isError:true`. La cadena de error mayor de 500 caracteres se reemplaza por `MCP_ERROR_MESSAGE_TOO_LARGE` para evitar filtrar prefijos de secretos; cadenas pequeñas se redactan. Los clientes deben comprobar `isError`, no solo el texto.
+- `boundedMcpJsonText` nunca enumera `Uint8Array`/`ArrayBuffer`/`Blob` del RPC: sustituye `[BINARY_PAYLOAD_UNAVAILABLE_OVER_MCP]`, marca `_responseTruncated:true` y retira cualquier `passed/verified`. No convertir bytes binarios a una lista JSON de números. Los ocho metadatos del manifest T09 sí caben por MCP; los bytes se obtienen **únicamente por el GET HTTPS autenticado del Worker principal**, con Cloudflare Access+bearer y verificación SHA-256 independiente. Un `delivery.path` no es URL pública ni archivo descargado.
+- Protocolo de error compatible con móvil: JSON UTF-8 limitado y `isError` MCP; GET de archivos como respuesta binaria con cabeceras/sha propias, **no** mezclarlo con `tools/call`. Android y autorización real entre Workers no se probaron; no anunciar PASS móvil. Backend viejo y MCP nuevo deben fallar cerrados por falta de snapshot RPC. No activar MCP aislado del principal.
+
+## 4. RED/GREEN, criterios y métricas
+
+- RED sintético Node: evento gigante de 8 MiB, `logCalls=1` y salida **exit 1** al exigir 0 lecturas crudas. Es la reproducción de la limitación estructural, **no** de un OOM real.
+- GREEN sintético Node: `green-synthetic.mjs`, 10 tareas/snapshots independientes sin consulta nativa, cursor conservado, `passed/verified:false`; **exit 0** (solo contrato modelado).
+- Pruebas de código añadidas en `src/supervisor-transcript-containment.test.ts`: snapshot solo lectura, `effect_unknown/turn_submit` sin token de fencing filtrado, 10 lectores, re-instanciación como simulación de reinicio, ausencia absoluta de `wait/log/history/storage.put`, progreso que no adelanta cursor. Pruebas puras existentes `src/supervisor-progress.test.ts` retienen gigante de 8 MiB, razonamiento filtrado, gaps, duplicados, cursor inválido, restart sintético, diez lectores (NO están conectadas al SDK).
+- Pruebas `src/staging-control-mcp/server.test.ts`: status solo snapshot, error explícito al faltar RPC en el Worker principal, `not_found` como error, progreso `isError:true`, continue/cancel sin falso `verified`; `bounded-response.test.ts`: respuesta `passed:true` falsificada y rechazo de blobs binarios / metadata T09 sin perder ID.
+- Metas del área: SDK `log/history` invocados por `staging_task_status/progress/artifacts-list` = **0** en fixtures; diez snapshots sin mezcla; retorno JSON MCP pequeño; ninguna respuesta terminal automática basada solo en estado. Estos tests **no** miden isolate heap real, tasa de OOM ni límite físico por Workers.
+- Versiones publicadas (solo lectura al abrir R3): principal `3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb`, deployment `36ef84b3-0f99-4dd4-ab8e-c11ee450dd23`; MCP `196240c0-1052-47b3-aaa7-02cf5baa87f0`, deployment `9fdaf22d-beeb-44a0-ab68-77ecd5745fa1`; ambos 100%. Ningún parche #145/R3 publicado. `staging_status=ok`, sesiones al menos 96 pero inventario parcial, **no** concurrencia 96. Verificar de nuevo antes de cualquier promoción.
+- Costes: **0 tareas/inferencias lanzadas por este encargo**, 0 Worker deployments, 0 operaciones de mutación de Staging; coste de GitHub Actions y facturación real **no medidos**, no declarar coste total 0 USD. Ningún lease exclusivo, hard stop ni capacidad de diez activos verificados.
+- CI de **HEAD FINAL**: el reporte de PR R3 enlaza los runs y su resultado exacto; no confundir con #45106083359 de #145 (PASS previo).
+- Referencias: fuente propia de #145/#139 y `agents@0.33.0` / `@opencode/sdk@2.0.24` fijados en `package.json` y `14_SESSION_RECOVERY_READMISSION.md`. No se copió ni actualizó código externo, no hay nueva licencia ni dependencia que promover.
+
+## HANDOFF A F0-C10/R3-T11 (único)
+
+**RESULTADO: PARTIAL / SAFE_CONTAINMENT.** Una API de progreso con eventos **no** tiene byte-bound antes de `next()` en el SDK verificado. La rama R3 elimina las consultas de log del endpoint externo y usa snapshot de estado; elimina falsos `passed/verified` en las respuestas MCP de tarea y bloquea bytes en MCP. El precio es que el progreso detallado y la exportación legacy continúan explícitamente **no disponibles**.
+
+**BASE:** #145 `a49e985909cb56bb42c609c9cd5cb4250a620169`, documentación R3 consultada #146 `05da68fd1644f92578588c62a4586d561c418c49`. **HEAD/PR final:** véase recibo exacto de GitHub de esta rama `f0-c10/r3-t05-safe-remote-mcp-20261123`. **Archivos:** `src/server.ts`, `src/staging-control-mcp/server.ts`, `src/staging-control-mcp/bounded-response.ts`, tests MCP y transcript, este `docs/f0-c10/05_REMOTE_MCP.md`. **Actor:** ChatGPT.
+
+**Pruebas / bloqueante:** RED exit 1, GREEN modelado exit 0, Bun/typecheck/build/invariantes/CI exactos en PR. Bloqueo no eludible: `supervisedTaskStatus()` nativo en operaciones con efectos aún puede materializar evento gigante; `wait()` y `session.log()` requieren trazas de heap T01 + compatibilidad T04 con receipt native; Android/T09 y E2E T10 siguen sin verificación real.
+
+**Conflicto:** nuevo RPC snapshot MCP/principal requiere publicar ambos Workers en el mismo lote, pero **sin autorización en R3**. No revertir `supervisor-admission` ni `supervisor-r2`; el snapshot no reconcilia un `turn_submit` sin recibo. T09 GET de manifest usa snapshot; captura continua siendo operación con efecto. T10 no puede acreditar eventos/intervalos de ejecución con la respuesta `pageAvailable:false` — necesita colector runtime independiente.
+
+**Criterio aceptación T11:** escoger #R3 como contención reversible con CI de ambos Workers y pruebas MCP de mezcla/versiones; exigir que `staging_task_status` es snapshot y `staging_task_progress` emite `isError:true` en vez de resultados fabricados. Mantener **NO DEPLOY / NO LIVE** hasta resolver límites previos a materialización en ruta nativa, verificar lease+corte gasto y probar un E2E autenticado.
