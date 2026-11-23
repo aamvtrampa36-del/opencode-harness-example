@@ -319,10 +319,26 @@ export class GitHubBridge {
     if (typeof commit.sha !== "string" || !/^[0-9a-f]{40}$/.test(commit.sha)) {
       throw new Error("GitHub did not return a valid replacement commit");
     }
-    const updatedRef = await this.api("PATCH",
-      base + "/git/refs/heads/" + encodeURIComponent(branch), { sha: commit.sha, force: false });
+    const updateRoute = base + "/git/refs/heads/" + encodeURIComponent(branch);
+    let updatedRef: any;
+    try {
+      updatedRef = await this.api("PATCH", updateRoute, { sha: commit.sha, force: false });
+    } catch {
+      // The PATCH may have succeeded before its HTTP reply vanished.
+      // Never replay a side effect on an ambiguous transport failure.
+      let observed: any;
+      try {
+        observed = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(branch));
+      } catch {
+        throw new Error("GITHUB_REF_UPDATE_UNKNOWN: HEAD readback failed; no retry");
+      }
+      if (observed?.object?.sha !== commit.sha)
+        throw new Error("GITHUB_REF_UPDATE_UNKNOWN: exact commit not confirmed; no retry");
+      return { repo, branch, path, commitSha: commit.sha, fileSha: blob.sha,
+        expectedHead, mode: "replacement", reconciled: true };
+    }
     if (updatedRef.object?.sha !== commit.sha) {
-      throw new Error("GitHub did not confirm the replacement branch HEAD");
+      throw new Error("GITHUB_REF_UPDATE_UNKNOWN: GitHub did not confirm the replacement branch HEAD");
     }
     return { repo, branch, path, commitSha: commit.sha, fileSha: blob.sha, expectedHead, mode: "replacement" };
   }
