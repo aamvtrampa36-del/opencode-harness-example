@@ -213,3 +213,5 @@ Los siguientes repositorios fueron leídos en commits **anclados** con sus archi
 6. **Integración T11:** revisar conflicto potencial con R2 T04/T05 y R2 T08 (fencing de PR en `src/github.ts`). No se alteraron esas ramas.
 
 **Resultado a comunicar al maestro:** `R2-T03 PARTIAL; PR #135 draft desde #126; durable admission + fencing integrado en candidata; CI HEAD pendiente; Stage sin cambios; zero starts/remote inference; presupuesto sin corte; falta E2E/T04/T07`. **No MERGE / NO DEPLOY / NO COMPLETE PASS.**
+
+**CI R2 focal:** workflow `.github/workflows/f0-c10-r2-t03-admission.yml`, permisos `contents:read`, solo Bun 1.4.4, suites de admisión/T04, typecheck/build e invariantes, sin Cloudflare/Remote. La PR puede apuntarse temporalmente a Staging para disparar CI de revisión, pero debe volver a base #126 antes de entregar; ningún resultado será declarado sin run y SHA exactos.
