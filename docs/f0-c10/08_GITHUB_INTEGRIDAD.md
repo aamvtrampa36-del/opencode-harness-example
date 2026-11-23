@@ -167,4 +167,10 @@ Archivo: \`src/github-publication-gate.test.ts\`. Usar \`bun test src/github-pub
 
 **Handoff a T03:** implementar el contrato \`GitHubPrPublicationGate\` como ledger durable en la misma autoridad elegida para admisión o un coordinador ya existente. Definir identidad, estado \`reserved→publishing→committed|unknown\`, exclusión por base, incrementos de epoch, recuperación/readback sin segundo POST y almacenamiento de recibos. Probar dos instancias DO/Workers, crash entre POST y receipt, caducidad de lease y agente tardío, reanudación de \`unknown\`, más control de gastos efectivo antes de Remote. Coordinar con T04 por journal. T11 debe integrar mediante PR dependiente y verificar CI/compatibilidad con #126 antes de promover.
 
+### CI verificada del primer HEAD R2
+
+- GitHub Actions exact SHA `82a323368e89516d73c3c731d91d4ae13254b0a4`: [OpenCode validation #45096050118](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45096050118) **completed/success**. Job `137435968740`: **526 tests / 74 files PASS**, incluidos **9/9 R2-T08**, Typecheck, preview, build de Workers/web e invariantes sin errores.
+- [F0-C10 offline #45096050062](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45096050062) y [T09 output #45096050092](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45096050092): **completed/success**, mismo SHA. No prueba runtime, DO ni despliegue.
+- La adición de esta nota documental produce un **nuevo HEAD** que requiere verificación CI independiente antes de alegar CI verde del HEAD final.
+
 **Rollback:** no fusionar el PR draft. Ninguna mutación Cloudflare/Producción fue realizada por esta contribución. \`R2-T08=PARTIAL\` hasta conexión durable verificada y E2E supervisado; \`F0-C10\` permanece \`NOT COMPLETE PASS\`.
