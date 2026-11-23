@@ -71,6 +71,43 @@ describe("F0-C10/R2-T05 bounded MCP serialization", () => {
     expect(page.verified).toBe(false);
   });
 
+  test("T09 artifact manifest remains byte-free and correlated for eight captured files", () => {
+    const taskId="0123456789abcdef";
+    const entries=Array.from({length:8},(_,i)=>({
+      schema:"opencode.task-output.v1",requestId:taskId,artifactId:i.toString(16).padStart(32,"0"),
+      name:`reporte-${i}.txt`,mime:"text/plain",byteSize:1024,sha256:"a".repeat(64),
+      createdAt:1000,delivery:{
+        kind:"authenticated-route",
+        path:`/api/supervisor/v1/tasks/${taskId}/artifacts/${i.toString(16).padStart(32,"0")}`,
+        expiresAt:5000
+      }
+    }));
+    const manifest={schema:"opencode.task-output.v1",requestId:taskId,status:"finished",
+      artifacts:entries,summary:{text:"",available:false,truncated:false},
+      errors:[],evidence:{sessionId:"ses_task",operationId:"op_task",projectId:"supervised-"+taskId,
+        byteReadback:"captured",collectorVerification:"pending"},
+      passed:false,verified:false,reviewRequired:true};
+    const json=JSON.parse(boundedMcpJsonText(manifest,16_000,"opencode-g1-staging"));
+    expect(json._responseTruncated).toBeUndefined();
+    expect(json.artifacts).toHaveLength(8);
+    expect(json.artifacts.every((a:typeof entries[number])=>a.requestId===taskId &&
+      a.delivery.path.includes("/artifacts/"))).toBe(true);
+    expect(json.passed).toBe(false);
+    expect(json.verified).toBe(false);
+    expect(json.evidence.collectorVerification).toBe("pending");
+  });
+
+  test("T09 oversized artifact manifests become explicitly unverified", () => {
+    const taskId="0123456789abcdef";
+    const manifest={requestId:taskId,status:"finished",passed:true,verified:true,
+      artifacts:Array.from({length:1000},(_,i)=>({artifactId:String(i),byteSize:1024}))};
+    const page=JSON.parse(boundedMcpJsonText(manifest));
+    expect(page._responseTruncated).toBe(true);
+    expect(page.passed).toBe(false);
+    expect(page.verified).toBe(false);
+    expect(page.status).toBe("unknown");
+  });
+
   test("ten interleaved MCP projections do not mix task IDs", async () => {
     const pages=await Promise.all(Array.from({length:10},async(_,i)=>{
       const id=i.toString(16).padStart(16,"0");
