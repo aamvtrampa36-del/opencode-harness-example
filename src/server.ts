@@ -25,7 +25,7 @@ import {
   reconcileSupervisorCreatedSession, supervisorCommitCreatedSession,
   reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
   reconcileSupervisorTurnEffect,
-  reconcileSupervisorSubmittedEffect, type StartGrant
+  reconcileSupervisorSubmittedEffect, supervisorGrantStillOwned, type StartGrant
 } from "./supervisor-admission";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
@@ -314,6 +314,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
       job = await this.ctx.storage.transaction(async tx => {
         const fresh = await tx.get<SupervisorTask>(key);
         if (!fresh) throw new Error("SUPERVISOR_TASK_MISSING_AFTER_FAILURE");
+        // A positive exact-ID GET may transfer token+generation while the
+        // original native create call is still in flight. Its later SDK
+        // failure must NOT write 'failed' on the new owner's task.
+        if (!await supervisorGrantStillOwned(tx, grant)) return fresh;
         if (fresh.status === "cancel_requested" || fresh.status === "cancelled" ||
             fresh.pendingTurn || (fresh.operationId && fresh.operationId !== job.operationId))
           return fresh;
