@@ -1,0 +1,26 @@
+name: F0-C10 offline harness (no Staging)
+
+on:
+  pull_request:
+    branches: [staging/opencode-g1-rpc-safe-20261120]
+    paths:
+      - 'scripts/f0-c10/**'
+      - 'docs/f0-c10/10_PRUEBAS_E2E.md'
+      - '.github/workflows/f0-c10-offline.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Node built-in tests (no credentials, no network calls)
+        run: node --test scripts/f0-c10/evaluate.test.mjs
+      - name: Matrix and negative fault suite
+        run: node scripts/f0-c10/run-offline.mjs --suite --out f0-c10-offline-evidence.json
+      - name: Inspect bounded JSON evidence
+        run: node -e "const x=require('./f0-c10-offline-evidence.json'); if (!x.pass || x.realStagingTested) process.exit(1)"
