@@ -142,7 +142,7 @@ export async function reserveDisposableExpense(storage:DurableObjectStorage,
  */
 export async function armReservedDisposableExpense(storage:DurableObjectStorage,
   grant:PreflightLeaseGrant,policy:DisposableCostPolicy,operationId:string,
-  now:number):Promise<{mayDispatch:boolean;state:"unknown"}> {
+  now:number):Promise<{firstArmed:boolean;providerDispatchAuthorized:false;state:"unknown"}> {
   requireValid(OP.test(operationId),"COST_INTENT_INVALID");
   return storage.transaction(async tx=>{
     const ledger=await getLedger(tx,policy);
@@ -160,7 +160,7 @@ export async function armReservedDisposableExpense(storage:DurableObjectStorage,
     } else {
       requireValid(row.state==="unknown","COST_JOURNAL_DISAGREEMENT");
     }
-    return {mayDispatch:v.mayDispatch,state:"unknown" as const};
+    return {firstArmed:v.mayDispatch,providerDispatchAuthorized:false as const,state:"unknown" as const};
   });
 }
 
