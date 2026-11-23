@@ -16,7 +16,7 @@ const NOW=1000;
 const TOKEN='supervisor-fixture-token-not-a-real-credential';
 const id=n=>n.toString(16).padStart(16,'0');
 function scope(requestId){return {id:requestId,project:'supervised-'+requestId,session:'sesTest_'+requestId,repository:'aamvtrampa36-del/opencode-harness-example'};}
-async function record(requestId,n,now=NOW){const contents=`verified-task-${n}`;const owner=scope(requestId);return captureInspectedArtifact({requestId,ownerProject:owner.project,ownerSession:owner.session,repository:owner.repository,request:{path:'dist/output.txt',name:'salida.txt',mime:'text/plain'},inspected:{path:'dist/output.txt',contents,size:Buffer.byteLength(contents)},now});}
+async function record(requestId,n,now=NOW){const contents=`verified-task-${n}`;const owner=scope(requestId);return captureInspectedArtifact({requestId,ownerProject:owner.project,ownerSession:owner.session,repository:owner.repository,request:{path:'dist/output.txt',name:'salida.txt',mime:'text/plain'},inspected:{path:'dist/output.txt',byteSize:Buffer.byteLength(contents),base64:Buffer.from(contents).toString('base64'),sha256:createHash('sha256').update(contents).digest('hex')},now});}
 
 async function startFixture() {
  const records=new Map();
