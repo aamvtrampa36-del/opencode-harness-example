@@ -28,8 +28,8 @@ class FakeDO {
 const scope="a".repeat(64);
 const policy=():DisposableCostPolicy=>({
   scopeHash:scope,policyRevision:"fixture1",totalMicroUsd:5000,
-  maxByServiceMicroUsd:Object.fromEntries(COST_KINDS.map(k=>[k,k==="workers_ai"?5000:1000]))
-    as Record<ExpenseKind,number>
+  maxByServiceMicroUsd:(Object.fromEntries(COST_KINDS.map(k=>[k,k==="workers_ai"?5000:1000]))
+    as Record<ExpenseKind,number>)
 });
 const make=async()=>{
   const db=new FakeDO();await initializeDisposableLease(db.asDO(),scope);
