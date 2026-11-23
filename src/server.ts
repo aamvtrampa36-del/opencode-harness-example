@@ -73,6 +73,8 @@ import {
   type StoredTaskArtifact
 } from "./task-output-artifacts";
 
+import { createSupervisorMemoryProbe, type PhaseProbe } from "./supervisor-phase-telemetry";
+
 import { r2SessionId, r2TurnJournalKey, r2TurnAdmission,
   r2CancelledByReceipt, r2StatusWriteAllowed, r2TerminalNativeReceipt,
   r2PendingTurnReconcileAllowed, type R2TurnJournal } from "./supervisor-r2";
@@ -89,10 +91,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
     connect?: (key: string) => Promise<void>;
   } = {};
   private readonly mcpLifecycle: { reload?: () => Promise<void> } = {};
+  /** Disabled by default; no Wrangler binding or deployment config modified. */
+  private phaseProbe(): PhaseProbe {
+    return createSupervisorMemoryProbe(
+      (this.env as Env & { OPENCODE_SUPERVISOR_PHASE_TELEMETRY?: string })
+        .OPENCODE_SUPERVISOR_PHASE_TELEMETRY === "true");
+  }
   /** Remote supervisor tasks use a single dedicated DO, never arbitrary user workspaces. */
   async startSupervisedTask(raw: unknown): Promise<unknown> {
     this.assertStagingRemote();
-    const start = validateSupervisorStart(raw, await this.personalConfig.getAllowedRepositories());
+    const trace = this.phaseProbe();
+    const start = await trace.run("admission", "validate", async () =>
+      validateSupervisorStart(raw, await this.personalConfig.getAllowedRepositories()));
     const key = supervisorTaskKey(start.requestId);
     const fingerprint = await supervisorFingerprint(start);
     let old = await this.ctx.storage.get<SupervisorTask>(key);
@@ -100,7 +110,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (old && old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
     if (old && isUntrackedLegacySupervisorOperation(old)) {
       let busy: boolean | undefined;
-      try { busy = await this.harness.session(old.session!).busy(); }
+      try { busy = await trace.run("status", "busy", () => this.harness.session(old!.session!).busy()); }
       catch { busy = undefined; }
       const legacy = { ...old,
         status: busy ? "running" as const : "unknown" as const,
@@ -133,7 +143,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
       sessionCreationAttempted: false, sessionIdPolicy: "deterministic-v1", revision: 0,
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
-    const admission = await reserveSupervisorAdmission(this.ctx.storage, job);
+    const admission = await trace.run("admission", "reserve", () =>
+      reserveSupervisorAdmission(this.ctx.storage, job));
     if (admission.kind === "capacity") {
       return { id: start.requestId, accepted: false, status: "capacity_rejected",
         reason: admission.reason, retryAfterMs: admission.retryAfterMs, capacity: 10 };
@@ -151,7 +162,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
         const id = r2SessionId(admission.task.id);
         let observed = false;
         try {
-          observed = await this.harness.use(async opencode => {
+          observed = await trace.run("session_create", "exactIdLookup", () =>
+            this.harness.use(async opencode => {
             try {
               const item = await opencode.sessions.get({ sessionID: id });
               return item?.id === id;
@@ -163,7 +175,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
                 return false;
               throw error;
             }
-          });
+          }));
         } catch {
           return { ...this.supervisorTaskReceipt(admission.task, true),
             accepted: false, confirmed: false,
@@ -173,11 +185,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
           return { ...this.supervisorTaskReceipt(admission.task, true),
             accepted: false, confirmed: false,
             reconciliation: "SESSION_NOT_CONFIRMED_NO_RETRY" };
-        const recovered = await reconcileSupervisorCreatedSession(
-          this.ctx.storage, admission.task.id, id, admission.slot);
+        const recovered = await trace.run("admission", "reconcile", () =>
+          reconcileSupervisorCreatedSession(this.ctx.storage, admission.task.id, id, admission.slot));
         if (recovered.kind === "recovered")
           return this.withSupervisorStartLock(start.requestId, async () =>
-            this.advanceSupervisedTask(recovered.task, start, true, recovered.grant), recovered.task);
+            this.advanceSupervisedTask(recovered.task, start, true, recovered.grant, trace), recovered.task);
         return { ...this.supervisorTaskReceipt(
           await this.supervisedRecord(admission.task.id), true),
           accepted: false, confirmed: false, reconciliation: recovered.reason };
@@ -197,7 +209,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         // Replaying requestId may never resubmit the initial prompt after a turn.
         return this.supervisorTaskReceipt(saved, true);
       }
-      return this.advanceSupervisedTask(saved, start, reused, admission.grant);
+      return this.advanceSupervisedTask(saved, start, reused, admission.grant, trace);
     }, old);
   }
 
@@ -231,14 +243,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   private async advanceSupervisedTask(
     job: SupervisorTask, start: ReturnType<typeof validateSupervisorStart>, reused: boolean,
-    grant: StartGrant
+    grant: StartGrant, trace: PhaseProbe
   ) {
     const key = supervisorTaskKey(job.id);
     try {
       if (!job.baseCommit) {
         // The deterministic branch reservation safely recovers after a lost GitHub response.
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "github_branch");
-        const branchResult = await this.githubRunner.ensureSupervisorBranch(job.repository, job.branch);
+        const branchResult = await trace.run("github_branch", "ensure", () =>
+          this.githubRunner.ensureSupervisorBranch(job.repository, job.branch));
         const sha = supervisorBaseCommit(branchResult, job.repository);
         await supervisorConfirmExternalEffect(this.ctx.storage, grant, "github_branch", { confirmed: true });
         job.baseCommit = sha;
@@ -265,12 +278,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
         // A reconciling caller cannot prove native existence until this
         // marker is durable. Failures cannot release an unknown slot.
         await this.ctx.storage.put(key, job);
-        const createdId = await this.harness.create({ id: sessionId });
+        const createdId = await trace.run("session_create", "create", () =>
+          this.harness.create({ id: sessionId }));
         if (createdId !== sessionId) throw new Error("SUPERVISOR_SESSION_ID_MISMATCH");
         // Commit receipt, task owner and slot clearance atomically, still
         // under the original grant. A reconciler may already have fenced it.
-        job = await supervisorCommitCreatedSession(this.ctx.storage, grant, sessionId);
-        await this.bindSessionScope(sessionId, { project: job.project, repository: job.repository });
+        job = await trace.run("session_create", "commit", () =>
+          supervisorCommitCreatedSession(this.ctx.storage, grant, sessionId));
+        await trace.run("session_create", "bind", () =>
+          this.bindSessionScope(sessionId, { project: job.project, repository: job.repository }));
       }
       // A lost reply may interrupt a prior bind. Rechecking the same-scope
       // mapping is safe; it must never widen a session's project permissions.
@@ -283,9 +299,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const handle = this.harness.session(job.session!);
       if (!job.operationId) {
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "configure");
-        await handle.setAgent("build");
+        await trace.run("configure", "setAgent", () => handle.setAgent("build"));
         const model = resolveModelSelection(job.model ?? "economy");
-        await handle.setModel(model);
+        await trace.run("configure", "setModel", () => handle.setModel(model));
         await supervisorConfirmExternalEffect(this.ctx.storage, grant, "configure", { confirmed: true });
         // Atomically retain any concurrent cancellation or turn cursor.
         const prepared = await this.ctx.storage.transaction(async tx => {
@@ -331,10 +347,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
     try {
       await supervisorBeginExternalEffect(this.ctx.storage, grant, "submit");
-      const receipt = await this.harness.session(job.session).submit(
-        supervisorPrompt(start, job.branch, job.project, job.baseCommit),
-        { operationId: job.operationId, whenBusy: "followUp" }
-      );
+      const submitSession = job.session;
+      const submitCommit = job.baseCommit;
+      const submitOperation = job.operationId;
+      const receipt = await trace.run("submit", "initial", () => this.harness.session(submitSession).submit(
+        supervisorPrompt(start, job.branch, job.project, submitCommit),
+        { operationId: submitOperation, whenBusy: "followUp" }
+      ));
       await supervisorConfirmExternalEffect(this.ctx.storage, grant, "submit",
         { confirmed: typeof receipt.accepted === "boolean" });
       // A late accepted submit must not roll back a cancel/steer that won.
@@ -489,6 +508,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   async remoteSupervisorContinue(raw: unknown): Promise<unknown> {
     this.assertStagingRemote();
+    const trace = this.phaseProbe();
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Comando inválido");
     const v = raw as Record<string, unknown>;
     if (Object.keys(v).some(k => !["id", "turnId", "prompt"].includes(k))) throw new Error("Parámetros desconocidos");
@@ -503,8 +523,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const operationId = supervisorTurnOperationId(id, v.turnId);
     // The one T03 admission ledger and T04 turn journal are updated inside
     // the same transaction, including readmission of a completed task.
-    const reservation = await reserveSupervisorContinuation(
-      this.ctx.storage, id, v.turnId, hash, operationId);
+    const reservation = await trace.run("admission", "reserve", () =>
+      reserveSupervisorContinuation(this.ctx.storage, id, v.turnId, hash, operationId));
     if (reservation.kind === "capacity") {
       return { taskId: id, accepted: false, status: "capacity_rejected",
         reason: reservation.reason, retryAfterMs: reservation.retryAfterMs };
@@ -525,8 +545,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
     let accepted: boolean | undefined;
     let sendError: string | undefined;
     try {
-      const receipt = await this.harness.session(reservation.task.session!).submit(
-        v.prompt.trim(), { operationId, whenBusy: "steer" });
+      const receipt = await trace.run("submit", "continue", () =>
+        this.harness.session(reservation.task.session!).submit(
+          v.prompt.trim(), { operationId, whenBusy: "steer" }));
       accepted = receipt.accepted;
     } catch (error) {
       sendError = error instanceof Error ? error.message.slice(0, 240) : "No confirmado";
@@ -629,16 +650,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
    * This never accepts data/file/https URLs, binary blobs, or arbitrary /bundle.
    */
   async supervisedArtifactCapture(id: string, raw: unknown): Promise<unknown> {
+    const trace = this.phaseProbe();
     const task = await this.scopedArtifactTask(id);
     const request = validateCaptureRequest(raw);
     const state = await this.supervisedTaskStatus(id) as { status?: string };
     if (state.status !== "finished") throw new Error("ARTIFACT_TASK_NOT_FINISHED");
     const dev = this.env.DEV.getByName(projectContainerName(task.project));
-    const inspected = await dev.readTaskArtifact(task.project, request.path);
-    const prepared = await captureInspectedArtifact({
+    const inspected = await trace.run("cleanup", "artifactRead", () =>
+      dev.readTaskArtifact(task.project, request.path));
+    const prepared = await trace.run("cleanup", "artifactPrepare", () => captureInspectedArtifact({
       requestId: task.id, ownerProject: task.project, ownerSession: task.session,
       repository: task.repository, request, inspected
-    });
+    }));
     const idKey = artifactKey(id, prepared.artifactId);
     const indexKey = artifactIndexKey(id);
     const saved = await this.ctx.storage.transaction(async tx => {
@@ -692,9 +715,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   /** Bytes survive a DO restart (SQLite storage), but expired records fail closed. */
   async supervisedTaskArtifactDownload(id: string, artifactId: string): Promise<Response> {
+    const trace = this.phaseProbe();
     const task = await this.scopedArtifactTask(id);
     assertArtifactId(artifactId);
-    const record = await this.ctx.storage.get<StoredTaskArtifact>(artifactKey(id, artifactId));
+    const record = await trace.run("cleanup", "artifactStoredRead", () =>
+      this.ctx.storage.get<StoredTaskArtifact>(artifactKey(id, artifactId)));
     if (!record) return artifactErrorResponse("ARTIFACT_NOT_FOUND", 404);
     if (Date.now() >= record.expiresAt) {
       await this.ctx.storage.delete(artifactKey(id, artifactId));
@@ -702,11 +727,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
     if (record.artifactId !== artifactId || record.requestId !== id ||
         !artifactIsOwnedBy(record, task)) return artifactErrorResponse("ARTIFACT_NOT_FOUND", 404);
-    return await verifiedArtifactDownload(record);
+    return await trace.run("cleanup", "artifactVerify", () => verifiedArtifactDownload(record));
   }
 
   async supervisedTaskStatus(id: string): Promise<unknown> {
     this.assertStagingRemote();
+    const trace = this.phaseProbe();
     const job = await this.supervisedRecord(id);
     const admission = await supervisorAdmissionSlot(this.ctx.storage, id);
     const base = { id: job.id, repository: job.repository, project: job.project,
@@ -731,7 +757,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     let operation: Awaited<ReturnType<typeof handle.wait>> | undefined;
     let waitError: string | undefined;
     try {
-      if (job.operationId) operation = await handle.wait(job.operationId, waitController.signal);
+      if (job.operationId) operation = await trace.run("status", "wait", () =>
+        handle.wait(job.operationId!, waitController.signal));
     } catch (error) {
       if (!waitController.signal.aborted) waitError = error instanceof Error ? error.message.slice(0, 200) : "No se pudo esperar la operación";
     } finally {
@@ -745,7 +772,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     // Never materialize a complete tool transcript in the supervisor's
     // memory-constrained Durable Object on every status poll. The durable
     // OpenCode event log is incremental and its cursor survives DO restarts.
-    const busy = await handle.busy();
+    const busy = await trace.run("status", "busy", () => handle.busy());
     let toolCounts: SupervisorToolCounts | undefined;
     let toolCountsComplete = false;
     let toolCountsError: string | undefined;
@@ -754,7 +781,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const saved = await this.ctx.storage.get<SupervisorToolCounts>(metricsKey);
       if (saved && !validSupervisorToolCounts(saved)) throw new Error("SUPERVISOR_METRICS_INVALID");
       const prior = saved ?? EMPTY_SUPERVISOR_TOOL_COUNTS;
-      const scan = await foldSupervisorToolLog(handle.log({after: prior.cursor, follow: false}), prior, 256);
+      const scan = await trace.run("status", "logFold", () =>
+        foldSupervisorToolLog(handle.log({after: prior.cursor, follow: false}), prior, 256));
       const committed = await this.ctx.storage.transaction(async tx => {
         const current = await tx.get<SupervisorToolCounts>(metricsKey);
         if (current && !validSupervisorToolCounts(current)) throw new Error("SUPERVISOR_METRICS_INVALID");
@@ -829,14 +857,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   async remoteSupervisorProgress(id: string, after = 0): Promise<unknown> {
     this.assertStagingRemote();
+    const trace = this.phaseProbe();
     if (!Number.isSafeInteger(after) || after < 0) throw new Error("Cursor de eventos inválido");
     const task = await this.supervisedRecord(id);
     if (!task.session) return { taskId: id, events: [], nextAfter: after,
       status: task.status, truncated: false, gapDetected: false, scanned: 0 };
     // Reads at most 128 raw records; filtered reasoning records also advance
     // the durable cursor. No history() call or post-hoc transcript slicing.
-    const page = await projectSupervisorProgress(
-      this.harness.session(task.session).log({ after, follow: false }), after);
+    const page = await trace.run("status", "progress", () => projectSupervisorProgress(
+      this.harness.session(task.session!).log({ after, follow: false }), after));
     return { taskId: id, session: task.session, status: task.status, ...page };
   }
 
