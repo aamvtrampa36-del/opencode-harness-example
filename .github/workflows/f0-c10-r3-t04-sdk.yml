@@ -39,6 +39,16 @@ jobs:
           node-version: '22'
       - name: Install pinned dependencies
         run: bun install --frozen-lockfile
+      - name: RED control (historical stale writer must fail as expected)
+        shell: bash
+        run: |
+          set +e
+          node --test scripts/f0-c10/r3-t04-stale-writer.red.mjs > /tmp/r3-t04-red.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/r3-t04-red.log
+          test "$status" -eq 1
+          grep -q 'fail 1' /tmp/r3-t04-red.log
       - name: Native SDK + local workerd SQLite restart and fencing (NO INFERENCE)
         run: node scripts/f0-c10/r3-t04-workerd-probe.mjs
       - name: Real T03/T04 helpers in synthetic transaction races
