@@ -1,0 +1,69 @@
+name: F0-C10 PREFLIGHT-03 — approved USD 2 ceiling (OFFLINE, NO DEPLOY)
+
+on:
+  push:
+    branches: [f0-c10/preflight-03-usd2-cap-20261123]
+  pull_request:
+    branches: [f0-c10/preflight-02-cutoff-lease-20261123]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: f0-c10-preflight-03-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  usd2-offline-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Attest exact source SHA
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install pinned dependencies
+        run: bun install --frozen-lockfile
+      - name: Owner-approved USD2 ceiling, lease + spend race tests
+        run: bun test src/preflight-exclusive-lease.test.ts src/preflight-disposable-cost.test.ts
+      - name: Historical unsafe-design RED remains detected (expected exit 1)
+        shell: bash
+        run: |
+          set +e
+          node --test scripts/f0-c10/preflight-02-known-red.red.mjs > /tmp/known-red.log 2>&1
+          code=$?
+          set -e
+          test "$code" -eq 1
+          grep -q "fail 2" /tmp/known-red.log
+      - name: Preflight-01 still denies any live GO
+        shell: bash
+        run: |
+          node --test scripts/f0-c10/operational-preflight.test.mjs
+          set +e
+          node scripts/f0-c10/operational-preflight.mjs --snapshot docs/f0-c10/preflight-01-observed-20261123.json > /tmp/stop.json
+          code=$?
+          set -e
+          test "$code" -eq 2
+          node -e "const p=require('/tmp/stop.json');if(p.decision!=='STOP'||p.liveLoadAuthorizedByThisArtifact!==false)process.exit(1)"
+      - name: Offline evidence of USD 2 maximum, no per-service approval or spend
+        run: |
+          node -e "const e=require('./docs/f0-c10/preflight-03-usd2-observed-20261123.json');if(e.budget.approvedMaximumCents!==200||e.budget.approvedMaximumMicroUsd!==2000000||e.budget.currency!=='USD'||e.budget.perServiceAllocations!=='NOT_SPECIFIED'||e.budget.permittedSpendNow!==false||e.execution.providerDispatchAuthorized!==false)process.exit(1)"
+      - name: Complete Bun regression
+        run: bun test
+      - name: Static preview
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build both Workers and web (NO DEPLOY)
+        run: bun run build
+      - name: Security invariants
+        run: bun scripts/check-invariants.mjs
