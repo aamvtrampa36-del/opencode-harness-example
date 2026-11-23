@@ -1135,7 +1135,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     this.assertStagingRemote();
     if (this.ctx.id.name !== SUPERVISOR_WORKSPACE)
       throw Error("PR_PUBLICATION_WRONG_AUTHORITY");
-    const match = /^opencode\\/staging-([a-f0-9]{16})$/.exec(input.branch);
+    const match = /^opencode\/staging-([a-f0-9]{16})$/.exec(input.branch);
     const task = match
       ? await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(match[1])) : undefined;
     assertSupervisedPublicationScope(input, sessionID, task);
@@ -1153,7 +1153,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       // branches. A project DO cannot create an independent storage lock.
       if (input.action === "pr" &&
           input.repo.toLowerCase() === "aamvtrampa36-del/opencode-harness-example" &&
-          /^opencode\\/staging-[a-f0-9]{16}$/.test(input.branch)) {
+          /^opencode\/staging-[a-f0-9]{16}$/.test(input.branch)) {
         if (!sessionID) throw Error("PR_PUBLICATION_SESSION_REQUIRED");
         if (this.ctx.id.name === SUPERVISOR_WORKSPACE)
           return this.publishSupervisedGithubDraft(input, sessionID);
