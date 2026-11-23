@@ -129,7 +129,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return this.withSupervisorStartLock(start.requestId, async () => {
       const saved = await this.ctx.storage.get<SupervisorTask>(key);
       if (!saved) throw new Error("La reserva de la tarea desapareció");
-      if (["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(saved.status)) {
+      if (["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(saved.status) ||
+          saved.pendingTurn || (saved.operationId &&
+          saved.operationId !== supervisorStartOperationId(saved.id))) {
+        // A requestId replay must never submit the *original* prompt using
+        // a newer continuation's operationId.
         return this.supervisorTaskReceipt(saved, true);
       }
       return this.advanceSupervisedTask(saved, start, reused);
