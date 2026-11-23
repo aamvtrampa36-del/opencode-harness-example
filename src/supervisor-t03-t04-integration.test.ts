@@ -241,7 +241,7 @@ describe("F0-C10/R2-T11 T03 admission + T04 recovery contract (OFFLINE)", () => 
       {status:"unanswered",reason:"not_found"})).toBe(false);
     expect(await reconcileSupervisorTurnEffect(db.asDO(),id(31),op,
       {status:"done"})).toBe(false); // slot already acknowledged and running
-    expect(await reserveSupervisorContinuation(db.asDO(),id(31),id(37),
+    await expect(reserveSupervisorContinuation(db.asDO(),id(31),id(37),
       hash,"rc-turn-"+id(31)+"-"+id(37),1105)).rejects.toThrow("SUPERVISOR_TURN_IN_FLIGHT");
   });
 
