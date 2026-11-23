@@ -228,25 +228,33 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (job.status === "failed" || !job.session || !job.operationId || !job.baseCommit) {
       return this.supervisorTaskReceipt(job, reused);
     }
+    let accepted: boolean | undefined;
+    let sendError: string | undefined;
     try {
       const receipt = await this.harness.session(job.session).submit(
         supervisorPrompt(start, job.branch, job.project, job.baseCommit),
         { operationId: job.operationId, whenBusy: "followUp" }
       );
-      job.status = "running";
-      job.error = undefined;
-      job.updatedAt = Date.now();
-      await this.ctx.storage.put(key, job);
-      return { ...this.supervisorTaskReceipt(job, reused), accepted: receipt.accepted };
+      accepted = receipt.accepted;
     } catch (error) {
-      // The durable operation may have been accepted before the RPC failed.
-      // Keep the same operationId so a retry can retrieve the original receipt.
-      job.status = "unknown";
-      job.error = error instanceof Error ? error.message.slice(0, 230) : "No se pudo confirmar el envío";
-      job.updatedAt = Date.now();
-      await this.ctx.storage.put(key, job);
-      return this.supervisorTaskReceipt(job, reused);
+      // The SDK may have persisted the inbox entry before losing its response.
+      sendError = error instanceof Error ? error.message.slice(0, 230) : "No se pudo confirmar el envío";
     }
+    const committed = await this.ctx.storage.transaction(async tx => {
+      const fresh = await tx.get<SupervisorTask>(key);
+      if (!fresh) throw new Error("SUPERVISOR_TASK_MISSING_AFTER_SUBMIT");
+      if (fresh.status === "cancel_requested" || fresh.status === "cancelled" ||
+          fresh.pendingTurn || fresh.operationId !== job.operationId) return fresh;
+      const next: SupervisorTask = { ...fresh,
+        ...(sendError ? { status: "unknown" as const, error: sendError } :
+          { status: "running" as const, error: undefined }),
+        revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
+      await tx.put(key, next);
+      return next;
+    });
+    return { ...this.supervisorTaskReceipt(committed, reused),
+      ...(sendError ? {} : { accepted }), ...(committed.status === "cancel_requested"
+        ? { confirmed: false, reason: "CONCURRENT_CANCEL_RECONCILIATION_REQUIRED" } : {}) };
   }
 
   /** This guard is enforced at the DO boundary, not only by the MCP client. */
