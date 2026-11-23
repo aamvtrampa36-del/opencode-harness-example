@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { runMock } from './mock.mjs';
 import { evaluateCampaign, evaluateTrace, LIVE_LIMITS } from './evaluate.mjs';
 import { EVIDENCE_ROLES, digest, signingBytes, verifyLiveEvidence } from './live-evidence.mjs';
+import { observedClaimBytes, observedClaimHash, OBSERVED_JOURNAL_SCHEMA } from './observed-journal.mjs';
 
 // Test-only ephemeral signing keys. Never ship private keys to Staging or model tools.
 const keys = Object.fromEntries(EVIDENCE_ROLES.map((role) => {
@@ -16,6 +17,48 @@ const keys = Object.fromEntries(EVIDENCE_ROLES.map((role) => {
 }));
 const trust = Object.fromEntries(EVIDENCE_ROLES.map((role) => [role, keys[role].publicKey]));
 const limits = { ...LIVE_LIMITS, maxCostUsd: 1, maxCampaignCostUsd: 3 };
+const observerKeys = Object.fromEntries(['do','container','provider'].map((origin) => {
+  const pair = generateKeyPairSync('ed25519');
+  return [origin, pair];
+}));
+trust.observers = Object.fromEntries(Object.entries(observerKeys).map(([origin,pair]) => [origin, {
+  publicKeyPem: pair.publicKey.export({ type: 'spki', format: 'pem' }),
+  collectorId: 'offline-observer-' + origin, deploymentId: origin === 'do' ? 'offline-worker-deployment' : 'offline-' + origin + '-deployment',
+  clockProofId: 'offline-clock-proof-' + origin, sourceSha: 'f'.repeat(40),
+  environment: 'staging',
+}]));
+function buildJournal(trace, { restartDoAfter = null } = {}) {
+  const state = new Map(), records = [];
+  let doCount = 0, restarted = false;
+  const append = (origin, event, overrideEpoch = null) => {
+    const previous = state.get(origin);
+    const config = trust.observers[origin];
+    const claim = {
+      origin, collectorId:config.collectorId, deploymentId:config.deploymentId,
+      clockProofId: config.clockProofId, sourceSha:trace.metadata.sourceSha,
+      workerVersion:trace.metadata.workerVersion, experimentId:trace.metadata.experimentId,
+      fencingToken: trace.metadata.fencingToken, seq:(previous?.seq ?? 0) + 1,
+      epoch:overrideEpoch ?? previous?.epoch ?? 1,
+      prevHash:previous?.hash ?? '0'.repeat(64), observedAtMs:event.atMs ?? previous?.atMs, event,
+    };
+    records.push({ claim, signature:sign(null, observedClaimBytes(claim), observerKeys[origin].privateKey).toString('base64') });
+    state.set(origin, { seq:claim.seq, epoch:claim.epoch, hash:observedClaimHash(claim), atMs:claim.observedAtMs });
+  };
+  for (const event of trace.events) {
+    if (event.type === 'artifact_readback') continue;
+    const origin = ['tool_start','tool_end','test_result'].includes(event.type) ? 'container' :
+      ['inference_start','inference_end'].includes(event.type) ? 'provider' : 'do';
+    if (origin === 'do' && restartDoAfter !== null && !restarted && doCount >= restartDoAfter) {
+      const prev = state.get('do');
+      append('do', {type:'observer_resume',lastVerifiedHash:prev.hash,atMs:event.atMs}, prev.epoch + 1);
+      restarted = true;
+    }
+    append(origin,event);
+    if (origin === 'do') doCount++;
+  }
+  trace.observedJournal = { schema:OBSERVED_JOURNAL_SCHEMA, records };
+  return trace;
+}
 
 function reseal(trace) {
   trace.attestations = Object.fromEntries(EVIDENCE_ROLES.map((role) =>
@@ -28,6 +71,9 @@ async function attestedFixture({ round = 1, size = 10, fault = null } = {}) {
   trace.mode = 'live';
   trace.metadata.experimentId = 'r2-synthetic-signed-' + round;
   trace.metadata.gitBaseSha = 'a'.repeat(40);
+  delete trace.metadata.simulated;
+  trace.metadata.workerDeploymentId = 'offline-worker-deployment';
+  trace.metadata.mcpDeploymentId = 'offline-mcp-deployment';
   trace.metadata.workerVersion = 'fixture-worker-only';
   trace.metadata.mcpVersion = 'fixture-mcp-only';
   trace.metadata.environment = 'staging';
@@ -65,6 +111,11 @@ async function attestedFixture({ round = 1, size = 10, fault = null } = {}) {
     event.experimentId = trace.metadata.experimentId;
     event.atMs = original + (event.atMs - original) * 20;
     event.source = event.type === 'artifact_readback' ? 'artifact-collector' : 'runtime';
+    event.fencingToken = trace.metadata.fencingToken;
+    if (event.type === 'tool_start' || event.type === 'tool_end') {
+      event.containerId = 'offline-container-' + task.requestId;
+      event.commandSha256 = 'b'.repeat(64);
+    }
     if (event.artifact) {
       event.artifact.projectId = task.projectId;
       event.artifact.path = 'tmp/f0-c10/' + requestId + '/' + task.kind + '.json';
@@ -94,6 +145,7 @@ async function attestedFixture({ round = 1, size = 10, fault = null } = {}) {
     stop: { enforced: true, controlId: 'fixture-spend-stop', scope: 'full-experiment' },
     meterReceiptId: 'fixture-cost-meter',
   };
+  buildJournal(trace);
   return reseal(trace);
 }
 
