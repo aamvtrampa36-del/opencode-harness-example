@@ -32,7 +32,7 @@ function phase(run, phaseName, action) {
   return value;
 }
 function event(session, index) {
-  return { ordinal: index, result: `\${session}:\${index}:\${'a'.repeat(OUTPUT_BYTES_PER_EVENT)}` };
+  return { ordinal: index, result: `${session}:${index}:${'a'.repeat(OUTPUT_BYTES_PER_EVENT)}` };
 }
 export function boundedStatus(session, maxEvents=MAX_EVENTS) {
   if (!Number.isInteger(maxEvents)||maxEvents<1||maxEvents>128) throw new Error('UNBOUNDED_EVENT_BUDGET');
@@ -54,7 +54,7 @@ export function simulate(mode='bounded') {
   if(!['red','bounded'].includes(mode)) throw new Error('INVALID_MODE');
   const run={runtime:'node-offline',version:process.version,mode,fixtures:{sessions:FIXTURE_COUNT,eventsPerSession:PER_SESSION,charsPerEvent:OUTPUT_BYTES_PER_EVENT},rows:[]};
   const state={admissions:[],sessions:[],historyCopies:[],alarmReferences:[]};
-  phase(run,'admit',()=>{state.admissions=Array.from({length:FIXTURE_COUNT},(_,i)=>({id:`fixture-\${i}`,state:'preparing'}));});
+  phase(run,'admit',()=>{state.admissions=Array.from({length:FIXTURE_COUNT},(_,i)=>({id:`fixture-${i}`,state:'preparing'}));});
   phase(run,'create/fork',()=>{state.sessions=state.admissions.map(({id},i)=>({id,events:Array.from({length:PER_SESSION},(_,n)=>event(i,n)),model:null}));});
   phase(run,'setModel',()=>{for(const s of state.sessions)s.model={provider:'fixture',model:'no-inference'};});
   phase(run,'submit',()=>{for(const s of state.sessions)s.events.push(event(s.id,PER_SESSION));});
@@ -87,7 +87,7 @@ export function simulate(mode='bounded') {
 export function measureChildProcess() {
   const p=spawnSync(process.execPath,['--expose-gc',fileURLToPath(import.meta.url),'--synthetic-child'],
     {encoding:'utf8',maxBuffer:8192,timeout:8000});
-  if(p.status!==0)throw new Error(`CHILD_FAILED_\${p.status}:\${(p.stderr||'').slice(0,100)}`);
+  if(p.status!==0)throw new Error(`CHILD_FAILED_${p.status}:${(p.stderr||'').slice(0,100)}`);
   const value=JSON.parse(p.stdout);
   if(value.kind!=='synthetic_child_process')throw new Error('CHILD_INVALID');
   return {kind:value.kind,bytesAllocated:value.bytesAllocated,rssBytes:value.rssBytes,
