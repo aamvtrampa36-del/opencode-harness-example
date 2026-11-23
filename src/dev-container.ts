@@ -36,6 +36,69 @@ import { BUN_RUNTIME_VERSION, commandRequiresBun } from "./dev-runtime";
  * Container snapshots are a Cloudflare beta; never silently replace an
  * unavailable snapshot with a blank workspace.
  */
+/** R2-T06: project-scoped one-shot subprocess supervisor, never a sandbox. */
+const LINUX_RUNNER_SOURCE = String.raw`// Runs inside the dedicated project Container; Node 24 is provided by its base image.
+// Never enumerate or signal processes outside this command's private process group.
+const { spawn } = require("node:child_process");
+const { constants } = require("node:os");
+const command = process.argv[1];
+const child = spawn("timeout", ["--signal=TERM", "--kill-after=5s", "180s", "bash", "-lc", command], {
+  detached: true, stdio: ["ignore", "pipe", "pipe"]
+});
+let requestedSignal = null;
+let settled = false;
+let escalation = null;
+let cleanupFailed = false;
+function signalGroup(signal) {
+  if (!Number.isSafeInteger(child.pid) || child.pid < 2) return;
+  try { process.kill(-child.pid, signal); }
+  catch (error) { if (error.code !== "ESRCH") { cleanupFailed = true; process.stderr.write("[linux runner: group signal failed]\n"); } }
+}
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+  process.on(signal, () => {
+    if (settled) return;
+    requestedSignal ??= signal;
+    signalGroup("SIGTERM");
+    escalation ??= setTimeout(() => signalGroup("SIGKILL"), 5_000);
+  });
+}
+const done = stream => new Promise(resolve => {
+  if (!stream) return resolve();
+  stream.once("end", resolve);
+  stream.once("close", resolve);
+  stream.once("error", resolve);
+});
+const completed = Promise.all([done(child.stdout), done(child.stderr)]);
+child.stdout.pipe(process.stdout, { end: false });
+child.stderr.pipe(process.stderr, { end: false });
+child.once("error", () => { if (!settled) { settled = true; process.exitCode = 125; } });
+child.once("exit", (code, signal) => { void (async () => {
+  if (settled) return;
+  settled = true;
+  if (escalation) clearTimeout(escalation);
+  // Exit refers to the timeout root, not to every descendant.
+  signalGroup("SIGTERM");
+  await new Promise(resolve => setTimeout(resolve, 250));
+  signalGroup("SIGKILL");
+  let pipeTimer;
+  const drained = await Promise.race([
+    completed.then(() => true),
+    new Promise(resolve => { pipeTimer = setTimeout(() => resolve(false), 1500); })
+  ]);
+  if (pipeTimer) clearTimeout(pipeTimer);
+  if (!drained) {
+    child.stdout.destroy();
+    child.stderr.destroy();
+    process.stderr.write("[linux runner: open pipes after group cleanup; detached process possible]\n");
+  }
+  const signalCode = signal ? constants.signals[signal] : undefined;
+  const exitCode = cleanupFailed || !drained ? 125
+    : requestedSignal ? 128 + constants.signals[requestedSignal]
+    : (code ?? (signalCode ? 128 + signalCode : 125));
+  process.exitCode = exitCode;
+})().catch(() => { process.exitCode = 125; }); });
+`;
+
 const INACTIVITY_MS = 15 * 60_000;
 const IDLE_MS = 5 * 60_000;
 const CHECK_MS = 60_000;
@@ -428,16 +491,15 @@ export class DevContainer extends DurableObject<Env> {
     try {
       await this.ensureGitAvailable(container);
       if (commandRequiresBun(command)) await this.ensureBunAvailable(container);
-      // Pass the command as a positional argument: no injection into wrapper.
-      // GNU timeout sends TERM at 180 s, then KILL after 5 s if required.
-      // This only covers the command's process group, not detached descendants.
-      // Longer jobs must be broken into resumable steps.
+      // A Node supervisor owns only this command's private process group.
+      // It closes inherited pipes after bounded cleanup; detached descendants
+      // remain outside this guarantee (see R2-T06 negative fixtures).
       const wrapper = [
         "mkdir -p /workspace/projects/" + project,
         "cd /workspace/projects/" + project,
-        "timeout --signal=TERM --kill-after=5s 180s bash -lc \"$1\""
+        "exec node -e \"$2\" \"$1\""
       ].join(" && ");
-      const process = await container.exec(["bash", "-lc", wrapper, "opencode", command]);
+      const process = await container.exec(["bash", "-lc", wrapper, "opencode", command, LINUX_RUNNER_SOURCE]);
       // Drain both pipes while the process runs. output() accumulates unbounded
       // stdout/stderr *before* a later slice, which can exhaust the DO isolate.
       const [stdout, stderr, exitCode] = await Promise.all([

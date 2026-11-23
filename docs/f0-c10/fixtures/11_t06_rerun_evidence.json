@@ -1,0 +1,76 @@
+{
+  "status": "PASS_WITH_KNOWN_GAPS",
+  "environment": "offline Linux Node; not Cloudflare",
+  "tests": [
+    {
+      "name": "nonzero-and-pipes",
+      "pass": true,
+      "exitCode": 7
+    },
+    {
+      "name": "binary-lossy-text-but-byte-count-exact",
+      "pass": true,
+      "exitCode": 23
+    },
+    {
+      "name": "bounded-16mib-each-channel",
+      "pass": true,
+      "exitCode": 19,
+      "bytesPerChannel": 16777216,
+      "retainedPerChannel": 32000
+    },
+    {
+      "name": "ten-local-projects-no-marker-or-stream-crossing",
+      "pass": true,
+      "exitCodes": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ]
+    },
+    {
+      "name": "same-pgid-descendant-TERM-ignore-cleaned",
+      "pass": true,
+      "exitCode": 31,
+      "after": "Z"
+    },
+    {
+      "name": "timeout-escalation",
+      "pass": true,
+      "exitCode": 137
+    },
+    {
+      "name": "explicit-runner-SIGTERM-cancellation",
+      "pass": true,
+      "exitCode": 143
+    },
+    {
+      "name": "detached-inherited-pipes-reported-fail-closed",
+      "pass": true,
+      "exitCode": 125,
+      "remainingProcessState": "S",
+      "policy": "KNOWN_GAP"
+    },
+    {
+      "name": "detached-redirected-invisible-orphan",
+      "pass": true,
+      "exitCode": 0,
+      "remainingProcessState": "S",
+      "policy": "KNOWN_GAP"
+    }
+  ],
+  "memory": {
+    "rssInitialBytes": 54071296,
+    "rssPeakSampledBytes": 93716480,
+    "heapPeakSampledBytes": 12322648,
+    "elapsedMs": 9532
+  },
+  "liveStagingTests": 0
+}
