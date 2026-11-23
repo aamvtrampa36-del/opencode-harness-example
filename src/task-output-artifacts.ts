@@ -95,7 +95,7 @@ export async function captureInspectedArtifact(args: {
   assertTaskId(args.requestId);
   const req = validateCaptureRequest(args.request);
   const x = args.inspected as { path?: unknown; size?: unknown; contents?: unknown } | null;
-  assert(Boolean(x) && typeof x === "object" && x.path === req.path &&
+  assert(x !== null && typeof x === "object" && x.path === req.path &&
     typeof x.contents === "string" && Number.isSafeInteger(x.size) &&
     (x.size as number) >= 0 && (x.size as number) <= TASK_ARTIFACT_MAX_BYTES, "UNVERIFIED_SOURCE_READ");
   const bytes = new TextEncoder().encode(x!.contents);
