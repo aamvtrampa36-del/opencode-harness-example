@@ -30,6 +30,8 @@ import { getOpenRouterCatalogue } from "./openrouter-catalog";
 import { assertOpenRouterImageModel, generateOpenRouterImage, getOpenRouterImageModels } from "./openrouter-images";
 import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import { GitHubBridge } from "./github";
+import { r2SessionId, r2TurnJournalKey, r2TurnAdmission, r2CancelledByReceipt,
+  r2StatusWriteAllowed, type R2TurnJournal } from "./supervisor-r2";
 import { verifyG8Proofs, G8_PROOFS } from "./g8-smoke";
 import { assessG8LiveHistory, g8LivePrompt, G8_LIVE_CHECK_VERSION, type G8LiveCheck } from "./g8-live-agent";
 import { G9_PROOF_VERSION, G9_REPO, G9_BRANCH, G9_PROJECT, G9_SOURCE, G9_TEST_PATH, G9_BROKEN, G9_FIXED, G9_TEST_SOURCE, assessG9History, g9AgentPrompt, assertG9BoundGitHubOperation, type G9ProofState } from "./g9-selfdev";
@@ -92,6 +94,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (old && ["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(old.status)) {
       return this.supervisorTaskReceipt(old, true);
     }
+    if (!old && start.sourceSession) {
+      // The pinned Harness exposes deterministic create({id}), but fork(from)
+      // has no caller-specified ID. Reject BEFORE any branch/session side effect.
+      throw new Error("SUPERVISOR_FORK_IDEMPOTENCY_UNSUPPORTED");
+    }
     if (!old) {
       const selection = start.model ?? "economy";
       const model = resolveModelSelection(selection);
@@ -104,7 +111,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       id: start.requestId, repository: start.repository,
       project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId, start.repository),
       fingerprint, createdAt: old?.createdAt ?? Date.now(), status: "preparing",
-      sessionCreationAttempted: false,
+      sessionCreationAttempted: false, sessionIdPolicy: "deterministic-v1", revision: 0,
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
     if (!old) {
@@ -170,32 +177,29 @@ export class OpenCodeAgent extends DurableObject<Env> {
         await this.ctx.storage.put(key, job);
       }
       if (!job.session) {
-        // create/fork has no caller-supplied idempotency key. An interrupted
-        // response can hide a successfully created session; never blindly replay.
-        if (supervisorSessionCreationDisposition(job) !== "create") {
+        if (job.sessionIdPolicy !== "deterministic-v1" || start.sourceSession) {
+          // Historical random-ID creations and all forks cannot be replayed
+          // safely by the existing harness. Never enumerate unbounded sessions.
           job.status = "unknown";
-          job.error = "SUPERVISOR_SESSION_CREATION_UNCONFIRMED";
+          job.error = "SUPERVISOR_LEGACY_OR_FORK_SESSION_UNCONFIRMED";
           job.updatedAt = Date.now();
           await this.ctx.storage.put(key, job);
           return this.supervisorTaskReceipt(job, reused);
         }
-        if (start.sourceSession) {
-          const exists = (await this.harness.sessions.list()).some(item => item.id === start.sourceSession);
-          if (!exists) throw new Error("La sesión de origen ya no existe en este workspace");
-        }
+        // agents@0.33.0 OpenCodeHarness.create({id}) forwards to
+        // @opencode/sdk@2.0.24 sessions.create({id}); repeated IDs return
+        // the same persisted session. The ID is available after a lost reply.
+        const sessionId = r2SessionId(job.id);
         job.sessionCreationAttempted = true;
         job.updatedAt = Date.now();
         await this.ctx.storage.put(key, job);
-        const created = start.sourceSession
-          ? await this.harness.sessions.fork(start.sourceSession)
-          : await this.harness.sessions.create();
-        // Persist the returned identity before doing scope/index work.
-        job.session = created.id;
+        const createdId = await this.harness.create({ id: sessionId });
+        if (createdId !== sessionId) throw new Error("SUPERVISOR_SESSION_ID_MISMATCH");
+        job.session = sessionId;
         job.updatedAt = Date.now();
         await this.ctx.storage.put(key, job);
-        await this.bindSessionScope(created.id, { project: job.project, repository: job.repository });
-        // The model may not create a second branch, or write outside its branch.
-        await this.ctx.storage.put("supervisor:session:" + created.id, job.id);
+        await this.bindSessionScope(sessionId, { project: job.project, repository: job.repository });
+        await this.ctx.storage.put("supervisor:session:" + sessionId, job.id);
       }
       await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
       const handle = this.harness.session(job.session!);
