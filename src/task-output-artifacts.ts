@@ -4,7 +4,7 @@
  * Never use a language-model pathname or public URL as an attachment URL.
  */
 export const TASK_ARTIFACT_SCHEMA = "opencode.task-output.v1";
-export const TASK_ARTIFACT_MAX_BYTES = 32 * 1024; // Exact cap of DevContainer.inspect(read)
+export const TASK_ARTIFACT_MAX_BYTES = 32 * 1024; // Exact cap of DevContainer.readTaskArtifact
 export const TASK_ARTIFACT_MAX_PER_TASK = 8;
 export const TASK_ARTIFACT_TTL_MS = 12 * 60 * 60 * 1000;
 export const TASK_ARTIFACT_PREFIX = "/api/supervisor/v1/tasks";
