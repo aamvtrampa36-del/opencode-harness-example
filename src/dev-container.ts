@@ -54,6 +54,26 @@ function signalGroup(signal) {
   try { process.kill(-child.pid, signal); }
   catch (error) { if (error.code !== "ESRCH") { cleanupFailed = true; process.stderr.write("[linux runner: group signal failed]\n"); } }
 }
+// An RPC consumer may close stdout/stderr before the command finishes.
+// Unhandled EPIPE crashes the supervisor and can leave its descendants alive.
+// Stop only the owned group and drain child streams without buffering them.
+let outputBroken = false;
+function onForwardError(channel) {
+  if (outputBroken) return;
+  outputBroken = true;
+  cleanupFailed = true;
+  child.stdout?.unpipe(process.stdout);
+  child.stderr?.unpipe(process.stderr);
+  child.stdout?.resume();
+  child.stderr?.resume();
+  signalGroup("SIGTERM");
+  escalation ??= setTimeout(() => signalGroup("SIGKILL"), 5_000);
+  if (channel === "stdout" && !process.stderr.destroyed) {
+    process.stderr.write("[linux runner: output pipe closed; terminating command group]\n");
+  }
+}
+process.stdout.on("error", () => onForwardError("stdout"));
+process.stderr.on("error", () => onForwardError("stderr"));
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
   process.on(signal, () => {
     if (settled) return;

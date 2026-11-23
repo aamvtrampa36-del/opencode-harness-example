@@ -156,3 +156,47 @@ No se copió código DeepSeek ni se instalaron dependencias. Node 24 pertenece a
 **Para cumplir cero huérfanos de setsid se requiere ownership del sistema operativo** (cgroup v2/servicio gestionado o PID namespace con supervisor reaper), con capacidad comprobada dentro de Containers Cloudflare. No probarlo sobre Containers compartidos ni introducir comandos globales. También falta recuperación durable de operaciones ante OOM y cancelación RPC, auditoría de process.output() en rutas auxiliares y medición real de overhead de Node por proceso. Un CI verde no cierra esas brechas.
 
 **Conclusión:** R2 mejora el tratamiento de grupos, señales, pipes y códigos de salida, pero **NO GARANTIZA limpieza de procesos detached ni demuestra diez tareas Linux ejecutándose en Staging**. Mantener #90 abierto. Estado PARTIAL.
+
+
+---
+
+## R2-T06.2 — Cierre prematuro de stdout/stderr y huérfanos por EPIPE
+
+**Corte:** 2026-11-22 America/Sao_Paulo / 2026-11-23 UTC. **Autor:** ChatGPT en entorno local; OpenCode Remote NO START. **Resultado:** mitigación positiva para cierre de pipes en Linux local; riesgo de detached setsid todavía RED. F0-C10 continúa PARTIAL.
+
+### Continuidad exacta y cambio mínimo
+
+La PR #121 (GNU timeout TERM/KILL) se incorporó a #126. La PR #132 (supervisor Node con grupo privado, bounded capture heredada de #105) y su copia revisada #137 siguen DRAFT, no fusionadas. El HEAD de #132 recuperado es 7f0fe32eeba2f6e8c0b0a967f0b15e06b294db4b, desde el que se creó exclusivamente la rama **f0-c10/r2-t06-epipe-20261122**. Esta segunda corrección es una PR incremental hacia la rama de #132; no se escribe #126 ni #132 directamente, no se duplican sus parches contra main.
+
+**RED nuevo reproducido:** si el lector del stream stdout (o stderr) destruye prematuramente su extremo mientras el comando aún emite datos, el Node supervisor de #132 puede sufrir error EPIPE no escuchado en process.stdout o process.stderr. El proceso Node sale con código 1 en lugar de error de supervisión controlado y un hijo puede continuar vivo; en una prueba dirigida sobre stdout se observó estado S del PID propio después del crash. Una RPC que pierda el canal de salida puede reproducir una condición análoga, pero **no se ha probado el disparador real en Cloudflare**.
+
+**Corrección propuesta acotada, solamente src/dev-container.ts:** registrar manejadores de error de los streams stdout y stderr del supervisor. Al fallar un canal, marcar fallo, dejar de reenviar ambas salidas hacia destinos fallidos, continuar drenando los pipes del hijo a descarte para no bloquearlo, enviar TERM exclusivamente al PGID propio del proceso creado y programar SIGKILL a ese mismo PGID tras 5 segundos si no salió. Conservar el flujo de salida normal y exit codes de #132. Si falla la salida, retornar exitCode 125 en lugar de afirmar éxito; en las pruebas se devuelve 125. Si se rompe el mismo stderr, no escribir en él para intentar diagnosticarlo.
+
+El cambio no añade dependencias, no cambia imágenes, cgroups, red, snapshots, Do, Workers, modelos ni esquema de permisos. No usa pkill, killall, ps con acciones globales, búsqueda de PID ajenos o destrucción del Container. La misma limitación previa se mantiene: los hijos que ejecutan setsid pueden escapar del PGID y no se garantiza su limpieza, incluso si redirigen stdio y el comando devuelve cero. Tampoco la cancelación de RPC se traduce automáticamente en señal.
+
+### Prueba de regresión dirigida RED → GREEN
+
+Fixture **scripts/f0-c10/t06-r2-output-disconnect.test.mjs** (Node 22/Linux, descartable, dos casos con node:test): ejecuta la misma constante LINUX_RUNNER_SOURCE embebida en src/dev-container.ts mediante argumentos posicionales, hace que un comando local emita 4096 bytes por intervalo y cierre a propósito el pipe de su consumidor después de 8192 bytes. Lee /proc solamente para el PID registrado por el fixture, comprueba estado gone/Z/X y termina solo PIDs propios en finally.
+
+| Caso | Antes (#132) | Después (candidato EPIPE) |
+| --- | --- | --- |
+| Cierre anticipado stdout | FAIL: test exit 1; runner exit 1; hijo vivo S observado en reproducción dirigida | PASS: test exit 0; runner exit 125; hijo inactivo |
+| Cierre anticipado stderr | FAIL: test exit 1; runner exit 1 | PASS: test exit 0; runner exit 125; hijo inactivo |
+
+El test sin modificación del contrato de salida falla dos subcasos contra el supervisor previo (0/2) y pasa sobre el nuevo (2/2). La prueba independiente original **scripts/f0-c10/t06-r2-process-fixtures.mjs** continúa PASS_WITH_KNOWN_GAPS: nueve escenarios, incluidos diez procesos Linux locales en CWD distintos con marcadores propios y exit codes 0–9, 16 MiB simultáneos por canal con retención de 32000 bytes por canal, truncamiento y no cero, timeout y SIGTERM. Los dos casos negativos setsid continúan detectando supervivencia del descendiente.
+
+**Métricas de la última ejecución local de la suite anterior:** Node v22.16.0 y coreutils timeout 9.7, RSS inicial del fixture 57.647.104 bytes, RSS máximo muestreado 93.855.744 bytes, heap máximo muestreado 11.944.120 bytes, duración 22.364 ms. Son valores exclusivamente del proceso de prueba local, no agregan los hijos ni miden Durable Objects, Container RAM, costes de inference o Cloudflare. El tiempo incluye variación de la máquina compartida; no inferir ahorro de recursos.
+
+**Evidencia canónica:** docs/f0-c10/fixtures/06_epipe_redgreen_evidence.json, junto a scripts/f0-c10/t06-r2-output-disconnect.test.mjs. CI que incluya explícitamente este fixture, Bun unit, typecheck, build, invariantes y el conjunto Linux original se deberá comprobar por HEAD de la PR draft. No llamar a un PASS offline aceptación E2E.
+
+### Comparación con DeepSeek y Cloudflare (fuentes comprobadas)
+
+**DeepSeek Harness** repositorio https://github.com/deepseek-ai/deepseek-harness, commit fijo **4b399c39a6d1479cd84ca591b4d7c88e24d38a96**, archivo LICENSE: **MIT**, copyright 2026 DeepSeek. Leídos packages/shell/bash-local/README.md y packages/subprocess/subprocess-local/README.md a ese commit; las implementaciones se organizan en packages/shell/bash-local/src/index.ts y packages/subprocess/subprocess-local/src/index.ts. El executor Bash local no confina archivos ni procesos: corre con autoridad del host. Subprocess-local usa ownership de rangos gestionados por el OS en Linux compatible con user-systemd y explicitamente reconoce límites de fallback, incluso setsid/reparent. Tiene collector bounded/spill, terminación y espera de rango vacío; esas APIs específicas de Node host no están demostradas como compatibles con Cloudflare workerd. No se copió código ni se instalaron paquetes de DeepSeek.
+
+**Cloudflare:** https://developers.cloudflare.com/containers/guides/execute-commands/ y https://developers.cloudflare.com/containers/api/durable-object-container/ distinguen exitCode del proceso inicial y supervivencia de descendientes, advierten de pipes mantenidos y de que cancelar RPC no termina procesos; timeout de GNU no cubre setsid. En https://developers.cloudflare.com/containers/configuration/scheduling-policy/ la política durable_object indica que runtime no acepta basic, mientras https://developers.cloudflare.com/containers/platform/limits/ aún lista basic; no cambiar instance: "basic" por intuición, sin preflight ni autorización. Esto es conflicto documental, no fallo runtime demostrado. Cloudflare GET revalidó versiones anteriores: Worker principal 3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb (100 %) y MCP 196240c0-1052-47b3-aaa7-02cf5baa87f0 (100 %); ninguno porta estos parches candidatos.
+
+### Riesgos, permisos y gate
+
+0 tareas iniciadas por OpenCode Remote, 0 inferencias nuevas, 0 comandos en Containers Staging, 0 deploy/merge, 0 cambios a main, Production, secretos, Access o recursos persistentes. Las pruebas locales se ejecutaron en directorios temporales y limpiaron solo procesos que crearon. Gastos monetarios de CI, de Cloudflare y del entorno local: **no medidos**, no declarar coste cero. GitHub Actions es el medio para certificar Bun/compilación; no confirma el runtime.
+
+**Resultado de subsistema:** mitigación EPIPE local PASS (2/2), suite anterior PASS_WITH_KNOWN_GAPS (9/9 con dos casos RED deliberados). **No garantiza** ausencia de huérfanos por setsid, aislamiento físico de diez Containers, control de cancelación RPC, autenticidad de código desplegado ni gasto controlado. Sigue bloqueado el gate de procesos detached/cgroups y compatibilidad de instancia. La próxima consolidación T11 deberá seleccionar una sola ruta entre #132, #137 y este incremento; nunca fusionar parches completos superpuestos por duplicado. F0-C10 = PARTIAL / NOT COMPLETE PASS.
