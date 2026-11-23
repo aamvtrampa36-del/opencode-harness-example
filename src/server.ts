@@ -18,13 +18,14 @@ import { OpenCodeSessionSockets } from "./sockets";
 import { collectSupervisorDirectory, supervisorTaskCount } from "./supervisor-directory";
 import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
 import { projectSupervisorProgress } from "./supervisor-progress";
+import { requireMeteredDiagnosticAdmission } from "./supervisor-legacy-capacity";
 import {
   reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot,
   hasSupervisorAdmissionSlot, supervisorAdmissionAllowsContinuation,
   reconcileSupervisorCreatedSession, supervisorCommitCreatedSession,
   reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
-  reconcileSupervisorTurnEffect,
+  reconcileSupervisorTurnEffect, inspectSupervisorAdmissionCapacity,
   reconcileSupervisorSubmittedEffect, type StartGrant
 } from "./supervisor-admission";
 import { workspacePlugin } from "./workspace";
@@ -146,7 +147,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const admission = await trace.run("admission", "reserve", () =>
       reserveSupervisorAdmission(this.ctx.storage, job));
     if (admission.kind === "capacity") {
-      return { id: start.requestId, accepted: false, status: "capacity_rejected",
+      return { id: start.requestId, accepted: false,
+        status: admission.reason === "CAPACITY_EXHAUSTED" ? "capacity_rejected" : "admission_stopped",
+        stop: admission.reason !== "CAPACITY_EXHAUSTED",
         reason: admission.reason, retryAfterMs: admission.retryAfterMs, capacity: 10 };
     }
     if (admission.kind === "reused") {
@@ -403,8 +406,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
       prefix: "supervisor:task:", limit: 101
     });
     const count = supervisorTaskCount(index, 100);
+    const admissionCapacity = await inspectSupervisorAdmissionCapacity(this.ctx.storage);
     return {
       environment: "staging", worker: "opencode-g1-staging", ready: true,
+      admissionCapacity,
       schema: "opencode.staging-control.v2",
       supervisedSessions: count.supervisedSessions,
       supervisedCountComplete: count.countComplete,
@@ -529,7 +534,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const reservation = await trace.run("admission", "reserve", () =>
       reserveSupervisorContinuation(this.ctx.storage, id, turnId, hash, operationId));
     if (reservation.kind === "capacity") {
-      return { taskId: id, accepted: false, status: "capacity_rejected",
+      return { taskId: id, accepted: false,
+        status: reservation.reason === "CAPACITY_EXHAUSTED" ? "capacity_rejected" : "admission_stopped",
+        stop: reservation.reason !== "CAPACITY_EXHAUSTED",
         reason: reservation.reason, retryAfterMs: reservation.retryAfterMs };
     }
     if (reservation.kind === "existing") {
@@ -1185,6 +1192,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
    * Repeated clicks reuse the saved attempt rather than spending more tokens.
    */
   async startG8LiveReview(): Promise<{ status: string; message?: string }> {
+    // Legacy G8 creates two sessions without T03 slots; disable only on Staging.
+    requireMeteredDiagnosticAdmission(
+      (this.env as Env & { OPENCODE_SUPERVISOR_ENABLED?: string }).OPENCODE_SUPERVISOR_ENABLED === "true");
     const existing = await this.ctx.storage.get<G8LiveCheck>("g8-live-agent-v1");
     if (existing?.version === G8_LIVE_CHECK_VERSION) {
       return { status: "existing", message: "La prueba G8 ya fue iniciada. Consulta su resultado." };
@@ -1278,6 +1288,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
    * credit for a subsequent GitHub source edit and draft PR.
    */
   async startG9SelfDev(): Promise<{status:string;reason?:string;session?:string}> {
+    // G9 has side effects before writing its own state: no unmetered start.
+    requireMeteredDiagnosticAdmission(
+      (this.env as Env & { OPENCODE_SUPERVISOR_ENABLED?: string }).OPENCODE_SUPERVISOR_ENABLED === "true");
     const allowed = await this.personalConfig.getAllowedRepositories();
     if (!allowed.some(name => name.toLowerCase() === G9_REPO.toLowerCase())) {
       return {status:"rejected",reason:"Autoriza el repositorio OpenCode Cloud en Configuración de GitHub."};
@@ -1493,6 +1506,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
   /** Explicit owner-initiated real-model/tool test, never a recurring cron. */
   async startAgentCheck(model: unknown = "cloudflare", kind: unknown = "repair", scope?: "openrouter"): Promise<{ status: string; session?: string; project?: string; model?: string; kind?: string; providerID?: string; providerModel?: string; message?: string }> {
+    // Both MCP and /api/dev/agent-check (including custom workspace) can
+    // create real sessions bypassing the supervisor ledger. Fail closed on Staging.
+    requireMeteredDiagnosticAdmission(
+      (this.env as Env & { OPENCODE_SUPERVISOR_ENABLED?: string }).OPENCODE_SUPERVISOR_ENABLED === "true");
     if (!isAgentCheckModel(model)) {
       return { status: "rejected", message: "Solo se permiten modelos económicos en la autoprueba." };
     }
