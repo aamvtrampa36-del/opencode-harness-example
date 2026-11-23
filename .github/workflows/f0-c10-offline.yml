@@ -19,8 +19,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Node built-in tests (no credentials, no network calls)
-        run: node --test scripts/f0-c10/evaluate.test.mjs
+        run: node --test scripts/f0-c10/evaluate.test.mjs scripts/f0-c10/live-evidence.test.mjs
       - name: Matrix and negative fault suite
         run: node scripts/f0-c10/run-offline.mjs --suite --out f0-c10-offline-evidence.json
+      - name: Verify signed-trace CLI fails closed without external trust
+        run: |
+          set +e
+          node scripts/f0-c10/verify-live.mjs >/tmp/f0-c10-cli-stdout.log 2>/tmp/f0-c10-cli-stderr.log
+          code=$?
+          set -e
+          test "$code" -eq 2
+          grep -q 'FAIL-CLOSED' /tmp/f0-c10-cli-stderr.log
       - name: Inspect bounded JSON evidence
         run: node -e "const x=require('./f0-c10-offline-evidence.json'); if (!x.pass || x.realStagingTested) process.exit(1)"
