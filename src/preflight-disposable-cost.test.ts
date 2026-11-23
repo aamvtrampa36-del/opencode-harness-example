@@ -3,7 +3,7 @@ import {initializeDisposableLease,claimDisposableLease,
   releaseUnusedDisposableLease,type PreflightLeaseGrant} from "./preflight-exclusive-lease";
 import {COST_KINDS,initializeDisposableBudget,reserveDisposableExpense,
   armReservedDisposableExpense,cancelUnsentDisposableExpense,
-  inspectDisposableBudget,type ExpenseKind,type DisposableCostPolicy
+  inspectDisposableBudget,F0_C10_APPROVED_MAX_MICRO_USD,type ExpenseKind,type DisposableCostPolicy
 } from "./preflight-disposable-cost";
 
 class FakeDO {
@@ -155,5 +155,80 @@ describe("F0-C10/PREFLIGHT-02 fenced expense ceiling (OFFLINE; not provider cuto
     const snap=await inspectDisposableBudget(db.asDO());
     expect(snap?.providerCutoffProven).toBe(false);
     expect(snap?.goAuthorized).toBe(false);
+  });
+});
+
+
+describe("F0-C10/PREFLIGHT-03 — US$2 is a ceiling, never a promise of paid runtime",()=>{
+  const usd2=():DisposableCostPolicy=>({
+    scopeHash:scope,policyRevision:"fixture-usd2",
+    totalMicroUsd:F0_C10_APPROVED_MAX_MICRO_USD,
+    // Test-only service maxima; there is NO operator-approved allocation.
+    // A SINGLE DO must still enforce the aggregate ceiling.
+    maxByServiceMicroUsd:{
+      workers_ai:2_000_000,openrouter:2_000_000,workers:2_000_000,
+      durable_objects:2_000_000,containers:2_000_000,github_actions:2_000_000
+    }
+  });
+  test("exact ceiling US$2 is valid; US$2.000001 is rejected before any ledger write",async()=>{
+    expect(F0_C10_APPROVED_MAX_MICRO_USD).toBe(2_000_000);
+    const {db,g}=await make();
+    const raised=usd2();raised.totalMicroUsd=2_000_001;
+    await expect(initializeDisposableBudget(db.asDO(),g,raised,1100))
+      .rejects.toThrow("COST_APPROVED_USD2_CEILING_EXCEEDED");
+    expect(await inspectDisposableBudget(db.asDO())).toBeNull();
+    expect(await initializeDisposableBudget(db.asDO(),g,usd2(),1100))
+      .toMatchObject({status:"initialized",providerCutoffProven:false});
+  });
+  test("six service categories share US$2 total; US$0.01 overrun denied",async()=>{
+    const {db,g}=await make();await initializeDisposableBudget(db.asDO(),g,usd2(),1100);
+    const costs=[
+      {kind:"workers_ai" as const,operationId:"ai",maxMicroUsd:900_000},
+      {kind:"openrouter" as const,operationId:"router",maxMicroUsd:400_000},
+      {kind:"workers" as const,operationId:"worker",maxMicroUsd:250_000},
+      {kind:"durable_objects" as const,operationId:"do",maxMicroUsd:150_000},
+      {kind:"containers" as const,operationId:"container",maxMicroUsd:200_000},
+      {kind:"github_actions" as const,operationId:"ci",maxMicroUsd:100_000},
+    ];
+    // Synthetic costs sum to US$2.00. Not a proposed service allocation.
+    const receipts=await Promise.all(costs.map(intent=>
+      reserveDisposableExpense(db.asDO(),g,usd2(),intent,1200)));
+    expect(receipts.every(x=>x.kind==="reserved")).toBe(true);
+    await expect(reserveDisposableExpense(db.asDO(),g,usd2(),
+      {kind:"workers_ai",operationId:"cent_over",maxMicroUsd:10_000},1300))
+      .rejects.toThrow("COST_BUDGET_EXHAUSTED");
+    expect(await inspectDisposableBudget(db.asDO())).toMatchObject({
+      totalMicroUsd:2_000_000,exposureMicroUsd:2_000_000,
+      providerCutoffProven:false,goAuthorized:false
+    });
+  });
+  test("failed or ambiguous receipts cannot free cost, extend cap, or unlock provider",async()=>{
+    const {db,g}=await make();await initializeDisposableBudget(db.asDO(),g,usd2(),1100);
+    await reserveDisposableExpense(db.asDO(),g,usd2(),
+      {kind:"workers_ai",operationId:"native_unknown",maxMicroUsd:2_000_000},1200);
+    const first=await armReservedDisposableExpense(db.asDO(),g,usd2(),"native_unknown",1300);
+    expect(first).toEqual({firstArmed:true,providerDispatchAuthorized:false,state:"unknown"});
+    const restarted=db.restart();
+    expect(await armReservedDisposableExpense(restarted.asDO(),g,usd2(),
+      "native_unknown",1400)).toEqual({firstArmed:false,providerDispatchAuthorized:false,state:"unknown"});
+    await expect(cancelUnsentDisposableExpense(restarted.asDO(),g,usd2(),
+      "native_unknown",1500)).rejects.toThrow();
+    const increased=usd2();increased.totalMicroUsd=2_000_001;
+    await expect(initializeDisposableBudget(restarted.asDO(),g,increased,1600))
+      .rejects.toThrow("COST_APPROVED_USD2_CEILING_EXCEEDED");
+    expect(await inspectDisposableBudget(restarted.asDO()))
+      .toMatchObject({exposureMicroUsd:2_000_000,providerCutoffProven:false,goAuthorized:false});
+  });
+  test("different DO owners are NOT a common account ledger: illustrative RED design counterexample",async()=>{
+    const one=await make(),two=await make();
+    await initializeDisposableBudget(one.db.asDO(),one.g,usd2(),1100);
+    await initializeDisposableBudget(two.db.asDO(),two.g,usd2(),1100);
+    for(const x of [one,two])await reserveDisposableExpense(x.db.asDO(),x.g,usd2(),
+      {kind:"workers_ai",operationId:"isolated",maxMicroUsd:2_000_000},1200);
+    const a=await inspectDisposableBudget(one.db.asDO());
+    const b=await inspectDisposableBudget(two.db.asDO());
+    expect(a!.exposureMicroUsd+b!.exposureMicroUsd).toBe(4_000_000);
+    // This proves why a per-DO limit cannot be called a real global hard cutoff.
+    expect(a!.goAuthorized||b!.goAuthorized).toBe(false);
   });
 });
