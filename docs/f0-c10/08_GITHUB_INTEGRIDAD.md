@@ -174,3 +174,39 @@ Archivo: \`src/github-publication-gate.test.ts\`. Usar \`bun test src/github-pub
 - La adición de esta nota documental produce un **nuevo HEAD** que requiere verificación CI independiente antes de alegar CI verde del HEAD final.
 
 **Rollback:** no fusionar el PR draft. Ninguna mutación Cloudflare/Producción fue realizada por esta contribución. \`R2-T08=PARTIAL\` hasta conexión durable verificada y E2E supervisado; \`F0-C10\` permanece \`NOT COMPLETE PASS\`.
+
+
+---
+
+## Continuación — Coordinador durable de publicación R2-T08 + T03 (candidato, NO DEPLOY)
+
+**Fecha:** 2026-11-22 BRT / 2026-11-23 UTC. **Actor:** ChatGPT mediante GitHub; no se llamó a OpenCode Remote con efectos. **Rama exclusiva:** \`f0-c10/r2-t08-publisher-ledger-20261122\` creada del HEAD \`b3387593a1300133aa0b15f4b2e07e204313a806\` de la [PR T03 #135](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/135). Se superpuso **solo en esta rama** el delta T08 de la [PR #130](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/130), sin modificar #130, #135, #126 ni Staging. Las tres permanecían candidatas draft/unmerged en la comprobación.
+
+### Alcance implementado
+
+- \`src/github-publication-durable.ts\` implementa \`GitHubPrPublicationGate\` con \`DurableObjectStorage.transaction\`, un registro por \`(repo,base)\` y recibo permanente por rama. El scope se identifica mediante SHA-256 del repo/base; el hash de intención incluye repo/base/branch/título/cuerpo. El contrato es **single authority**, no un mutex por instancia.
+- El registro usa \`generation\` monótona y \`token\` aleatorio, con transición \`reserved → publishing → committed\` o \`unknown\`. El TTL **solo puede renovar una reserva que aún no empezó ningún efecto**. Una vez persistido \`publishing\`, un fallo de red, respuesta perdida, restart o timeout NO permite ceder el scope a otro escritor. Los reintentos del mismo intento operan en \`retryOnly\`: pueden recuperar una PR exacta, pero no volver a hacer POST.
+- \`beginExternalEffect()\` se ejecuta en transacción con validación de token/generación y revalidación opcional de sesión/tarea. Un intento revocado o una tarea cancelada antes de POST se rechazan. El efecto de red ocurre **fuera** de la transacción. Se persiste recibo estrictamente comprobado (repo, rama, base, head/base SHA, draft, número y URL). Nunca se almacena el token del servidor en el documento o en respuesta al agente.
+- \`src/server.ts\` integra la publicación desde el **Durable Object ya existente y nombrado** \`SUPERVISOR_WORKSPACE = opencode-supervisor-v1\`: \`ctx.id.name\` identifica si el agente está en el mismo objeto; desde otra instancia se usa \`env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE)\`. El método RPC \`publishSupervisedGithubDraft\` valida de nuevo el \`taskId\` derivado de \`opencode/staging-<16hex>\`, repo, proyecto \`supervised-<id>\`, \`sessionID\` auténtico y estado preparing/running. \`src/workspace.ts\` pasa \`context.sessionID\` desde la herramienta, no desde el prompt. Se revalida el registro dentro de la transacción de \`publishing\`.
+- \`src/github.ts\` **falla cerrado** para PR de \`opencode/staging-<16hex>\` si falta gate, impidiendo un camino de publicación propio no coordinado. Los commits y ramas continúan sujetos a ACL preexistente; no se abrieron merge, force-push ni deploy. Los recibos de \`pr\` ahora incluyen \`headSha\` y \`baseSha\` confirmados.
+- El puente GitHub nativo se mantiene. El conector oficial se utilizó únicamente para preparar la rama, publicar código/PR y verificar CI.
+
+### Qué no garantiza todavía
+
+1. **No se desplegó**: ni Worker, MCP, binding, migración, secretos o ajustes de Cloudflare. La identidad \`ctx.id.name\` de un DO nombrado está documentada por Cloudflare (https://developers.cloudflare.com/durable-objects/api/id/), pero la ruta RPC específica del Workers/Agents SDK actual requiere **prueba autenticada** antes de declarar el gate operativo.
+2. La nueva exclusión solo cubre PR del **repositorio OpenCode Staging supervisado** que pasen por este puente y su método RPC. Otros repositorios, ramas no supervisadas, tokens directos, el conector oficial de ChatGPT, usuarios externos y otras bases pueden crear PR fuera de la autoridad. No alegar exclusión universal ni bloqueo de conflictos entre bases diferentes.
+3. Los writes de contenido completo, reemplazo y creación de ramas mantienen las guardas actuales y la reconciliación acotada; **no** son transacciones globales de diez tareas. \`force:false\` no es CAS exacto del HEAD. El tratamiento de \`unknown\` puede bloquear publicaciones indefinidamente hasta reconciliación o recuperación auditada; esto es preferible a dos POST ciegos, pero requiere operación/visibilidad antes de habilitarlo.
+4. El Durable Object del supervisor también gestiona sesiones y puede sufrir OOM; T01/T02 deben certificar su memoria. El gate no arregla las OOM ni los slots/scheduler de T03; no introducir un nuevo Durable Object sin autorización.
+5. T04 debe revisar la política de cancelación y efectos inciertos; T11 debe comparar e integrar #130 y #135 sin sobrescribir sus ramas. La publicación candidata tiene rollback sencillo antes de merge: abandonar esta PR; **no hay rollback de datos publicado** que realizar.
+
+### Matriz de pruebas negativas — nuevo archivo
+
+\`src/github-publication-durable.test.ts\` contiene el fake transaccional con snapshot/restart y el puente \`GitHubBridge\` real contra HTTP simulado. Casos: dos escritores competidores, diez ramas/path disjuntos, respuesta 503 tras POST aplicado, 503 sin efecto con reinicio y UNKNOWN sticky, payload cambiado, reintento tras recibo, expiración de reserva antes de POST y fencing del propietario antiguo, tarea cancelada durante preflight, gate ausente y repositorio/rama/proyecto/sesión no autorizados, corrupción del ledger. Las pruebas de la primera ronda permanecen en \`src/github-publication-gate.test.ts\`, \`src/github-pr-conflicts.test.ts\`, \`src/github.test.ts\` y \`scripts/f0-c10-t08-integrity.test.mjs\`.
+
+**Pruebas/CI:** ejecutar \`bun test\`, \`bun run typecheck\`, \`bun run build\`, \`bun scripts/check-invariants.mjs\`, preview y harness offline mediante workflows de PR. **No atribuir PASS antes de ver el HEAD y los pasos reales del runner.** No se llama a inferencia ni a Staging con efectos en este lote.
+
+### Frontera de aceptación
+
+**Estado:** \`CODE_CANDIDATE / CI_PENDING / RUNTIME_NOT_VERIFIED\`. Para aceptar este subsistema hacen falta CI verde del HEAD, prueba de RPC dentro y fuera del DO central, fault injection con reinicio entre POST y recibo, restauración del journal, doble escritor real sin doble POST, revalidación de permisos/branch y prueba de coste y memoria. Para aceptar F0-C10 siguen siendo necesarias las rondas E2E 10/10 de T10 y criterios del issue #90.
+
+**Criterio STOP:** un token antiguo consigue publicar, aparece una segunda publicación tras UNKNOWN, la sesión ajena publica sobre rama supervisada, existen escrituras fuera del carril central o un fallo de memoria consume el ledger: bloquear promoción y no relajar permisos.
