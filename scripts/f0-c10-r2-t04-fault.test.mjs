@@ -2,7 +2,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   r2SessionId, r2TurnJournalKey, r2TurnAdmission,
-  r2CancelledByReceipt, r2StatusWriteAllowed
+  r2CancelledByReceipt, r2StatusWriteAllowed, r2TerminalNativeReceipt
 } from "../src/supervisor-r2.ts";
 
 /** Disposable deterministic transaction model, NOT Cloudflare DO/SQLite.
@@ -150,4 +150,13 @@ describe("R2-T04 fault-injection with disposable transactional model", () => {
     assert.equal(r2CancelledByReceipt({...task,status:"cancel_requested"},
       task.operationId,{status:"unanswered",reason:"interrupted"}),false);
   });
+  test("native terminal receipt requires done or an explicit terminal unanswered reason", () => {
+    assert.equal(r2TerminalNativeReceipt({status:"done"}),true);
+    assert.equal(r2TerminalNativeReceipt({status:"unanswered",reason:"failed"}),true);
+    assert.equal(r2TerminalNativeReceipt({status:"unanswered",reason:"interrupted"}),true);
+    assert.equal(r2TerminalNativeReceipt({status:"unanswered",reason:"not_found"}),false);
+    assert.equal(r2TerminalNativeReceipt({status:"unanswered"}),false);
+    assert.equal(r2TerminalNativeReceipt(undefined),false);
+  });
+
 });
