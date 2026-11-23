@@ -271,3 +271,9 @@ La salida `GO` del fixture sintético **NO** autoriza tráfico; solo prueba la l
 **Criterio de área alcanzado:** referencia durable con T03 y pruebas sin sobre-reserva; `STOP` cuando no hay cortes efectivos (offline). **Criterio NO alcanzado:** prueba real de contención de TODAS las inferencias/servicios, medición de cargo final, cuota efectiva, idempotencia de proveedor y DO workerd real. La salida a T11 es **PARTIAL**; no confundir con `COMPLETE PASS` global de F0-C10 ni cerrar issue #90.
 
 **Handoff concreto T11:** revisar/integrar SOLO el módulo `src/supervisor-inference-budget.ts` y sus fixtures de esta PR R3 sobre el HEAD final que T11 elija; conservar la única autoridad T03 y ejecutar fault injection del adaptador SDK ante reintentos y recepción tardía. Mantener toda inferencia live en `STOP` hasta prueba de límites efectivos por servicio y autorización adicional. No hacer cherry-pick doble de #117/#142: ya son ancestros de #145.
+
+## R3-T07 — Recibo de entrega única para T11
+
+**PR draft:** [#153](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/153), rama `f0-c10/r3-t07-durable-inference-budget-20261123`, creada desde el documento R3 #146 `05da68fd1644f92578588c62a4586d561c418c49`. Actor ChatGPT; no OpenCode, no Codex. El HEAD final y sus jobs CI se consultan en la PR y no se infieren a partir de este archivo (el commit que incorpora el recibo cambia el propio HEAD).
+
+**Validez:** contrato candidato sin conexión al interceptor, sin capacidad real demostrada ni certificado de corte integral; por política todo ensayo pagado continúa **STOP**. Los fixtures GREEN/RED se ejecutaron localmente; CI sobre HEAD final es un gate distinto. T11 recibe una sola PR R3-T07, sin duplicar #117/#142 ni fusionar ramas previas por separado.
