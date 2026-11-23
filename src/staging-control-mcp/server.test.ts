@@ -120,10 +120,10 @@ describe("OpenCode staging MCP server", () => {
       const { tools } = await client.listTools();
       expect(tools.map(tool => tool.name).sort()).toEqual([
         "staging_agent_check", "staging_agent_check_status", "staging_cancel_task",
-        "staging_diagnostics", "staging_mcp_call", "staging_mcp_servers", "staging_mcp_tools",
+        "staging_capture_task_artifact", "staging_diagnostics", "staging_mcp_call", "staging_mcp_servers", "staging_mcp_tools",
         "staging_models", "staging_openrouter_check", "staging_openrouter_check_status",
         "staging_repositories", "staging_review_task", "staging_session_inspect", "staging_sessions",
-        "staging_start_task", "staging_status", "staging_task_continue", "staging_task_progress", "staging_task_select_model",
+        "staging_start_task", "staging_status", "staging_task_artifacts", "staging_task_continue", "staging_task_progress", "staging_task_select_model",
         "staging_task_status", "staging_task_transcript"
       ]);
       const taskStatusTool = tools.find(tool => tool.name === "staging_task_status");
