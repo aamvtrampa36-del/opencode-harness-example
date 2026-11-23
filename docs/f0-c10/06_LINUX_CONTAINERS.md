@@ -88,3 +88,71 @@ Archivos analizados en ese commit:
 **Siguiente acción:** revisar CI y diff de esta PR draft; integrar solo con autorización específica, después medir en runtime aislado con reserva efectiva (primero una tarea, luego 2/4/10 en otro lote), instrumentar bytes de ambas salidas/exitCode/timeout/estado del proceso, medir RSS y OOM del DO, y probar cancelación y restart. Resolver rutas auxiliares process.output() y fugas de procesos en un lote independiente antes de declarar diez herramientas Linux simultáneas confiables.
 
 **Conclusión T06:** el colector principal de Linux está mejorado y probado parcialmente, pero el ejecutor todavía NO está certificado para contribuir con diez procesos realmente simultáneos y recuperables en Staging.
+
+
+---
+
+## R2-T06 — Ciclo de procesos, escape de PGID y pruebas negativas
+
+**Corte:** 2026-11-22/23 UTC. **Actor:** ChatGPT; GitHub lectura/escritura en rama y pruebas Node/Linux offline. OpenCode Remote no utilizado. **Estado:** PARTIAL / SAME_PGID_POSITIVE / DETACHED_RED_CONFIRMED / NO STAGING E2E.
+
+**Integración de referencia:** [PR #126](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/126), draft, HEAD inicial observado 1268ba22f26330d619b046fcf551ca846cb69d0f. Incorpora #121 y conserva #105. **PR R2:** [#132](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/132), rama fix/f0-c10-r2-t06-process-lifecycle-20261122, base exacta del candidato #126. Ninguna rama se integró ni desplegó.
+
+### R2.1 Reconstrucción y corrección
+
+El supervisor OpenCodeAgent valida scope, registra proyecto y enruta a un DevContainer lógico mediante projectContainerName; DevContainer.run valida proyecto y longitud del comando, adquiere commandQueue, verifica import/restore, inicia o restaura Container, prepara Git/Bun si corresponde, y llama a runExclusive; finalmente actualiza busy, lastActivity y alarm. Un Container lógico por proyecto no prueba diez Containers activos ni separación física de isolates.
+
+La primera ronda envolvió el comando con GNU timeout, TERM tras 180 s y KILL después de 5 s, pero no limpió los descendientes del grupo si el Bash principal salió normalmente; tampoco los descendientes que abandonan el grupo mediante setsid. Drenar stdout/stderr en paralelo como hace #105 elimina la acumulación completa de salida, pero aún puede esperar eternamente por un descriptor heredado.
+
+**Cambio R2 limitado a la ruta de runExclusive en src/dev-container.ts:** el shell prepara el directorio propio y reemplaza su proceso por un supervisor Node (Node 24 suministrado por la imagen managed). El código y la instrucción de usuario se transportan como argumentos POSICIONALES distintos; no se concatenan dentro de código ejecutable. El supervisor lanza GNU timeout con detached:true y stdio separado; el PID del proceso que crea corresponde a un grupo de procesos privado. A la salida normal o por error de ese proceso raíz, envía TERM y después KILL exclusivamente a su PGID, con 250 ms entre señales. Frente a TERM/INT/HUP explícito sobre el supervisor, lo transmite al grupo y escala tras 5 s, cancelando timer al terminar. Nunca utiliza killall, pkill, recorrido global de PIDs ni destroy() de Container.
+
+La salida pasa por pipes binarios con backpressure, que sigue drenando captureBoundedOutput de #105 con contenido máximo de 32.000 bytes POR canal; el marcador de truncamiento va aparte. Si los pipes continúan abiertos 1,5 s después de limpieza, el supervisor los cierra, emite diagnóstico y devuelve 125: no se interpreta una captura incompleta como éxito. Códigos normales no cero se conservan. El código 125 no es prueba de origen único (podría proceder de una app).
+
+**stdin:** en run() sigue cerrado (EOF), no hay PTY persistente. Las rutas con stdin explícito fuera de run() no se modificaron. Salida binaria no UTF-8 pasa con byte counts correctos, pero TextDecoder convierte secuencias inválidas a caracteres de sustitución; no prometer recuperación byte-exacta de archivos desde stdout textual.
+
+### R2.2 Fixtures Linux y mediciones locales
+
+**Nuevo test:** scripts/f0-c10/t06-r2-process-fixtures.mjs. Lee el mismo LINUX_RUNNER_SOURCE del código productivo, lo ejecuta mediante el mismo transporte posicional de Bash y crea exclusivamente directorios temporales. PIDs de procesos creados por el test se recopilan y se terminan en finally; nunca se mata un PID ajeno deliberadamente. Ejecutado con Node v22.16.0 y GNU timeout 9.7, sin acceso a Cloudflare ni inferencia.
+
+**Última muestra de ejecución local:** PASS_WITH_KNOWN_GAPS. Nueve casos:
+
+| Prueba | Resultado local |
+| --- | --- |
+| stdout/stderr corto, exit code 7 | PASS, código 7 |
+| 5 bytes de datos binarios en cada pipe, exit code 23 | PASS, recuento 5 por canal; texto contiene U+FFFD |
+| 16.777.216 bytes simultáneos POR canal, exit code 19 | PASS; 32.000 bytes conservados y 16.745.216 omitidos por canal |
+| 10 procesos sintéticos en 10 cwd independientes, marcadores y códigos 0–9 | PASS, sin mezcla observada |
+| descendiente en mismo PGID ignora TERM, raíz exit code 31 | PASS; descendiente no activo al finalizar (gone/Z) |
+| timeout sintético acortado a 1 s; escalada a KILL | PASS; salida observada 137 |
+| SIGTERM explícito al supervisor, escalada reducida solo en test | PASS; código 143 |
+| descendiente setsid hereda stdout/stderr | RED CONFIRMADO; 125 y diagnóstico de pipes abiertos, hijo sigue vivo S |
+| descendiente setsid redirige los tres stdio a /dev/null | RED CONFIRMADO; raíz devuelve 0 pero hijo sigue vivo S |
+
+**Memoria de la última prueba local, muestreo cada 10 ms:** RSS inicial 56.426.496 bytes, máximo RSS muestreado 97.452.032 bytes, heapUsed máximo 12.289.200 bytes; duración total 8.967 ms. Se midió SOLO el proceso Node del fixture, sin agregación del RSS de sus hijos ni Workers/DO/Containers. No se atribuye causalmente ahorro de memoria ni capacidad para diez Containers; el límite de 32.000 bytes es de contenido retenido, no de RSS.
+
+Los dos casos setsid son **pruebas negativas deliberadas**: no se han corregido. El test limpia sus propios PIDs, pero el ejecutor de producción no puede asegurar limpieza de un proceso setsid con stdio redirigido; ni un exitCode 0 significa que el árbol está vacío. Estado Z significa zombie inactivo, no reaping garantizado. La cancelación de una RPC no envía automáticamente SIGTERM a este supervisor; perder la respuesta todavía puede dejar trabajo vivo.
+
+### R2.3 Comparación externa y compatibilidad
+
+**DeepSeek Harness** fijado a commit [4b399c39a6d1479cd84ca591b4d7c88e24d38a96](https://github.com/deepseek-ai/deepseek-harness/tree/4b399c39a6d1479cd84ca591b4d7c88e24d38a96), licencia MIT, LICENSE con copyright 2026 DeepSeek.
+
+- packages/shell/bash-local/src/index.ts: Bash por comando y timeouts, no proporciona sandboxing.
+- packages/subprocess/subprocess-local/src/index.ts y README.md: grupo/rango de proceso, finalización/join y captura acotada con spill opcional a archivo privado (permisos 0700/0600); soporta scopes systemd Linux cuando existen, fallback sin visibilidad completa de escapes.
+- packages/shell/bash-sandbox/README.md: confinamiento explícito de archivos, no de red/procesos; falla cerrado si no puede confinar.
+- packages/shell/tool-bash-persistent/README.md: PTY por agente y reset en estado incierto; no trasplantar a herramienta Linux one-shot.
+
+No se copió código DeepSeek ni se instalaron dependencias. Node 24 pertenece al Container manejado del proyecto; Bun 1.4.4 continúa como dependencia condicional para comandos, no como runtime del Durable Object. El comportamiento real del Runner Node en la imagen de Cloudflare no fue medido.
+
+**Cloudflare:** https://developers.cloudflare.com/containers/guides/execute-commands/ (actualizado 2026-11-09), https://developers.cloudflare.com/containers/api/durable-object-container/ y https://developers.cloudflare.com/containers/platform/limits/. La documentación confirma que exitCode no implica cierre de descendientes, kill() afecta solo al proceso directo, timeout trabaja por grupo excepto setsid y process.output() retiene memoria completa. El tamaño basic por instancia es 0,25 vCPU, 1 GiB RAM y 4 GB de disco; no garantiza diez instancias concedidas ni coste nulo. Véase también https://github.com/cloudflare/sandbox-sdk/blob/main/docs/SESSION_EXECUTION_DEEP_DIVE.md sobre los límites de limpieza de descendientes escapados.
+
+### R2.4 Gates y restricciones
+
+**Evidencia de integridad:** fuente base 1268ba22f26330d619b046fcf551ca846cb69d0f; PR #132 draft, cuyo HEAD y checks deben contrastarse después del último commit. El estado de Staging principal #374 y MCP #19 citado en la primera ronda es HISTÓRICO, no revalidado aquí; el parche R2 no está desplegado.
+
+**Costes/acciones:** 0 llamadas Remote que inicien o modifiquen tareas; 0 comandos sobre Containers vivos; 0 pruebas de carga en Staging; 0 cambios de infraestructura, secretos, Producción o main, sin merge. GitHub CI autorizado puede consumir tiempo de runners; ningún importe real de facturación se midió. No afirmar coste total de cuenta cero.
+
+**G-C10-B:** pruebas offline locales positivas y negativas ejecutadas; CI del HEAD de PR #132 todavía debe comprobarse, incluyendo tests Bun, typecheck, build e invariantes. **G-C10-C/D/E:** BLOCKED/NO VERIFIED: falta entorno de ejecución aislado, reserva/corte de gasto, E2E con recuperación e instrumentación de procesos y memoria.
+
+**Para cumplir cero huérfanos de setsid se requiere ownership del sistema operativo** (cgroup v2/servicio gestionado o PID namespace con supervisor reaper), con capacidad comprobada dentro de Containers Cloudflare. No probarlo sobre Containers compartidos ni introducir comandos globales. También falta recuperación durable de operaciones ante OOM y cancelación RPC, auditoría de process.output() en rutas auxiliares y medición real de overhead de Node por proceso. Un CI verde no cierra esas brechas.
+
+**Conclusión:** R2 mejora el tratamiento de grupos, señales, pipes y códigos de salida, pero **NO GARANTIZA limpieza de procesos detached ni demuestra diez tareas Linux ejecutándose en Staging**. Mantener #90 abierto. Estado PARTIAL.
