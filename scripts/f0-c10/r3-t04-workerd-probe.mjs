@@ -144,6 +144,29 @@ try {
   assert.deepEqual(duplicate.before.matchingRows,duplicate.after.matchingRows);
   note("repeated create after positive reconciliation retains one native session row");
 
+  // Live interleaving: the original HTTP request is suspended AFTER
+  // OpenCodeWorkerd.create commits its row; a second RPC transfers ownership.
+  const heldGrant=await post(8,"prepare",{intent:true});
+  const originalInFlight=post(8,"create-held",{
+    grant:heldGrant.grant,injectError:true});
+  let held=false;
+  for(let k=0;k<40;k++){
+    const status=await get(8,"held");
+    if(status.held){held=true;break}
+    await new Promise(resolve=>setTimeout(resolve,150));
+  }
+  assert.equal(held,true,"original creator did not reach post-native hold gate");
+  const newOwner=await post(8,"reconcile");
+  assert.equal(newOwner.kind,"recovered");
+  const release=await post(8,"release-held");
+  assert.equal(release.released,true);
+  const oldReply=await originalInFlight;
+  assert.equal(oldReply.kind,"fenced");
+  assert.equal(oldReply.state.task.status,"preparing");
+  assert.equal(oldReply.state.task.session,sid(ID));
+  assert.equal(oldReply.state.slot.generation,heldGrant.grant.generation+1);
+  note("real workerd overlapping creator SDK error after transfer cannot erase new owner");
+
   const prepScope=await post(5,"prepare",{intent:true});
   await post(5,"create");
   await post(5,"foreign-scope");
