@@ -240,11 +240,20 @@ export class OpenCodeAgent extends DurableObject<Env> {
         const model = resolveModelSelection(job.model ?? "economy");
         await handle.setModel(model);
         await supervisorConfirmExternalEffect(this.ctx.storage, grant, "configure", { confirmed: true });
-        job.operationId = supervisorStartOperationId(job.id);
-        job.status = "running";
-        job.updatedAt = Date.now();
-        // Store the native idempotency key before sending anything to OpenCode.
-        await this.ctx.storage.put(key, job);
+        // Atomically retain any concurrent cancellation or turn cursor.
+        const prepared = await this.ctx.storage.transaction(async tx => {
+          const fresh = await tx.get<SupervisorTask>(key);
+          if (!fresh || fresh.session !== job.session || fresh.status !== "preparing" ||
+              fresh.operationId || fresh.pendingTurn || fresh.cancelAmbiguous) return fresh;
+          const updated: SupervisorTask = { ...fresh,
+            operationId: supervisorStartOperationId(job.id), status: "running",
+            revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
+          await tx.put(key, updated);
+          return updated;
+        });
+        if (!prepared || prepared.operationId !== supervisorStartOperationId(job.id))
+          return this.supervisorTaskReceipt(await this.supervisedRecord(job.id), true);
+        job = prepared;
       }
     } catch (error) {
       if (error instanceof Error && error.message === "ADMISSION_FENCE_REJECTED") {
@@ -254,12 +263,21 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const slot = await supervisorAdmissionSlot(this.ctx.storage, job.id);
       const uncertainEffect = slot?.phase === "effect_unknown";
       const uncertainCreate = job.sessionCreationAttempted === true && !job.session;
-      job.status = uncertainEffect || uncertainCreate ? "unknown" : "failed";
       const detail = error instanceof Error ? error.message.slice(0, 180) : "No se pudo iniciar la tarea";
-      job.error = uncertainCreate ? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED: " + detail :
-        uncertainEffect ? "ADMISSION_EXTERNAL_EFFECT_UNCONFIRMED: " + detail : detail;
-      job.updatedAt = Date.now();
-      await this.ctx.storage.put(key, job);
+      job = await this.ctx.storage.transaction(async tx => {
+        const fresh = await tx.get<SupervisorTask>(key);
+        if (!fresh) throw new Error("SUPERVISOR_TASK_MISSING_AFTER_FAILURE");
+        if (fresh.status === "cancel_requested" || fresh.status === "cancelled" ||
+            fresh.pendingTurn || (fresh.operationId && fresh.operationId !== job.operationId))
+          return fresh;
+        const updated: SupervisorTask = { ...fresh,
+          status: uncertainEffect || uncertainCreate ? "unknown" : "failed",
+          error: uncertainCreate ? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED: " + detail :
+            uncertainEffect ? "ADMISSION_EXTERNAL_EFFECT_UNCONFIRMED: " + detail : detail,
+          revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
+        await tx.put(key, updated);
+        return updated;
+      });
     }
     if (job.status === "failed" || !job.session || !job.operationId || !job.baseCommit) {
       return this.supervisorTaskReceipt(job, reused);
