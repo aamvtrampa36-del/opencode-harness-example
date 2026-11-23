@@ -67,7 +67,8 @@ export async function reserveSupervisorAdmission(
     for (const [id, slot] of Object.entries(ledger.slots)) {
       const task = await tx.get<SupervisorTask>(supervisorTaskKey(id));
       if (!task) throw new Error("ADMISSION_ORPHAN_SLOT");
-      if (slot.phase !== "effect_unknown" && terminal(task.status)) {
+      if (slot.phase !== "effect_unknown" && terminal(task.status) &&
+          !task.pendingTurn && !task.cancelAmbiguous) {
         delete ledger.slots[id]; changed = true;
       }
     }
@@ -260,7 +261,11 @@ export async function supervisorCommitCreatedSession(
         slot.phase !== "effect_unknown" || slot.effect !== "session_create")
       throw Error("ADMISSION_FENCE_REJECTED");
     const reverse = await tx.get<string>("supervisor:session:" + sessionId);
-    if (reverse && reverse !== grant.id) throw Error("SESSION_CREATE_SCOPE_CONFLICT");
+    const scope = await tx.get<ProjectScope>(scopeStorageKey(sessionId));
+    if (reverse && reverse !== grant.id ||
+        scope && (scope.project !== task.project ||
+          scope.repository?.toLowerCase() !== task.repository.toLowerCase()))
+      throw Error("SESSION_CREATE_SCOPE_CONFLICT");
     const next: SupervisorTask = { ...task, session: sessionId,
       revision: (task.revision ?? 0) + 1, updatedAt: now };
     slot.phase = "reserved";
