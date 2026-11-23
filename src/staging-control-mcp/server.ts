@@ -1,3 +1,4 @@
+import { boundedMcpJsonText, redactMcpString } from "./bounded-response";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { MODEL_PRESETS } from "../model-presets";
@@ -49,93 +50,14 @@ const workspaceSchema = z.string()
   .optional();
 const sessionIdSchema = z.string().regex(/^ses[A-Za-z0-9_]{1,64}$/);
 
-function redactString(value: string): string {
-  return value
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTADO]")
-    .replace(/\b(?:github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]{12,}\b/g, "[REDACTADO]")
-    .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/g, "[REDACTADO]")
-    .replace(/\bBearer\s+[A-Za-z0-9_.~+/-]+/gi, "Bearer [REDACTADO]")
-    .replace(/((?:api[_-]?key|password|passphrase|token|secret|authorization|cookie)\s*[:=]\s*["']?)([^\s,;"']+)/gi, "$1[REDACTADO]");
-}
-
-const SECRET_FIELD = /(^|[_.\s-])(password|passphrase|token|secret|authorization|cookie|credential|api[_-]?key|private[_-]?key)([_.\s-]|$)/i;
-
-function safeValue(value: unknown, depth = 0): unknown {
-  if (depth > 24) return "[profundidad omitida]";
-  if (typeof value === "string") return redactString(value);
-  if (Array.isArray(value)) return value.map(item => safeValue(item, depth + 1));
-  if (value && typeof value === "object") {
-    const safe: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value)) {
-      safe[key] = SECRET_FIELD.test(key) ? "[REDACTADO]" : safeValue(item, depth + 1);
-    }
-    return safe;
-  }
-  return value;
-}
-
-type JsonClip = { value: unknown; truncated: boolean };
-
-function clipJsonValue(
-  value: unknown, limits: { stringChars: number; arrayItems: number; objectKeys: number; depth: number },
-  depth = 0
-): JsonClip {
-  if (depth > limits.depth) return { value: "[profundidad recortada]", truncated: true };
-  if (typeof value === "string") {
-    if (value.length <= limits.stringChars) return { value, truncated: false };
-    const marker = "[recortado]";
-    return { value: value.slice(0, Math.max(0, limits.stringChars - marker.length)) + marker, truncated: true };
-  }
-  if (Array.isArray(value)) {
-    const items = value.slice(0, limits.arrayItems).map(item => clipJsonValue(item, limits, depth + 1));
-    return { value: items.map(item => item.value),
-      truncated: value.length > limits.arrayItems || items.some(item => item.truncated) };
-  }
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>);
-    const clipped: Record<string, unknown> = {};
-    let truncated = entries.length > limits.objectKeys;
-    for (const [key, item] of entries.slice(0, limits.objectKeys)) {
-      const child = clipJsonValue(item, limits, depth + 1);
-      clipped[key] = child.value;
-      truncated ||= child.truncated;
-    }
-    return { value: clipped, truncated };
-  }
-  return { value, truncated: false };
-}
-
-function jsonText(value: unknown, maxChars = 16_000): string {
-  const safe = safeValue(value);
-  const json = JSON.stringify(safe, null, 2) ?? "null";
-  if (json.length <= maxChars) return json;
-
-  const limits = [
-    { stringChars: 2048, arrayItems: 64, objectKeys: 64, depth: 16 },
-    { stringChars: 1024, arrayItems: 32, objectKeys: 32, depth: 12 },
-    { stringChars: 512, arrayItems: 16, objectKeys: 16, depth: 10 },
-    { stringChars: 256, arrayItems: 8, objectKeys: 12, depth: 8 },
-    { stringChars: 64, arrayItems: 4, objectKeys: 8, depth: 6 },
-    { stringChars: 16, arrayItems: 0, objectKeys: 4, depth: 4 }
-  ];
-  for (const limit of limits) {
-    const clipped = clipJsonValue(safe, limit);
-    let candidate = clipped.value;
-    if (clipped.truncated && candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
-      candidate = { ...(candidate as Record<string, unknown>), _responseTruncated: true };
-    }
-    const bounded = JSON.stringify(candidate, null, 2) ?? "null";
-    if (bounded.length <= maxChars) return bounded;
-  }
-  return JSON.stringify({ _responseTruncated: true, message: "Resultado omitido por límite de tamaño" });
-}
-
 function result(value: unknown, maxChars?: number) {
-  return { content: [{ type: "text" as const, text: jsonText(value, maxChars) }] };
+  return { content: [{ type: "text" as const, text: boundedMcpJsonText(value, maxChars) }] };
 }
 
 function failed(error: unknown) {
-  const message = error instanceof Error ? redactString(error.message).slice(0, 500) : "Error del control de staging";
+  const message = error instanceof Error
+    ? (error.message.length > 500 ? "MCP_ERROR_MESSAGE_TOO_LARGE" : redactMcpString(error.message))
+    : "Error del control de staging";
   return { content: [{ type: "text" as const, text: message }], isError: true };
 }
 
@@ -382,7 +304,10 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
 
 async function callTask(operation: () => Promise<unknown>, maxChars?: number) {
   try {
-    return result({ ...asRecord(await operation()), targetWorker: STAGING_WORKER }, maxChars);
+    // Project the original RPC value before copying/spreading or stringifying it.
+    // The target is attached to the small projected object, never to the full source.
+    return { content: [{ type: "text" as const,
+      text: boundedMcpJsonText(await operation(), maxChars, STAGING_WORKER) }] };
   } catch (error) {
     return failed(error);
   }
