@@ -1,6 +1,6 @@
 # F0-OOM-02/T06 — preflight y procedimiento de carga autenticada (SIN EJECUTAR)
 
-**Corte de auditoría:** 2026-11-22/23 UTC. **Actor:** ChatGPT, lecturas autorizadas de GitHub y Cloudflare. **Estado:** `PREPARADO / BLOCKED PARA CLOUDFARE WRITE`. **No existe versión candidata subida o desplegada por T06**. El alcance de este documento es preparar una decisión y una operación futura limitada; no autoriza upload, despliegue, cambio de tráfico, merge, token, secreto, Access ni gasto nuevo.
+**Corte de auditoría:** 2026-11-22/23 UTC. **Actor:** ChatGPT, lecturas autorizadas de GitHub y Cloudflare. **Estado:** `PREPARADO / BLOCKED PARA CLOUDFLARE WRITE`. **No existe versión candidata subida o desplegada por T06**. El alcance de este documento es preparar una decisión y una operación futura limitada; no autoriza upload, despliegue, cambio de tráfico, merge, token, secreto, Access ni gasto nuevo.
 
 ## 1. Reconciliación de gates T02–T05
 
