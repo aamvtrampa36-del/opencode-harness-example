@@ -554,7 +554,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         branch: task.branch, baseCommit: task.baseCommit, session: task.session,
         operationId: task.operationId, model: task.model,
         startedAt: task.createdAt, updatedAt: task.updatedAt,
-        status: task.status, error: task.error,
+        status: task.status, error: task.error?.slice(0, 200),
         snapshot: true, source: "supervisor-task-ledger",
         reviewRequired: true, passed: false, verified: false
       },
@@ -724,7 +724,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
       updatedAt: task.updatedAt, asOf: task.updatedAt, source: "supervisor-task-ledger",
       admissionState: slot?.phase ?? "legacy_or_released",
       ...(slot?.effect ? { admissionEffect: slot.effect } : {}),
-      snapshot: true, nativeReconciled: false, toolCalls: null, toolCountsComplete: false,
+      snapshot: true, nativeReconciled: false,
+      pendingTurn: Boolean(task.pendingTurn),
+      cancelAmbiguous: Boolean(task.cancelAmbiguous),
+      toolCalls: null, toolCountsComplete: false,
       reviewRequired: true, passed: false, verified: false
     };
   }
@@ -845,7 +848,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       completedTools: toolCounts?.completedTools ?? null,
       failedTools: toolCounts?.failedTools ?? null,
       toolCountsComplete, toolCountsError, reviewRequired: true,
-      operationReason: reconciled.operationId === job.operationId ? operation?.reason : undefined,
+      operationReason: reconciled.operationId === job.operationId ? operation?.reason?.slice(0, 240) : undefined,
       operationAnswerAvailable: reconciled.operationId === job.operationId && Boolean(operation?.text),
       waitError: reconciled.operationId === job.operationId ? waitError : "STALE_OPERATION_CURSOR",
       passed: false, verified: false };
