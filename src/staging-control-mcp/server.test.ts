@@ -292,7 +292,19 @@ describe("OpenCode staging MCP server", () => {
         status: "unknown", passed: false, verified: false
       });
       supervisor.remoteSupervisorTaskStatusSnapshot = snapshotRpc;
-      expect(defaultSupervisorCalls).toBe(defaultCallsBeforeTaskStatus + 2);
+      supervisor.remoteSupervisorTaskStatusSnapshot = async () => ({
+        id: "a1234567890bcdef", status: "not_found", passed: true, verified: true
+      });
+      const missingNative = await client.callTool({
+        name: "staging_task_status", arguments: { id: "a1234567890bcdef" }
+      });
+      expect(missingNative.isError).toBe(true);
+      expect(JSON.parse(textContent(missingNative))).toMatchObject({
+        status: "unknown", nativeResult: "not_found",
+        error: "SUPERVISOR_NATIVE_NOT_FOUND", passed: false, verified: false
+      });
+      supervisor.remoteSupervisorTaskStatusSnapshot = snapshotRpc;
+      expect(defaultSupervisorCalls).toBe(defaultCallsBeforeTaskStatus + 3);
       expect(customSupervisorCalls).toBe(1);
       const progress = await client.callTool({ name: "staging_task_progress", arguments: { id: "a1234567890bcdef", after: 0 } });
       expect(JSON.parse(textContent(progress))).toMatchObject({ targetWorker: STAGING_WORKER, events: [], nextAfter: 0 });
