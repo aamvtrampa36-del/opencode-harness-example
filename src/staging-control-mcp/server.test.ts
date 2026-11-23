@@ -411,3 +411,63 @@ describe("managed Linux runtime selection", () => {
     expect(commandRequiresBun("echo bun is a runtime")).toBe(false);
   });
 });
+
+
+describe("F0-C10 R2 task artifact MCP projection", () => {
+  test("never copies bytes, internal paths or bearer into the manifest", async () => {
+    const id = "0000000000000001";
+    let captured = 0;
+    const stub = {
+      async supervisedTaskArtifacts(taskId: string) {
+        expect(taskId).toBe(id);
+        return {
+          schema: "opencode.task-output.v1", requestId: id,
+          passed: false, verified: false, reviewRequired: true,
+          artifacts: [{
+            requestId: id, artifactId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            name: "relatório.md", mime: "text/markdown", byteSize: 5,
+            sha256: "1".repeat(64),
+            delivery: {
+              kind: "authenticated-route",
+              path: "/api/supervisor/v1/tasks/" + id +
+                "/artifacts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              expiresAt: 1795380000000
+            }
+          }]
+        };
+      },
+      async supervisedArtifactCapture(taskId: string, payload: unknown) {
+        expect(taskId).toBe(id);
+        expect(payload).toEqual({ path: "dist/report.md", name: "relatório.md", mime: "text/markdown" });
+        captured++;
+        return { requestId: id, artifactId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", byteSize: 5 };
+      }
+    } as unknown as StagingSupervisor;
+    const server = createStagingControlServer({
+      async readHealth() { return Response.json({ status: "ok" }); },
+      supervisor: () => stub
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "artifact-mcp-test", version: "1.0.0" });
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const listed = JSON.parse(textContent(await client.callTool({
+        name: "staging_task_artifacts", arguments: { id }
+      })));
+      expect(listed).toMatchObject({ requestId: id, passed: false, verified: false });
+      expect(JSON.stringify(listed)).not.toContain("dist/report.md");
+      expect(JSON.stringify(listed)).not.toContain("/bundle");
+      expect(JSON.stringify(listed)).not.toContain("Bearer");
+      const capturedResult = JSON.parse(textContent(await client.callTool({
+        name: "staging_capture_task_artifact",
+        arguments: { id, path: "dist/report.md", name: "relatório.md", mime: "text/markdown" }
+      })));
+      expect(capturedResult).toMatchObject({ requestId: id, byteSize: 5 });
+      expect(captured).toBe(1);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
