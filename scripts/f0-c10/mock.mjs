@@ -53,6 +53,15 @@ export async function runMock({ size = 10, fault = null } = {}) {
     if (!(fault === 'historical-red' && index >= 6)) emit('output', { artifact: { kind: task.kind, content, sha256: sha256(content),
       projectId: fault === 'cross-project' && index === 0 ? tasks[Math.min(1, size - 1)].projectId + '-foreign' : task.projectId,
       path: 'tmp/f0-c10/' + task.requestId + '/' + task.kind + '.json' } });
+    // Independent retrieval is simulated separately from the producer's output claim.
+    // In live mode the collector MUST actually fetch bytes through an authenticated path.
+    if (!(fault === 'historical-red' && index >= 6) &&
+        !(fault === 'missing-readback' && index === 0)) {
+      const bytes = fault === 'corrupt-readback' && index === 0 ? '{"tampered":true}' : content;
+      emit('artifact_readback', { retrieval: 'local-fixture-read',
+        artifact: { kind: task.kind, content: bytes, sha256: sha256(bytes),
+          projectId: task.projectId, path: 'tmp/f0-c10/' + task.requestId + '/' + task.kind + '.json' } });
+    }
     if (!(fault === 'historical-red' && index >= 6)) emit('completed', { verified: true });
   }));
   // Preserve per-stream sequence order; cross-stream order is by collection timestamp.
