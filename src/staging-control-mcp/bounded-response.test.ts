@@ -108,6 +108,52 @@ describe("F0-C10/R2-T05 bounded MCP serialization", () => {
     expect(page.status).toBe("unknown");
   });
 
+
+  test("R3 refuses to transport binary task bytes in MCP tool responses", () => {
+    const bytes = new Uint8Array(256 * 1024).fill(71);
+    const page = JSON.parse(boundedMcpJsonText({
+      requestId: "a1234567890bcdef", status: "finished",
+      passed: true, verified: true, artifact: { bytes, mime: "text/plain" }
+    }, 16_000, "opencode-g1-staging", true));
+    expect(page._responseTruncated).toBe(true);
+    expect(page.passed).toBe(false);
+    expect(page.verified).toBe(false);
+    expect(page.artifact.bytes).toBe("[BINARY_PAYLOAD_UNAVAILABLE_OVER_MCP]");
+    expect(JSON.stringify(page).length).toBeLessThan(16_000);
+    const blob = new Blob([bytes]);
+    const second = JSON.parse(boundedMcpJsonText({ blob, passed: true }, 16_000,
+      "opencode-g1-staging", true));
+    expect(second.blob).toBe("[BINARY_PAYLOAD_UNAVAILABLE_OVER_MCP]");
+    expect(second.passed).toBe(false);
+  });
+
+  test("R3 rejects fake native PASS even when no value was truncated", () => {
+    const page = JSON.parse(boundedMcpJsonText({
+      id: "a1234567890bcdef", status: "finished",
+      passed: true, verified: true, toolCountsComplete: true
+    }, 16_000, "opencode-g1-staging", true));
+    expect(page.passed).toBe(false);
+    expect(page.verified).toBe(false);
+    expect(page.reviewRequired).toBe(true);
+    expect(page.status).toBe("finished");
+  });
+
+  test("R3 preserves effect_unknown / turn_submit and quarantines native not_found", () => {
+    const pending = JSON.parse(boundedMcpJsonText({
+      status: "unknown", admissionState: "effect_unknown", admissionEffect: "turn_submit",
+      operationId: "rc-turn-a1234567890bcdef-1111111111111111",
+      passed: true, verified: true
+    }, 16_000, "opencode-g1-staging", true));
+    expect(pending).toMatchObject({
+      status: "unknown", admissionState: "effect_unknown",
+      admissionEffect: "turn_submit", passed: false, verified: false
+    });
+    const lost = JSON.parse(boundedMcpJsonText({status:"not_found",passed:true,verified:true},
+      16_000,"opencode-g1-staging",true));
+    expect(lost).toMatchObject({status:"unknown",nativeResult:"not_found",
+      error:"SUPERVISOR_NATIVE_NOT_FOUND",passed:false,verified:false});
+  });
+
   test("ten interleaved MCP projections do not mix task IDs", async () => {
     const pages=await Promise.all(Array.from({length:10},async(_,i)=>{
       const id=i.toString(16).padStart(16,"0");
