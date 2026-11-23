@@ -197,6 +197,7 @@ Algunos eventos agregados incluyen `remoteSupervisorSessions`, credenciales, `ge
 **Archivos nuevos exclusivos de R2:**
 - `scripts/f0-c10/phase-memory-profile.mjs`: perfilador Node sin red, sin datos reales, sin logs de prompts, con siete fases fijas y medidas `heapUsed`, `rss`, `external`, `arrayBuffers`, duración y delta con GC opcional; dos escenarios idénticos `--red` y `--bounded`.
 - `scripts/f0-c10/phase-memory-profile.test.mjs`: cinco pruebas de secuencia, salida RED, proyección acotada, marcadores de retención, respuesta MCP y memoria de proceso hijo. Ninguna usa el DO compartido.
+- `.github/workflows/f0-c10-r2-t01-memory.yml`: CI autocontenida para R2; solo `node --test` y RED/GREEN. No ejecuta Bun/build Worker, ni comandos de despliegue.
 
 ```sh
 node --test scripts/f0-c10/phase-memory-profile.test.mjs
@@ -220,7 +221,7 @@ Entorno local de la prueba: **Node v22.16.0**, sin `bun` instalado; no se ejecut
 
 **Separación de tres dominios:** `heapUsed/rss` y `arrayBuffers` son del **proceso Node padre**, que **no** es el isolate del Worker; se lanzó un hijo Node separado con Buffer sintético de **4.194.304 bytes**, RSS observado **30.793.728 bytes** (**no** es Cloudflare Container, no responde a DO); la respuesta MCP del fixture contenía **16.444 bytes** en JSON completo y **50 bytes** transmitidos tras clip, con `truncated=true`. **Esta demostración del tamaño de transmisión serializa antes el input en memoria: NO es una corrección segura de la ruta MCP real.** Es intencionadamente una prueba de que `wire bytes` no informa el pico de serialización. El algoritmo de log limitado también deberá tener **presupuesto de bytes de entrada por evento**, no solo contador de eventos.
 
-**Diff R2:** única actualización de `docs/f0-c10/01_DIAGNOSTICO.md` y dos scripts nuevos `scripts/f0-c10/phase-memory-profile{,.test}.mjs`. **No** se altera `src/server.ts`, el MCP, rutas #106/#114, `main`, migraciones ni config. No se implementa una corrección del runtime sin identificar inequívocamente el allocating code. Las mediciones nuevas son **instrumentación de diagnóstico**, no un claim de performance de producción.
+**Diff R2:** única actualización de `docs/f0-c10/01_DIAGNOSTICO.md`, dos scripts nuevos `scripts/f0-c10/phase-memory-profile{,.test}.mjs` y **workflow offline read-only** `.github/workflows/f0-c10-r2-t01-memory.yml` (`push` de la rama R2 y `pull_request` hacia rama T11; 3 minutos máximos, sin credenciales ni Staging). **No** se altera `src/server.ts`, el MCP, rutas #106/#114, `main`, migraciones ni config. No se implementa una corrección del runtime sin identificar inequívocamente el allocating code. Las mediciones nuevas son **instrumentación de diagnóstico**, no un claim de performance de producción.
 
 ### R2.5 Fuentes abiertas fijadas a commit y licencia
 
