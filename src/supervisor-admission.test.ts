@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot, hasSupervisorAdmissionSlot,
-  type StartGrant } from "./supervisor-admission";
+  reconcileSupervisorSubmittedEffect, type StartGrant } from "./supervisor-admission";
 import type { SupervisorTask } from "./supervisor-control";
 
 /** Test double with serialized, rollback-capable durable transactions. */
@@ -160,5 +160,20 @@ describe("F0-C10/R2-T03 durable admission (Cloudflare transaction interface, off
       const receipts = await Promise.all(Array.from({length:count},(_,i)=>at(s,i+1)));
       expect(receipts.filter(x=>x.kind==="granted")).toHaveLength(count);
     }
+  });
+
+  test("native not_found cannot resolve an uncertain submit, done receipt can without replay", async () => {
+    const s = new DurableFake();
+    const a = granted(await at(s,1));
+    await s.put("supervisor:task:"+id(1),{...task(1),operationId:"rc-start-"+id(1)});
+    await begin(s,a,"submit");
+    expect(await reconcileSupervisorSubmittedEffect(s.asDO(),id(1),"rc-start-"+id(1),
+      {status:"unanswered",reason:"not_found"})).toBe(false);
+    expect((await supervisorAdmissionSlot(s.asDO(),id(1)))?.phase).toBe("effect_unknown");
+    expect(await reconcileSupervisorSubmittedEffect(s.asDO(),id(1),"rc-start-"+id(2),
+      {status:"done"})).toBe(false);
+    expect(await reconcileSupervisorSubmittedEffect(s.asDO(),id(1),"rc-start-"+id(1),
+      {status:"done"})).toBe(true);
+    expect((await supervisorAdmissionSlot(s.asDO(),id(1)))?.phase).toBe("running");
   });
 });
