@@ -1,0 +1,73 @@
+{
+  "scope": "Linux local offline only; not Cloudflare Staging",
+  "actor": "ChatGPT (not OpenCode Remote)",
+  "sourceBaseline": "7f0fe32eeba2f6e8c0b0a967f0b15e06b294db4b",
+  "baselineRed": {
+    "stdout": {
+      "testExit": 1,
+      "actualRunnerExit": 1,
+      "expectedRunnerExit": 125,
+      "orphanObservedState": "S (separate targeted reproduction)"
+    },
+    "stderr": {
+      "testExit": 1,
+      "actualRunnerExit": 1,
+      "expectedRunnerExit": 125
+    }
+  },
+  "candidateGreen": {
+    "stdout": {
+      "testExit": 0,
+      "runnerExit": 125,
+      "descendantActive": false
+    },
+    "stderr": {
+      "testExit": 0,
+      "runnerExit": 125,
+      "descendantActive": false
+    }
+  },
+  "existingT06Suite": {
+    "testExit": 0,
+    "status": "PASS_WITH_KNOWN_GAPS",
+    "tests": 9,
+    "tenLocalSyntheticProjects": true,
+    "exitCodes": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "bytesPerLargeStream": 16777216,
+    "retainedBytesPerStream": 32000,
+    "setsidInheritedPipes": "KNOWN GAP: exit125 but surviving child",
+    "setsidRedirectedPipes": "KNOWN GAP: exit0 with surviving child",
+    "memory": {
+      "rssInitialBytes": 57647104,
+      "rssPeakSampledBytes": 93855744,
+      "heapPeakSampledBytes": 11944120,
+      "elapsedMs": 22364
+    }
+  },
+  "environment": {
+    "node": "v22.16.0",
+    "timeout": "GNU coreutils 9.7",
+    "bunLocal": false
+  },
+  "limits": [
+    "no cleanup guarantee across setsid",
+    "no Cloudflare Container runtime tested",
+    "no causal Worker memory evidence",
+    "RPC cancellation still not explicitly propagated"
+  ],
+  "remoteTaskStarts": 0,
+  "containerStageCommands": 0,
+  "tenConcurrentLiveTasks": 0,
+  "monetaryCost": "not measured"
+}
