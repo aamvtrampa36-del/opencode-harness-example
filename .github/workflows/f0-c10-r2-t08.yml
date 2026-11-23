@@ -1,0 +1,40 @@
+name: F0-C10 R2 T08 isolated validation
+
+on:
+  push:
+    branches:
+      - f0-c10/r2-t08-20261122
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: f0-c10-r2-t08-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact head
+        uses: actions/checkout@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install frozen dependencies
+        run: bun install --frozen-lockfile
+      - name: GitHub gate and conflict tests
+        run: bun test src/github-publication-gate.test.ts src/github-pr-conflicts.test.ts src/github.test.ts
+      - name: All unit tests
+        run: bun test
+      - name: Preview server
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build Worker and web
+        run: bun run build
+      - name: Security invariants
+        run: bun scripts/check-invariants.mjs

@@ -108,3 +108,86 @@ Lectura remota: `staging_status=ok`, `supervisor.ready=true`, `supervisedSession
 **EVIDENCIA:** SHA base y archivos exactos, PR draft de T08, pruebas Bun añadidas (ejecución CI aún por verificar), simulación local 8/8 y antecedentes de issue #90.  
 **BLOQUEANTE:** lease global/fencing no implementados ni ejercitados, CI del HEAD aún por comprobar al momento de redactar, sin reserva/corte de coste para un nuevo OpenCode Remote.  
 **PRÓXIMA ACCIÓN:** verificar protecciones GitHub mediante un lector con permiso administrativo autorizado; verificar CI de la PR draft y corregir únicamente los defectos del candidato en esta rama si aparecen; en un lote separado coordinar arbitraje atómico real y prueba dos escritores → diez escritores sin autorizar merge ni deploy automáticamente.
+
+
+---
+
+# R2-T08 — Publicación idempotente con journal durable (continuación)
+
+**Autoría:** ChatGPT mediante GitHub; **OpenCode Remote: NO START**. **Fuente R2:** PR [#126](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/126), base de rama de T08 `1268ba22f26330d619b046fcf551ca846cb69d0f` (PR draft/unmerged); plan R2 en [#127](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/127). Esta sección no sustituye las pruebas históricas del informe superior. **Estado: CANDIDATO / NO RUNTIME PASS**.
+
+## R2.1 Contrato de seguridad y SHA
+
+- **`branch`:** `POST /git/refs` tiene unicidad del nombre de referencia, pero no crea un lease reusable. El supervisor `ensureSupervisorBranch` reconsulta la misma SHA tras colisión de creación, rechaza nueva base, no force-push.
+- **`write` completo:** `PUT /contents` usa SHA de blob actual de archivo, no CAS del HEAD completo; retorno perdido se reconcilia por lectura exacta del contenido de *esa rama*. Distintos escritores sobre la **misma** rama todavía requieren un solo dueño. Si la respuesta está perdida y otro contenido fue publicado, no reinterpretar la diferencia como permiso para volver a escribir sin journal.
+- **`write` reemplazo:** exige `expectedHead`, construye commit hijo, `PATCH /git/refs` con `force:false`. Esto rechaza actualizaciones **no fast-forward**; no admite parámetro REST atómico `expected_old_sha`. El patrón `GET HEAD → PATCH` no es CAS general y no bloquea otros hijos por sí solo.
+- **`pr`:** actual preflight comprueba refs, paths (incluidos renames), PR abiertas y vuelve a leer SHA; no es transacción con `POST /pulls`. GitHub REST no ofrece una clave idempotente de PR documentada. Reintentar un POST tras `503` o respuesta perdida es peligroso; una lista temporalmente vacía no autoriza repetir.
+- **Permisos:** `GitHubBridge` verifica propietario y allowlist, `opencode/*`, rutas protegidas, tamaños y modo del agente; `OpenCodeAgent.enforceSessionScope` vincula `sessionID`, repo y rama de `requestId` antes de la herramienta. Plan/Review solo lectura. El token vive en Secrets/Settings del Worker, nunca en Linux. Estas reglas NO cubren tokens GitHub externos ni los controles de merge; en lectura anterior `rulesets=[]` y protección de `main` inaccesible 403. No se alteraron reglas ni permisos.
+
+**Matriz R2 (sin falsos positivos):**
+
+| Efecto | Precisión posible | Reparación implementada / pendiente |
+| --- | --- | --- |
+| Crear rama determinista | Unicidad de ref + GET readback | Existente, no global mutex |
+| Actualizar un archivo con SHA de blob | Conflicto de versión de archivo, no todo HEAD | Existente; requiere único dueño de rama |
+| Commit hijo y PATCH `force:false` | Fast-forward, no expected SHA CAS | Existente, requiere scope + head pin |
+| Abrir PR tras lista/compare | No atómico: dos POST pueden ganar | **Nuevo gate opcional** para serializar base |
+| PR POST con respuesta perdida | Estado externo puede ser `unknown` | **Nuevo journal: no segundo POST**; reconciliación solo GET |
+| Timeout/crash entre preflight y POST | Si ya se marcó intento, efecto es incierto | `unknown` durable; sin TTL/retry ciego |
+| Otro escritor tras `unknown` | Nunca conceder exclusión concurrente | Bloqueado hasta recibo verificado o resolución autorizada |
+| Staging real actual | Puente aún no conectado al gate | **NO GARANTÍA LIVE; NO DEPLOY** |
+
+## R2.2 Implementación candidata
+
+**Archivos nuevos/actualizados en la rama exclusiva R2:**
+
+- `src/github-publication-gate.ts`: interfaz de almacenamiento transaccional y `GitHubPublicationGate.run()`, con scope `SHA256(repo,base)`, huella del payload, `generation` monótono y estados `free → preflight → unknown → free`. Mientras haya `preflight` o `unknown`, la transacción rechaza cualquier otro propietario. Solo un recibo verificado autoriza liberar `unknown`.
+- `src/github.ts`: `pr` pasa por el gate **únicamente si está inyectado**. Antes de enviar `POST`, persiste `unknown` y SHA base/head, dentro de una transacción; la reconciliación en la repetición de la misma intención usa únicamente `GET /pulls?state=all&head=...&base=...` y exige identidad exacta. Si faltan datos, difieren SHA/payload/branch/fork o hay resultados ambiguos, **no reenvía POST**. Existe un parámetro `requirePublicationGate` optativo que falla cerrado para ramas `opencode/staging-<16hex>` si el gate falta. **T03 debe activarlo tras conectar el almacén compartido, y T11 revalidar compatibilidad.** El bridge conserva su API histórica para otros clientes.
+- `src/github-publication-gate.test.ts`: almacén transaccional de mocks compartido entre instancias de bridge, dos escritores rivales con barrera, diez branches, HEAD movido, POST remoto exitoso + 503 perdido, POST 503 sin efecto observable, payload divergente, escape de repo/main y strict fail-closed.
+
+**Fencing exacto:** `generation` y `owner` se validan transaccionalmente antes de marcar el intento. Después de `markEffect()`, el slot queda **`unknown` persistente** *antes* del POST GitHub. No hay expiración automática, porque vencimiento por reloj no puede invalidar un HTTP POST ya enviado. Un escritor antiguo no puede adquirir una nueva generación por encima de un `unknown`. El gate serializa operaciones solo entre clientes que utilizan **el mismo almacén durable**. Un wrapper almacenado en memoria de cada Worker **NO** basta. Si alguien escribe a GitHub sin el gate, la garantía de exclusión no aplica.
+
+**Conservadurismo deliberado:** si el proceso muere en `preflight` antes de publicar, la reserva puede bloquear nuevas PR hasta recuperación del propietario. No hay borrado manual ni liberación automática implementados en este candidato. Si el proceso muere en `unknown`, la misma huella solo puede ejecutar un GET de reconciliación; un resultado negativo del GET deja `unknown`, porque una lectura no establece que el POST no se haya completado. Esto sacrifica disponibilidad puntual, no integridad.
+
+**Efectos fuera del gate:** `branch` y `write` siguen protegidos por scopes y guardas actuales, pero **no** pasan todavía por esta exclusión compartida. Para garantizar escrituras de dos sesiones a la **misma rama** se necesita T03: vincular `requestId → rama` a un único writer y, si es necesario, incluir todas las mutaciones de rama en una sección exclusiva; de lo contrario el contrato de PR solo garantiza exclusión del paso PR, no la totalidad `branch → commit → PR`.
+
+## R2.3 Dependencia explícita de T03 — NO conectada aún
+
+T03 conserva la propiedad de la admisión de tareas, su journal, límites de capacidad y budget; T08 no añade un segundo scheduler de agentes ni nuevos bindings. T03 debe suministrar una transacción `transaction(get/put)` **desde una identidad Durable Object común para todos los writers del mismo repo/base**, preferentemente el supervisor ya compartido mientras siga siendo la autoridad. Instanciar un nuevo `GitHubPublicationGate` por petición está permitido **solo si todos apuntan al mismo storage durable**, no al storage de DO distintos. Debe inyectarse en el constructor de `GitHubBridge` y habilitar `requirePublicationGate=true` para Staging cuando la compatibilidad y la recuperación estén verificadas. No alterar el plan R2 o la rama #126 desde T08.
+
+T03/T04 deben especificar recuperación administrativa reversible de `preflight` abandonado, demostración de que no hay writer vivo y reconciliación `unknown` sin saltar el fencing; nunca liberar `unknown` mediante TTL. T11 integrará esta interfaz con #126 y verificará DI/scope, regresiones, coste y E2E. Mientras falta la inyección, **esta implementación está preparada pero no operativa en Staging**, y el preflight legado conserva la carrera.
+
+## R2.4 Negativos, criterios de aceptación y pruebas
+
+Correr `bun test src/github-publication-gate.test.ts src/github-pr-conflicts.test.ts src/github.test.ts`, `bun run typecheck`, `bun run build`, `bun scripts/check-invariants.mjs` en el HEAD de esta PR. La CI no prueba transacciones reales de Cloudflare: `TransactionalStore` es un simulador con cola serial. No se publican diez PR reales: las pruebas son HTTP fake y, en la primera ronda, Git worktrees locales.
+
+**Aceptación offline:** segundo escritor no hace POST mientras primero ocupa reserva; tras PR A, B con path solapado se rechaza; diez rutas disjuntas producen diez recibos sintéticos separados; HEAD movido bloquea; respuesta 503 después de POST exitoso concilia exactamente un recibo y un POST; respuesta 503 sin evidencia deja `unknown`; payload distinto se bloquea; fallo de permiso no toca API. **Aún no es aceptación integral de diez agentes activos.**
+
+**STOP:** no usar `unknown` como `failed` para reiniciar, no auto expirar efectos, no reintentar POST a ciegas, no introducir cambios en `main`, reglas, ramas ajenas, Workers, secretos ni Producción. No inferencia, Staging Remote con efectos, merge o deploy en este lote.
+
+## R2.5 Implementaciones externas verificadas (sin código copiado)
+
+- **Aider:** fuente [`aider/repo.py` en commit `5dc9490bb35f9729ef2c95d00a19ccd30c26339c`](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/repo.py), licencia **Apache-2.0** ([repositorio](https://github.com/Aider-AI/aider)). Aprende trazabilidad de commits/ediciones, **no** promueve su Git local a mutex distribuido.
+- **SWE-agent:** [configuración y checkout `sweagent/environment/repo.py` en `3ea751c087f32b16e039a2233dd6eefecef325d5`](https://github.com/SWE-agent/SWE-agent/blob/3ea751c087f32b16e039a2233dd6eefecef325d5/sweagent/environment/repo.py), licencia **MIT** ([LICENSE](https://github.com/SWE-agent/SWE-agent/blob/3ea751c087f32b16e039a2233dd6eefecef325d5/LICENSE)). Proporciona contexto reproducible por `base_commit`; tampoco arbitra `POST /pulls` externo.
+- **OpenHands SDK:** [`openhands-agent-server/openhands/agent_server/event_service.py` en `ebec01b3893696c2f5454762eb44796c71bb391a`](https://github.com/OpenHands/software-agent-sdk/blob/ebec01b3893696c2f5454762eb44796c71bb391a/openhands-agent-server/openhands/agent_server/event_service.py), licencia **MIT** ([repositorio](https://github.com/OpenHands/software-agent-sdk)). Se observó `ConversationLease` con `generation`: patrón comparable para eventos, **no** prueba de fencing GitHub REST.
+- **GitHub:** [REST Git references](https://docs.github.com/en/rest/git/refs?apiVersion=2022-11-28) (force:false = fast-forward), [REST Pull requests](https://docs.github.com/en/rest/pulls/pulls?apiVersion=2022-11-28) (sin idempotency-key para create PR documentada), [GitHub Contents](https://docs.github.com/en/rest/repos/contents?apiVersion=2022-11-28) (`sha` del archivo). Un `git update-ref <new> <old>` local es CAS para ese repositorio, pero **no se trasladó** a GitHub REST.
+
+**Procedencia:** commits de terceros obtenidos del endpoint REST `/commits/main` en la consulta de esta ronda; se conservaron SHA y licencia. Cero imports/copia de código externo.
+
+## R2.6 Cierre técnico de esta ronda
+
+**RESULTADO:** candidato con journal durable y exclusión de publicación opcional, no activado ni desplegado.  
+**EVIDENCIA:** commits/diff de rama R2, prueba RED de carrera previa, nuevos tests y CI del HEAD (ver PR draft para estado final).  
+**BLOQUEANTE:** inyección de storage de DO común + strict mode + recuperación de `unknown`/T03; aún sin prueba E2E de Cloudflare ni control de coste.  
+**PRÓXIMA ACCIÓN:** integrar interfaz con T03 en lote T11 y ejecutar test de dos writers en Staging únicamente tras permiso/preflight de gastos, luego escalar a diez.
+
+
+## R2.7 Reconciliación con la PR paralela #130 y validación exacta
+
+Tras preparar este candidato se observó [PR #130](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/130), otra rama R2-T08 **draft** partiendo de la misma #126. No se editó esa rama ni su PR. Su cambio complementario consistía en reconciliar `PATCH /git/refs` de `replaceExact` tras error ambiguo; se incorporó en **esta rama R2 exclusiva** una versión focalizada: al producirse error de PATCH realiza un solo GET de ref, devuelve `reconciled:true` solo si HEAD es exactamente el commit deseado, y en cualquier otro caso `GITHUB_REF_UPDATE_UNKNOWN` **sin segundo PATCH**. Dos casos sintéticos nuevos prueban aplicado/no aplicado.
+
+Las implementaciones de arbitraje de #130 y #131 **son alternativas**, no deben fusionarse las dos ni duplicar contratos de `GitHubPrPublicationGate` y `GitHubPublicationGate`. Esta PR #131 aporta una clase con contrato de almacén transaccional y estado `unknown`; #130 aporta un *seam* de interfaz más pequeño, ambos pendientes de inyección T03. T11 debe elegir la integración mínima compatible, conservar las pruebas negativas y no elevar los dos schedulers a producción.
+
+Para que CI corra sobre la PR R2 **basada en #126** (base no incluida en los filtros de `.github/workflows/ci.yml`), la rama añade **solo a la rama propia** `.github/workflows/f0-c10-r2-t08.yml`: workflow temporal de `push` que reproduce Bun, preview, typecheck, build e invariantes **sin despliegue**. T11 debe excluir este workflow temporal de la integración final o decidir su mantenimiento por separado. La creación de un workflow en una rama de revisión no altera los workflows activos de main/Staging. El SHA exacto y la ejecución final están en la PR draft #131; un workflow cancelado por el siguiente push no es un fallo de código.
+
+**Dependencia no resuelta:** tanto #130 como #131 dejan el puente en modo legacy sin cableado a storage durable común; **no existe todavía exclusión live**. El siguiente gate técnico no es generar otra PR de T08 sino integración T03/T11 con pruebas de recuperación real y permisos.
