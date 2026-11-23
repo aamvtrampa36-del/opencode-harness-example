@@ -190,6 +190,11 @@ export async function reconcileSupervisorSubmittedEffect(
 /** Turn arbitration is task-local, but it cannot overtake an unsettled
  * initial T03 external effect. Legacy tasks without a slot retain their
  * existing continuation behavior; an active slot must be fully running. */
-export function supervisorAdmissionAllowsContinuation(slot: AdmissionSlot | undefined): boolean {
-  return slot === undefined || slot.phase === "running";
+export function supervisorAdmissionAllowsContinuation(
+  slot: AdmissionSlot | undefined, managedByAdmission = false
+): boolean {
+  // A T03-managed task whose terminal slot was reclaimed must not start
+  // a new turn without re-reserving global capacity. Legacy no-slot tasks
+  // retain previous behavior until migrated under an explicit policy.
+  return slot?.phase === "running" || (slot === undefined && !managedByAdmission);
 }
