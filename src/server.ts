@@ -580,17 +580,29 @@ export class OpenCodeAgent extends DurableObject<Env> {
       // fails. Unknown counts are not zeros and must not yield a false PASS.
       toolCountsError = error instanceof Error ? error.message.slice(0, 200) : "SUPERVISOR_METRICS_UNAVAILABLE";
     }
-    const status = classifySupervisorOperation(job, busy, operation);
-    const nextError = operation?.status === "unanswered"
-      ? operation.reason?.slice(0, 240)
-      : operation?.status === "done" ? undefined : job.error;
-    if (status !== job.status || nextError !== job.error) {
-      job.status = status;
-      job.error = nextError;
-      job.updatedAt = Date.now();
-      await this.ctx.storage.put(supervisorTaskKey(id), job);
-    }
-    return { ...base, updatedAt: job.updatedAt, status, error: job.error,
+    // The read may have started before a continue/cancel committed. Avoid a
+    // stale status write reverting the latest operation cursor or cancel intent.
+    const reconciled = await this.ctx.storage.transaction(async tx => {
+      const fresh = await tx.get<SupervisorTask>(supervisorTaskKey(id));
+      if (!fresh) throw new Error("Tarea del supervisor inexistente");
+      if (!r2StatusWriteAllowed(fresh, job.operationId)) return fresh;
+      let status = classifySupervisorOperation(fresh, busy, operation);
+      if (status === "cancelled" &&
+          (!r2CancelledByReceipt(fresh, job.operationId!, operation) || fresh.cancelAmbiguous)) {
+        status = "unknown"; // no false terminal for an ambiguous concurrent steer
+      }
+      if (fresh.cancelAmbiguous && status === "finished") status = "unknown";
+      const nextError = operation?.status === "unanswered"
+        ? operation.reason?.slice(0, 240)
+        : operation?.status === "done" ? undefined : fresh.error;
+      if (status === fresh.status && nextError === fresh.error) return fresh;
+      const next: SupervisorTask = { ...fresh, status, error: nextError,
+        revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
+      await tx.put(supervisorTaskKey(id), next);
+      return next;
+    });
+    return { ...base, operationId: reconciled.operationId, updatedAt: reconciled.updatedAt,
+      status: reconciled.status, error: reconciled.error,
       toolCalls: toolCounts?.toolCalls ?? null,
       completedTools: toolCounts?.completedTools ?? null,
       failedTools: toolCounts?.failedTools ?? null,
