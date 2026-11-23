@@ -17,6 +17,7 @@ import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
 import { collectSupervisorDirectory, supervisorTaskCount } from "./supervisor-directory";
 import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
+import { projectSupervisorProgress } from "./supervisor-progress";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
 import { createDynamicMcpHost } from "./dynamic-mcp-bridge";
@@ -523,25 +524,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
     this.assertStagingRemote();
     if (!Number.isSafeInteger(after) || after < 0) throw new Error("Cursor de eventos inválido");
     const task = await this.supervisedRecord(id);
-    if (!task.session) return { taskId: id, events: [], nextAfter: after, status: task.status };
-    const events: Array<{ seq?: number; type: string }> = [];
-    let nextAfter = after;
-    let truncated = false;
-    for await (const value of this.harness.session(task.session).log({ after, follow: false })) {
-      const event = value as unknown as Record<string, unknown>;
-      const durable = event.durable && typeof event.durable === "object"
-        ? event.durable as Record<string, unknown> : {};
-      const data = event.data && typeof event.data === "object"
-        ? event.data as Record<string, unknown> : {};
-      const eventType = String(event.type ?? data.type ?? "event").slice(0, 100);
-      if (/reasoning/i.test(eventType)) continue;
-      const rawSeq = durable.seq ?? event.seq;
-      const seq = typeof rawSeq === "number" && Number.isSafeInteger(rawSeq) ? rawSeq : undefined;
-      if (seq !== undefined) nextAfter = Math.max(nextAfter, seq);
-      if (events.length >= 100) { truncated = true; break; }
-      events.push({ ...(seq !== undefined ? { seq } : {}), type: eventType });
-    }
-    return { taskId: id, session: task.session, status: task.status, events, nextAfter, truncated };
+    if (!task.session) return { taskId: id, events: [], nextAfter: after,
+      status: task.status, truncated: false, gapDetected: false, scanned: 0 };
+    // Reads at most 128 raw records; filtered reasoning records also advance
+    // the durable cursor. No history() call or post-hoc transcript slicing.
+    const page = await projectSupervisorProgress(
+      this.harness.session(task.session).log({ after, follow: false }), after);
+    return { taskId: id, session: task.session, status: task.status, ...page };
   }
 
   async cancelSupervisedTask(id: string): Promise<unknown> {
