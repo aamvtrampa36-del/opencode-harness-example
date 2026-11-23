@@ -1,4 +1,5 @@
-import type { GitHubPrPublicationGate, GitHubPrPublicationScope, GitHubPrPublicationPermit } from "./github";
+import type { GitHubPrPublicationGate, GitHubPrPublicationScope, GitHubPrPublicationPermit,
+  GitHubPrPublicationProof } from "./github";
 
 /**
  * R2-T08: transactional publication gate for the SINGLE existing supervisor DO.
@@ -15,13 +16,15 @@ type Active = {
   generation: number;
   deadline: number;
   phase: Phase;
+  /** Immutable reviewed commit identity, written atomically BEFORE POST. */
+  proof?: GitHubPrPublicationProof;
 };
 type Ledger = { version: 1; generation: number; active?: Active };
 type Receipt = {
   version: 1; intentHash: string; repo: string; base: string; branch: string;
   number: number; url: string; headSha: string; baseSha: string; draft: true;
 };
-type Claimed = { retryOnly: boolean; token: string; generation: number };
+type Claimed = { retryOnly: boolean; token: string; generation: number; proof?: GitHubPrPublicationProof };
 const PREFIX = "github:pr-publisher:v1:";
 const TTL_MS = 60_000;
 const SHA = /^[a-f0-9]{40}$/i;
@@ -40,7 +43,8 @@ function readLedger(value: unknown): Ledger {
   const a = entry.active;
   if (a && (!HASH.test(a.intentHash) || !/^[0-9a-f-]{36}$/i.test(a.token) ||
     !Number.isSafeInteger(a.generation) || a.generation < 1 ||
-    !Number.isSafeInteger(a.deadline) || !["reserved", "publishing", "unknown"].includes(a.phase)))
+    !Number.isSafeInteger(a.deadline) || !["reserved", "publishing", "unknown"].includes(a.phase) ||
+    (a.proof !== undefined && (!a.proof || !SHA.test(a.proof.headSha) || !SHA.test(a.proof.baseSha)))))
     throw Error("PR_LEDGER_INVALID");
   return entry as Ledger;
 }
@@ -128,12 +132,13 @@ export class DurableGitHubPublicationGate implements GitHubPrPublicationGate {
         if (active.phase !== "reserved") {
           if (active.intentHash !== intentHash)
             throw Error("PR_PUBLICATION_BUSY_UNKNOWN");
-          return { retryOnly: true, token: "", generation: active.generation };
+          return { retryOnly: true, token: "", generation: active.generation, proof: active.proof };
         }
         if (active.deadline > now) throw Error("PR_PUBLICATION_BUSY");
         // Only a reservation with NO beginExternalEffect can expire.
       }
-      if (receipt) return { retryOnly: true, token: "", generation: ledger.generation };
+      if (receipt) return { retryOnly: true, token: "", generation: ledger.generation,
+        proof: { baseSha: receipt.baseSha, headSha: receipt.headSha } };
       const generation = ledger.generation + 1;
       if (!Number.isSafeInteger(generation)) throw Error("PR_LEDGER_EPOCH_EXHAUSTED");
       const token = crypto.randomUUID();
@@ -146,8 +151,11 @@ export class DurableGitHubPublicationGate implements GitHubPrPublicationGate {
     const permit: GitHubPrPublicationPermit = {
       fencingToken: claim.token,
       retryOnly: claim.retryOnly,
-      beginExternalEffect: async () => {
+      expectedProof: claim.proof,
+      beginExternalEffect: async proof => {
         if (claim.retryOnly) throw Error("PR_PUBLISH_UNKNOWN");
+        if (!proof || !SHA.test(proof.baseSha) || !SHA.test(proof.headSha))
+          throw Error("PR_PUBLICATION_PROOF_INVALID");
         await this.storage.transaction(async tx => {
           // Cancellation/branch ownership may have changed during HTTP preflight.
           // Check within the same durable tx as the publishing marker.
@@ -159,7 +167,8 @@ export class DurableGitHubPublicationGate implements GitHubPrPublicationGate {
             a.deadline <= this.clock())
             throw Error("PR_PUBLICATION_FENCE_REJECTED");
           a.phase = "publishing";
-          await tx.put(key, ledger); // write-ahead before POST
+          a.proof = { baseSha: proof.baseSha.toLowerCase(), headSha: proof.headSha.toLowerCase() };
+          await tx.put(key, ledger); // write-ahead commit identity BEFORE POST
         });
       }
     };
@@ -177,6 +186,10 @@ export class DurableGitHubPublicationGate implements GitHubPrPublicationGate {
             (!claim.retryOnly && (ledger.active.token !== claim.token ||
                ledger.active.generation !== claim.generation)))
             throw Error("PR_PUBLICATION_FENCE_REJECTED");
+          const pinned = ledger.active.proof;
+          if (!pinned || pinned.headSha !== receipt.headSha ||
+              pinned.baseSha !== receipt.baseSha)
+            throw Error("PR_PUBLICATION_HEAD_CHANGED");
           delete ledger.active;
           await tx.put(key, ledger);
         } else if (!existing) {
