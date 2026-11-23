@@ -1,6 +1,6 @@
 import {describe, expect, test} from "bun:test";
 import {GitHubBridge, OPENCODE_STAGING_BASE} from "./github";
-import {DurableGitHubPublicationGate} from "./github-publication-durable";
+import {DurableGitHubPublicationGate, assertSupervisedPublicationScope} from "./github-publication-durable";
 
 const repo="aamvtrampa36-del/opencode-harness-example";
 const api="/repos/"+repo;
@@ -247,5 +247,43 @@ describe("R3-T08 stateful branch/commit/PR writer isolation (no GitHub network)"
       path:"safe.txt",content:"hi"})).rejects.toThrow("authorized GitHub account");
     expect(g.trace).toHaveLength(0);
     expect(g.branchCreates+g.filePuts+g.prPosts).toBe(0);
+  });
+});
+
+describe("R3-T08 conflict semantics and cross-owner rejection",()=>{
+  test("two independent branches modifying the same filename keep blobs but second PR is rejected",async()=>{
+    const s=new TxStorage(),g=new StatefulGitHub(),path="docs/shared/output.json";
+    const a=branch(31),b=branch(32);
+    await Promise.all([a,b].map(name=>client(s,g).ensureSupervisorBranch(repo,name)));
+    await Promise.all([[a,"producer A"],[b,"producer B"]].map(([name,content])=>
+      client(s,g).execute({action:"write",repo,branch:name,path,content})));
+    expect(g.contents.get(a+"::"+path)?.text).toBe("producer A");
+    expect(g.contents.get(b+"::"+path)?.text).toBe("producer B");
+    expect(g.filePuts).toBe(2);
+    expect(g.commitEffects).toBe(2);
+    await client(s,g).execute({action:"pr",repo,branch:a,title:"Writer A"});
+    await expect(client(s,g).execute({action:"pr",repo,branch:b,title:"Writer B"}))
+      .rejects.toThrow("PR_WRITE_SCOPE_CONFLICT");
+    expect(g.prPosts).toBe(1);
+    expect(g.prs).toHaveLength(1);
+    expect(g.prs[0]?.files).toEqual([path]);
+  });
+  test("supervisor denies foreign session/task/project/branch before publication",()=>{
+    const id="0000000000000029",ownerBranch="opencode/staging-"+id;
+    const task={id,repository:repo,branch:ownerBranch,project:"supervised-"+id,
+      session:"ses_owner",status:"running"};
+    const input={repo,branch:ownerBranch,action:"pr"};
+    expect(()=>assertSupervisedPublicationScope(input,"ses_owner",task)).not.toThrow();
+    expect(()=>assertSupervisedPublicationScope(input,"ses_foreign",task))
+      .toThrow("PR_PUBLICATION_SESSION_SCOPE_DENIED");
+    expect(()=>assertSupervisedPublicationScope({...input,branch:branch(30)},"ses_owner",task))
+      .toThrow("PR_PUBLICATION_SESSION_SCOPE_DENIED");
+    expect(()=>assertSupervisedPublicationScope(input,"ses_owner",
+      {...task,project:"supervised-another"}))
+      .toThrow("PR_PUBLICATION_SESSION_SCOPE_DENIED");
+    expect(()=>assertSupervisedPublicationScope({...input,repo:"aamvtrampa36-del/another"},"ses_owner",task))
+      .toThrow("PR_PUBLICATION_SESSION_SCOPE_DENIED");
+    expect(()=>assertSupervisedPublicationScope(input,"ses_owner",{...task,status:"cancelled"}))
+      .toThrow("PR_PUBLICATION_SESSION_SCOPE_DENIED");
   });
 });
