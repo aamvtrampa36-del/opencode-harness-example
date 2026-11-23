@@ -46,6 +46,10 @@ test('ten real loopback GET requests recover each matching task bytes despite sh
    const a=[...fx.records.values()].find(x=>x.requestId===id(n));
    const response=await fetch(new URL(artifactView(a).delivery.path,fx.base),{headers:{Authorization:`Bearer ${TOKEN}`},redirect:'manual'});
    assert.equal(response.status,200);
+   assert.match(response.headers.get('content-disposition'),/^attachment;/i);
+   assert.equal(response.headers.get('x-content-type-options'),'nosniff');
+   assert.equal(response.headers.get('content-length'),String(a.byteSize));
+   assert.equal(response.headers.get('content-type'),'text/plain; charset=utf-8');
    const received=new Uint8Array(await response.arrayBuffer());
    assert.equal(Buffer.from(received).toString(),'verified-task-'+n);
    assert.equal(createHash('sha256').update(received).digest('hex'),a.sha256);

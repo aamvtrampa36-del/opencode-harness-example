@@ -1,0 +1,37 @@
+name: F0-C10 R3 T09 source/bytes/security (offline only)
+on:
+  push:
+    branches: [f0-c10/r3-t09-artifact-isolation-20261123]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: f0-c10-r3-t09-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - name: R3 T09 real-byte reader, ACL negatives, loopback GET and MCP
+        run: bun test src/task-artifact-source.test.mjs src/task-output-artifacts.test.mjs src/task-artifact-http.test.mjs src/staging-control-mcp/server.test.ts
+      - name: Original T09 download contract
+        run: node --test docs/f0-c10/fixtures/09-output-contract.test.mjs
+      - name: Complete Bun unit regression
+        run: bun test
+      - name: Static preview regression
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build Workers and web client (NO DEPLOY)
+        run: bun run build
+      - name: Security and project invariants
+        run: bun scripts/check-invariants.mjs
