@@ -183,9 +183,9 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
   if (p95StatusMs === null || p95StatusMs > limits.maxStatusP95Ms) fail('STATUS_P95', p95StatusMs);
   if (mode === 'live') {
     for (const field of ['workerVersion', 'mcpVersion', 'sourceSha', 'gitBaseSha', 'environment', 'leaseId', 'clockSyncMaxSkewMs']) {
-      if (!trace.metadata?.[field]) fail('MISSING_LIVE_PROVENANCE', field);
+      if (trace.metadata?.[field] === undefined || trace.metadata?.[field] === null || trace.metadata?.[field] === '') fail('MISSING_LIVE_PROVENANCE', field);
     }
-    if ((trace.metadata?.clockSyncMaxSkewMs ?? Infinity) > 250) fail('CLOCK_SKEW', trace.metadata?.clockSyncMaxSkewMs);
+    if (!Number.isFinite(trace.metadata?.clockSyncMaxSkewMs) || trace.metadata.clockSyncMaxSkewMs < 0 || trace.metadata.clockSyncMaxSkewMs > 250) fail('CLOCK_SKEW', trace.metadata?.clockSyncMaxSkewMs);
     // Cloudflare samples belong to an isolate, never to an individual task.
     // Do not accept a self-declared memory field from an OpenCode task event.
     const samples = Array.isArray(trace.telemetry) ? trace.telemetry : [];
