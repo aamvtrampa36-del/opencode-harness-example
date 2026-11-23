@@ -591,12 +591,28 @@ export class GitHubBridge {
           encodeURIComponent(source) + "&per_page=100&page=1");
         if (!Array.isArray(existing) || existing.length >= 100)
           throw new Error("PR_PREFLIGHT_INCOMPLETE: open PR list missing or truncated");
+        const desiredBody = (input.body || "").slice(0, 5000);
         for (const item of existing) {
           if (!Number.isSafeInteger(item?.number) || item.number < 1 ||
               item?.base?.ref !== source || typeof item?.head?.ref !== "string")
             throw new Error("PR_PREFLIGHT_INCOMPLETE: untrusted PR identity");
-          if (item.head.ref === branch)
-            throw new Error("PR_ALREADY_OPEN: retrieve the existing PR instead of duplicating");
+          if (item.head.ref === branch) {
+            // A previous POST may have created the PR even if its HTTP reply
+            // was lost. Reconcile only the identical reviewed intent; never
+            // mistake an unrelated PR or fork for the requested operation.
+            const exactIntent = item.head?.repo?.full_name?.toLowerCase() === repo.toLowerCase() &&
+              item.head?.sha?.toLowerCase() === headSha &&
+              item.base?.sha?.toLowerCase() === baseSha &&
+              item.title === input.title &&
+              item.body === desiredBody &&
+              item.draft === true &&
+              typeof item.html_url === "string" && item.html_url.length > 0;
+            if (exactIntent) {
+              return { repo, number: item.number, url: item.html_url, draft: true,
+                base: source, head: branch, headSha, reconciled: true };
+            }
+            throw new Error("PR_ALREADY_OPEN: same branch with different or unverifiable intent");
+          }
         }
         // Only a bounded batch of GitHub diffs enters memory at any time.
         for (let index = 0; index < existing.length; index += 5) {
@@ -621,7 +637,7 @@ export class GitHubBridge {
         if (baseShaNow !== baseSha || headShaNow !== headSha)
           throw new Error("PR_PREFLIGHT_STALE: branch moved during collision preflight");
         const created = await this.api("POST", base + "/pulls", {
-          title: input.title, body: (input.body || "").slice(0, 5000),
+          title: input.title, body: desiredBody,
           head: branch, base: source, draft: true
         });
         return { repo, number: created.number, url: created.html_url, draft: created.draft, base: source, head: branch };
