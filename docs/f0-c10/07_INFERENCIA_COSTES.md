@@ -198,3 +198,8 @@ Preflight vinculante para una futura autorización separada: identificar la ruta
 **BLOQUEANTE:** integración con punto real del SDK por generación; claim/fence duradero T03; persistencia global transaccional; validación de límites efectivos y corte de gasto upstream (AI Gateway account spend-limit disabled, billing spend-policies 403); OOM #90 no resuelto.
 
 **PRÓXIMA ACCIÓN:** T03/T11 integran, con pruebas de fault injection en proveedor simulado y memoria/recuperación bajo el mismo DO, el ledger de inferencia duradero sin otro scheduler. Hasta verificar los cortes reales y obtener lote de despliegue/gasto expresamente autorizado, no ejecutar Remote con efectos ni ensayos 10×.
+
+
+## R2.9 Recibo de PR de revisión
+
+La continuación está publicada como [PR draft #142](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/142) desde una rama exclusiva T07; no introduce cambios en recursos ejecutivos. La CI de la rama debe comprobarse contra su HEAD exacto (no el SHA de #126) y el PASS de sus jobs no prueba integración con un proveedor real.
