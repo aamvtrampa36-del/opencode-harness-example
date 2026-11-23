@@ -146,3 +146,100 @@ Referencias **pinneadas por commit** y licencia verificada directamente en `LICE
 - **Próxima acción útil sin nuevo despliegue:** auditar PR #106 con pruebas de paths de historial y habilitar un perfil/replay *offline* con objetos SDK sintéticos que mida picos por `session.create()`/start/recovery, antes de plantear la integración Stage. Para validar la causa exclusiva faltan percentiles de isolate y spans de fase en un candidato desplegado por **otro lote**.
 
 **Resultado final T01: PARTIAL** — mecanismo de materialización no acotada demostrado y mitigación candidata identificada; causalidad exclusiva del OOM de diez solicitudes, efectividad del fix en Cloudflare y simultaneidad diez activos **NO VERIFICADAS**.
+
+
+---
+
+## R2-T01 — Perfiles sintéticos por fase y nueva correlación (2026-11-22/23 UTC)
+
+**Estado R2: PARTIAL / OFFLINE_PHASE_FIXTURE_PASS / LIVE_ALLOCATOR_UNVERIFIED.** Esta sección continúa el diagnóstico T01 original (PR #116) sin reescribir ni atribuir falsamente sus mediciones a una versión nueva. **Actor R2:** ChatGPT con lecturas GitHub/Cloudflare/Remote y pruebas Node locales; OpenCode no ejecutó tareas. **Rama:** `f0-c10/r2-t01-phase-memory-20261122` creada desde el **HEAD candidato de la PR #126**, `1268ba22f26330d619b046fcf551ca846cb69d0f`, no desde `main`. Destino previsto de la PR R2: rama `f0-c10/t11-integration-20261122` (para no reintroducir los cambios integrados de T02–T11 en el diff). **Sin deploy, merge, secretos, acceso a transcripts ni cambios de datos persistentes.**
+
+### R2.1 Identidad y procedencia comprobadas
+
+- [PR #116](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/116) permanece **open/draft**, HEAD `c86683c19b7e532f176356195c42ce2f4081b3a3`. [PR #126](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/126) **open/draft, sin merge**, HEAD `1268ba22f26330d619b046fcf551ca846cb69d0f`: integración candidata de #106, #114, #120, T01–T10. [#106](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/106) y [#114](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/114) también continúan open/draft; no se duplican sus guardas en código de runtime.
+- Lectura Cloudflare GET deployments en este R2: principal `opencode-g1-staging` continúa en **#374** `3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb`, deployment `36ef84b3-0f99-4dd4-ab8e-c11ee450dd23`, tráfico 100%; MCP en **#19** `196240c0-1052-47b3-aaa7-02cf5baa87f0`, deployment `9fdaf22d-beeb-44a0-ab68-77ecd5745fa1`, 100%. El HEAD #126 **no** está publicado.
+- La ruta GitHub indicada en el encargo, `docs/f0-c10/F0_C10_PLAN_INTEGRAL.md`, devolvió **404** tanto en #126 como en Staging y T01. Se consultó directamente el **archivo adjunto original** `F0_C10_PLAN_INTEGRAL.md` de este proyecto, con propuesta fechada 22-11-2026; **no se afirma que sea el plan actualizado de esa ruta**. La consolidación vigente encontrada en #126 es `docs/f0-c10/11_CONSOLIDACION.md`. [T02](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/1268ba22f26330d619b046fcf551ca846cb69d0f/docs/f0-c10/02_DURABLE_OBJECTS.md) y [T05](https://github.com/aamvtrampa36-del/opencode-harness-example/blob/1268ba22f26330d619b046fcf551ca846cb69d0f/docs/f0-c10/05_REMOTE_MCP.md) son fuentes de coordinación.
+- El [HEAD de #126](https://github.com/aamvtrampa36-del/opencode-harness-example/commit/1268ba22f26330d619b046fcf551ca846cb69d0f) tiene GitHub Actions `45093134038`, `45093134014` y `45093134023` con `completed/success` en lectura. **CI de #126 NO certifica la instrumentación R2 ni despliegue.** CI del HEAD R2 deberá cotejarse por PR/commit después de crear este documento.
+
+### R2.2 Reconstrucción exacta del flujo (fuente #126, no runtime medido)
+
+`src/server.ts` blob `e06b30ef8d11b7945187ff36fc40c39700980a44` de la integración candidata:
+
+| Fase propuesta | Ejecución real del candidato | Qué se podría medir y qué falta |
+|---|---|---|
+| admit | `validateSupervisorStart`, `supervisorFingerprint`, `ctx.storage.transaction` para reserva; lock **por requestId** | elapsed, contadores de reservas y registros, tamaño de índices; no es semáforo global |
+| create/fork | `ensureSupervisorBranch`, `sessionCreationAttempted` persistido, `harness.sessions.create/fork`, `bindSessionScope`, indexación | antes/después SDK, caché de sesiones, bytes de objetos retenidos; `fork` usa `sessions.list()` para verificar el padre |
+| setModel | `handle.setAgent("build")`, `resolveModelSelection`, `handle.setModel` | coste de plugins/SDK/model/provider; no imputar al proveedor sin métricas |
+| submit | `ctx.storage.put(operationId)` antes de `handle.submit(...,whenBusy:"followUp")` | vida de promesas, cola, referencias y materialización de contexto |
+| status | `handle.wait(operationId,AbortSignal 120ms)`, `busy()`, `foldSupervisorToolLog(...,256)` | `wait` no está perfilado; no se usa `history()` en este polling, pero un cursor **por eventos** no limita individualmente un evento gigante |
+| alarm | ciclo de alarma de SDK/DO y eventos internos | telemetría por alarma, memoria previa y número de operaciones cargadas; RPC `alarm` no equivale a causa |
+| recover | journal `sessionCreationAttempted` de #120 y reconciliación conservadora | idempotencia y objetos liberados; `unknown` no puede presentarse como recuperación completa |
+
+**Otras rutas:** `OpenCodeHarness` es campo `readonly` de `OpenCodeAgent`, configurado con `OpenCodeWorkerd.create({storage,plugins:[...]})` y referencia a Workspace, MCP, OpenRouter, WebSockets y callbacks Linux; los proyectos Linux se resuelven por `DevContainer` con nombres distintos. `exportSessionData` de interfaz general **todavía** utiliza `sessions.list()+history()+JSON.stringify` y queda fuera de las guardas de supervisor #106; no se ejecutó ni se presenta como asignador de los starts. Además, `runConnector` puede transportar un `event.transcript` hacia el Container: es una **hipótesis de retención/serialización**, no lectura comprobada en los seis resets. No mutar rutas T05 sin acuerdo de integración.
+
+### R2.3 Observabilidad histórica cotejada, pero sin memoria por fase
+
+Consulta **Cloudflare Observability de solo lectura**: servicio `opencode-g1-staging`, `needle=memory`, intervalo 2026-11-22 18:17–18:21 UTC, máximo 70 eventos. Registra **18 filas** para **6 trazas** `exceededMemory` (una fila evento RPC más líneas de error duplicadas). DO `4ed9d1d2f6d3b9c0da23b0b4986af0cb42b9638797470e49466fdef3ba34243c`; versión #374. Correlacionar por `traceId+timestamp`, no confundir requestId del RPC Cloudflare con el ID supervisor de 16 caracteres.
+
+| UTC | TraceId (prefijo) | RPC final | Wall ms | CPU ms |
+|---|---|---|---:|---:|
+| 18:18:28.906 | `fd73701f5765` | `startSupervisedTask` | 8048 | 2018 |
+| 18:18:40.222 | `4a9a911d62b9` | `startSupervisedTask` | 9632 | 1581 |
+| 18:18:52.101 | `0a08257bc281` | `startSupervisedTask` | 9503 | 65 |
+| 18:19:04.674 | `bf3a7810d085` | `startSupervisedTask` | 10047 | 146 |
+| 18:19:15.744 | `8fa13a7ad993` | `startSupervisedTask` | 9190 | 901 |
+| 18:19:29.377 | `ecded62eb76d` | `startSupervisedTask` | 12181 | 2046 |
+
+Algunos eventos agregados incluyen `remoteSupervisorSessions`, credenciales, `getRemoteMcps`, `connectorSettings` y hooks: **no son prueba de qué método produjo la asignación**. Consulta complementaria en el mismo rango con `needle=supervisor.phase`: **0 eventos**; no hay distribución de bytes por `create/setModel/submit`. El API/plugin no ofreció aquí una serie GraphQL cuantitativa de memoria de isolate, ni muestras de Container. No inferir límites por fase de CPU/wall RPC. La cifra **128 MB** es límite de **isolate**, no memoria disponible por cada DO; métricas del DO ID se obtienen sobre el isolate completo, que puede compartir objetos.
+
+### R2.4 Nuevo instrumento RED/GREEN offline
+
+**Archivos nuevos exclusivos de R2:**
+- `scripts/f0-c10/phase-memory-profile.mjs`: perfilador Node sin red, sin datos reales, sin logs de prompts, con siete fases fijas y medidas `heapUsed`, `rss`, `external`, `arrayBuffers`, duración y delta con GC opcional; dos escenarios idénticos `--red` y `--bounded`.
+- `scripts/f0-c10/phase-memory-profile.test.mjs`: cinco pruebas de secuencia, salida RED, proyección acotada, marcadores de retención, respuesta MCP y memoria de proceso hijo. Ninguna usa el DO compartido.
+
+```sh
+node --test scripts/f0-c10/phase-memory-profile.test.mjs
+node --expose-gc scripts/f0-c10/phase-memory-profile.mjs --red > red.json      # exit 1 esperado
+node --expose-gc scripts/f0-c10/phase-memory-profile.mjs --bounded > green.json # exit 0
+```
+
+Entorno local de la prueba: **Node v22.16.0**, sin `bun` instalado; no se ejecutó `bun test`, `tsc`, build, ni E2E de workerd para R2. **Resultados observados:** tests `5/5 PASS, exit 0`; modo RED `exit 1` por contrato deliberado; modo GREEN `exit 0`. Se modelan seis sesiones con 400 eventos iniciales de 1024 caracteres cada una. **No es la librería real agents@0.33.0**, no implementa Durable Object y no prueba aislamiento físico de diez tareas.
+
+| Fase | RED `retainedHeapDeltaBytes` | GREEN `retainedHeapDeltaBytes` | Interpretación |
+|---|---:|---:|---|
+| admit | -576 | -576 | ruido GC, no inferencia negativa |
+| create/fork | 848824 | 848824 | mismos datos sintéticos |
+| setModel | 1936 | 1936 | modelo ficticio (sin inferencia) |
+| submit | 15192 | 15192 | anexión sintética |
+| status | **4412336** | **6760** | RED serializa todos los eventos y conserva strings; GREEN proyección de últimos 64 metadatos |
+| alarm | 1928 | 1736 | RED retiene closures; GREEN metadatos |
+| recover | 576 | **-863488** | GREEN suelta referencias; no simula storage real |
+
+**No interpretar los deltas GC como consumos absolutos, picos máximos, cargas de Workers AI ni medidas reproducibles byte a byte.** El perfil R2 se ejecutó una vez por modo para la tabla; el heap local varía por GC/JIT. El fixture RED retiene **6 strings de historial, 6 closures y 6 objetos de sesión** tras recuperación; GREEN conserva **0** de esos objetos y lee **384** eventos de metadatos, frente a **2406** inspeccionados en el modelo RED. Es una **causa concreta del comportamiento del fixture**; la atribución en el incidente vivo sigue desconocida.
+
+**Separación de tres dominios:** `heapUsed/rss` y `arrayBuffers` son del **proceso Node padre**, que **no** es el isolate del Worker; se lanzó un hijo Node separado con Buffer sintético de **4.194.304 bytes**, RSS observado **30.793.728 bytes** (**no** es Cloudflare Container, no responde a DO); la respuesta MCP del fixture contenía **16.444 bytes** en JSON completo y **50 bytes** transmitidos tras clip, con `truncated=true`. **Esta demostración del tamaño de transmisión serializa antes el input en memoria: NO es una corrección segura de la ruta MCP real.** Es intencionadamente una prueba de que `wire bytes` no informa el pico de serialización. El algoritmo de log limitado también deberá tener **presupuesto de bytes de entrada por evento**, no solo contador de eventos.
+
+**Diff R2:** única actualización de `docs/f0-c10/01_DIAGNOSTICO.md` y dos scripts nuevos `scripts/f0-c10/phase-memory-profile{,.test}.mjs`. **No** se altera `src/server.ts`, el MCP, rutas #106/#114, `main`, migraciones ni config. No se implementa una corrección del runtime sin identificar inequívocamente el allocating code. Las mediciones nuevas son **instrumentación de diagnóstico**, no un claim de performance de producción.
+
+### R2.5 Fuentes abiertas fijadas a commit y licencia
+
+| Repositorio / archivo y commit exactos | Licencia comprobada | Técnica relevante y límite |
+|---|---|---|
+| [cloudflare/workerd — README](https://github.com/cloudflare/workerd/blob/4756b99d9697dab382c60cafe52447135d6cef98/README.md), `4756b99d9697dab382c60cafe52447135d6cef98` | **Apache-2.0** ([LICENSE](https://github.com/cloudflare/workerd/blob/4756b99d9697dab382c60cafe52447135d6cef98/LICENSE)) | workerd expone runtime de isolates para pruebas de comportamiento, pero el README advierte que **no es sandbox endurecido por sí mismo**; no sustituye los límites/estadísticas del Cloudflare desplegado |
+| [OpenHands SDK — conversation/state.py](https://github.com/OpenHands/software-agent-sdk/blob/ebec01b3893696c2f5454762eb44796c71bb391a/openhands-sdk/openhands/sdk/conversation/state.py) y [event_store.py](https://github.com/OpenHands/software-agent-sdk/blob/ebec01b3893696c2f5454762eb44796c71bb391a/openhands-sdk/openhands/sdk/conversation/event_store.py), `ebec01b3893696c2f5454762eb44796c71bb391a` | **MIT** ([LICENSE](https://github.com/OpenHands/software-agent-sdk/blob/ebec01b3893696c2f5454762eb44796c71bb391a/LICENSE)) | `EventLog` y proyecciones/caché de vistas; `walk_back(...,limit)` ayuda a no reconstruir toda la rama. Pero su `_event_cache` muestra que un cursor limitado **no** prueba ausencia de retención de eventos parseados |
+| [DeepSeek Harness — subprocess-local/README.md](https://github.com/deepseek-ai/deepseek-harness/blob/4b399c39a6d1479cd84ca591b4d7c88e24d38a96/packages/subprocess/subprocess-local/README.md) y [bash-local/README.md](https://github.com/deepseek-ai/deepseek-harness/blob/4b399c39a6d1479cd84ca591b4d7c88e24d38a96/packages/shell/bash-local/README.md), `4b399c39a6d1479cd84ca591b4d7c88e24d38a96` | **MIT** ([LICENSE](https://github.com/deepseek-ai/deepseek-harness/blob/4b399c39a6d1479cd84ca591b4d7c88e24d38a96/LICENSE)) | salida con tail de memoria acotado y spill a archivo; ejecución separada de subprocess. `dsh-bash-local` **no da sandbox** por sí solo. Son ejemplos, no se copió código |
+
+Documentación oficial: [memoria por isolate y filtro DO](https://developers.cloudflare.com/durable-objects/observability/metrics-and-analytics/#memory-usage), [límites Worker](https://developers.cloudflare.com/workers/platform/limits/#memory) y [profiling](https://developers.cloudflare.com/workers/observability/dev-tools/memory-usage/). Sin heap dumps de live con posibles secretos.
+
+### R2.6 Contrato de prueba real pendiente y handoff a T02/T05
+
+- **T02**: instrumentar con autorización posterior la secuencia alrededor de `harness.sessions.create/fork` y `setModel` con número de instancias, estado caliente, conteos de cachés y cuantiles de isolate antes/durante/después. Evitar atribuir memoria de otros DO co-residentes. Si sigue sin margen con rutas acotadas, recién entonces evaluar cambio arquitectónico; no dividir por DO como garantía física.
+- **T05**: proteger **bytes de entrada** y no solo salida para MCP y log; confirmar si `handle.wait`, `runConnector(event.transcript)` o un evento gigante generan más de una copia. La proyección de progreso de #114 limita a 128 eventos, pero no implica que cada objeto tenga cota de bytes. No volver a exponer transcript histórico para medirlo.
+- **T04**: comparar `alarm`/reinicio con journal de `sessionCreationAttempted` sin reintentar creación incierta. Mantener `unknown` cuando falte receipt.
+- **T10**: sólo incorporar esta instrumentación al E2E si está conectada a traces reales, idempotencia y muestras válidas. Una lectura de `busy` o un test Node verde no es diez activos.
+- **Propuesta de telemetría no implementada en runtime:** marcador `supervisor.phase` con nombres fijos, timestamp, duration, resultado y versión/trace pseudonimizados; medir en panel Cloudflare percentiles de **isolate** mientras se correlacionan fases por ventanas estrechas. No loguear payload, IDs sensibles, prompts, transcript ni tokens. Capturar memory actual solo desde API admisible (no inventar `process.memoryUsage()` en workerd).
+
+**Coste/seguridad:** no se hicieron nuevos starts, inferencia ni Containers Cloudflare. Solo consultas de observabilidad y GitHub, tests Node y CI del PR draft. Facturación específica de Cloudflare/GitHub **no medida**; no afirmar US$0. Lease global y límite real de costes para Remote siguen **no verificados**; no emitir tareas pagadas ni `staging_agent_check`. Cualquier merge/deploy necesita lote distinto.
+
+**Criterio de salida R2:** `PARTIAL` — fase que retiene memoria demostrada en el fixture y código para reproducirla, **sin evidencia de allocador exacto en el DO real ni GREEN del runtime**. CI del HEAD de esta rama deberá registrarse al abrir la PR; GitHub Actions puede confirmar tests/compatibilidad de código, no uso real de memoria de Staging. **F0-C10 permanece NOT VERIFIED / NO COMPLETE PASS**.
