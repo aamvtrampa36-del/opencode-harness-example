@@ -11,7 +11,7 @@ const begin = async (ledger, n) => {
   return claimed;
 };
 
-test('10 concurrent independent admissions are durable model entries, FIFO, no duplicate IDs', async () => {
+test('10 concurrent independent admissions yield distinct model records, FIFO, no duplicate IDs', async () => {
   const l = new AdmissionLedger();
   const receipts = await Promise.all(Array.from({ length: 10 }, (_, i) => l.admit(input(i + 1))));
   assert.equal(new Set(receipts.map(r => r.requestId)).size, 10);
@@ -76,6 +76,18 @@ test('OOM between claim and submit yields UNKNOWN, not blind duplicate execution
   assert.equal((await l.claim()).length, 0);
   await assert.rejects(l.reconcile(one.requestId, { operationId: `rc-start-${one.requestId}` }),
     /AUTHORITATIVE_RECEIPT_REQUIRED/);
+});
+
+test('native done receipt alone cannot mark the task verified', async () => {
+  const l = new AdmissionLedger(); const [one] = await begin(l, 1);
+  await l.loseResponseOrRestart(one.requestId);
+  const restored = await l.reconcile(one.requestId,
+    { operationId: `rc-start-${one.requestId}`, completed: true });
+  assert.equal(restored.state, 'running');
+  assert.equal(restored.operationCompleted, true);
+  assert.equal(l.counts().finished, 0);
+  await assert.rejects(l.finish(one.requestId, one.lease, { verified: true }),
+    /VERIFICATION_REQUIRED/);
 });
 
 test('native not_found is not authoritative success and unknown does not auto-expire', async () => {
