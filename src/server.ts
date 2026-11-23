@@ -290,19 +290,34 @@ export class OpenCodeAgent extends DurableObject<Env> {
       );
       await supervisorConfirmExternalEffect(this.ctx.storage, grant, "submit",
         { confirmed: typeof receipt.accepted === "boolean" });
-      job.status = "running";
-      job.error = undefined;
-      job.updatedAt = Date.now();
-      await this.ctx.storage.put(key, job);
-      return { ...this.supervisorTaskReceipt(job, reused), accepted: receipt.accepted };
+      // A late accepted submit must not roll back a cancel/steer that won.
+      const committed = await this.ctx.storage.transaction(async tx => {
+        const fresh = await tx.get<SupervisorTask>(key);
+        if (!fresh) throw new Error("SUPERVISOR_TASK_MISSING_AFTER_SUBMIT");
+        if (fresh.status === "cancel_requested" || fresh.status === "cancelled" ||
+            fresh.pendingTurn || fresh.operationId !== job.operationId) return fresh;
+        const updated: SupervisorTask = { ...fresh, status: "running",
+          error: undefined, revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
+        await tx.put(key, updated);
+        return updated;
+      });
+      return { ...this.supervisorTaskReceipt(committed, reused),
+        accepted: receipt.accepted, confirmed: committed.status !== "cancel_requested" };
     } catch (error) {
       // The durable operation may have been accepted before the RPC failed.
       // Keep the same operationId so a retry can retrieve the original receipt.
-      job.status = "unknown";
-      job.error = error instanceof Error ? error.message.slice(0, 230) : "No se pudo confirmar el envío";
-      job.updatedAt = Date.now();
-      await this.ctx.storage.put(key, job);
-      return this.supervisorTaskReceipt(job, reused);
+      const detail = error instanceof Error ? error.message.slice(0, 230) : "No se pudo confirmar el envío";
+      const committed = await this.ctx.storage.transaction(async tx => {
+        const fresh = await tx.get<SupervisorTask>(key);
+        if (!fresh) throw new Error("SUPERVISOR_TASK_MISSING_AFTER_SUBMIT");
+        if (fresh.status === "cancel_requested" || fresh.status === "cancelled" ||
+            fresh.pendingTurn || fresh.operationId !== job.operationId) return fresh;
+        const updated: SupervisorTask = { ...fresh, status: "unknown",
+          error: detail, revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
+        await tx.put(key, updated);
+        return updated;
+      });
+      return this.supervisorTaskReceipt(committed, reused);
     }
   }
 
