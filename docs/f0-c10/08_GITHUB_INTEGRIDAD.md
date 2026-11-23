@@ -108,3 +108,121 @@ Lectura remota: `staging_status=ok`, `supervisor.ready=true`, `supervisedSession
 **EVIDENCIA:** SHA base y archivos exactos, PR draft de T08, pruebas Bun añadidas (ejecución CI aún por verificar), simulación local 8/8 y antecedentes de issue #90.  
 **BLOQUEANTE:** lease global/fencing no implementados ni ejercitados, CI del HEAD aún por comprobar al momento de redactar, sin reserva/corte de coste para un nuevo OpenCode Remote.  
 **PRÓXIMA ACCIÓN:** verificar protecciones GitHub mediante un lector con permiso administrativo autorizado; verificar CI de la PR draft y corregir únicamente los defectos del candidato en esta rama si aparecen; en un lote separado coordinar arbitraje atómico real y prueba dos escritores → diez escritores sin autorizar merge ni deploy automáticamente.
+
+
+---
+
+## R2-T08 — Contrato de publicación con fencing y respuesta perdida (2026-11-22)
+
+**Continuidad y autoría.** Esta sección pertenece a la ronda 2, construida por ChatGPT en \`f0-c10/r2-t08-github-publication-20261122\`, partiendo de la candidata #126 (base exacta \`1268ba22f26330d619b046fcf551ca846cb69d0f\`). No fue ejecutada por OpenCode Remote. #122 aportó reconciliación de recibo \`POST /pulls\`; #124 aportó el contraejemplo de dos PR superpuestas; #126 integró ambos en una **rama draft aún sin merge ni deployment**. La rama documental R2 #127 contiene \`00_COORDINACION.md\`, \`12_RONDA_2_PROMPTS.md\` y el plan completo R2.
+
+### Decisión técnica y dependencia de T03
+
+Se añadió en \`src/github.ts\` la **interfaz** \`GitHubPrPublicationGate\` (inyección opcional como cuarto parámetro de \`GitHubBridge\`):
+
+- \`withExclusive(intent, execute)\` debe tomar el scope \`(repo, base)\` de forma **atómica entre todas las instancias y Durable Objects**, no con un \`Map\` local, \`busy=false\`, tags, comentarios, consulta GitHub ni lock por \`requestId\`.
+- El intent canónico contiene \`repo, base, branch, title, body\`. **T03 debe añadir al registro server-side** la identidad autenticada \`taskId/sessionId\`, \`head/base SHA\`, hash de payload, generación monótona y token fencing; verificar que nadie pueda proporcionar esos datos desde un modelo.
+- El \`GitHubPrPublicationPermit\` entrega \`fencingToken\`, \`retryOnly\` y \`beginExternalEffect()\`. T03 debe registrar en transacción durable el inicio de publicación y validar el token **antes del POST**. Sólo después \`GitHubBridge\` emitirá \`POST /pulls\`; dentro de una repetición \`retryOnly=true\` no lo emite nunca.
+- Si una respuesta HTTP se pierde tras POST, el registro queda \`unknown/publishing\`, **no se libera por TTL**. La misma intención puede consultar GitHub y recuperar la PR exacta por branch, repositorio de head, base/head SHA, título, cuerpo y \`draft:true\`. Si la PR no aparece, se rechaza \`PR_PUBLISH_UNKNOWN\` y NO se intenta otro POST. Una intención divergente no puede superar la reserva pendiente.
+- La salida exitosa debe persistir PR número/URL/SHA con la generación vigente. Otro escritor sólo puede comenzar después de confirmación durable de esa salida. Si el proceso muere entre efecto externo y persistencia, el registro previo a POST permitirá recuperar o poner en cuarentena.
+- Un TTL/epoch no detiene por sí solo una llamada HTTP ya enviada por un escritor vencido: **el POST debe vivir dentro de una única autoridad de publicación** y el estado incierto debe bloquear promociones posteriores. El fencing es efectivo sólo si todas las rutas mutantes pasan por ese ejecutor. No ocultar ni liberar las operaciones \`unknown\`.
+
+**Estado exacto:** la interfaz y el uso del permiso en el puente están implementados; **no** existe en esta rama una implementación de almacenamiento durable, un único coordinador global ni conexión desde \`src/server.ts\`. La llamada antigua \`GitHubBridge\` sin cuarto argumento conserva su comportamiento previo para no romper la operación vigente; por tanto, **la carrera real de dos PR sigue abierta sin T03**. No promover esta contribución como garantía runtime. Integrar y probar con T03 antes de habilitar diez publicaciones.
+
+### Cambios adicionales: actualización de ref ambigua
+
+\`replaceExact\` generaba un commit nuevo y realizaba \`PATCH /git/refs/... {sha, force:false}\`. En un 503 con efecto aplicado, el puente antes devolvía una excepción sin recibo. Ahora, ante excepción de PATCH, hace **sólo un GET** de la ref: si el SHA coincide exactamente con el commit creado, retorna el recibo \`reconciled:true\`; si no, devuelve \`GITHUB_REF_UPDATE_UNKNOWN\` sin otro PATCH. Esto **no** transforma \`force:false\` en compare-and-swap: sigue siendo una validación de fast-forward, no del SHA anterior. Para CAS de commits, GitHub GraphQL \`createCommitOnBranch\` ofrece \`expectedHeadOid\`; no resuelve el efecto distinto \`POST /pulls\`.
+
+### Matriz de nuevas pruebas negativas
+
+| Caso | Expectativa del test | Garantía |
+| --- | --- | --- |
+| Dos tareas mismo archivo, misma base, dos instancias de GitHubBridge | 1 POST y rechazo del segundo por conflicto | **Mock con un único gate compartido**, no Cloudflare |
+| Diez ramas con archivos disjuntos | Diez recibos, paths y PR separados | **Mock** de publicación serializada |
+| HEAD cambia durante preflight | \`PR_PREFLIGHT_STALE\`, cero POST | **Mock** contra puente real |
+| POST exitoso pero respuesta HTTP 503 | Retry mismo intent lee PR exacta; nunca hace segundo POST | **Mock** con ledger de modo recuperación |
+| POST ambiguo que no aparece en listado | \`PR_PUBLISH_UNKNOWN\`, cero POST adicional | **Mock**; quarantine durable pendiente |
+| Payload divergente después de intento incierto | \`PR_PUBLICATION_BUSY_UNKNOWN\`, cero POST | **Mock**, requiere T03 |
+| Fencing invalidado antes de POST | Rechazo \`PR_FENCE_STALE\`, cero POST | **Mock** de revocación, no fencing entre DO |
+| Respuesta PATCH perdida, ref ya es commit esperado | \`reconciled:true\`, exactamente 1 PATCH | **GitHubBridge** con HTTP simulado |
+| Respuesta PATCH perdida sin HEAD esperado | \`GITHUB_REF_UPDATE_UNKNOWN\`, exactamente 1 PATCH | **GitHubBridge** con HTTP simulado |
+| Intento de PR sobre \`main\` o repo ajeno | Rechazo previo a API | Guarda server-side existente |
+
+Archivo: \`src/github-publication-gate.test.ts\`. Usar \`bun test src/github-publication-gate.test.ts src/github-pr-conflicts.test.ts src/github.test.ts\`; después suite Bun completa, typecheck, build e invariantes en CI sobre HEAD exacto. Estas pruebas **no** autorizan invocaciones Remote, ni instalación de una nueva clase DO, bindings, migraciones, reglas, secretos o despliegues.
+
+### Integridad branch → commit → PR / límites
+
+1. **Branch:** \`ensureSupervisorBranch\` crea nombre determinista desde base SHA y devuelve recibo exacto; \`branch\` manual no es idempotente tras 503, aunque GitHub rechace una ref ya existente. La rama de tarea supervisada sigue fijada en \`src/supervisor-control.ts\`, server-side.
+2. **Commit:** escritura completa \`PUT /contents\` usa blob SHA y readback por bytes; no ofrece CAS de todo el HEAD. Reemplazo \`PATCH\` impide non-fast-forward, no CAS del viejo OID. El commit objeto inalcanzable creado antes de PATCH es un efecto Git de bajo alcance distinto de actualizar una rama. Un 503 debe reconciliar antes de reintentar, sin escribir a ciegas.
+3. **PR:** \`POST /pulls\` puede aplicar antes de perder respuesta. La reconciliación exacta de #122 funciona tras un reintento deliberado, pero para exclusión multi-escritor faltan ledger transaccional, fencing y publicación bajo una única autoridad de T03. Una lista vacía de GitHub no prueba ausencia de un POST en vuelo.
+4. **Permisos:** no se modificaron \`ALLOWED_REPOS\`, \`assertNonCanonicalWrite\`, \`branchChecked\`, \`assertScopedTool\`, \`assertSupervisorBoundGitHubOperation\`, parámetros \`force:false\` ni política \`draft:true\`. En sesiones no supervisadas se mantiene la limitación ya documentada sobre vinculación de rama; este PR no autoriza ampliaciones.
+5. **Frontera externa:** actores con token GitHub directo u otros clientes pueden saltarse un gate del puente. Deben permanecer controles CI/rulesets y revisión humana, cuya configuración efectiva no fue verificada para este cambio. **No habilitar merges automáticos**.
+
+### Estudios de implementación externa (evidencia de patrón, no código incorporado)
+
+- GitHub REST: \`PATCH refs\` recibe \`sha/force\`, no \`expectedOldSHA\` (https://docs.github.com/en/rest/git/refs); GitHub GraphQL: \`createCommitOnBranch(expectedHeadOid)\` (https://docs.github.com/en/graphql/reference/commits). **Ninguno** garantiza idempotencia atómica de \`POST /pulls\`.
+- Aider, <https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/repo.py> y <https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/LICENSE.txt>: commit Git local con cambios acotados; Apache-2.0. No usarlo como lock global.
+- SWE-agent, <https://github.com/SWE-agent/SWE-agent/blob/3ea751c087f32b16e039a2233dd6eefecef325d5/sweagent/environment/repo.py> y <https://github.com/SWE-agent/SWE-agent/blob/3ea751c087f32b16e039a2233dd6eefecef325d5/LICENSE>: repositorio/environment aislado y PR opcional tras tarea; MIT. No atribuir a SWE-agent serialización distribuida de publicación.
+- Cloudflare Durable Objects: <https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/> proporciona transacciones **dentro de un único DO**; T03 debe asegurar que todas las tareas compartan la misma clave de árbitro o una ruta única validada. No crear un DO nuevo en T08.
+
+**Handoff a T03:** implementar el contrato \`GitHubPrPublicationGate\` como ledger durable en la misma autoridad elegida para admisión o un coordinador ya existente. Definir identidad, estado \`reserved→publishing→committed|unknown\`, exclusión por base, incrementos de epoch, recuperación/readback sin segundo POST y almacenamiento de recibos. Probar dos instancias DO/Workers, crash entre POST y receipt, caducidad de lease y agente tardío, reanudación de \`unknown\`, más control de gastos efectivo antes de Remote. Coordinar con T04 por journal. T11 debe integrar mediante PR dependiente y verificar CI/compatibilidad con #126 antes de promover.
+
+### CI verificada del primer HEAD R2
+
+- GitHub Actions exact SHA `82a323368e89516d73c3c731d91d4ae13254b0a4`: [OpenCode validation #45096050118](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45096050118) **completed/success**. Job `137435968740`: **526 tests / 74 files PASS**, incluidos **9/9 R2-T08**, Typecheck, preview, build de Workers/web e invariantes sin errores.
+- [F0-C10 offline #45096050062](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45096050062) y [T09 output #45096050092](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45096050092): **completed/success**, mismo SHA. No prueba runtime, DO ni despliegue.
+- La adición de esta nota documental produce un **nuevo HEAD** que requiere verificación CI independiente antes de alegar CI verde del HEAD final.
+
+**Rollback:** no fusionar el PR draft. Ninguna mutación Cloudflare/Producción fue realizada por esta contribución. \`R2-T08=PARTIAL\` hasta conexión durable verificada y E2E supervisado; \`F0-C10\` permanece \`NOT COMPLETE PASS\`.
+
+
+---
+
+## Continuación — Coordinador durable de publicación R2-T08 + T03 (candidato, NO DEPLOY)
+
+**Fecha:** 2026-11-22 BRT / 2026-11-23 UTC. **Actor:** ChatGPT mediante GitHub; no se llamó a OpenCode Remote con efectos. **Rama exclusiva:** \`f0-c10/r2-t08-publisher-ledger-20261122\` creada del HEAD \`b3387593a1300133aa0b15f4b2e07e204313a806\` de la [PR T03 #135](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/135). Se superpuso **solo en esta rama** el delta T08 de la [PR #130](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/130), sin modificar #130, #135, #126 ni Staging. Las tres permanecían candidatas draft/unmerged en la comprobación.
+
+### Alcance implementado
+
+- \`src/github-publication-durable.ts\` implementa \`GitHubPrPublicationGate\` con \`DurableObjectStorage.transaction\`, un registro por \`(repo,base)\` y recibo permanente por rama. El scope se identifica mediante SHA-256 del repo/base; el hash de intención incluye repo/base/branch/título/cuerpo. El contrato es **single authority**, no un mutex por instancia.
+- El registro usa \`generation\` monótona y \`token\` aleatorio, con transición \`reserved → publishing → committed\` o \`unknown\`. El TTL **solo puede renovar una reserva que aún no empezó ningún efecto**. Una vez persistido \`publishing\`, un fallo de red, respuesta perdida, restart o timeout NO permite ceder el scope a otro escritor. Los reintentos del mismo intento operan en \`retryOnly\`: pueden recuperar una PR exacta, pero no volver a hacer POST.
+- \`beginExternalEffect()\` se ejecuta en transacción con validación de token/generación y revalidación opcional de sesión/tarea. Un intento revocado o una tarea cancelada antes de POST se rechazan. El efecto de red ocurre **fuera** de la transacción. Se persiste recibo estrictamente comprobado (repo, rama, base, head/base SHA, draft, número y URL). Nunca se almacena el token del servidor en el documento o en respuesta al agente.
+- \`src/server.ts\` integra la publicación desde el **Durable Object ya existente y nombrado** \`SUPERVISOR_WORKSPACE = opencode-supervisor-v1\`: \`ctx.id.name\` identifica si el agente está en el mismo objeto; desde otra instancia se usa \`env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE)\`. El método RPC \`publishSupervisedGithubDraft\` valida de nuevo el \`taskId\` derivado de \`opencode/staging-<16hex>\`, repo, proyecto \`supervised-<id>\`, \`sessionID\` auténtico y estado preparing/running. \`src/workspace.ts\` pasa \`context.sessionID\` desde la herramienta, no desde el prompt. Se revalida el registro dentro de la transacción de \`publishing\`.
+- \`src/github.ts\` **falla cerrado** para PR de \`opencode/staging-<16hex>\` si falta gate, impidiendo un camino de publicación propio no coordinado. Los commits y ramas continúan sujetos a ACL preexistente; no se abrieron merge, force-push ni deploy. Los recibos de \`pr\` ahora incluyen \`headSha\` y \`baseSha\` confirmados.
+- El puente GitHub nativo se mantiene. El conector oficial se utilizó únicamente para preparar la rama, publicar código/PR y verificar CI.
+
+### Qué no garantiza todavía
+
+1. **No se desplegó**: ni Worker, MCP, binding, migración, secretos o ajustes de Cloudflare. La identidad \`ctx.id.name\` de un DO nombrado está documentada por Cloudflare (https://developers.cloudflare.com/durable-objects/api/id/), pero la ruta RPC específica del Workers/Agents SDK actual requiere **prueba autenticada** antes de declarar el gate operativo.
+2. La nueva exclusión solo cubre PR del **repositorio OpenCode Staging supervisado** que pasen por este puente y su método RPC. Otros repositorios, ramas no supervisadas, tokens directos, el conector oficial de ChatGPT, usuarios externos y otras bases pueden crear PR fuera de la autoridad. No alegar exclusión universal ni bloqueo de conflictos entre bases diferentes.
+3. Los writes de contenido completo, reemplazo y creación de ramas mantienen las guardas actuales y la reconciliación acotada; **no** son transacciones globales de diez tareas. \`force:false\` no es CAS exacto del HEAD. El tratamiento de \`unknown\` puede bloquear publicaciones indefinidamente hasta reconciliación o recuperación auditada; esto es preferible a dos POST ciegos, pero requiere operación/visibilidad antes de habilitarlo.
+4. El Durable Object del supervisor también gestiona sesiones y puede sufrir OOM; T01/T02 deben certificar su memoria. El gate no arregla las OOM ni los slots/scheduler de T03; no introducir un nuevo Durable Object sin autorización.
+5. T04 debe revisar la política de cancelación y efectos inciertos; T11 debe comparar e integrar #130 y #135 sin sobrescribir sus ramas. La publicación candidata tiene rollback sencillo antes de merge: abandonar esta PR; **no hay rollback de datos publicado** que realizar.
+
+### Matriz de pruebas negativas — nuevo archivo
+
+\`src/github-publication-durable.test.ts\` contiene el fake transaccional con snapshot/restart y el puente \`GitHubBridge\` real contra HTTP simulado. Casos: dos escritores competidores, diez ramas/path disjuntos, respuesta 503 tras POST aplicado, 503 sin efecto con reinicio y UNKNOWN sticky, payload cambiado, reintento tras recibo, expiración de reserva antes de POST y fencing del propietario antiguo, tarea cancelada durante preflight, gate ausente y repositorio/rama/proyecto/sesión no autorizados, corrupción del ledger. Las pruebas de la primera ronda permanecen en \`src/github-publication-gate.test.ts\`, \`src/github-pr-conflicts.test.ts\`, \`src/github.test.ts\` y \`scripts/f0-c10-t08-integrity.test.mjs\`.
+
+**Pruebas/CI:** ejecutar \`bun test\`, \`bun run typecheck\`, \`bun run build\`, \`bun scripts/check-invariants.mjs\`, preview y harness offline mediante workflows de PR. **No atribuir PASS antes de ver el HEAD y los pasos reales del runner.** No se llama a inferencia ni a Staging con efectos en este lote.
+
+### Frontera de aceptación
+
+**Estado:** \`CODE_CANDIDATE / CI_PENDING / RUNTIME_NOT_VERIFIED\`. Para aceptar este subsistema hacen falta CI verde del HEAD, prueba de RPC dentro y fuera del DO central, fault injection con reinicio entre POST y recibo, restauración del journal, doble escritor real sin doble POST, revalidación de permisos/branch y prueba de coste y memoria. Para aceptar F0-C10 siguen siendo necesarias las rondas E2E 10/10 de T10 y criterios del issue #90.
+
+**Criterio STOP:** un token antiguo consigue publicar, aparece una segunda publicación tras UNKNOWN, la sesión ajena publica sobre rama supervisada, existen escrituras fuera del carril central o un fallo de memoria consume el ledger: bloquear promoción y no relajar permisos.
+
+
+### Auditoría RED → GREEN y CI del candidato
+
+**RED observado en GitHub Actions:** [OpenCode validation #45098032541](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45098032541), HEAD inicial \`8ed5da21298480a1ba8658d51425c9ece83420fd\`, \`failure\` en Unit tests: **10 fallos**, nueve de la nueva suite por confundir SHA-256 del fingerprint (64 hex) con SHA de commit Git (40 hex) en \`readLedger/readReceipt\`; uno por expectativa histórica de publicar una rama staging sin gate. No hubo error de infraestructura ni Remote; build/typecheck quedaron omitidos por fallo previo. No ocultar el RED.
+
+**Reparación focal:** \`HASH=64\` para intención/fingerprint, \`SHA=40\` para OIDs Git; la antigua prueba de PR sin gate ahora espera \`PR_PUBLICATION_COORDINATOR_REQUIRED\` antes de API, y la ruta positiva se verifica a través del ledger/bridge. No se relajó ninguna guarda.
+
+**GREEN verificado sobre SHA \`b5e3801a9ed31e69b399e1e7bb151116d0dfb308\`**:
+
+- [OpenCode validation #45098121582](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45098121582) — \`completed/success\`; **551 pruebas aprobadas en 76 archivos**, incluidas **11/11 nuevas del ledger durable**, vistas previas, typecheck, build de Workers/web e invariantes.
+- [F0-C10 offline harness #45098121612](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45098121612) — \`completed/success\`.
+- [T09 offline output #45098121592](https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45098121592) — \`completed/success\`.
+- Ejecución: GitHub Actions con Bun **1.4.4**; los tests de T08 son mocks transaccionales en memoria y HTTP simulado, **no fault injection sobre Cloudflare real**.
+
+**Aviso HEAD documental:** la incorporación de este registro crea un commit adicional posterior al SHA citado; verificar nuevamente los tres workflows sobre el HEAD final. Mantener PR draft y no permitir merge/deploy por el hecho de que el candidato tenga CI verde.
