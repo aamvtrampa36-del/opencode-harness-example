@@ -604,7 +604,7 @@ export class GitHubBridge {
               item.head?.sha?.toLowerCase() === headSha &&
               item.base?.sha?.toLowerCase() === baseSha &&
               item.title === input.title &&
-              item.body === desiredBody &&
+              (item.body ?? "") === desiredBody &&
               item.draft === true &&
               typeof item.html_url === "string" && item.html_url.length > 0;
             if (exactIntent) {
