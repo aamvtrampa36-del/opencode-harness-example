@@ -14,7 +14,7 @@ import {
   reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorAdmissionSlot, supervisorCommitCreatedSession,
   supervisorGrantStillOwned, reconcileSupervisorCreatedSession,
-  reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
+  reserveSupervisorContinuation, reconcileSupervisorTurnEffect,
   type StartGrant
 } from "../../src/supervisor-admission";
 
@@ -182,6 +182,17 @@ export class R3RecoveryLab extends DurableObject<LocalEnv> {
           const result = await reserveSupervisorContinuation(
             this.ctx.storage, id, turn, "b".repeat(64), op);
           return send({ kind: result.kind, state: await this.state(id) });
+        }
+        case "/turn-receipt": {
+          const turn = String(input.turn ?? "1111111111111111");
+          const op = "rc-turn-" + id + "-" + turn;
+          const status = input.status === "done" ? "done" : "unanswered";
+          const reason = String(input.reason ?? "not_found");
+          // Real T03 ledger and SQLite transaction; receipt itself is a
+          // SYNTHETIC test value, not an OpenCode model/tool invocation.
+          const accepted = await this.ctx.storage.transaction(tx =>
+            reconcileSupervisorTurnEffect(tx, id, op, { status, reason }));
+          return send({ accepted, state: await this.state(id) });
         }
         default: return send({ error: "UNKNOWN_LOCAL_TEST_ACTION" }, 404);
       }
