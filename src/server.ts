@@ -34,7 +34,8 @@ import { isModelSelection, MODEL_PRESETS, NATIVE_WORKERS_AI_MODELS, resolveModel
 import { getOpenRouterCatalogue } from "./openrouter-catalog";
 import { assertOpenRouterImageModel, generateOpenRouterImage, getOpenRouterImageModels } from "./openrouter-images";
 import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
-import { GitHubBridge } from "./github";
+import { GitHubBridge, type GitHubAction } from "./github";
+import { DurableGitHubPublicationGate, assertSupervisedPublicationScope } from "./github-publication-durable";
 import { verifyG8Proofs, G8_PROOFS } from "./g8-smoke";
 import { assessG8LiveHistory, g8LivePrompt, G8_LIVE_CHECK_VERSION, type G8LiveCheck } from "./g8-live-agent";
 import { G9_PROOF_VERSION, G9_REPO, G9_BRANCH, G9_PROJECT, G9_SOURCE, G9_TEST_PATH, G9_BROKEN, G9_FIXED, G9_TEST_SOURCE, assessG9History, g9AgentPrompt, assertG9BoundGitHubOperation, type G9ProofState } from "./g9-selfdev";
@@ -1124,8 +1125,41 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
   }
 
+  /** One authoritative PR publisher: all Staging supervisor tasks use THIS
+   * named DO, regardless of which OpenCodeAgent instance owns the caller.
+   * Never expose this method as an unauthenticated HTTP endpoint.
+   */
+  async publishSupervisedGithubDraft(
+    input: Extract<GitHubAction, { action: "pr" }>, sessionID: string
+  ): Promise<unknown> {
+    this.assertStagingRemote();
+    if (this.ctx.id.name !== SUPERVISOR_WORKSPACE)
+      throw Error("PR_PUBLICATION_WRONG_AUTHORITY");
+    const match = /^opencode\\/staging-([a-f0-9]{16})$/.exec(input.branch);
+    const task = match
+      ? await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(match[1])) : undefined;
+    assertSupervisedPublicationScope(input, sessionID, task);
+    const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
+      || await this.personalConfig.getGitHubKey();
+    if (!key) throw Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
+    return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
+      await this.personalConfig.getAllowedRepositories(),
+      new DurableGitHubPublicationGate(this.ctx.storage)).execute(input);
+  }
+
   private readonly githubRunner = {
-    execute: async (input: Parameters<GitHubBridge["execute"]>[0]) => {
+    execute: async (input: Parameters<GitHubBridge["execute"]>[0], sessionID?: string) => {
+      // The shared supervisor DO is the only allowed publisher of its Staging
+      // branches. A project DO cannot create an independent storage lock.
+      if (input.action === "pr" &&
+          input.repo.toLowerCase() === "aamvtrampa36-del/opencode-harness-example" &&
+          /^opencode\\/staging-[a-f0-9]{16}$/.test(input.branch)) {
+        if (!sessionID) throw Error("PR_PUBLICATION_SESSION_REQUIRED");
+        if (this.ctx.id.name === SUPERVISOR_WORKSPACE)
+          return this.publishSupervisedGithubDraft(input, sessionID);
+        return this.env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE)
+          .publishSupervisedGithubDraft(input, sessionID);
+      }
       const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
         || await this.personalConfig.getGitHubKey();
       if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
