@@ -154,3 +154,9 @@ La SDK fijada en `package.json` es `agents@0.33.0`. La documentación oficial de
 ## E. Condiciones de cierre R2 y gate general
 
 R2-T05 puede aceptarse como **PASS técnico acotado** si `bun test`, `typecheck`, build Worker principal + MCP, invariantes y CI del HEAD exacto pasan, y se comprueba que las rutas peligrosas fallan antes de `history()`. **R2 no certifica** una prueba de diez tareas verdaderamente activas ni limita eventos crudos ya deserializados. F0-C10 sigue `PARTIAL/NO COMPLETE PASS` hasta las pruebas E2E auténticas T10 con presupuesto y exclusividad verificados.
+
+## F. Entrega a C11/T11 — selección de cambios y contratos (2026-11-22/23)
+
+La reconciliación posterior se documenta en [`05_C11_HANDOFF.md`](./05_C11_HANDOFF.md) de esta rama y en la PR #139. Incluye el diff seleccionado de #139, solapamiento concreto con T09 R2 [#133](https://github.com/aamvtrampa36-del/opencode-harness-example/pull/133) y controles del evaluador T10 de #126. **Esta es una entrega al integrador C11, no una integración realizada**; no reescribir #126 ni #133.
+
+Puntos de bloqueo: #133 deriva de #123, no de #126 y conserva funciones heredadas de transcript/exportación que se deben descartar al portar; su manifiesto GET llama a `supervisedTaskStatus` (no está demostrado que sea lectura barata). En `scripts/f0-c10/evaluate.mjs` de #126, el `status_probe` no invalida por sí solo `gapDetected:true` o `_responseTruncated:true`; C11/T10 debe cerrar ese negativo antes de aceptar trazas live. La nueva prueba `bounded-response.test.ts` presenta manifiestos sintéticos de ocho archivos de T09 y salida MCP truncada; no se ha fusionado código T09 en esta rama. Ver CI del HEAD posterior a la entrega, no reaprovechar únicamente los runs históricos.
