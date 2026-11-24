@@ -157,13 +157,37 @@ def cas_push(cwd,remote,ref,base,candidate):
     return git("push","--porcelain","--force-with-lease="+ref+":"+base,remote,candidate+":"+ref,cwd=cwd,check=False,timeout=60)
 def integrated(repo,r,main):
     if main==r["base"]: return None
-    # Only exact result at current tip or GitHub's recorded merge commit reachable from main.
+    # The PR's merged marker can lag an atomic push. Inspect bounded first-parent
+    # history if another writer subsequently advanced main. Never infer from ancestry alone.
     p=gh("repos/"+repo+"/pulls/"+str(r["pr"]))
-    c=p.get("merge_commit_sha") if p.get("merged") else main
-    if not sha(c) or not ancestor(c,main): return None
-    z=gh("repos/"+repo+"/git/commits/"+c)
-    if [x["sha"] for x in z["parents"]]==[r["base"],r["head"]] and z["tree"]["sha"]==r["tree"]: return c
+    candidates=[p.get("merge_commit_sha") if p.get("merged") else None,main]
+    if ancestor(r["base"],main):
+        history=git("rev-list","--first-parent","--max-count=100",r["base"]+".."+main,check=False)
+        if history.returncode==0: candidates.extend(out(history).splitlines())
+    for c in dict.fromkeys(candidates):
+        if not sha(c) or not ancestor(c,main): continue
+        local=git("show","-s","--format=%P%n%T",c,check=False)
+        if local.returncode: continue
+        lines=out(local).splitlines()
+        if len(lines)!=2 or lines[0].split()!=[r["base"],r["head"]] or lines[1]!=r["tree"]: continue
+        z=gh("repos/"+repo+"/git/commits/"+c)
+        if [x["sha"] for x in z["parents"]]==[r["base"],r["head"]] and z["tree"]["sha"]==r["tree"]: return c
     return None
+def already_reconciled(repo,r,c,main):
+    cp,_=live_checkpoint(repo)
+    gate=cp.get("integration_v1",{})
+    rec=gate.get("latest_main_receipt") or {}
+    if rec.get("operation_id")!=r["request_id"] or rec.get("sha")!=c or gate.get("queue_refresh_required") is not False or gate.get("evidence",{}).get("main")!=main: return False
+    f=gh("repos/"+repo+"/contents/.agent-ops/main-integration-receipt.json?ref=ops%2Ftask-checkpoints-v1")
+    import base64
+    evidence=json.loads(base64.b64decode(f["content"]))
+    return f.get("sha")==rec.get("blob") and evidence.get("operation_id")==r["request_id"] and evidence.get("sha")==c and evidence.get("tree")==r["tree"]
+def require_no_live_lease(repo):
+    import datetime
+    cp,_=live_checkpoint(repo);old=cp.get("reservation")
+    if old:
+        expiry=datetime.datetime.fromisoformat(old["lease_expires_at"].replace("Z","+00:00"))
+        require(expiry<=datetime.datetime.now(datetime.timezone.utc),"another repository lease is active; defer before full CI")
 def prepare():
     repo=scope();r,enabled=read_req(repo)
     output("enabled","false")
@@ -172,9 +196,13 @@ def prepare():
     main,_=refs(repo,r)
     prior=integrated(repo,r,main)
     if prior:
+        if already_reconciled(repo,r,prior,main):
+            emit({"status":"ALREADY_RECONCILED","sha":prior,"operation_id":r["request_id"],"main_write":False});return
+        require_no_live_lease(repo)
         output("reconcile","true")
         for k in ("base","head","tree","request_id"): output(k,r[k])
         emit({"status":"ALREADY_INTEGRATED","sha":prior,"operation_id":r["request_id"]});return
+    require_no_live_lease(repo)
     t=check_live(repo,r)
     # Reuse the existing deterministic validator on the exact combined commit.
     c=commit_for(r,t)
