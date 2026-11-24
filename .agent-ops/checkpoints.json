@@ -10,7 +10,7 @@
     "recovery": "Inspect only current checkpoint and changed evidence. Check actual Issue/PR state, HEAD/base and dependencies. Resume only if useful, authorized and compatible; blocked/stale/resolved/cancelled tasks are not retried by default. After two attempts with no material progress mark blocked with reason; reopen only on new evidence. No automatic merge/deploy or expansion of permissions. States: available, active, recoverable, blocked, obsolete, cancelled, completed. A terminal state is not a candidate. For a blocked task, require a changed dependency or materially new evidence. Do not reopen a completed/obsolete/cancelled task; create a new task only if a distinct current objective warrants it.",
     "checkpoint": "Persist after claim, first useful evidence and each material milestone before further risky work. Keep objective, acceptance, issue/PR, branch, base/head SHA, evidence, completed, pending, next action, blocker, session/operation ID and progress counters. A completed checkpoint requires actual evidence meeting acceptance. Store references, not copied logs. Release on completion/pause. An expired lease permits revalidation and new generation, not blind continuation. Keep only the latest task per lane in this file; before replacement preserve evidence in the relevant Issue/PR or Git history. Never change policy/schema during ordinary checkpoint updates."
   },
-  "revision": 8,
+  "revision": 9,
   "reservation": null,
   "lanes": {
     "integration-selftest": {
@@ -70,7 +70,7 @@
   "composition_v1": {
     "schema": "agent-composition/v1",
     "source": "fc04d256d08a56ae1679b405c24c8cf8b2d8be39",
-    "source_blob": "e9456d5eb60f8fcdcac9b1931339a3964201d0d7",
+    "source_blob": "04d8b4780e2e3c3e53e12c585665f4da17b1a18c",
     "script": ".agent-ops/compose.mjs",
     "workflow": ".github/workflows/agent-context.yml",
     "request": ".agent-ops/context-request.json",
@@ -96,7 +96,7 @@
       "compact_bytes": 2346,
       "collection_ms": 2053
     },
-    "policy": "Read-only context and validation metadata; not authorization or task acceptance. Prefer native host composition if available; do not trigger Actions for simple queries. When needed update context-request by CAS with exact project, lane, PR, operation, steps<=4, unique request_id; read run by request commit SHA, compact JSON in job log/artifact. Revalidate refs, checkpoint blob, and receipt identity before reuse. Do not repeat targeted tests when recorded current PASS remains valid. Separate explicit PR from unrelated lane. No write/deploy or reservation effects in compose script. Existing validation-request path remains the authorized validation trigger.",
+    "policy": "Read-only context with live queue identity and exact targeted tree match; no authority. Historical receipts retain original run identities. Verify current refs and source versions before reuse.",
     "cloudflare_diagnostics": {
       "repo": "aamvtrampa36-del/opencode-harness-example",
       "commit": "c00052b71508e458f4d3039ccd1e79ef6e45af86",
@@ -109,12 +109,12 @@
     "queue": ".agent-ops/integration-queue.json",
     "workflow": ".github/workflows/agent-integration.yml",
     "refresh_trigger": ".agent-ops/integration-request.json",
-    "authority": "Queue remains read-only for product changes; sole conditional actuator is Agent exact main integration. It validates an immutable combined tree, then updates main with exact-base Git lease and proven fast-forward ancestry. Not a server-wide protection against external writers. No direct main writes by agents.",
+    "authority": "Read-only queue; sole participating main writer is Agent exact main integration. Git exact-base CAS, cooperative lease and exact handoff; not a server-wide GitHub protection.",
     "mode": "ATOMIC_CONDITIONAL",
     "evidence": {
-      "run": 45435493643,
+      "run": 45476427515,
       "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
-      "queue_blob": "f3964703ccfe44919156b96029135cbdf91a7920",
+      "queue_blob": "a9ce93dc836c11162666066b1dd90a73ea5d392c",
       "counts": {
         "BLOCKED": 7,
         "EXPERIMENTAL": 7
@@ -129,8 +129,8 @@
         "overlap_pairs": 15,
         "overlaps_truncated": false
       },
-      "elapsed_ms": 1901,
-      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45435493643"
+      "elapsed_ms": 1796,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45476427515"
     },
     "handoff": "Use a matching queue entry before selecting a candidate; no blind retry of blocked or terminal work. Compare target tree with validation_v1; do not repeat exact valid targeted evidence. Only refresh queue if main or candidate head changed, or new PR/review evidence changes eligibility. Existing lane permissions unchanged.",
     "sandbox_receipt": null,
@@ -163,7 +163,7 @@
         "scope": "main, path_includes=*; deploy command configured.",
         "policy": "Do not infer deployment authorization from merge authorization."
       },
-      "resume_condition": "Eligible non-draft exact candidate with verified acceptance handoff, no restrictions or unresolved review, satisfied dependencies, full combined-tree CI and separate deployment clearance. No retry unchanged blocked candidate.",
+      "resume_condition": "Exact eligible non-draft candidate, verified agent handoff, separate deployment clearance, full combined-tree CI and integration lease. Shared connector identity is not proof of personal consent.",
       "safety": "No main writes, no automated close, no promotion of drafts, no force push or deploy. Existing sandbox receipt reusable; no rerun solely to reconfirm this gate.",
       "github_pro": "DISCARDED",
       "external_writer_risk": "Accepted cooperative boundary; exact-base CAS rejects changes before the push, cannot forbid other actors or branch ABA."
@@ -177,19 +177,32 @@
       "trigger": "CAS update request on ops branch; workflow push event; same per-repo concurrency group as queue",
       "mode": "IDLE_NO_ELIGIBLE_CANDIDATE",
       "source_commit": "15c72099314d21c87994e8382bd3e2687eb188ed",
-      "script_blob": "c5e12357c65dd1ccbb1d691e00b59601f116fdeb",
+      "script_blob": "78dfb4583881c9d409b99567994738d12f09caa9",
       "acceptance_evidence": {
-        "run": 45460038404,
-        "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45460038404",
-        "selftest": "PASS",
-        "bare_remote_stale_write_rejected": true,
-        "policy_guards": 8,
+        "run": 45476656330,
+        "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45476656330",
+        "cross_layer": "PASS_ISOLATED",
         "product_ci": "SKIPPED_IDLE",
         "main_apply": "SKIPPED_IDLE",
         "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623"
       },
       "deployment_policy": "Every main change may deploy via existing trigger; requires separate explicit release clearance; never infer from integration authorization.",
-      "handoff": "Existing lanes remain within original permissions. For eligible reviewed PR, use exact base/head/combined tree and owner-authenticated acceptance comment INTEGRATION_ACCEPTED base=... head=... tree=...; do not create marker without review. Exact deployment clearance, dependencies, and SHA256 operation identity per validate_req. No direct writes to main; existing explicit restrictions stand. Never infer release permission. Preserve all checkpoints and CAS request; one in-flight request."
-    }
+      "handoff": "Agent-authored AGENT_REVIEWED marker (not personal owner approval); exact handoff_v2, matching lane task, functional PASS references, separate deployment assessment and general owner authorization. Never manufacture consent. Lease acquired by actuator after CI. See script and unified protocol."
+    },
+    "queue_refresh_required": false
+  },
+  "consolidation_v1": {
+    "schema": "agent-consolidation/v1",
+    "protocol": ".agent-ops/PROTOCOL.md",
+    "run": 45476656330,
+    "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45476656330",
+    "status": "PASS_ISOLATED",
+    "scope": "Actual validator, composition, classifier, Git CAS and recovery function; synthetic API/checkpoint transport; no main writes",
+    "remaining": [
+      "No eligible product candidate; full product apply not exercised",
+      "No independent proof of personal consent through shared owner connection",
+      "Cooperative external-writer boundary",
+      "No independent live Cloudflare attestation inside Actions"
+    ]
   }
 }
