@@ -179,7 +179,40 @@ export class DevContainer extends DurableObject<Env> {
     }
   }
 
+  async configurePilotDeadline(project:string,workUntil:number,closeUntil:number) {
+    const now=Date.now();
+    if(!/^supervised-[a-f0-9]{16}$/.test(project)||this.ctx.id.name!=="project-v1:"+project||
+        !Number.isSafeInteger(workUntil)||workUntil<=now||workUntil>now+900_000||closeUntil!==workUntil+300_000)
+      throw Error("PILOT_CONTAINER_DEADLINE_INVALID");
+    await this.ctx.storage.transaction(async tx=>{
+      const previous=await tx.get<{project:string;workUntil:number;closeUntil:number}>("pilot-deadline-v1");
+      if(previous){
+        if(previous.project!==project||previous.workUntil!==workUntil||previous.closeUntil!==closeUntil)
+          throw Error("PILOT_CONTAINER_DEADLINE_IMMUTABLE");
+        return;
+      }
+      if(this.ctx.container?.running||await tx.get("snapshotId")||await tx.get("lastActivity"))
+        throw Error("PILOT_CONTAINER_NOT_FRESH");
+      await tx.put("pilot-deadline-v1",{project,workUntil,closeUntil});
+    });
+    await this.scheduleCheck();
+  }
+  private async checkPilotWork(){
+    const p=await this.ctx.storage.get<{workUntil:number;closeUntil:number}>("pilot-deadline-v1");
+    if(p&&Date.now()>=p.workUntil)throw Error("PILOT_CONTAINER_WORK_EXPIRED");
+  }
+  private async scheduleCheck(){
+    const p=await this.ctx.storage.get<{workUntil:number;closeUntil:number}>("pilot-deadline-v1");
+    const now=Date.now();
+    if(p&&now>=p.closeUntil){
+      await this.ctx.storage.put("pilot-close-v1",{status:this.ctx.container?.running?"overdue":"not-running",at:now});
+      return;
+    }
+    await this.ctx.storage.setAlarm(p?Math.min(now+CHECK_MS,now<p.workUntil?p.workUntil:p.closeUntil):now+CHECK_MS);
+  }
+
   private async ensureRunning() {
+    await this.checkPilotWork();
     this.starting ??= this.startOrRecover().finally(() => { this.starting = undefined; });
     return await this.starting;
   }
@@ -192,6 +225,7 @@ export class DevContainer extends DurableObject<Env> {
       const savedAt = await this.ctx.storage.get<number>("savedAt");
       const lastActivity = await this.ctx.storage.get<number>("lastActivity");
       assertRecoverableContainer(snapshotId, savedAt, lastActivity, Date.now());
+      await this.checkPilotWork();
       container.start({
         ...(snapshotId
           ? { containerSnapshot: { id: snapshotId } }
@@ -207,7 +241,7 @@ export class DevContainer extends DurableObject<Env> {
     }
     await container.setInactivityTimeout(INACTIVITY_MS);
     if ((await this.ctx.storage.getAlarm()) === null) {
-      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      await this.scheduleCheck();
     }
     return container;
   }
@@ -217,6 +251,7 @@ export class DevContainer extends DurableObject<Env> {
     const smoke = await this.ctx.storage.get<unknown>("smokeReportV1");
     return {
       smoke,
+      pilotClose: await this.ctx.storage.get("pilot-close-v1") ?? null,
       savedAt,
       snapshotExpiresAt: savedAt ? new Date(savedAt + SNAPSHOT_TTL_MS).toISOString() : null,
       running: this.ctx.container?.running ?? false,
@@ -263,7 +298,7 @@ export class DevContainer extends DurableObject<Env> {
       } finally {
         this.busy--;
         await this.ctx.storage.put("lastActivity", Date.now());
-        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+        await this.scheduleCheck();
       }
     } finally {
       release();
@@ -333,7 +368,7 @@ export class DevContainer extends DurableObject<Env> {
       } finally {
         this.busy--;
         await this.ctx.storage.put("lastActivity", Date.now());
-        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+        await this.scheduleCheck();
       }
     } finally {
       release();
@@ -482,7 +517,7 @@ export class DevContainer extends DurableObject<Env> {
       } finally {
         this.busy--;
         await this.ctx.storage.put("lastActivity", Date.now());
-        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+        await this.scheduleCheck();
       }
     } finally { release(); }
   }
@@ -507,7 +542,7 @@ export class DevContainer extends DurableObject<Env> {
     } finally {
       this.busy--;
       await this.ctx.storage.put("lastActivity", Date.now());
-      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      await this.scheduleCheck();
     }
   }
 
@@ -543,7 +578,7 @@ export class DevContainer extends DurableObject<Env> {
     } finally {
       this.busy--;
       await this.ctx.storage.put("lastActivity", Date.now());
-      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      await this.scheduleCheck();
     }
   }
 
@@ -601,7 +636,7 @@ export class DevContainer extends DurableObject<Env> {
     } finally {
       this.busy--;
       await this.ctx.storage.put("lastActivity", Date.now());
-      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      await this.scheduleCheck();
     }
   }
 
@@ -654,13 +689,14 @@ export class DevContainer extends DurableObject<Env> {
     const container = this.ctx.container;
     if (!container?.running) return;
     if (this.busy > 0) {
-      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      await this.scheduleCheck();
       return;
     }
 
     const lastActivity = (await this.ctx.storage.get<number>("lastActivity")) ?? 0;
     const savedAt = (await this.ctx.storage.get<number>("savedAt")) ?? 0;
-    const idle = Date.now() - lastActivity >= IDLE_MS;
+    const pilot=await this.ctx.storage.get<{workUntil:number;closeUntil:number}>("pilot-deadline-v1");
+    const idle = Date.now() - lastActivity >= IDLE_MS || Boolean(pilot&&Date.now()>=pilot.workUntil);
     const checkpointDue = lastActivity > savedAt && Date.now() - savedAt >= CHECKPOINT_MS;
 
     if (idle || checkpointDue) {
@@ -671,7 +707,7 @@ export class DevContainer extends DurableObject<Env> {
         // Never destroy the only unsaved copy of a project.
         console.error("Linux checkpoint failed", error instanceof Error ? error.message : "unknown");
         await container.setInactivityTimeout(INACTIVITY_MS);
-        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+        await this.scheduleCheck();
         return;
       }
     }
@@ -679,10 +715,12 @@ export class DevContainer extends DurableObject<Env> {
     if (idle && this.busy === 0 &&
         (await this.ctx.storage.get<number>("lastActivity")) === lastActivity) {
       await container.destroy("idle");
+      if(pilot)await this.ctx.storage.put("pilot-close-v1",{status:container.running?"unconfirmed":"stopped",at:Date.now()});
+      if(pilot&&container.running)await this.scheduleCheck();
       return;
     }
     await container.setInactivityTimeout(INACTIVITY_MS);
-    await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+    await this.scheduleCheck();
   }
 
   /** HTTP-only static preview; isolation headers are applied by the Worker. */
@@ -874,7 +912,7 @@ export class DevContainer extends DurableObject<Env> {
       } finally {
         this.busy--;
         await this.ctx.storage.put("lastActivity", Date.now());
-        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+        await this.scheduleCheck();
       }
     } finally { release(); }
   }
@@ -928,7 +966,7 @@ export class DevContainer extends DurableObject<Env> {
       } finally {
         this.busy--;
         await this.ctx.storage.put("lastActivity", Date.now());
-        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+        await this.scheduleCheck();
       }
     } finally {
       release();
@@ -985,7 +1023,7 @@ export class DevContainer extends DurableObject<Env> {
     } finally {
       this.busy--;
       await this.ctx.storage.put("lastActivity", Date.now());
-      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      await this.scheduleCheck();
     }
   }
 
@@ -1091,7 +1129,7 @@ export class DevContainer extends DurableObject<Env> {
     } finally {
       this.busy--;
       await this.ctx.storage.put("lastActivity", Date.now());
-      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      await this.scheduleCheck();
     }
   }
 

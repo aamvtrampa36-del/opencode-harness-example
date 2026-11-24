@@ -38,6 +38,8 @@ export type SupervisorTask = {
   branch: string;
   fingerprint: string;
   session?: string;
+  /** Server-only process identity; a restarted pilot cannot resume dispatch. */
+  pilotInstance?: string;
   /** Durable write-ahead marker. If a session creation RPC lost its response,
    * never invoke create/fork again without independent reconciliation. */
   sessionCreationAttempted?: boolean;

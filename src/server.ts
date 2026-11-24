@@ -3,6 +3,9 @@ import { PersonalSettings } from "./personal-settings";
 export { PersonalSettings };
 export { OpenCodeSupervisorWorkflow } from "./supervisor-workflow";
 import { DevContainer } from "./dev-container";
+import { makePilotHybridBinding, pilotHybridPlugin, type PilotContext } from "./pilot-hybrid";
+import { PILOT_GLM, PILOT_BACKUP, PILOT_CLOSE_MS, pilotBudgetPolicy, pilotDispatchEvidenceValid,
+  type PilotDispatchEvidence } from "./supervisor-inference-budget";
 export { DevContainer };
 import { Workspace, type DurableObjectStorageLike } from "@cloudflare/computer";
 import { CodemodeBackend } from "@cloudflare/computer/backends/codemode";
@@ -124,6 +127,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const trace = this.phaseProbe();
     const start = await trace.run("admission", "validate", async () =>
       validateSupervisorStart(raw, await this.personalConfig.getAllowedRepositories()));
+    const pilotLane = this.pilotLaneId();
+    if (pilotLane && (start.requestId !== pilotLane || start.model !== PILOT_BACKUP || start.mode || start.sourceSession ||
+        !pilotDispatchEvidenceValid(pilotBudgetPolicy(pilotLane,this.pilotInstance,Date.now()),this.pilotDispatchEvidence())))
+      return {id:start.requestId,accepted:false,confirmed:false,stop:true,reason:"PILOT_DISPATCH_STOP"};
     // C05 has no independently verified provider/overhead cutoff. Deny new
     // read_only work before admission or Container/SDK effects, regardless of
     // requested model or a client claim of authorization.
@@ -133,6 +140,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const key = supervisorTaskKey(start.requestId);
     const fingerprint = await supervisorFingerprint(start);
     let old = await this.ctx.storage.get<SupervisorTask>(key);
+    if (pilotLane && old) return {id:start.requestId,accepted:false,confirmed:false,stop:true,reason:"PILOT_NO_REPLAY"};
     let reused = Boolean(old);
     if (old && old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
     if (old && old.mode !== "read_only" && isUntrackedLegacySupervisorOperation(old)) {
@@ -169,6 +177,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       ...(start.mode === "read_only" ? { mode: start.mode,
         sourceCommit: start.sourceCommit, sourceTree: start.sourceTree } : {}),
       fingerprint, createdAt: old?.createdAt ?? Date.now(), status: "preparing",
+      ...(pilotLane ? {pilotInstance:this.pilotInstance} : {}),
       sessionCreationAttempted: false, sessionIdPolicy: "deterministic-v1", revision: 0,
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
@@ -716,6 +725,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async remoteSupervisorSelectModel(id: string, model: string): Promise<unknown> {
+    if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     this.assertStagingRemote();
     const task = await this.supervisedRecord(id);
     if (task.mode === "read_only") throw Error("SUPERVISOR_READ_ONLY_MODEL_CHANGE_FORBIDDEN");
@@ -739,6 +749,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async remoteSupervisorContinue(raw: unknown): Promise<unknown> {
+    if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     this.assertStagingRemote();
     const trace = this.phaseProbe();
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Comando inválido");
@@ -842,6 +853,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async remoteSupervisorMcpCall(input: { server: string; name: string; arguments?: Record<string, unknown> }): Promise<unknown> {
+    if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     this.assertStagingRemote();
     const host = createDynamicMcpHost(() => this.personalConfig.getRemoteMcps());
     return { targetWorker: "opencode-g1-staging", server: input.server, tool: input.name,
@@ -1353,6 +1365,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   private async startSubagent(parentSession: string, task: string, kind: "analysis" | "decision"): Promise<{ session: string }> {
+    if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     // Delegation must not bypass the source pin or admission accounting.
     // T04 may replace this fail-closed guard with an audited inherited scope.
     const parentScope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(parentSession));
@@ -1481,12 +1494,14 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   private async denyReadOnlySessionEffect(sessionID: string): Promise<void> {
+    if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
     if (this.ctx.id?.name === SUPERVISOR_WORKSPACE && !scope) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
     if (await this.readOnlyTaskForScope(scope, sessionID)) throw Error("SUPERVISOR_READ_ONLY_EFFECT_FORBIDDEN");
   }
 
   async enforceSessionScope(sessionID: string, action: ScopedToolAction): Promise<void> {
+    if(this.pilotLaneId())await this.pilotContext(sessionID);
     const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
     if (this.ctx.id?.name === SUPERVISOR_WORKSPACE && !scope) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
     assertScopedTool(scope, action);
@@ -2079,10 +2094,34 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   // Workers AI over the AI binding, as an OpenCode provider plugin.
-  readonly ai = createAI({ binding: this.env.AI });
+  private readonly pilotInstance = crypto.randomUUID();
+  private pilotLaneId():string|undefined {
+    const id=(this.env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
+    if(!id || this.ctx.id?.name!==SUPERVISOR_WORKSPACE)return undefined;
+    if(!/^[a-f0-9]{16}$/.test(id))throw Error("PILOT_ID_INVALID");
+    return id;
+  }
+  // No caller-controlled proof. Activation requires a later authorized,
+  // independently verified server-side evidence producer. STOP_LIVE.
+  private pilotDispatchEvidence():PilotDispatchEvidence|undefined { return undefined; }
+  private async pilotContext(sessionID:string):Promise<PilotContext> {
+    const id=this.pilotLaneId();
+    if(!id || sessionID!==r2SessionId(id))throw Error("PILOT_SESSION_FORBIDDEN");
+    const task=await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(id));
+    const slot=await supervisorAdmissionSlot(this.ctx.storage,id);
+    if(!task || !slot || task.session!==sessionID || task.pilotInstance!==this.pilotInstance ||
+        task.status!=="running" || task.model!==PILOT_BACKUP)throw Error("PILOT_TASK_FENCED");
+    const policy=pilotBudgetPolicy(id,this.pilotInstance,task.createdAt),proof=this.pilotDispatchEvidence();
+    if(!proof || !pilotDispatchEvidenceValid(policy,proof))throw Error("PILOT_DISPATCH_STOP");
+    return {storage:this.ctx.storage,grant:{id,token:slot.token,generation:slot.generation},policy,proof};
+  }
+  readonly ai = createAI({ binding: this.pilotLaneId() ?
+    makePilotHybridBinding(this.env.AI,session=>this.pilotContext(session),
+      async()=> (this.env as Env & {OPENROUTER_API_KEY?:string}).OPENROUTER_API_KEY || await this.personalConfig.getOpenRouterKey())
+    : this.env.AI });
   // Register every native preset BEFORE the harness initializes. A plain
   // {providerID, id} selector does not add a model to OpenCode's provider.
-  private readonly registeredWorkersModels = NATIVE_WORKERS_AI_MODELS.map(id => this.ai(id));
+  private readonly registeredWorkersModels = NATIVE_WORKERS_AI_MODELS.filter(id=>!this.pilotLaneId() || id===PILOT_GLM).map(id => this.ai(id));
   // Files in the object's own storage. `exec` runs JavaScript in a Worker
   // Loader isolate with no network of its own. `git` turns on
   // `workspace.git`, which `codemode:git` uses to clone over HTTPS from the host.
@@ -2160,9 +2199,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
         }
       }
     }
+    const pilot=this.pilotLaneId()?await this.pilotContext(sessionID??""):undefined;
+    if(pilot && project!=="supervised-"+pilot.grant.id)throw Error("PILOT_PROJECT_FORBIDDEN");
     const registry = this.env.DEV.getByName("personal");
     await registry.reserveIsolatedProject(project, scope?.repository);
     const dev = this.env.DEV.getByName(projectContainerName(project));
+    if(pilot)await dev.configurePilotDeadline(project,pilot.policy.hybrid!.workUntil,pilot.policy.hybrid!.workUntil+PILOT_CLOSE_MS);
     if (scope?.repository) {
       const receipt = await dev.prepareRepository(project, scope.repository, sourceCommit, sourceTree);
       if (readOnly) assertCertifiedReadOnlyImport(readOnly, receipt);
@@ -2215,14 +2257,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
         },
         plugins: [
           this.ai.plugin,
+          ...(this.pilotLaneId() ? [pilotHybridPlugin(r2SessionId(this.pilotLaneId()!),id=>this.pilotContext(id))] : []),
           tokenEconomizerAdapter(
-            async () => (await this.personalConfig.connectorSettings()).tokenEconomizerEnabled,
+            async () => !this.pilotLaneId() && (await this.personalConfig.connectorSettings()).tokenEconomizerEnabled,
             (connectorID, event) => this.runConnector(connectorID, event),
             sessionID => this.sessionProject(sessionID)
           ),
           openRouterCredentialPlugin(
-            async () => (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
-              || await this.personalConfig.getOpenRouterKey(),
+            async () => this.pilotLaneId() ? undefined : ((this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
+              || await this.personalConfig.getOpenRouterKey()),
             (connect) => { this.providerConnection.connect = connect; }
           ),
           remoteMcpPlugin(
@@ -2251,7 +2294,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     // Low effort: with more, the model sometimes writes its whole answer
     // into its reasoning.
     defaults: {
-      model: this.ai(MODEL_ID),
+      model: this.ai(this.pilotLaneId()?PILOT_GLM:MODEL_ID),
       agent: "build"
     }
   });
