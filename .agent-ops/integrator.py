@@ -57,7 +57,7 @@ def details(p,main,focus):
             pmerge=git("merge-tree","--write-tree",main,head,check=False)
             if pmerge.returncode not in (0,1): raise RuntimeError("merge-tree unavailable")
             tree=out(pmerge).splitlines()[0]
-            row["combined_tree"]=tree if is_sha(tree) else None
+            row["combined_tree"]=tree if pmerge.returncode==0 and is_sha(tree) else None
             row["conflict"]=pmerge.returncode==1
             row["tree_equal"]=pmerge.returncode==0 and tree==out(git("rev-parse",main+"^{tree}"))
     except (RuntimeError,ValueError,IndexError,subprocess.TimeoutExpired):
@@ -100,7 +100,14 @@ def scan():
         row["status"],row["next"]=classify(row,main,prior)
         row["priority"]=1 if row["pr"] in focus else 0
         row["authorization"]="NONE_FOR_MAIN"
-        row["validation_reference"]=prior.get("url") if prior and prior.get("pr")==row["pr"] and prior.get("head")==row["head"] and prior.get("base")==main else None
+        exact=bool(prior and prior.get("pr")==row["pr"] and prior.get("head")==row["head"] and prior.get("base")==main)
+        row["validation_reference"]=prior.get("url") if exact else None
+        target=prior.get("targeted") or {} if exact else {}
+        row["validation"]={"exact_refs":exact,"static":prior.get("static_status") if exact else None,"ci":prior.get("ci_status") if exact else None,"targeted_tree_match":bool(exact and row.get("combined_tree") and target.get("tree")==row["combined_tree"] and target.get("status")=="PASS"),"acceptance":"NOT_ESTABLISHED"}
+        if row["validation"]["targeted_tree_match"]:
+            row["next"]+="; recorded targeted PASS matches combined tree, do not repeat without material change"
+        if exact and prior.get("static_status")=="FAIL":
+            row["next"]+="; inspect recorded static defect before retry"
         paths=sorted(row.pop("_paths",set()))
         row["file_count"]=len(paths)
         row["paths"]=paths[:20]
@@ -169,7 +176,61 @@ def selftest():
         assert classify(dict(row,contained=True),base,evidence)[0]=="REDUNDANT"
         assert classify(row,base,dict(evidence,head=two),True,True)[0]=="NEEDS_VALIDATION"
         print(json.dumps({"selftest":"PASS","fixture":"real isolated git refs","integrations":2,"stale_write_rejected":True,"duplicate_rejected":True,"conflict_detected":True,"regression_detected":True,"recovery_readback":True,"policy_checks":11,"main_unchanged":s("rev-parse","main")==base}))
+
+def sandbox_apply():
+    """Only the explicit synthetic branch in CDF Cloud. Never apply product candidates."""
+    repo=os.environ["GITHUB_REPOSITORY"]
+    if repo!=OWNER+"/cdf-cloud-engine" or os.environ.get("GITHUB_REF")!="refs/heads/"+OPS: raise RuntimeError("sandbox scope denied")
+    req=json.loads(pathlib.Path(".agent-ops/integration-fixture-request.json").read_text())
+    if req.get("enabled") is not True:
+        print(json.dumps({"sandbox_apply":"SKIPPED","reason":"disabled"}));return
+    if set(req)!={"enabled","authorization","pr","head","base","operation_id"} or req["authorization"]!="synthetic-fixture-only" or not is_sha(req["head"]) or not is_sha(req["base"]) or type(req["pr"]) is not int or req["pr"]<=0 or not re.fullmatch(r"fixture-[a-z0-9-]{1,48}",req["operation_id"]): raise RuntimeError("invalid fixture request")
+    branch="ops/integration-sandbox-v1"
+    ref="refs/heads/"+branch
+    root="repos/"+repo
+    base,head=req["base"],req["head"]
+    pr=gh(root+"/pulls/"+str(req["pr"]))
+    if pr.get("base",{}).get("ref")!=branch or pr.get("base",{}).get("repo",{}).get("full_name")!=repo or pr.get("head",{}).get("repo",{}).get("full_name")!=repo or not pr["head"]["ref"].startswith("ops/integration-fixture-") or pr["head"]["sha"]!=head: raise RuntimeError("fixture PR identity mismatch")
+    if pr.get("draft") or DENY.search((pr.get("title") or "")+" "+(pr.get("body") or "")): raise RuntimeError("fixture PR restricted")
+    main_before=gh(root+"/git/ref/heads/main")["object"]["sha"]
+    actual=gh(root+"/git/ref/heads/"+branch)["object"]["sha"]
+    # Reconcile a response lost after push. Exact parents + tree required.
+    merge=git("merge-tree","--write-tree",base,head,check=False)
+    if merge.returncode: raise RuntimeError("fixture conflict")
+    tree=out(merge).splitlines()[0]
+    if not is_sha(tree): raise RuntimeError("invalid tree")
+    diff=git("diff","--no-ext-diff","--no-textconv","--name-status","-z",base,tree,"--").stdout.split(b"\0")
+    if len(diff)!=3 or diff[0]!=b"A" or not re.fullmatch(rb"\.agent-ops/fixtures/integration-[a-z0-9-]+\.txt",diff[1]) or diff[2]: raise RuntimeError("non-synthetic file denied")
+    entry=out(git("ls-tree",tree,"--",os.fsdecode(diff[1])))
+    if not entry.startswith("100644 blob "): raise RuntimeError("nonregular fixture denied")
+    data=git("show",tree+":"+os.fsdecode(diff[1])).stdout
+    if len(data)>512 or not data.startswith(b"Synthetic integration acceptance fixture"): raise RuntimeError("fixture content denied")
+    def verify(sha):
+        c=gh(root+"/git/commits/"+sha)
+        return [p["sha"] for p in c["parents"]]==[base,head] and c["tree"]["sha"]==tree
+    if actual!=base:
+        if verify(actual):
+            print(json.dumps({"sandbox_apply":"ALREADY_INTEGRATED","operation_id":req["operation_id"],"sha":actual,"base":base,"head":head,"tree":tree,"main_unchanged":gh(root+"/git/ref/heads/main")["object"]["sha"]==main_before}))
+            return
+        raise RuntimeError("sandbox base moved; never retry blindly")
+    if pr.get("state")!="open" or pr.get("merged"): raise RuntimeError("fixture PR no longer open")
+    git("config","user.name","Agent Integration Fixture");git("config","user.email","fixture@example.invalid")
+    candidate=out(git("commit-tree",tree,"-p",base,"-p",head,"-m","Isolated integration "+req["operation_id"]))
+    # The candidate must be a fast-forward. The lease flag is used ONLY for exact CAS
+    # on the synthetic branch; it must never permit rewriting history or targeting main.
+    if not ancestor(base,candidate) or not ancestor(head,candidate): raise RuntimeError("non-fast-forward denied")
+    if gh(root+"/git/ref/heads/"+branch)["object"]["sha"]!=base or gh(root+"/pulls/"+str(req["pr"]))["head"]["sha"]!=head: raise RuntimeError("fixture refs changed")
+    command(["gh","auth","setup-git"],timeout=20)
+    pushed=git("push","--porcelain","--force-with-lease="+ref+":"+base,"origin",candidate+":"+ref,check=False)
+    # Reconcile even if transport reports failure; no blind retry.
+    actual=gh(root+"/git/ref/heads/"+branch)["object"]["sha"]
+    if actual!=candidate or not verify(actual): raise RuntimeError("push uncertain or rejected; no blind retry")
+    main_after=gh(root+"/git/ref/heads/main")["object"]["sha"]
+    if main_after!=main_before: raise RuntimeError("main moved externally; report separately")
+    print(json.dumps({"sandbox_apply":"PASS","operation_id":req["operation_id"],"pr":req["pr"],"sha":actual,"base":base,"head":head,"tree":tree,"push_exit":pushed.returncode,"fast_forward":True,"main_unchanged":True}))
+
 if __name__=="__main__":
-    p=argparse.ArgumentParser();p.add_argument("mode",choices=["selftest","scan"]);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument("mode",choices=["selftest","scan","sandbox-apply"]);a=p.parse_args()
     if a.mode=="selftest": selftest()
+    elif a.mode=="sandbox-apply": sandbox_apply()
     else: scan()
