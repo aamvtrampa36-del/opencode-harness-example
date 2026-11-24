@@ -10,7 +10,7 @@
     "recovery": "Inspect only current checkpoint and changed evidence. Check actual Issue/PR state, HEAD/base and dependencies. Resume only if useful, authorized and compatible; blocked/stale/resolved/cancelled tasks are not retried by default. After two attempts with no material progress mark blocked with reason; reopen only on new evidence. No automatic merge/deploy or expansion of permissions. States: available, active, recoverable, blocked, obsolete, cancelled, completed. A terminal state is not a candidate. For a blocked task, require a changed dependency or materially new evidence. Do not reopen a completed/obsolete/cancelled task; create a new task only if a distinct current objective warrants it.",
     "checkpoint": "Persist after claim, first useful evidence and each material milestone before further risky work. Keep objective, acceptance, issue/PR, branch, base/head SHA, evidence, completed, pending, next action, blocker, session/operation ID and progress counters. A completed checkpoint requires actual evidence meeting acceptance. Store references, not copied logs. Release on completion/pause. An expired lease permits revalidation and new generation, not blind continuation. Keep only the latest task per lane in this file; before replacement preserve evidence in the relevant Issue/PR or Git history. Never change policy/schema during ordinary checkpoint updates."
   },
-  "revision": 3,
+  "revision": 4,
   "reservation": null,
   "lanes": {
     "integration-selftest": {
@@ -66,5 +66,42 @@
     },
     "scope": "Synthetic and exact Git refs only; not product acceptance or deployment. Targeted receipts bind base/head/tree. No repeated validation when identical evidence remains applicable.",
     "selftests": "PASS on GitHub Actions in all three projects; RED/GREEN, cache reuse/invalidation, 4 profiles, 8 CI evidence cases"
+  },
+  "composition_v1": {
+    "schema": "agent-composition/v1",
+    "source": "fc04d256d08a56ae1679b405c24c8cf8b2d8be39",
+    "source_blob": "e9456d5eb60f8fcdcac9b1931339a3964201d0d7",
+    "script": ".agent-ops/compose.mjs",
+    "workflow": ".github/workflows/agent-context.yml",
+    "request": ".agent-ops/context-request.json",
+    "operations": [
+      "get_task_context",
+      "inspect_pr",
+      "resume_task",
+      "validate_task (read receipt only)",
+      "execute_plan (read-only fixed graph)"
+    ],
+    "evidence": {
+      "pr": 105,
+      "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
+      "head": "a320b1eb8346e9e9b1390699306aef24056dda52",
+      "run": 45432726141,
+      "job": 138582141431,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45432726141",
+      "decision": "DO_NOT_RESUME",
+      "coverage": "COMPLETE_READS",
+      "selftest": "PASS",
+      "backend_calls": 7,
+      "raw_bytes": 83950,
+      "compact_bytes": 2346,
+      "collection_ms": 2053
+    },
+    "policy": "Read-only context and validation metadata; not authorization or task acceptance. Prefer native host composition if available; do not trigger Actions for simple queries. When needed update context-request by CAS with exact project, lane, PR, operation, steps<=4, unique request_id; read run by request commit SHA, compact JSON in job log/artifact. Revalidate refs, checkpoint blob, and receipt identity before reuse. Do not repeat targeted tests when recorded current PASS remains valid. Separate explicit PR from unrelated lane. No write/deploy or reservation effects in compose script. Existing validation-request path remains the authorized validation trigger.",
+    "cloudflare_diagnostics": {
+      "repo": "aamvtrampa36-del/opencode-harness-example",
+      "commit": "c00052b71508e458f4d3039ccd1e79ef6e45af86",
+      "path": ".agent-ops/cloudflare-diagnostics.js",
+      "status": "Tested in ChatGPT Cloudflare ADMIN; OpenCode staging direct execute rejected PILOT_ALTERNATE_EFFECT_FORBIDDEN; preserve policy."
+    }
   }
 }
