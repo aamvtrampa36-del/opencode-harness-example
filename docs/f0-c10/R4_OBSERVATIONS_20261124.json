@@ -1,0 +1,161 @@
+{
+  "schema": "r4-read-observations-v1",
+  "observedAt": "2026-11-24T04:54:17Z",
+  "observationWindowStart": "2026-11-24T04:50:00Z",
+  "actor": "ChatGPT / GitHub and Cloudflare Admin GET",
+  "candidate": {
+    "head": "42574cb3f5ee0cbfab2ce54176145c089edc41df",
+    "branch": "f0-c10/integracion-final-20261123",
+    "pr": 163,
+    "draft": true,
+    "merged": false,
+    "ci": {
+      "id": "45326449041",
+      "head": "42574cb3f5ee0cbfab2ce54176145c089edc41df",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    "pilotBranchHttp": 404
+  },
+  "workers": [
+    {
+      "name": "opencode-g1-staging",
+      "deployment": "5fc14f5e-ffe2-4590-9e5a-88622be3ae15",
+      "versions": [
+        {
+          "version_id": "613059c6-4675-4b24-b124-ed289ba23d01",
+          "percentage": 100
+        }
+      ],
+      "date": "2026-06-11",
+      "flags": [
+        "nodejs_compat",
+        "durable_object_io_tasks_prevent_eviction"
+      ],
+      "bindings": [
+        [
+          "AI",
+          "ai"
+        ],
+        [
+          "DEV",
+          "durable_object_namespace",
+          "DevContainer"
+        ],
+        [
+          "G1_DEV_UNLIMITED_CHECKS",
+          "plain_text"
+        ],
+        [
+          "LOADER",
+          "worker_loader"
+        ],
+        [
+          "OpenCodeAgent",
+          "durable_object_namespace",
+          "OpenCodeAgent"
+        ],
+        [
+          "OPENCODE_SUPERVISOR_ENABLED",
+          "plain_text"
+        ],
+        [
+          "RECOVERY_R2",
+          "r2_bucket",
+          "opencode-v1-recovery-20261112"
+        ],
+        [
+          "SESSION_BK",
+          "durable_object_namespace",
+          "SessionBackupDrillAgent"
+        ],
+        [
+          "SETTINGS",
+          "durable_object_namespace",
+          "PersonalSettings"
+        ],
+        [
+          "SUPERVISOR_WORKFLOW",
+          "workflow",
+          "OpenCodeSupervisorWorkflow",
+          "opencode-supervisor-stage"
+        ]
+      ]
+    },
+    {
+      "name": "opencode-staging-control-mcp",
+      "deployment": "6a80f8a9-c62b-46ce-9393-eb432959696a",
+      "versions": [
+        {
+          "version_id": "90910fcf-455d-4b26-8df0-eb8fcab8b7a0",
+          "percentage": 100
+        }
+      ],
+      "date": "2026-11-17",
+      "flags": [
+        "nodejs_compat"
+      ],
+      "bindings": [
+        [
+          "MCP_ENABLED",
+          "plain_text"
+        ],
+        [
+          "STAGING_HEALTH",
+          "service",
+          "opencode-g1-staging"
+        ],
+        [
+          "STAGING_SUPERVISOR",
+          "durable_object_namespace",
+          "OpenCodeAgent",
+          "opencode-g1-staging"
+        ]
+      ]
+    }
+  ],
+  "container": {
+    "name": "opencode-g1-staging-devcontainer",
+    "applicationId": "bb8b042de894489f82b9efeb486da157",
+    "schedulingPolicy": "durable_object",
+    "active": 0,
+    "starting": 0,
+    "activeInstancesListed": 0,
+    "hasNext": false,
+    "versionsReported": 0,
+    "imageDigest": null,
+    "compatibilityVerified": null
+  },
+  "billing": {
+    "covered": true,
+    "anchor": "2026-11-24T00:00:00Z",
+    "records": 588,
+    "currentCycleRecords": 0,
+    "priorCycleDO": 49947.72308172799,
+    "maxDaily": 9001.388725248,
+    "observedThrough": "2026-11-23T00:00:00Z",
+    "billedDO": 0,
+    "sharedLagAllowance": 30000,
+    "pilotAllowance": 2000,
+    "includedDO": 400000,
+    "basis": "previous-cycle-proxy",
+    "pricingRefreshedInThisLot": false,
+    "unrelatedActivityInvalidatesMargin": null
+  },
+  "executor": {
+    "githubArtifactsInLinux": true,
+    "cloudflareAdminFileReferenceInputDocumented": false,
+    "linuxCloudflareCredentialVerified": null,
+    "existingWorkersBuildTriggers": {
+      "principal": "6389b483-1230-47c0-bb2c-9ac007f930d4",
+      "mcp": "0256daec-8698-4c50-a035-0fbb53158045"
+    },
+    "guardedBuildWithNoUploadProven": false
+  },
+  "exclusiveLane": null,
+  "requestId": "42574cb3f5ee0cbf",
+  "requestNeverConsumed": null,
+  "ambiguousEffectsAbsent": null,
+  "authorizationV2Installed": false,
+  "liveScopeAuthorized": false
+}
