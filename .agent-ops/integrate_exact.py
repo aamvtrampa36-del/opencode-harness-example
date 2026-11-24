@@ -67,9 +67,26 @@ def owner_comment(repo,r,comment_id,expected):
     q=gh("repos/"+repo+"/issues/comments/"+str(comment_id))
     require(q.get("user",{}).get("login")==OWNER and q.get("issue_url")=="https://api.github.com/repos/"+repo+"/issues/"+str(r["pr"]),"acceptance comment not from owner on exact PR")
     require(expected in (q.get("body") or "").splitlines(),"exact approval marker missing")
+def live_checkpoint(repo):
+    import base64
+    f=gh("repos/"+repo+"/contents/.agent-ops/checkpoints.json?ref=ops%2Ftask-checkpoints-v1")
+    cp=json.loads(base64.b64decode(f["content"]))
+    require(cp.get("repository")==repo and cp.get("schema")=="agent-checkpoints/v1","checkpoint identity mismatch")
+    return cp,f["sha"]
+def exact_identity(r): return {k:r[k] for k in ("pr","base","head","tree","request_id")}
+def same_identity(a,r): return isinstance(a,dict) and all(a.get(k)==v for k,v in exact_identity(r).items())
 def review_gate(repo,r):
     comment_id=int(r["acceptance"]["reference"].split("#issuecomment-")[1])
-    owner_comment(repo,r,comment_id,"INTEGRATION_ACCEPTED "+marker(r))
+    # A connector posting as the owner is not proof of a personal user approval.
+    owner_comment(repo,r,comment_id,"AGENT_REVIEWED "+marker(r))
+    cp,_=live_checkpoint(repo)
+    i=cp["integration_v1"]
+    require(i.get("mode")=="ATOMIC_CONDITIONAL" and i.get("activation_gate",{}).get("owner_authorized") is True,"general integration authorization missing")
+    h=i.get("handoff_v2")
+    require(same_identity(h,r) and h.get("review_reference")==r["acceptance"]["reference"] and h.get("lane")==r["acceptance"]["lane"] and h.get("functional_acceptance")=="PASS" and h.get("review_origin")=="agent" and h.get("deployment")==r["deployment"],"exact agent handoff missing")
+    lane=cp.get("lanes",{}).get(h["lane"],{})
+    require(lane.get("task_id")==h.get("task_id") and lane.get("pr")==r["pr"] and lane.get("base_sha")==r["base"] and lane.get("head_sha")==r["head"] and lane.get("status") in ("recoverable","completed") and h.get("task_id"),"handoff task identity changed")
+    require(isinstance(h.get("evidence"),list) and len(h["evidence"])>0 and all(isinstance(v,str) and v.startswith("https://github.com/"+repo+"/") for v in h["evidence"]),"functional evidence reference required")
     reviews=gh("repos/"+repo+"/pulls/"+str(r["pr"])+"/reviews?per_page=100")
     require(isinstance(reviews,list) and len(reviews)<100,"review coverage incomplete")
     latest={}
@@ -83,6 +100,12 @@ def deployment_gate(repo,r,paths):
     if d["mode"]=="EXPLICIT_RELEASE":
         # This is a separately recorded owner authorization, not inferred from merge permission.
         require(re.fullmatch(r"owner-explicit-release:[1-9][0-9]*",d["reference"]),"missing separate release authorization")
+        # Shared connector identity cannot authenticate personal deployment consent.
+        # Explicit release grants must be recorded from separately verified user authorization,
+        # outside routine autonomous lanes; no such grants are provisioned by consolidation.
+        cp,_=live_checkpoint(repo)
+        grant=cp["integration_v1"].get("release_grant_v2")
+        require(same_identity(grant,r) and grant.get("origin")=="explicit-user-instruction-verified-by-operator" and grant.get("reference")==d["reference"] and grant.get("authorized") is True,"separate verified release grant absent")
         owner_comment(repo,r,int(d["reference"].split(":")[1]),"DEPLOY_AUTHORIZED "+marker(r))
         return
     require(repo==OWNER+"/cdf-cloud-engine","known main-triggered deploy; separate release clearance required")
@@ -115,7 +138,7 @@ def check_live(repo,r):
         q=gh(root+"/pulls/"+str(dep))
         require(q.get("merged") and q.get("base",{}).get("ref")=="main" and sha(q.get("merge_commit_sha")) and ancestor(q["merge_commit_sha"],main),"dependency not integrated")
     # Reject changes to control files after dispatch; exact source branch, not main.
-    for path in (REQ,SCRIPT,WORKFLOW):
+    for path in (REQ,SCRIPT,WORKFLOW,".agent-ops/validate_task.py"):
         blob=out(git("rev-parse","HEAD:"+path))
         remote=gh(root+"/contents/"+path+"?ref=ops%2Ftask-checkpoints-v1")
         require(remote["sha"]==blob,"operational input changed")
@@ -153,6 +176,11 @@ def prepare():
         for k in ("base","head","tree","request_id"): output(k,r[k])
         emit({"status":"ALREADY_INTEGRATED","sha":prior,"operation_id":r["request_id"]});return
     t=check_live(repo,r)
+    # Reuse the existing deterministic validator on the exact combined commit.
+    c=commit_for(r,t)
+    v=json.loads(cmd(["python3",".agent-ops/validate_task.py","--project",repo.split("/")[-1],"--base",r["base"],"--head",c],check=False,timeout=120).stdout)
+    require(v.get("static_status") in ("PASS","CACHED"),"combined static validation not PASS")
+    emit({"static_status":v["static_status"],"validation_id":v.get("validation_id"),"tree":t,"acceptance":"NOT_ESTABLISHED"})
     for k in ("base","head","tree","request_id"): output(k,r[k])
     output("enabled","true")
     emit({"status":"PREPARED","tree":t,"pr":r["pr"],"operation_id":r["request_id"]})
@@ -189,11 +217,13 @@ def persist_result(repo,r,c,pr,recovered,exit_code=None):
     cp_path=".agent-ops/checkpoints.json"
     old=gh(root+cp_path+"?ref=ops%2Ftask-checkpoints-v1")
     cp=json.loads(base64.b64decode(old["content"]))
-    require(cp["repository"]==repo and not cp.get("reservation"),"checkpoint reserved; receipt persisted; reconcile later")
+    require(cp["repository"]==repo and (cp.get("reservation") or {}).get("owner")==lease_owner(r),"checkpoint reserved; receipt persisted; reconcile later")
+    cp["reservation"]=None
     cp["revision"]+=1
     gate=cp["integration_v1"]
     gate["latest_main_receipt"]={"path":path,"blob":blob,"operation_id":r["request_id"],"sha":c,"run_id":result["run_id"],"status":result["status"]}
     gate["queue_refresh_required"]=True
+    if same_identity(gate.get("handoff_v2"),r): gate["handoff_v2"]["integration_status"]="INTEGRATED_VERIFIED"
     put_ops(repo,cp_path,cp,old["sha"])
     emit({"checkpoint":"PASS","receipt_blob":blob,"queue_refresh_required":True})
     # Reuse existing queue scanner only on trusted operational files. Never run candidate code here.
@@ -205,21 +235,40 @@ def persist_result(repo,r,c,pr,recovered,exit_code=None):
     require(q["repository"]==repo and q["main"]==gh("repos/"+repo+"/git/ref/heads/main")["object"]["sha"],"queue main changed")
     qb=put_ops(repo,".agent-ops/integration-queue.json",q,out(git("rev-parse","HEAD:.agent-ops/integration-queue.json")))
     old=gh(root+cp_path+"?ref=ops%2Ftask-checkpoints-v1");cp=json.loads(base64.b64decode(old["content"]))
-    require(not cp.get("reservation") and cp["integration_v1"]["latest_main_receipt"]["operation_id"]==r["request_id"],"checkpoint changed")
+    require(cp["integration_v1"]["latest_main_receipt"]["operation_id"]==r["request_id"],"checkpoint changed")
     cp["revision"]+=1;cp["integration_v1"]["queue_refresh_required"]=False
     cp["integration_v1"]["evidence"]={"run":q["run_id"],"main":q["main"],"queue_blob":qb,"counts":q["counts"],"coverage":q["coverage"],"elapsed_ms":q["elapsed_ms"],"url":"https://github.com/"+repo+"/actions/runs/"+str(q["run_id"])}
     put_ops(repo,cp_path,cp,old["sha"])
     emit({"queue":"PASS","blob":qb,"main":q["main"]})
+def lease_owner(r): return "integrator:"+r["request_id"]+":"+os.environ["GITHUB_RUN_ID"]+":"+os.environ.get("GITHUB_RUN_ATTEMPT","1")
+def claim(repo,r):
+    import datetime
+    cp,blob=live_checkpoint(repo);old=cp.get("reservation")
+    if old:
+        expiry=datetime.datetime.fromisoformat(old["lease_expires_at"].replace("Z","+00:00"))
+        require(expiry<=datetime.datetime.now(datetime.timezone.utc),"another repository lease is active")
+    cp["revision"]+=1
+    cp["reservation"]={"lane":"integration","owner":lease_owner(r),"generation":cp["revision"],"lease_expires_at":(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(minutes=45)).isoformat().replace("+00:00","Z")}
+    put_ops(repo,".agent-ops/checkpoints.json",cp,blob)
+    return cp["reservation"]["generation"]
+def confirm_lease(repo,r,generation):
+    import datetime
+    cp,_=live_checkpoint(repo);a=cp.get("reservation") or {}
+    require(a.get("owner")==lease_owner(r) and a.get("generation")==generation and datetime.datetime.fromisoformat(a["lease_expires_at"].replace("Z","+00:00"))>datetime.datetime.now(datetime.timezone.utc),"integration lease lost")
 def apply():
     repo=scope();r,enabled=read_req(repo);require(enabled,"disabled")
     require(all(r[k]==os.environ.get("EXPECTED_"+k.upper()) for k in ("base","head","tree","request_id")),"request identity mismatch")
     main,pr=refs(repo,r);prior=integrated(repo,r,main)
-    if prior: persist_result(repo,r,prior,pr,True);return
+    if prior:
+        claim(repo,r)
+        persist_result(repo,r,prior,pr,True);return
     require(os.environ.get("VALIDATION_RESULT")=="success","validation not bound to request")
     t=check_live(repo,r);c=commit_for(r,t)
+    generation=claim(repo,r)
     require(ancestor(r["head"],c),"candidate missing head")
     cmd(["gh","auth","setup-git"],timeout=20)
     check_live(repo,r)
+    confirm_lease(repo,r,generation)
     try: p=cas_push(None,"origin","refs/heads/main",r["base"],c);exit_code=p.returncode
     except subprocess.TimeoutExpired: exit_code=None
     actual,pr=refs(repo,r)
