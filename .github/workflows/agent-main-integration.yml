@@ -5,10 +5,14 @@ on:
     paths:
       - '.agent-ops/main-integration-request.json'
       - '.agent-ops/integrate_exact.py'
+      - '.agent-ops/consolidation_test.py'
+      - '.agent-ops/compose.mjs'
+      - '.agent-ops/validate_task.py'
       - '.github/workflows/agent-main-integration.yml'
 permissions:
   contents: read
   pull-requests: read
+  issues: read
   actions: read
 concurrency:
   group: agent-integration-queue
@@ -31,6 +35,8 @@ jobs:
           persist-credentials: false
       - name: Prove exact lease and fail-closed guards
         run: python3 .agent-ops/integrate_exact.py selftest
+      - name: Cross-layer isolated acceptance
+        run: python3 .agent-ops/consolidation_test.py
       - name: Prepare exact snapshot
         id: plan
         env:
@@ -81,6 +87,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+      issues: read
       actions: read
     runs-on: ubuntu-latest
     timeout-minutes: 12
