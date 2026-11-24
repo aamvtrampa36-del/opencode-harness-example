@@ -1,0 +1,42 @@
+name: Agent context on demand
+on:
+  push:
+    branches: [ops/task-checkpoints-v1]
+    paths:
+      - '.agent-ops/context-request.json'
+      - '.agent-ops/compose.mjs'
+      - '.github/workflows/agent-context.yml'
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  actions: read
+concurrency:
+  group: agent-context-request
+  cancel-in-progress: true
+jobs:
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Selftest bounded composition
+        run: node .agent-ops/compose.mjs --selftest
+      - name: Read current task context
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f .agent-ops/context-request.json ]; then exit 0; fi
+          node .agent-ops/compose.mjs --request | tee context-receipt.json
+      - name: Store compact receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: agent-context-receipt
+          path: context-receipt.json
+          if-no-files-found: ignore
+          retention-days: 14
