@@ -3,5 +3,6 @@
   "pr": 105,
   "base": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
   "head": "a320b1eb8346e9e9b1390699306aef24056dda52",
-  "request_id": "validation-acceptance-20261124-105"
+  "request_id": "validation-acceptance-20261124-105",
+  "consumed": true
 }

@@ -45,6 +45,9 @@ jobs:
           import json, os, re, subprocess, sys
           from pathlib import Path
           req=json.loads(Path('.agent-ops/validation-request.json').read_text())
+          if req.get('consumed') is True:
+              print('Request already consumed; no candidate validation repeated.')
+              sys.exit(0)
           repo=os.environ['GITHUB_REPOSITORY'].split('/')[-1]
           assert req['project']==repo
           assert all(re.fullmatch('[a-f0-9]{40}',req[x]) for x in ('base','head'))
@@ -63,7 +66,7 @@ jobs:
           main=identity.get('current_main','')
           # Targeted tests are opt-in, on exact owner PR and current base,
           # only when the existing CI receipt cannot be reused.
-          if req.get('mode')=='targeted' and evidence['static'].get('static_status')=='PASS' and identity.get('head')==req['head'] and re.fullmatch('[a-f0-9]{40}',main) and evidence['ci'].get('status')!='CACHED':
+          if req.get('mode')=='targeted' and evidence['static'].get('profile') not in ('documentation','no-change') and evidence['static'].get('static_status')=='PASS' and identity.get('head')==req['head'] and re.fullmatch('[a-f0-9]{40}',main) and evidence['ci'].get('status')!='CACHED':
               with open(os.environ['GITHUB_OUTPUT'],'a') as out:
                   out.write('targeted=true\nmain='+main+'\nhead='+req['head']+'\n')
           # Never claim acceptance or deployment based on this receipt.
@@ -135,9 +138,11 @@ jobs:
               fi
               ;;
             CDF-WorkBench-)
+              ran=0
               if git diff --cached --name-only HEAD | grep -q '^cloudflare/cdf-workbench-mcp/'; then
                 npm ci --prefix cloudflare/cdf-workbench-mcp --no-audit --no-fund
                 npm test --prefix cloudflare/cdf-workbench-mcp
+                ran=1
               fi
               if git diff --cached --name-only HEAD | grep -Eq '^(plugins/|scripts/|\.github/)'; then
                 python -m pip install PyYAML==6.0.2 cryptography==45.0.7
@@ -147,6 +152,12 @@ jobs:
                 while IFS= read -r -d '' f; do node "$f"; done < <(find /tmp/cdf-workbench-source-tests/skills -type f \( -name '*.test.mjs' -o -name 'test_*.mjs' \) -print0)
                 python scripts/check_release_policy.py
                 python scripts/verify_package.py
+                ran=1
+              fi
+              if [ "$ran" -eq 0 ]; then
+                echo "classification=BLOCKED" >> "$GITHUB_OUTPUT"
+                echo "No applicable targeted suite; use project CI."
+                exit 2
               fi
               ;;
             opencode-harness-example)
@@ -161,13 +172,14 @@ jobs:
         env:
           TARGET_TREE: ${{ steps.tree.outputs.tree }}
           TEST_OUTCOME: ${{ steps.tests.outcome }}
+          TEST_CLASSIFICATION: ${{ steps.tests.outputs.classification }}
           CANDIDATE: ${{ needs.validate.outputs.head }}
           BASE: ${{ needs.validate.outputs.main }}
         run: |
           python3 - <<'PY'
           import json,os
           from pathlib import Path
-          receipt={"schema":"agent-targeted-receipt/v1","base":os.environ["BASE"],"head":os.environ["CANDIDATE"],"tree":os.environ["TARGET_TREE"],"status":"PASS" if os.environ["TEST_OUTCOME"]=="success" and os.environ["TARGET_TREE"] else "FAIL" if os.environ["TEST_OUTCOME"]=="failure" else "BLOCKED","coverage":"targeted synthetic tests only; full CI and deployment independent"}
+          receipt={"schema":"agent-targeted-receipt/v1","base":os.environ["BASE"],"head":os.environ["CANDIDATE"],"tree":os.environ["TARGET_TREE"],"status":"BLOCKED" if os.environ.get("TEST_CLASSIFICATION")=="BLOCKED" else "PASS" if os.environ["TEST_OUTCOME"]=="success" and os.environ["TARGET_TREE"] else "FAIL" if os.environ["TEST_OUTCOME"]=="failure" else "BLOCKED","coverage":"targeted synthetic tests only; full CI and deployment independent"}
           Path("targeted-result.json").write_text(json.dumps(receipt)+"\n")
           print(json.dumps(receipt))
           PY
