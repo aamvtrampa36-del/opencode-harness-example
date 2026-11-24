@@ -1,0 +1,121 @@
+name: R4 independent Staging packages (OFFLINE ONLY)
+on:
+  push:
+    branches: [f0-c10/r4-preparation-42574cb3]
+    paths: [".github/workflows/r4-packages.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: r4-packages-42574cb3
+  cancel-in-progress: false
+jobs:
+  package:
+    if: github.event.repository.private == false && github.run_attempt == 1
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [a, b]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+      SOURCE_SHA: "42574cb3f5ee0cbfab2ce54176145c089edc41df"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "42574cb3f5ee0cbfab2ce54176145c089edc41df"
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.5"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+          no-cache: true
+      - name: Build pinned candidate and capture complete package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          export GITHUB_SHA="$SOURCE_SHA"
+          bun install --frozen-lockfile
+          bun run build
+          CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH=wrangler.g1.jsonc bun run build
+          export TMPDIR="$(mktemp -d)"
+          node scripts/f0-c10/pilot-staging-package.mjs | tee "$RUNNER_TEMP/r4-build.log"
+          mkdir "$RUNNER_TEMP/r4-output"
+          export OUT="$RUNNER_TEMP/r4-output"
+          python - <<'PY'
+          import os,json,pathlib,hashlib,shutil
+          out=pathlib.Path(os.environ['OUT'])
+          lines=[x for x in pathlib.Path(os.environ['RUNNER_TEMP'],'r4-build.log').read_text().splitlines() if x.startswith('PILOT_STAGING_PACKAGE ')]
+          assert len(lines)==1
+          r=json.loads(lines[0].split(' ',1)[1])
+          expected={'source':os.environ['SOURCE_SHA'],'principalConfig':'482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f','mcpConfig':'31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54','assets':{'files':308,'sha256':'be169d6ee98822f733d89029136f925d59cef10ff6932c1988e5fb1e97e51fe7'},'build':{'files':768,'sha256':'293ed81d578c6ff8b0ed6ce574e8ba806a0a9da7692a93923902f52d7243c806'},'bindings':['DEV','OpenCodeAgent','SESSION_BK','SETTINGS'],'migration':'v4','deployed':False}
+          for k,v in expected.items(): assert r[k]==v,(k,r[k],v)
+          packages=list(pathlib.Path(os.environ['TMPDIR']).glob('pilot-staging-*'))
+          assert len(packages)==1
+          root=out/'payload'
+          root.mkdir()
+          for name,src in [('principal',packages[0]/'principal'),('mcp',packages[0]/'mcp'),('dist',pathlib.Path('dist'))]:
+              assert src.is_dir()
+              assert all(not x.is_symlink() for x in src.rglob('*'))
+              shutil.copytree(src,root/name)
+          for name in ['wrangler.g1.jsonc','wrangler.mcp-staging.jsonc']: shutil.copy2(name,root/name)
+          manifest={str(p.relative_to(root)): {'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'size':p.stat().st_size} for p in sorted(root.rglob('*')) if p.is_file()}
+          assert len(manifest)<2000
+          assert sum(v['size'] for v in manifest.values())<=100*1024*1024
+          (out/'inventory.json').write_text(json.dumps(manifest,sort_keys=True))
+          (out/'receipt.json').write_text(json.dumps(r,sort_keys=True))
+          (out/'provenance.json').write_text(json.dumps({'source':os.environ['SOURCE_SHA'],'workflow_run':os.environ['GITHUB_RUN_ID'],'workflow_sha':os.environ['GITHUB_WORKFLOW_SHA'],'tmpdir':os.environ['TMPDIR'],'status':'DIAGNOSTIC_NOT_DEPLOYABLE'},sort_keys=True))
+          PY
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+          cd "$OUT"
+          tar -czf payload.tar.gz payload
+          rm -r payload
+          sha256sum payload.tar.gz inventory.json receipt.json provenance.json > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r4-package-${{ matrix.replica }}
+          path: ${{ runner.temp }}/r4-output/
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0
+  compare:
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r4-package-*
+          path: replicas
+      - name: Verify archives and report every differing file
+        shell: bash
+        run: |
+          set -euo pipefail
+          for d in replicas/r4-package-*; do (cd "$d" && sha256sum -c SHA256SUMS); done
+          python - <<'PY'
+          import pathlib,json,tarfile,hashlib
+          def load(name):
+              d=pathlib.Path('replicas/r4-package-'+name)
+              inv=json.loads((d/'inventory.json').read_text())
+              with tarfile.open(d/'payload.tar.gz') as t:
+                  actual={}
+                  for m in t.getmembers():
+                      if m.isdir(): continue
+                      assert m.isfile() and m.name.startswith('payload/') and '..' not in pathlib.PurePosixPath(m.name).parts
+                      p=m.name[len('payload/'):]
+                      assert p not in actual
+                      b=t.extractfile(m).read()
+                      actual[p]={'sha256':hashlib.sha256(b).hexdigest(),'size':len(b)}
+                  assert actual==inv
+              return inv
+          a,b=load('a'),load('b')
+          delta=[{'path':p,'a':a.get(p),'b':b.get(p)} for p in sorted(a.keys()|b.keys()) if a.get(p)!=b.get(p)]
+          print('R4_DELTA '+json.dumps(delta))
+          print('R4_COMPARISON '+json.dumps({'files_a':len(a),'files_b':len(b),'different':len(delta),'binary_equal':not delta,'liveDispatchAuthorized':False}))
+          PY
