@@ -1,0 +1,107 @@
+name: Agent exact main integration
+on:
+  push:
+    branches: [ops/task-checkpoints-v1]
+    paths:
+      - '.agent-ops/main-integration-request.json'
+      - '.agent-ops/integrate_exact.py'
+      - '.github/workflows/agent-main-integration.yml'
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+concurrency:
+  group: agent-integration-queue
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.plan.outputs.enabled }}
+      base: ${{ steps.plan.outputs.base }}
+      head: ${{ steps.plan.outputs.head }}
+      tree: ${{ steps.plan.outputs.tree }}
+      request_id: ${{ steps.plan.outputs.request_id }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prove exact lease and fail-closed guards
+        run: python3 .agent-ops/integrate_exact.py selftest
+      - name: Prepare exact snapshot
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f .agent-ops/main-integration-request.json ]; then
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 .agent-ops/integrate_exact.py prepare
+  full-validate:
+    needs: prepare
+    if: needs.prepare.outputs.enabled == 'true'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checkout exact combined tree without write credentials
+        env:
+          EXPECTED_BASE: ${{ needs.prepare.outputs.base }}
+          EXPECTED_HEAD: ${{ needs.prepare.outputs.head }}
+          EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+        run: python3 .agent-ops/integrate_exact.py checkout
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Unit tests
+        run: bun test
+      - name: Test real static preview server
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build both Worker and web client
+        run: bun run build
+      - name: Validate security and project invariants
+        run: bun scripts/check-invariants.mjs
+  apply:
+    needs: [prepare, full-validate]
+    if: needs.prepare.outputs.enabled == 'true' && needs.full-validate.result == 'success'
+    permissions:
+      contents: write
+      pull-requests: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Apply tested tree with exact-base lease and reconcile
+        env:
+          EXPECTED_BASE: ${{ needs.prepare.outputs.base }}
+          EXPECTED_HEAD: ${{ needs.prepare.outputs.head }}
+          EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
+          EXPECTED_REQUEST_ID: ${{ needs.prepare.outputs.request_id }}
+          VALIDATION_RESULT: success
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .agent-ops/integrate_exact.py apply
+      - name: Preserve integration evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: main-integration-receipt
+          path: main-integration-receipt.json
+          if-no-files-found: ignore
+          retention-days: 14
