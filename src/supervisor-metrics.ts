@@ -60,3 +60,5 @@ export async function foldSupervisorToolLog(
 
 // Logical evidence counts must never be interpreted as physical native activity.
 export { logicalPhaseCounts } from './metralla-m02-phase-evidence';
+
+export { logicalEvidenceSnapshot } from './metralla-m02-phase-journal';
