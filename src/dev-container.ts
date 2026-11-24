@@ -175,7 +175,10 @@ export class DevContainer extends DurableObject<Env> {
     super(ctx, env);
     const container = ctx.container;
     if (container?.running) {
-      void ctx.blockConcurrencyWhile(() => container.setInactivityTimeout(INACTIVITY_MS));
+      void ctx.blockConcurrencyWhile(async()=>{
+        const p=await ctx.storage.get<{closeUntil:number}>("pilot-deadline-v1");
+        await container.setInactivityTimeout(p?Math.max(1,p.closeUntil-Date.now()):INACTIVITY_MS);
+      });
     }
   }
 
@@ -199,7 +202,14 @@ export class DevContainer extends DurableObject<Env> {
   }
   private async checkPilotWork(){
     const p=await this.ctx.storage.get<{workUntil:number;closeUntil:number}>("pilot-deadline-v1");
-    if(p&&Date.now()>=p.workUntil)throw Error("PILOT_CONTAINER_WORK_EXPIRED");
+    if(p&&(Date.now()>=p.workUntil||await this.ctx.storage.get("pilot-close-requested-v1")))throw Error("PILOT_CONTAINER_WORK_EXPIRED");
+    return p;
+  }
+  private async pilotSignal(limit:number){
+    const p=await this.checkPilotWork();
+    const ms=p?Math.min(limit,p.workUntil-Date.now()):limit;
+    if(ms<=0)throw Error("PILOT_CONTAINER_WORK_EXPIRED");
+    return AbortSignal.timeout(ms);
   }
   private async scheduleCheck(){
     const p=await this.ctx.storage.get<{workUntil:number;closeUntil:number}>("pilot-deadline-v1");
@@ -225,13 +235,13 @@ export class DevContainer extends DurableObject<Env> {
       const savedAt = await this.ctx.storage.get<number>("savedAt");
       const lastActivity = await this.ctx.storage.get<number>("lastActivity");
       assertRecoverableContainer(snapshotId, savedAt, lastActivity, Date.now());
-      await this.checkPilotWork();
+      const pilot=await this.checkPilotWork();
       container.start({
         ...(snapshotId
           ? { containerSnapshot: { id: snapshotId } }
           : { image: "cloudflare/debian-trixie" }),
         entrypoint: ["sleep", "infinity"],
-        enableInternet: true,
+        enableInternet: !pilot,
         instance: "basic"
       });
       // If snapshot restore fails, fail closed rather than losing project data.
@@ -239,7 +249,8 @@ export class DevContainer extends DurableObject<Env> {
         await this.ctx.storage.put("lastActivity", Date.now());
       }
     }
-    await container.setInactivityTimeout(INACTIVITY_MS);
+    const pilot=await this.checkPilotWork();
+    await container.setInactivityTimeout(pilot?Math.max(1,pilot.closeUntil-Date.now()):INACTIVITY_MS);
     if ((await this.ctx.storage.getAlarm()) === null) {
       await this.scheduleCheck();
     }
@@ -459,9 +470,11 @@ export class DevContainer extends DurableObject<Env> {
         await this.recordProject(id);
         return existing;
       }
+      const pilot=await this.checkPilotWork();
       const pending = await this.ctx.storage.get<{
         project: string; repository: string; sourceCommit?: string; sourceTree?: string
       }>("repo-import-pending-v1");
+      if(pilot&&pending)throw Error("PILOT_IMPORT_EFFECT_UNKNOWN");
       if (pending && (pending.project !== id ||
           pending.repository.toLowerCase() !== repository.toLowerCase() ||
           (pending.sourceCommit ?? "") !== (sourceCommit ?? "") ||
@@ -476,7 +489,8 @@ export class DevContainer extends DurableObject<Env> {
         ...(sourceTree ? { sourceTree } : {})
       });
       const token = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN || await settings.getGitHubKey();
-      const source = await githubSourceArchive(repository, token || "", allowed, fetch, sourceCommit, sourceTree);
+      const http:typeof fetch=pilot?async(input,init)=>fetch(input,{...init,signal:AbortSignal.any([await this.pilotSignal(120_000),...(init?.signal?[init.signal]:[])])}):fetch;
+      const source = await githubSourceArchive(repository, token || "", allowed, http, sourceCommit, sourceTree);
       const container = await this.ensureRunning();
       this.busy++;
       try {
@@ -485,7 +499,7 @@ export class DevContainer extends DurableObject<Env> {
         const process = await container.exec(
           ["node", "--input-type=module", "-e", GITHUB_IMPORT_SOURCE, id,
             ...(sourceTree ? [sourceTree] : [])],
-          { stdin: source.stream, signal: AbortSignal.timeout(120_000) }
+          { stdin: source.stream, signal: await this.pilotSignal(120_000) }
         );
         const [stdout, stderr, exitCode] = await Promise.all([
           captureBoundedOutput(process.stdout, 4_096),
@@ -531,7 +545,7 @@ export class DevContainer extends DurableObject<Env> {
     this.busy++;
     await this.ctx.storage.put("lastActivity", Date.now());
     try {
-      const process = await container.exec(["node", "-e", INSPECT_SOURCE, id, action, target]);
+      const process = await container.exec(["node", "-e", INSPECT_SOURCE, id, action, target],{signal:await this.pilotSignal(30_000)});
       const output = await process.output();
       const decoder = new TextDecoder();
       if (output.exitCode !== 0) {
@@ -606,8 +620,10 @@ export class DevContainer extends DurableObject<Env> {
     this.busy++;
     await this.ctx.storage.put("lastActivity", Date.now());
     try {
-      await this.ensureGitAvailable(container);
-      if (commandRequiresBun(command)) await this.ensureBunAvailable(container);
+      const pilot=await this.checkPilotWork();
+      if(!pilot){await this.ensureGitAvailable(container);
+        if(commandRequiresBun(command))await this.ensureBunAvailable(container);}
+      else if(commandRequiresBun(command))throw Error("PILOT_OFFLINE_USE_NODE_OR_GITHUB_CI");
       // A Node supervisor owns only this command's private process group.
       // It closes inherited pipes after bounded cleanup; detached descendants
       // remain outside this guarantee (see R2-T06 negative fixtures).
@@ -616,7 +632,7 @@ export class DevContainer extends DurableObject<Env> {
         "cd /workspace/projects/" + project,
         "exec node -e \"$2\" \"$1\""
       ].join(" && ");
-      const process = await container.exec(["bash", "-lc", wrapper, "opencode", command, LINUX_RUNNER_SOURCE]);
+      const process = await container.exec(["bash", "-lc", wrapper, "opencode", command, LINUX_RUNNER_SOURCE],pilot?{signal:await this.pilotSignal(180_000)}:undefined);
       // Drain both pipes while the process runs. output() accumulates unbounded
       // stdout/stderr *before* a later slice, which can exhaust the DO isolate.
       const [stdout, stderr, exitCode] = await Promise.all([
@@ -684,10 +700,24 @@ export class DevContainer extends DurableObject<Env> {
     }
   }
 
+  /** Stop admitting work, preserve files via normal snapshot, report state. */
+  async closePilotProject(project:string){
+    if(this.ctx.id.name!=="project-v1:"+project||!/^supervised-[a-f0-9]{16}$/.test(project))throw Error("PILOT_CONTAINER_SCOPE");
+    const p=await this.ctx.storage.get<{project:string;workUntil:number;closeUntil:number}>("pilot-deadline-v1");
+    if(!p){if(this.ctx.container?.running||await this.ctx.storage.get("lastActivity"))throw Error("PILOT_CONTAINER_UNTRACKED");
+      return {running:false,close:{status:"never-started",at:Date.now()}};}
+    if(p.project!==project)throw Error("PILOT_CONTAINER_SCOPE");
+    await this.ctx.storage.put("pilot-close-requested-v1",true);
+    await this.alarm();
+    return {running:this.ctx.container?.running??false,close:await this.ctx.storage.get("pilot-close-v1")??null};
+  }
   /** Durable Object alarm: checkpoint then suspend the idle VM. */
   async alarm() {
     const container = this.ctx.container;
-    if (!container?.running) return;
+    if (!container?.running) {
+      if(await this.ctx.storage.get("pilot-deadline-v1"))await this.ctx.storage.put("pilot-close-v1",{status:"not-running",at:Date.now()});
+      return;
+    }
     if (this.busy > 0) {
       await this.scheduleCheck();
       return;
@@ -696,7 +726,8 @@ export class DevContainer extends DurableObject<Env> {
     const lastActivity = (await this.ctx.storage.get<number>("lastActivity")) ?? 0;
     const savedAt = (await this.ctx.storage.get<number>("savedAt")) ?? 0;
     const pilot=await this.ctx.storage.get<{workUntil:number;closeUntil:number}>("pilot-deadline-v1");
-    const idle = Date.now() - lastActivity >= IDLE_MS || Boolean(pilot&&Date.now()>=pilot.workUntil);
+    if(pilot&&Date.now()>=pilot.closeUntil){await this.scheduleCheck();return;}
+    const idle = pilot ? Date.now()>=pilot.workUntil||Boolean(await this.ctx.storage.get("pilot-close-requested-v1")) : Date.now()-lastActivity>=IDLE_MS;
     const checkpointDue = lastActivity > savedAt && Date.now() - savedAt >= CHECKPOINT_MS;
 
     if (idle || checkpointDue) {
@@ -706,7 +737,7 @@ export class DevContainer extends DurableObject<Env> {
       } catch (error) {
         // Never destroy the only unsaved copy of a project.
         console.error("Linux checkpoint failed", error instanceof Error ? error.message : "unknown");
-        await container.setInactivityTimeout(INACTIVITY_MS);
+        if(!pilot)await container.setInactivityTimeout(INACTIVITY_MS);
         await this.scheduleCheck();
         return;
       }
@@ -719,7 +750,7 @@ export class DevContainer extends DurableObject<Env> {
       if(pilot&&container.running)await this.scheduleCheck();
       return;
     }
-    await container.setInactivityTimeout(INACTIVITY_MS);
+    if(!pilot)await container.setInactivityTimeout(INACTIVITY_MS);
     await this.scheduleCheck();
   }
 

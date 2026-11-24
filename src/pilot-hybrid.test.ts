@@ -21,7 +21,8 @@ function fixture(){
  }} as unknown as DurableObjectStorage;
  const proof:PilotDispatchEvidence={kind:"pilot-risk-bounded-v1",experimentId:id,instance,validUntil:createdAt+800000,
    residualRiskExplicitlyAccepted:true,exclusiveLeaseVerified:true,actualSdkInterceptorVerified:true,noUncontrolledRoutesVerified:true,
-   closeVerified:true,billingHeadroomVerified:true,plannedOtherMicroUsd:500000};
+   closeVerified:true,billingHeadroomVerified:true,plannedOtherMicroUsd:500000,
+   inputBounds:{free:{maxWireBytes:48*1024,maxInputTokens:64000,receipt:"a".repeat(64)},glm:{maxWireBytes:48*1024,maxInputTokens:64000,receipt:"b".repeat(64)}}};
  const ctx:PilotContext={storage,grant:{id,token:"token",generation:1},policy,proof};
  let free=0,paid=0;let mode="ok";let key:string|undefined="offline-dummy";
  const response=(model:string,cost:number)=>Response.json({id:crypto.randomUUID(),object:"chat.completion",created:1,model,
@@ -73,4 +74,10 @@ test("pinned Agents model language hook actually reaches the metered binding",as
  const result=await event.language.doStream({prompt:[{role:"user",content:[{type:"text",text:"test"}]}],headers:{"x-opencode-session-id":session},maxOutputTokens:8000});
  const reader=result.stream.getReader();let parts=0;for(;;){const x=await reader.read();if(x.done)break;parts++;}
  expect(parts).toBeGreaterThan(0);expect(f.counts()).toEqual([1,0]);
+});
+
+test("input certificate must cover final serialized payload before dispatch",async()=>{
+ const f=fixture();f.ctx.proof.inputBounds.free.maxWireBytes=50;
+ await expect(f.call()).rejects.toThrow("PILOT_INPUT_BOUND_UNCERTIFIED");
+ expect(f.counts()).toEqual([0,0]);
 });

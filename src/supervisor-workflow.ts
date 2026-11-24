@@ -20,7 +20,7 @@ import type { SessionBackupDrillAgent } from "./session-sql-backup-do";
 type SupervisorWorkflowCommand =
   | ({ action: "start"; requestId: string; repository: string; prompt: string } &
       import("./staging-control-mcp/start-contract").ReadOnlyStartFields)
-  | { action: "status" | "cancel" | "review"; id: string }
+  | { action: "status" | "cancel" | "review" | "pilot_close"; id: string }
   | { action: "recovery_drill" }
   | { action: "joint_prepare" }
   | { action: "joint_verify_cleanup"; nonce: string }
@@ -351,6 +351,10 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
         return input.mode === "read_only"
           ? JSON.parse(boundedMcpJsonText(receipt, undefined, undefined, true))
           : receipt;
+      }
+      if (args.action === "pilot_close") {
+        if(Object.keys(args).some(k=>!["action","id"].includes(k))||typeof args.id!=="string")throw Error("PILOT_CLOSE_INVALID");
+        return host.closePilotTask(args.id);
       }
       if (args.action === "status" || args.action === "cancel" || args.action === "review") {
         if (Object.keys(args).some(k => !["action", "id"].includes(k)))

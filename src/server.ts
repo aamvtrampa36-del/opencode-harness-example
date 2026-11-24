@@ -4,6 +4,8 @@ export { PersonalSettings };
 export { OpenCodeSupervisorWorkflow } from "./supervisor-workflow";
 import { DevContainer } from "./dev-container";
 import { makePilotHybridBinding, pilotHybridPlugin, type PilotContext } from "./pilot-hybrid";
+import { PILOT_REPO, PILOT_BASE, PILOT_CLAIM, parsePilotApproval, evidenceFromClaim, type PilotClaim } from "./pilot-authorization";
+declare const __OPENCODE_RELEASE_SHA__: string;
 import { PILOT_GLM, PILOT_BACKUP, PILOT_CLOSE_MS, pilotBudgetPolicy, pilotDispatchEvidenceValid,
   type PilotDispatchEvidence } from "./supervisor-inference-budget";
 export { DevContainer };
@@ -128,8 +130,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const start = await trace.run("admission", "validate", async () =>
       validateSupervisorStart(raw, await this.personalConfig.getAllowedRepositories()));
     const pilotLane = this.pilotLaneId();
-    if (pilotLane && (start.requestId !== pilotLane || start.model !== PILOT_BACKUP || start.mode || start.sourceSession ||
-        !pilotDispatchEvidenceValid(pilotBudgetPolicy(pilotLane,this.pilotInstance,Date.now()),this.pilotDispatchEvidence())))
+    const pilotApproval = pilotLane ? this.pilotApproval() : undefined;
+    if (pilotLane && (start.requestId !== pilotLane || start.repository!==PILOT_REPO || start.model !== PILOT_BACKUP || start.mode || start.sourceSession || !pilotApproval))
       return {id:start.requestId,accepted:false,confirmed:false,stop:true,reason:"PILOT_DISPATCH_STOP"};
     // C05 has no independently verified provider/overhead cutoff. Deny new
     // read_only work before admission or Container/SDK effects, regardless of
@@ -139,6 +141,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         reason: "SUPERVISOR_READ_ONLY_PROVIDER_DISPATCH_NOT_AUTHORIZED" };
     const key = supervisorTaskKey(start.requestId);
     const fingerprint = await supervisorFingerprint(start);
+    if(pilotApproval && fingerprint!==pilotApproval.fingerprint)throw Error("PILOT_PROMPT_MISMATCH");
     let old = await this.ctx.storage.get<SupervisorTask>(key);
     if (pilotLane && old) return {id:start.requestId,accepted:false,confirmed:false,stop:true,reason:"PILOT_NO_REPLAY"};
     let reused = Boolean(old);
@@ -181,9 +184,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       sessionCreationAttempted: false, sessionIdPolicy: "deterministic-v1", revision: 0,
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
+    const pilotClaim = pilotApproval ? {approval:pilotApproval,instance:this.pilotInstance,
+      objectId:this.ctx.id.toString(),startedAt:job.createdAt} : undefined;
     const admission = await trace.run("admission", "reserve", () =>
       reserveSupervisorAdmission(this.ctx.storage, job, undefined, start.mode === "read_only"
-        ? { commit: start.sourceCommit!, tree: start.sourceTree! } : undefined));
+        ? { commit: start.sourceCommit!, tree: start.sourceTree! } : undefined,pilotClaim));
     if (admission.kind === "capacity") {
       return { id: start.requestId, accepted: false,
         status: admission.reason === "CAPACITY_EXHAUSTED" ? "capacity_rejected" : "admission_stopped",
@@ -474,11 +479,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (job.mode === "read_only") return this.advanceReadOnlyTask(job, start, reused, grant, trace);
     const key = supervisorTaskKey(job.id);
     try {
+      if(this.pilotLaneId())await this.requirePilotTask(job);
       if (!job.baseCommit) {
         // The deterministic branch reservation safely recovers after a lost GitHub response.
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "github_branch");
         const branchResult = await trace.run("github_branch", "ensure", () =>
-          this.githubRunner.ensureSupervisorBranch(job.repository, job.branch));
+          this.githubRunner.ensureSupervisorBranch(job.repository, job.branch, job.pilotInstance?job:undefined));
         const sha = supervisorBaseCommit(branchResult, job.repository);
         await supervisorConfirmExternalEffect(this.ctx.storage, grant, "github_branch", { confirmed: true });
         job = await this.updatePreparingSupervisorTask(grant, fresh => {
@@ -486,6 +492,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           return { ...fresh, baseCommit: sha };
         });
       }
+      if(this.pilotLaneId())await this.requirePilotTask(job);
       if (!job.session) {
         if (job.sessionIdPolicy !== "deterministic-v1" || start.sourceSession ||
             supervisorSessionCreationDisposition(job) !== "create") {
@@ -522,6 +529,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       }
       await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
       const handle = this.harness.session(job.session!);
+      if(this.pilotLaneId())await this.requirePilotTask(job);
       if (!job.operationId) {
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "configure");
         await trace.run("configure", "setAgent", () => handle.setAgent("build"));
@@ -576,6 +584,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       return this.supervisorTaskReceipt(job, reused);
     }
     try {
+      if(this.pilotLaneId())await this.requirePilotTask(job);
       await supervisorBeginExternalEffect(this.ctx.storage, grant, "submit");
       const submitSession = job.session;
       const submitCommit = job.baseCommit;
@@ -987,6 +996,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return await trace.run("cleanup", "artifactVerify", () => verifiedArtifactDownload(record));
   }
 
+  async closePilotTask(id:string){
+    this.assertStagingRemote();
+    if(id!==this.pilotLaneId())throw Error("PILOT_SESSION_FORBIDDEN");
+    const task=await this.supervisedRecord(id);
+    if(!task.pilotInstance)throw Error("PILOT_TASK_FENCED");
+    const cancellation=await this.cancelSupervisedTask(id);
+    const container=await this.env.DEV.getByName(projectContainerName(task.project)).closePilotProject(task.project).catch(()=>({running:null,close:null}));
+    return {id,cancellation,container,verified:false};
+  }
   async remoteSupervisorTaskStatusSnapshot(id: string): Promise<unknown> {
     this.assertStagingRemote();
     if (!/^[a-f0-9]{16}$/.test(id)) throw new Error("SUPERVISOR_TASK_ID_INVALID");
@@ -1811,10 +1829,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       ? await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(match[1])) : undefined;
     if (task?.mode === "read_only") throw Error("SUPERVISOR_READ_ONLY_PUBLICATION_FORBIDDEN");
     assertSupervisedPublicationScope(input, sessionID, task);
+    const pilot=this.pilotLaneId()?await this.pilotContext(sessionID):undefined;
     const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
       || await this.personalConfig.getGitHubKey();
     if (!key) throw Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
-    return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
+    return new GitHubBridge(key, this.pilotGitHubFetch(pilot?.proof.validUntil),
       await this.personalConfig.getAllowedRepositories(),
       new DurableGitHubPublicationGate(this.ctx.storage, Date.now, async (tx, scope) => {
         const match = /^opencode\/staging-([a-f0-9]{16})$/.exec(scope.branch);
@@ -1822,11 +1841,21 @@ export class OpenCodeAgent extends DurableObject<Env> {
           ? await tx.get<SupervisorTask>(supervisorTaskKey(match[1])) : undefined;
         if (current?.mode === "read_only") throw Error("SUPERVISOR_READ_ONLY_PUBLICATION_FORBIDDEN");
         assertSupervisedPublicationScope(input, sessionID, current);
-      })).execute(input);
+      }),pilot?{branch:input.branch,sha:task!.baseCommit!,base:PILOT_BASE}:undefined).execute(input);
   }
 
   private readonly githubRunner = {
     execute: async (input: Parameters<GitHubBridge["execute"]>[0], sessionID?: string) => {
+      const pilot=this.pilotLaneId()?await this.pilotContext(sessionID??""):undefined;
+      const pilotTask=pilot?await this.supervisedRecord(pilot.grant.id):undefined;
+      if(pilotTask){
+        if(input.repo.toLowerCase()!==PILOT_REPO||("branch" in input&&input.branch!==pilotTask.branch)||input.action==="branch")throw Error("PILOT_GITHUB_SCOPE");
+        if(input.action==="read"){
+          if(input.ref&&![pilotTask.baseCommit,pilotTask.branch].includes(input.ref))throw Error("PILOT_GITHUB_REF");
+          input={...input,ref:input.ref??pilotTask.baseCommit};
+        }
+        if(input.action==="write"&&!["src/client.tsx","src/client-repository-mode.test.ts"].includes(input.path))throw Error("PILOT_GITHUB_PATH");
+      }
       if (sessionID) {
         const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
         const task = await this.readOnlyTaskForScope(scope, sessionID);
@@ -1861,8 +1890,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
         || await this.personalConfig.getGitHubKey();
       if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
       // Wrap the global fetch so it is called with the correct receiver in Workers.
-      return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
-        await this.personalConfig.getAllowedRepositories()).execute(input);
+      return new GitHubBridge(key, this.pilotGitHubFetch(pilot?.proof.validUntil),
+        await this.personalConfig.getAllowedRepositories(),undefined,pilotTask?{branch:pilotTask.branch,sha:pilotTask.baseCommit!,base:PILOT_BASE}:undefined).execute(input);
     },
     resolveReadOnlySource: async (repo: string, sourceCommit: string, sourceTree: string) => {
       const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
@@ -1871,12 +1900,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
       return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
         await this.personalConfig.getAllowedRepositories()).resolveReadOnlySource(repo, sourceCommit, sourceTree);
     },
-    ensureSupervisorBranch: async (repo: string, branch: string) => {
+    ensureSupervisorBranch: async (repo: string, branch: string, pilotTask?:SupervisorTask) => {
+      const proof=pilotTask?await this.requirePilotTask(pilotTask):undefined;
+      const approval=pilotTask?this.pilotApproval(pilotTask.createdAt):undefined;
+      if(this.pilotLaneId()&&(!proof||!approval))throw Error("PILOT_BRANCH_AUTHORIZATION");
       const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
         || await this.personalConfig.getGitHubKey();
       if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
-      return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
-        await this.personalConfig.getAllowedRepositories()).ensureSupervisorBranch(repo, branch);
+      return new GitHubBridge(key, this.pilotGitHubFetch(proof?.validUntil),
+        await this.personalConfig.getAllowedRepositories(),undefined,approval?{branch,sha:approval.releaseSha,base:PILOT_BASE}:undefined).ensureSupervisorBranch(repo, branch);
     }
   };
   async isOpenRouterConfigured(): Promise<boolean> {
@@ -2101,9 +2133,33 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if(!/^[a-f0-9]{16}$/.test(id))throw Error("PILOT_ID_INVALID");
     return id;
   }
-  // No caller-controlled proof. Activation requires a later authorized,
-  // independently verified server-side evidence producer. STOP_LIVE.
-  private pilotDispatchEvidence():PilotDispatchEvidence|undefined { return undefined; }
+  // The deployment owner supplies independently reviewed receipt digests
+  // only in a separately authorized Staging version. No binding in source.
+  private pilotApproval(now=Date.now()){
+    const id=this.pilotLaneId();
+    if(!id)return undefined;
+    this.assertStagingRemote();
+    return parsePilotApproval((this.env as Env & {OPENCODE_PILOT_AUTHORIZATION?:string}).OPENCODE_PILOT_AUTHORIZATION,
+      typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"",id,now);
+  }
+  private async pilotDispatchEvidence(task:SupervisorTask):Promise<PilotDispatchEvidence|undefined> {
+    const claim=await this.ctx.storage.get<PilotClaim>(PILOT_CLAIM);
+    return evidenceFromClaim(claim,this.pilotApproval(task.createdAt),this.pilotInstance,this.ctx.id.toString(),task);
+  }
+  private async requirePilotTask(task:SupervisorTask){
+    if(!this.pilotLaneId())return;
+    const proof=await this.pilotDispatchEvidence(task);
+    if(!proof)throw Error("PILOT_DISPATCH_STOP");
+    return proof;
+  }
+  private pilotGitHubFetch(until?:number):typeof fetch{
+    return (url,init)=>{
+      if(until===undefined)return globalThis.fetch(url,init);
+      const ms=until-Date.now();
+      if(ms<=0)throw Error("PILOT_WORK_EXPIRED");
+      return globalThis.fetch(url,{...init,redirect:"error",signal:AbortSignal.any([AbortSignal.timeout(Math.min(ms,30_000)),...(init?.signal?[init.signal]:[])])});
+    };
+  }
   private async pilotContext(sessionID:string):Promise<PilotContext> {
     const id=this.pilotLaneId();
     if(!id || sessionID!==r2SessionId(id))throw Error("PILOT_SESSION_FORBIDDEN");
@@ -2111,7 +2167,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const slot=await supervisorAdmissionSlot(this.ctx.storage,id);
     if(!task || !slot || task.session!==sessionID || task.pilotInstance!==this.pilotInstance ||
         task.status!=="running" || task.model!==PILOT_BACKUP)throw Error("PILOT_TASK_FENCED");
-    const policy=pilotBudgetPolicy(id,this.pilotInstance,task.createdAt),proof=this.pilotDispatchEvidence();
+    const policy=pilotBudgetPolicy(id,this.pilotInstance,task.createdAt),proof=await this.pilotDispatchEvidence(task);
     if(!proof || !pilotDispatchEvidenceValid(policy,proof))throw Error("PILOT_DISPATCH_STOP");
     return {storage:this.ctx.storage,grant:{id,token:slot.token,generation:slot.generation},policy,proof};
   }
@@ -2244,7 +2300,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         config: { default_agent: "build" },
         // Native OpenRouter discovery is opt-in and only activated when
         // the private Cloudflare Secret is available.
-        models: { fetch: true },
+        models: { fetch: !this.pilotLaneId() },
         // OpenCode is silent unless given a log writer.
         log: {
           level: "warn",

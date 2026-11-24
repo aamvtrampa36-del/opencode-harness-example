@@ -1,4 +1,5 @@
 import { supervisorStartOperationId, supervisorTaskKey, type SupervisorTask } from "./supervisor-control";
+import { PILOT_CLAIM, validatePilotClaim, type PilotClaim } from "./pilot-authorization";
 import { auditLegacyCapacity, type AdmissionCapacityEvidence,
   type LegacyCapacityStop } from "./supervisor-legacy-capacity";
 import { r2TurnAdmission, r2SessionId, r2TurnJournalKey, r2TerminalNativeReceipt, type R2TurnJournal } from "./supervisor-r2";
@@ -56,7 +57,7 @@ function newGrant(id: string, generation: number, now: number): AdmissionSlot {
 /** Never auto-reclaim ambiguous external effects merely because a TTL elapsed. */
 export async function reserveSupervisorAdmission(
   storage: DurableObjectStorage, candidate: SupervisorTask, now = Date.now(),
-  readOnlyPins?: ReadOnlySourcePins
+  readOnlyPins?: ReadOnlySourcePins, pilot?: PilotClaim
 ): Promise<AdmissionDecision> {
   if (!Number.isSafeInteger(now) || now < 0) throw new Error("ADMISSION_CLOCK_INVALID");
   const key = supervisorTaskKey(candidate.id);
@@ -65,6 +66,12 @@ export async function reserveSupervisorAdmission(
   if (readOnlyPins) { validClock(now); validateReadOnlyCandidate(candidate, readOnlyPins); }
   return storage.transaction(async tx => {
     const old = await tx.get<SupervisorTask>(key);
+    const previousPilot=await tx.get<PilotClaim>(PILOT_CLAIM);
+    if(Boolean(candidate.pilotInstance)!==Boolean(pilot))throw Error("PILOT_AUTHORIZATION_REQUIRED");
+    if(pilot){
+      validatePilotClaim(pilot,candidate,now);
+      if(previousPilot||old)throw Error("PILOT_NO_REPLAY");
+    }else if(previousPilot&&now<previousPilot.startedAt+20*60_000)throw Error("PILOT_EXCLUSIVE_LANE");
     const journal = await readOnlyJournal(tx, candidate.id);
     if (old && isReadOnlyTask(old) !== readOnly || journal && !old ||
         old && readOnly && (!journal || !samePins(journal.pins, readOnlyPins!)) ||
@@ -125,8 +132,10 @@ export async function reserveSupervisorAdmission(
       // Not accepted and no task record: explicit backpressure, no lost work.
       return { kind: "capacity", reason: "CAPACITY_EXHAUSTED", retryAfterMs: 1_000 };
     }
+    if(pilot && Object.keys(ledger.slots).length!==0)throw Error("PILOT_EXCLUSIVE_SLOT_REQUIRED");
     const slot = newGrant(candidate.id, 1, now);
     ledger.slots[candidate.id] = slot;
+    if(pilot)await tx.put(PILOT_CLAIM,pilot);
     await tx.put(key, candidate);
     if (readOnlyPins) await tx.put(readOnlyJournalKey(candidate.id), {
       version: 1, pins: {commit:readOnlyPins.commit,tree:readOnlyPins.tree},

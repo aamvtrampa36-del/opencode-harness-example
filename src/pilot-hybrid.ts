@@ -50,7 +50,7 @@ function quotaRejected(response:Response, data:Record<string,any>) {
   // Only an explicit router admission refusal, never generic HTTP 429,
   // upstream error, incomplete stream, or a response with generation data.
   return response.status===429 && data.error?.code===429 &&
-    data.error?.metadata?.limit_source==="openrouter_free_tier_per_minute" &&
+    ["openrouter_free_tier_per_minute","openrouter_free_tier_per_day"].includes(data.error?.metadata?.limit_source) &&
     !data.error.metadata.provider_name && !data.id && !data.choices && !data.usage;
 }
 /** Actual Agents language-model binding seam, not an additional agent loop.
@@ -75,6 +75,13 @@ export function makePilotHybridBinding(binding:Ai, context:(session:string)=>Pro
       const selection=await pilotProviderSelection(c.storage,c.grant,c.policy,makeIntent(PILOT_FREE),!key);
       const one=async(selection:string):Promise<Response|null>=>{
         const i=makeIntent(selection);
+        const payload=selection===PILOT_FREE?{...body,model:"openrouter/free",max_tokens:PILOT_OUTPUT_TOKENS,n:1,stream:false,
+          provider:{max_price:{prompt:0,completion:0,request:0,image:0,audio:0},require_parameters:true,allow_fallbacks:false}}:
+          {...body,max_completion_tokens:PILOT_OUTPUT_TOKENS,n:1,stream:false,parallel_tool_calls:false};
+        const encoded=JSON.stringify(payload), bound=selection===PILOT_FREE?c.proof.inputBounds?.free:c.proof.inputBounds?.glm;
+        // Must cover the final wire shape, including templates/tools and all
+        // allowed provider tokenizers. Bytes alone are not token proof.
+        check(bound&&new TextEncoder().encode(encoded).length<=bound.maxWireBytes&&bound.maxInputTokens<=PILOT_INPUT_TOKENS,"PILOT_INPUT_BOUND_UNCERTIFIED");
         const remaining=Math.min(120_000,c.policy.hybrid!.workUntil-Date.now(),c.proof.validUntil-Date.now());
         check(remaining>0 && !options.signal?.aborted,"PILOT_DEADLINE");
         const signal=AbortSignal.any([AbortSignal.timeout(remaining),...(options.signal?[options.signal]:[])]);
@@ -89,17 +96,16 @@ export function makePilotHybridBinding(binding:Ai, context:(session:string)=>Pro
             check(key,"PILOT_FREE_KEY_MISSING");
             response=await request(ENDPOINT,{method:"POST",redirect:"error",signal,
               headers:{"Authorization":"Bearer "+key,"Content-Type":"application/json"},
-              body:JSON.stringify({...body,model:"openrouter/free",max_tokens:PILOT_OUTPUT_TOKENS,n:1,stream:false,
-                provider:{max_price:{prompt:0,completion:0,request:0,image:0,audio:0},require_parameters:true,allow_fallbacks:false}})});
+              body:encoded});
           }else{
             check(selection===PILOT_BACKUP,"PILOT_PROVIDER_FORBIDDEN");
-            response=await raw.run(PILOT_GLM,{...body,max_completion_tokens:PILOT_OUTPUT_TOKENS,stream:false},{returnRawResponse:true,signal});
+            response=await raw.run(PILOT_GLM,payload,{returnRawResponse:true,signal});
           }
           check(!signal.aborted,"PILOT_DEADLINE");
           let data=await readJson(response);
           if(selection===PILOT_FREE && quotaRejected(response,data)){
             await rejectInferenceBeforeGeneration(c.storage,i,{origin:"trusted-provider-adapter",beforeGeneration:true,
-              code:"429",preGenerationSource:"openrouter_free_tier_per_minute"});
+              code:"429",preGenerationSource:data.error.metadata.limit_source});
             return null;
           }
           check(response.ok,"PILOT_PROVIDER_REJECTED");

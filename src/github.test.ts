@@ -629,3 +629,21 @@ describe("GitHub bounded replacement guards", () => {
     expect(calls.some(item => item.method === "PUT")).toBe(false);
   });
 });
+
+test("pilot branch uses exact integrator SHA, never legacy staging or moved base",async()=>{
+ const repo="aamvtrampa36-del/opencode-harness-example",branch="opencode/staging-a1234567890bcdef",base="f0-c10/integracion-final-20261123",sha="a".repeat(40);
+ let tip=sha,posted=0;
+ const http=(async(url:any,init:any={})=>{
+   const u=String(url);
+   if(u.endsWith("/repos/"+repo))return Response.json({default_branch:"main"});
+   if(u.endsWith("/git/ref/heads/"+encodeURIComponent(base)))return Response.json({object:{sha:tip}});
+   if(u.endsWith("/git/ref/heads/"+encodeURIComponent(branch)))return Response.json({}, {status:404});
+   if(u.endsWith("/git/refs")&&init.method==="POST"){posted++;const b=JSON.parse(init.body);expect(b.sha).toBe(sha);return Response.json({object:{sha}});}
+   throw Error("unexpected route "+u);
+ }) as typeof fetch;
+ const api=new GitHubBridge("test",http,[repo],undefined,{base,branch,sha});
+ expect(await api.ensureSupervisorBranch(repo,branch)).toMatchObject({source:base,sha});
+ tip="b".repeat(40);
+ await expect(api.ensureSupervisorBranch(repo,branch)).rejects.toThrow("PILOT_SOURCE_SHA_CHANGED");
+ expect(posted).toBe(1);
+});

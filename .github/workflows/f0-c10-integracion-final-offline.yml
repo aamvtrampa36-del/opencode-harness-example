@@ -65,4 +65,9 @@ jobs:
         run: bun run typecheck
       - run: bun run build
       - run: bun scripts/check-invariants.mjs
+      - name: Exact Staging packaging (no deploy or upload)
+        run: |
+          set -euo pipefail
+          CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH=wrangler.g1.jsonc bun run build
+          node scripts/f0-c10/pilot-staging-package.mjs
       - run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"

@@ -3,6 +3,7 @@ import { reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot, hasSupervisorAdmissionSlot,
   reconcileSupervisorSubmittedEffect, type StartGrant } from "./supervisor-admission";
 import type { SupervisorTask } from "./supervisor-control";
+import { PILOT_CLAIM, parsePilotApproval, evidenceFromClaim, type PilotApproval, type PilotClaim } from "./pilot-authorization";
 
 /** Test double with serialized, rollback-capable durable transactions. */
 class DurableFake {
@@ -185,4 +186,28 @@ describe("F0-C10/R2-T03 durable admission (Cloudflare transaction interface, off
       {status:"done"})).toBe(true);
     expect((await supervisorAdmissionSlot(s.asDO(),id(1)))?.phase).toBe("running");
   });
+});
+
+test("pilot authorization is single-use, exact-release, fingerprint and process bound",async()=>{
+  const s=new DurableFake(), now=1000, instance="12345678-1234-1234-1234-123456789abc", objectId="a".repeat(64);
+  const candidate={...task(50),createdAt:now,model:"cloudflare" as const,pilotInstance:instance};
+  const receipt="b".repeat(64), release="c".repeat(40);
+  const approval:PilotApproval={schema:"pilot-release-v1",environment:"staging",requestId:candidate.id,releaseSha:release,fingerprint:candidate.fingerprint,notBefore:now-1,expiresAt:now+1800000,ciRun:"1234",approvalRef:"synthetic-test-only",residualRisk:"accepted-bounded-trial",plannedOtherMicroUsd:500000,
+    evidence:{sdkOffline:receipt,routeControls:receipt,closeControls:receipt,billingHeadroom:receipt,freeInputBound:receipt,glmInputBound:receipt},
+    inputBounds:{free:{maxWireBytes:10000,maxInputTokens:64000,receipt},glm:{maxWireBytes:10000,maxInputTokens:64000,receipt}}};
+  expect(parsePilotApproval(undefined,release,candidate.id,now)).toBeUndefined();
+  expect(parsePilotApproval(JSON.stringify(approval),"d".repeat(40),candidate.id,now)).toBeUndefined();
+  expect(parsePilotApproval(JSON.stringify({...approval,inputBounds:{}}),release,candidate.id,now)).toBeUndefined();
+  const claim:PilotClaim={approval,instance,objectId,startedAt:now};
+  await expect(reserveSupervisorAdmission(s.asDO(),candidate,now)).rejects.toThrow("PILOT_AUTHORIZATION_REQUIRED");
+  await expect(reserveSupervisorAdmission(s.asDO(),{...candidate,fingerprint:"e".repeat(64)},now,undefined,claim)).rejects.toThrow("PILOT_AUTHORIZATION_INVALID");
+  const other=new DurableFake();await at(other,1,now);
+  await expect(reserveSupervisorAdmission(other.asDO(),candidate,now,undefined,claim)).rejects.toThrow("PILOT_EXCLUSIVE_SLOT_REQUIRED");
+  const result=await Promise.allSettled([reserveSupervisorAdmission(s.asDO(),candidate,now,undefined,claim),reserveSupervisorAdmission(s.asDO(),candidate,now,undefined,claim)]);
+  expect(result.filter(r=>r.status==="fulfilled")).toHaveLength(1);
+  expect(await s.get(PILOT_CLAIM)).toEqual(claim);
+  expect(evidenceFromClaim(claim,approval,instance,objectId,candidate,now+100)).toBeDefined();
+  expect(evidenceFromClaim(claim,approval,crypto.randomUUID(),objectId,candidate,now+100)).toBeUndefined();
+  expect(evidenceFromClaim(claim,approval,instance,objectId,candidate,now+900000)).toBeUndefined();
+  await expect(at(s,51,now+10)).rejects.toThrow("PILOT_EXCLUSIVE_LANE");
 });

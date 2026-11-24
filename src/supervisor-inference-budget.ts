@@ -5,6 +5,7 @@
  * requires separately attested, risk-bounded server-side dispatch evidence.
  */
 import type { StartGrant } from "./supervisor-admission";
+import type { InputBound } from "./pilot-authorization";
 
 export type Price = { inputMicroUsdPerMillion: number; outputMicroUsdPerMillion: number; revision: string };
 export type ModelAllowance = { providerID: string; modelID: string; price: Price };
@@ -220,13 +221,15 @@ export function paidPreflight(input: PaidPreflight): {decision:"GO"|"STOP"; bloc
   return {decision:blockers.length?"STOP":"GO",blockers};
 }
 /** Private server evidence, not an input schema or a client boolean. No
- * current code supplies this evidence. The pilot's risk objective differs
+ * caller-supplied claim supplies this evidence. The pilot's risk objective differs
  * from a guaranteed invoice: do not weaken the original strict preflight. */
 export type PilotDispatchEvidence = {
   kind:"pilot-risk-bounded-v1"; experimentId:string; instance:string; validUntil:number;
   residualRiskExplicitlyAccepted:true; exclusiveLeaseVerified:true;
   actualSdkInterceptorVerified:true; noUncontrolledRoutesVerified:true;
+  /** Offline close controls, not a physical-stop observation. */
   closeVerified:true; billingHeadroomVerified:true; plannedOtherMicroUsd:number;
+  inputBounds:{free:InputBound;glm:InputBound};
 };
 export function pilotDispatchEvidenceValid(policy:BudgetPolicy, proof:unknown, now=Date.now()): boolean {
   const p=proof as Partial<PilotDispatchEvidence>|undefined;
@@ -236,7 +239,9 @@ export function pilotDispatchEvidenceValid(policy:BudgetPolicy, proof:unknown, n
     p.residualRiskExplicitlyAccepted===true && p.exclusiveLeaseVerified===true &&
     p.actualSdkInterceptorVerified===true && p.noUncontrolledRoutesVerified===true &&
     p.closeVerified===true && p.billingHeadroomVerified===true &&
-    int(p.plannedOtherMicroUsd,0,850_000));
+    int(p.plannedOtherMicroUsd,0,850_000) &&
+    [p.inputBounds?.free,p.inputBounds?.glm].every(b=>b &&
+      int(b.maxWireBytes,1,48*1024)&&int(b.maxInputTokens,1,PILOT_INPUT_TOKENS)&&/^[a-f0-9]{64}$/.test(b.receipt)));
 }
 export function pilotBudgetPolicy(id:string,instance:string,createdAt:number):BudgetPolicy {
   return {experimentId:id,totalMicroUsd:PILOT_INFERENCE_MICRO_USD,

@@ -153,12 +153,19 @@ export class GitHubBridge {
     private readonly token: string,
     private readonly http: GitHubFetch = fetch,
     allowedRepos: readonly string[] = ALLOWED_REPOS,
-    private readonly publicationGate?: GitHubPrPublicationGate
+    private readonly publicationGate?: GitHubPrPublicationGate,
+    private readonly pilotBase?: {branch:string;sha:string;base:string}
   ) {
     if (!token) throw new Error("GITHUB_TOKEN is not configured in Cloudflare Secrets");
     this.allowed = new Set(allowedRepos.map(normalizeOwnedRepository));
   }
 
+  private reviewedBase(repo:string,branch:string,defaultBranch:string){
+    if(!this.pilotBase)return reviewedBase(repo,branch,defaultBranch);
+    if(repo.toLowerCase()!==OPENCODE_REPO.toLowerCase()||branch!==this.pilotBase.branch||
+      !STAGING_REVIEW.test(branch)||this.pilotBase.base!=="f0-c10/integracion-final-20261123"||!/^[a-f0-9]{40}$/.test(this.pilotBase.sha))throw Error("PILOT_GITHUB_BASE_INVALID");
+    return this.pilotBase.base;
+  }
   private async api(method: string, route: string, data?: unknown, allow404 = false,
     rejectRedirect = false): Promise<any> {
     const response = await this.http("https://api.github.com" + route, {
@@ -213,12 +220,13 @@ export class GitHubBridge {
     }
     const base = "/repos/" + repo;
     const info = await this.api("GET", base);
-    const source = reviewedBase(repo, branch, info.default_branch);
+    const source = this.reviewedBase(repo, branch, info.default_branch);
     const from = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(source));
     const sha = from?.object?.sha;
     if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) {
       throw new Error("Source branch commit is unverifiable");
     }
+    if(this.pilotBase&&sha!==this.pilotBase.sha)throw Error("PILOT_SOURCE_SHA_CHANGED");
     const ref = base + "/git/ref/heads/" + encodeURIComponent(branch);
     const existing = await this.api("GET", ref, undefined, true);
     if (existing) {
@@ -581,7 +589,7 @@ export class GitHubBridge {
       case "branch": {
         const branch = branchChecked(input.branch);
         const info = await this.api("GET", base);
-        const source = reviewedBase(repo, branch, info.default_branch);
+        const source = this.reviewedBase(repo, branch, info.default_branch);
         const from = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(source));
         if (typeof from?.object?.sha !== "string" || !/^[0-9a-f]{40}$/.test(from.object.sha)) {
           throw new Error("Source branch commit is unverifiable");
@@ -624,7 +632,7 @@ export class GitHubBridge {
       case "review": {
         const branch = branchChecked(input.branch);
         const info = await this.api("GET", base);
-        const source = reviewedBase(repo, branch, info.default_branch);
+        const source = this.reviewedBase(repo, branch, info.default_branch);
         const comparison = await this.api("GET", base + "/compare/" +
           encodeURIComponent(source) + "..." + encodeURIComponent(branch));
         const files = Array.isArray(comparison.files) ? comparison.files : [];
@@ -655,7 +663,7 @@ export class GitHubBridge {
           throw new Error("Pull request title must be between 1 and 160 characters");
         }
         const info = await this.api("GET", base);
-        const source = reviewedBase(repo, branch, info.default_branch);
+        const source = this.reviewedBase(repo, branch, info.default_branch);
         const desiredBody = (input.body || "").slice(0, 5000);
         const attempt = async (permit?: GitHubPrPublicationPermit): Promise<unknown> => {
         // Automatic fail-closed preflight at the *actual agent PR creation*
@@ -669,6 +677,7 @@ export class GitHubBridge {
           return sha.toLowerCase();
         };
         const [baseSha, headSha] = await Promise.all([getHead(source), getHead(branch)]);
+        if(this.pilotBase&&baseSha!==this.pilotBase.sha)throw Error("PILOT_SOURCE_SHA_CHANGED");
         // A lost POST response must never be reconciled against a DIFFERENT
         // branch HEAD, even if the branch, PR title and body have not changed.
         if (permit?.retryOnly &&
