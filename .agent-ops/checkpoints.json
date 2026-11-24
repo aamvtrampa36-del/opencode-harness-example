@@ -10,7 +10,7 @@
     "recovery": "Inspect only current checkpoint and changed evidence. Check actual Issue/PR state, HEAD/base and dependencies. Resume only if useful, authorized and compatible; blocked/stale/resolved/cancelled tasks are not retried by default. After two attempts with no material progress mark blocked with reason; reopen only on new evidence. No automatic merge/deploy or expansion of permissions. States: available, active, recoverable, blocked, obsolete, cancelled, completed. A terminal state is not a candidate. For a blocked task, require a changed dependency or materially new evidence. Do not reopen a completed/obsolete/cancelled task; create a new task only if a distinct current objective warrants it.",
     "checkpoint": "Persist after claim, first useful evidence and each material milestone before further risky work. Keep objective, acceptance, issue/PR, branch, base/head SHA, evidence, completed, pending, next action, blocker, session/operation ID and progress counters. A completed checkpoint requires actual evidence meeting acceptance. Store references, not copied logs. Release on completion/pause. An expired lease permits revalidation and new generation, not blind continuation. Keep only the latest task per lane in this file; before replacement preserve evidence in the relevant Issue/PR or Git history. Never change policy/schema during ordinary checkpoint updates."
   },
-  "revision": 5,
+  "revision": 6,
   "reservation": null,
   "lanes": {
     "integration-selftest": {
@@ -133,6 +133,12 @@
       "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45435493643"
     },
     "handoff": "Use a matching queue entry before selecting a candidate; no blind retry of blocked or terminal work. Compare target tree with validation_v1; do not repeat exact valid targeted evidence. Only refresh queue if main or candidate head changed, or new PR/review evidence changes eligibility. Existing lane permissions unchanged.",
-    "sandbox_receipt": null
+    "sandbox_receipt": null,
+    "reconciliation": {
+      "run": 45435788067,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45435788067",
+      "publication": "UNCHANGED",
+      "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623"
+    }
   }
 }
