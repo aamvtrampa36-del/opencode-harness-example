@@ -98,10 +98,12 @@ test("ordinary admission stays compatible, read_only pins mandatory and duplicat
   const {store,task,grant}=await setup();
   const reused=await reserveSupervisorAdmission(store.asDO(),task,1001,PINS);
   assert.equal(reused.kind,"reused");
-  await assert.rejects(reserveSupervisorAdmission(store.asDO(),task,1001,{...PINS,tree:"e".repeat(40)}),/IDENTITY_CONFLICT/);
+  const changed={...PINS,tree:"e".repeat(40)};
+  await assert.rejects(reserveSupervisorAdmission(store.asDO(),task,1001,changed),/READ_ONLY_SOURCE_PIN_MISMATCH/);
+  await assert.rejects(reserveSupervisorAdmission(store.asDO(),{...task,sourceTree:changed.tree},1001,changed),/READ_ONLY_ADMISSION_IDENTITY_CONFLICT/);
   await assert.rejects(reserveSupervisorAdmission(store.asDO(),candidate(2),1001),/PINS_REQUIRED/);
   await assert.rejects(supervisorBeginExternalEffect(store.asDO(),grant,"github_branch",1001),/TRANSACTION_REQUIRED/);
-  const ordinary={...candidate(2),branch:"normal-branch",mode:undefined};
+  const ordinary={...candidate(2),branch:"normal-branch",mode:undefined,sourceCommit:undefined,sourceTree:undefined};
   const r=await reserveSupervisorAdmission(store.asDO(),ordinary,1001);
   if(r.kind!=="granted")throw Error("ordinary grant");
   await supervisorBeginExternalEffect(store.asDO(),r.grant,"github_branch",1002);
