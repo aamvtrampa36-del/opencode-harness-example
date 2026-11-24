@@ -66,6 +66,47 @@ console.log(JSON.stringify({composition:'PASS',calls_first:7,duplicate_steps_rem
             i.gh=lambda path: {"merged":True,"merge_commit_sha":actual} if "/pulls/" in path else {"parents":[{"sha":base},{"sha":head}],"tree":{"sha":tree}}
             require(i.integrated(repo,r,actual)==actual,"lost response reconciliation")
         finally:i.gh=old;os.chdir(cwd)
+        # Recovery after a subsequent writer advances main, even when PR metadata lags.
+        g(w,"checkout","--detach",candidate);advanced=commit("later.txt","later writer\n")
+        require(i.cas_push(w,str(remote),"refs/heads/main",candidate,advanced).returncode==0,"later writer")
+        os.chdir(w);old=i.gh
+        try:
+            i.gh=lambda path: {"merged":False} if "/pulls/" in path else {"parents":[{"sha":base},{"sha":head}],"tree":{"sha":tree}}
+            require(i.integrated(repo,r,advanced)==candidate,"history reconciliation")
+        finally:i.gh=old;os.chdir(cwd)
+        # Test the real handoff guard; a shared owner-account comment alone grants nothing.
+        r["acceptance"]={"reviewed":True,"reference":"https://github.com/"+repo+"/pull/1#issuecomment-1","lane":"cloud-tech","scope":"exact-head-base-tree"}
+        r["deployment"]={"mode":"NO_DEPLOY","reference":"cloudflare-live-no-deploy:8f152306-cca8-44c4-ad7b-1b1330738554","observed_at":int(time.time())}
+        state["lanes"]["cloud-tech"]=dict(state["lanes"]["test"])
+        state["integration_v1"]["activation_gate"]={"owner_authorized":True}
+        orig_gh=i.gh;orig_cp=i.live_checkpoint;orig_put=i.put_ops
+        import copy
+        registry=copy.deepcopy(state)
+        blob=["a"*40]
+        def live(repo): return copy.deepcopy(registry),blob[0]
+        def put(repo,path,cp,expected):
+            require(expected==blob[0],"fixture CAS stale")
+            registry.clear();registry.update(copy.deepcopy(cp));blob[0]=hashlib.sha1(json.dumps(cp,sort_keys=True).encode()).hexdigest()
+        def gh(path):
+            if "/issues/comments/" in path:return {"user":{"login":i.OWNER},"issue_url":"https://api.github.com/repos/"+repo+"/issues/1","body":"AGENT_REVIEWED "+i.marker(r)}
+            if "/reviews" in path:return []
+            if "main-integration-receipt.json" in path:return {"sha":"b"*40,"content":base64.b64encode(json.dumps({"operation_id":r["request_id"],"sha":candidate,"tree":tree}).encode()).decode()}
+            raise RuntimeError("unexpected fixture request")
+        try:
+            i.gh=gh;i.live_checkpoint=live;i.put_ops=put
+            denied(lambda:i.review_gate(repo,r))
+            registry["integration_v1"]["handoff_v2"]={**i.exact_identity(r),"review_reference":r["acceptance"]["reference"],"lane":"cloud-tech","task_id":"fixture","functional_acceptance":"PASS","review_origin":"agent","deployment":r["deployment"],"evidence":["https://github.com/"+repo+"/actions/runs/1"]}
+            i.review_gate(repo,r)
+            # A separate explicit release still fails without independently verified grant.
+            release={**r,"deployment":{"mode":"EXPLICIT_RELEASE","reference":"owner-explicit-release:1","observed_at":int(time.time())}}
+            denied(lambda:i.deployment_gate(repo,release,["README.md"]))
+            oldrun=os.environ.setdefault("GITHUB_RUN_ID","1")
+            generation=i.claim(repo,r);i.confirm_lease(repo,r,generation)
+            denied(lambda:i.claim(repo,r));denied(lambda:i.require_no_live_lease(repo))
+            i.release_lease(repo,r,generation);require(registry["reservation"] is None,"lease release")
+            registry["integration_v1"].update(latest_main_receipt={"operation_id":r["request_id"],"sha":candidate,"blob":"b"*40},queue_refresh_required=False,evidence={"main":advanced})
+            require(i.already_reconciled(repo,r,candidate,advanced),"consumed operation dedup")
+        finally:i.gh=orig_gh;i.live_checkpoint=orig_cp;i.put_ops=orig_put
         # Model checkpoint CAS with real Git update-ref; reject stale publication.
         state["revision"]+=1;state["lanes"]["test"]["status"]="completed";state["lanes"]["test"]["next_action"]=None
         state["integration_v1"]["latest_main_receipt"]={"sha":actual,"operation_id":r["request_id"]}
@@ -77,5 +118,5 @@ console.log(JSON.stringify({composition:'PASS',calls_first:7,duplicate_steps_rem
         require(g(w,"update-ref","refs/heads/checkpoint-state",nxt,cp).returncode==0,"checkpoint CAS")
         require(g(w,"update-ref","refs/heads/checkpoint-state",cp,cp,check=False).returncode!=0,"stale checkpoint rejected")
         require(json.loads(s(w,"show",nxt+":checkpoint.json"))["lanes"]["test"]["status"]=="completed","next agent terminal")
-        print(json.dumps({"consolidation":"PASS","scope":"actual validator, composition, classifier, Git CAS and recovery function; synthetic API/checkpoint transport","validation_reused":b["static_status"],"validation_invalidated":True,"first_ms":a["duration_ms"],"cached_ms":b["duration_ms"],"composition":composition,"restricted_rejected":True,"stale_base_rejected":True,"exact_tree_verified":True,"recovered_without_push":True,"checkpoint_cas":True,"next_agent_terminal":True,"product_writes":0}))
+        print(json.dumps({"consolidation":"PASS","scope":"actual validator, composition, classifier, Git CAS and recovery function; synthetic API/checkpoint transport","validation_reused":b["static_status"],"validation_invalidated":True,"first_ms":a["duration_ms"],"cached_ms":b["duration_ms"],"composition":composition,"restricted_rejected":True,"stale_base_rejected":True,"exact_tree_verified":True,"recovered_without_push":True,"checkpoint_cas":True,"next_agent_terminal":True,"history_reconciliation":True,"handoff_guard":True,"separate_release_rejected":True,"lease_guard":True,"consumed_dedup":True,"product_writes":0}))
 if __name__=="__main__":main()
