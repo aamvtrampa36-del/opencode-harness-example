@@ -1,0 +1,77 @@
+{
+  "schema": "f0-c10.preflight-usd2-approval.v1",
+  "project": "F0-C10",
+  "ownerDecision": {
+    "currency": "USD",
+    "amount": "2.00",
+    "microUsd": 2000000,
+    "scope": "one future isolated F0-C10 experimental campaign; all attributable costs combined",
+    "notPerTask": true,
+    "notPerProvider": true
+  },
+  "implementation": {
+    "basePr": 159,
+    "baseSha": "63706447d36b10ccbbaa87e75cc3e9874808ad54",
+    "preflightPhase": "PREFLIGHT-03",
+    "operationalLeaseDeployed": false,
+    "providerCutoffDeployed": false,
+    "liveDispatchAuthorized": false,
+    "accountPolicyMutationsAuthorized": false
+  },
+  "cloudflareReadOnly": {
+    "spendPoliciesModern": {
+      "method": "GET",
+      "result": "HTTP_200_EMPTY",
+      "listedPolicyCount": 0,
+      "previousResult": "HTTP_403",
+      "verifiedActivePolicy": null
+    },
+    "aiGatewayDefault": {
+      "exists": true,
+      "observedRateLimit": null
+    },
+    "legacyGatewaySpendingLimit": {
+      "deprecated": true,
+      "enabled": false
+    },
+    "corollary": "The later GET succeeded and returned an empty list; this is not proof of an all-service hard cutoff. Legacy observations are historical.",
+    "revalidation": {
+      "observedDate": "2026-11-23",
+      "source": "Cloudflare ADMIN authenticated GET; sanitized observation, not signed attestation",
+      "principal": {
+        "versionNumber": 375,
+        "versionId": "0255f6c2-2307-479c-9ff0-89986af4a760",
+        "priorVersionId": "3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb",
+        "scriptEtag": "6fb589599ab9a0eacca0929a48900b21dd3da54db6d0bc2b1297f1a20ee5032b",
+        "sameBindings": true,
+        "cacheOptions": {
+          "enabled": true,
+          "cross_version_cache": false
+        }
+      },
+      "sourceIdentityVerified": false
+    }
+  },
+  "costInventory": {
+    "workers_ai": null,
+    "openrouter": null,
+    "workers": null,
+    "durable_objects": null,
+    "containers": null,
+    "github_actions": null,
+    "storage": null,
+    "egress": null,
+    "observability": null,
+    "unclassified": null
+  },
+  "guarantees": {
+    "singleControllingDurableObject": false,
+    "accountIsolation": false,
+    "providerHardCutoffVerified": false,
+    "allRoutesIntercepted": false,
+    "attributableCostUpperBoundVerified": false,
+    "rollbackVerified": false
+  },
+  "gate": "STOP",
+  "note": "This JSON records the owner's numeric ceiling, not a payment, provider billing rule, permission to deploy, proof of live isolation, or authority to spend."
+}
