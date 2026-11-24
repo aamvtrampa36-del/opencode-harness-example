@@ -32,6 +32,9 @@ export function runT03Checks(source) {
   assert(advance.split("supervisorGrantStillOwned(tx, grant)").length>=5,"missing fence in status writes");
   assert(source.includes("SUPERVISOR_READ_ONLY_REVIEW_FORBIDDEN"),"review not denied");
   assert(source.includes("SUPERVISOR_READ_ONLY_DELEGATION_UNAVAILABLE"),"delegation not fenced");
+  assert(source.includes("deferSupervisorStart(decision, {"),"T08 not wired");
+  assert(source.includes("await this.requireReadOnlyTaskScope(job, job.session!)"),"T04 scope not required");
+  assert(source.includes("enforceReadOnlyRoute(authority.scope, authority.expected, { kind: \"linux\", project, operation })"),"Linux action not independently guarded");
   assert(source.includes("dev.prepareRepository(project, scope.repository, sourceCommit, sourceTree)"),"unpinned tool import");
   assert(source.includes("status: \"cancel_requested\",\n              cancelAmbiguous: true"),"cancel intent missing");
   return {receiptPositive:1,receiptNegative:negatives,sourceOrderAndGuards:"PASS"};
