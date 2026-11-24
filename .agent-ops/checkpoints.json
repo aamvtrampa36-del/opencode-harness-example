@@ -1,0 +1,16 @@
+{
+  "schema": "agent-checkpoints/v1",
+  "repository": "aamvtrampa36-del/opencode-harness-example",
+  "policy": {
+    "version": 1,
+    "branch": "ops/task-checkpoints-v1",
+    "path": ".agent-ops/checkpoints.json",
+    "authority": "Operational metadata only. GitHub issues, PRs and commit evidence remain authoritative. Never merge this branch or store canon, credentials, transcripts or uncommitted private content.",
+    "write": "Fetch file from this exact branch and use returned blob SHA with GitHub update_file. On conflict or timeout reread; never blind-retry. Preserve other lanes. New claim requires fresh eligibility check, no live reservation in repository, unique owner/operation ID, generation increment, 45-minute lease. Before any consequential write check current ownership, lease and target branch SHA; release promptly. This is cooperative, not an enforcement gate for external tools.",
+    "recovery": "Inspect only current checkpoint and changed evidence. Check actual Issue/PR state, HEAD/base and dependencies. Resume only if useful, authorized and compatible; blocked/stale/resolved/cancelled tasks are not retried by default. After two attempts with no material progress mark blocked with reason; reopen only on new evidence. No automatic merge/deploy or expansion of permissions.",
+    "checkpoint": "Persist after claim, first useful evidence and each material milestone before further risky work. Keep objective, acceptance, issue/PR, branch, base/head SHA, evidence, completed, pending, next action, blocker, session/operation ID and progress counters. A completed checkpoint requires actual evidence meeting acceptance. Store references, not copied logs. Release on completion/pause. An expired lease permits revalidation and new generation, not blind continuation."
+  },
+  "revision": 0,
+  "reservation": null,
+  "lanes": {}
+}
