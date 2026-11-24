@@ -11,6 +11,11 @@ export const SUPERVISOR_WORKSPACE = "opencode-supervisor-v1";
 export const SUPERVISOR_API_PREFIX = "/api/supervisor/v1";
 const TASK_ID = /^[a-f0-9]{16}$/;
 const GITHUB_MUTATIONS = new Set(["branch", "write", "pr"]);
+const GITHUB_READ_ONLY_OPERATIONS = new Set([
+  "repo", "read", "pr_search", "pr_info", "issue_info", "pr_files", "pr_reviews", "pr_checks"
+]);
+const SOURCE_SHA = /^[a-f0-9]{40}$/;
+export type SupervisorMode = "read_only";
 
 export type SupervisorStart = {
   requestId: string;
@@ -20,6 +25,10 @@ export type SupervisorStart = {
   model?: ModelSelectionID;
   /** Optional exact OpenCode session to fork. Its conversation is inherited, its files are not. */
   sourceSession?: string;
+  mode?: SupervisorMode;
+  /** Requested immutable commit/tree pair; verified independently before execution. */
+  sourceCommit?: string;
+  sourceTree?: string;
 };
 
 export type SupervisorTask = {
@@ -29,6 +38,8 @@ export type SupervisorTask = {
   branch: string;
   fingerprint: string;
   session?: string;
+  /** Server-only process identity; a restarted pilot cannot resume dispatch. */
+  pilotInstance?: string;
   /** Durable write-ahead marker. If a session creation RPC lost its response,
    * never invoke create/fork again without independent reconciliation. */
   sessionCreationAttempted?: boolean;
@@ -45,6 +56,10 @@ export type SupervisorTask = {
     "cancel_requested" | "cancelled" | "unknown";
   /** Immutable source commit used to seed this task's isolated Linux project. */
   baseCommit?: string;
+  /** Immutable requested pins; baseCommit alone records the verified commit. */
+  mode?: SupervisorMode;
+  sourceCommit?: string;
+  sourceTree?: string;
   model?: ModelSelectionID;
   operationId?: string;
   error?: string;
@@ -98,6 +113,25 @@ export function classifySupervisorOperation(
   return status;
 }
 
+/** Validate pins even for typed internal callers; absence of mode is the legacy contract. */
+function validateReadOnlyPins(input: {
+  mode?: unknown; sourceCommit?: unknown; sourceTree?: unknown; sourceSession?: unknown;
+}): { mode: SupervisorMode; sourceCommit: string; sourceTree: string } | undefined {
+  if (input.mode === undefined) {
+    if (input.sourceCommit !== undefined || input.sourceTree !== undefined) {
+      throw new Error("sourceCommit y sourceTree solo se admiten en modo read_only");
+    }
+    return undefined;
+  }
+  if (input.mode !== "read_only") throw new Error("Modo del supervisor inválido");
+  if (input.sourceSession !== undefined) throw new Error("read_only no admite forks de sesiones");
+  if (typeof input.sourceCommit !== "string" || !SOURCE_SHA.test(input.sourceCommit) ||
+      typeof input.sourceTree !== "string" || !SOURCE_SHA.test(input.sourceTree)) {
+    throw new Error("read_only requiere sourceCommit y sourceTree: SHA de 40 caracteres hexadecimales en minúscula");
+  }
+  return { mode: "read_only", sourceCommit: input.sourceCommit, sourceTree: input.sourceTree };
+}
+
 export function validateSupervisorStart(raw: unknown, approved: readonly string[]): SupervisorStart {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Solicitud inválida");
   const input = raw as Record<string, unknown>;
@@ -118,12 +152,15 @@ export function validateSupervisorStart(raw: unknown, approved: readonly string[
       (typeof input.sourceSession !== "string" || !/^ses[A-Za-z0-9_]{1,64}$/.test(input.sourceSession))) {
     throw new Error("La sesión de origen debe ser un ID OpenCode válido");
   }
-  if (Object.keys(input).some(key => !["requestId", "repository", "prompt", "model", "sourceSession"].includes(key))) {
+  const pins = validateReadOnlyPins(input);
+  if (Object.keys(input).some(key => !["requestId", "repository", "prompt", "model", "sourceSession",
+    "mode", "sourceCommit", "sourceTree"].includes(key))) {
     throw new Error("Parámetros del supervisor desconocidos");
   }
   return { requestId: input.requestId, repository, prompt: input.prompt.trim(),
     ...(input.model ? { model: input.model } : {}),
-    ...(input.sourceSession ? { sourceSession: input.sourceSession } : {}) };
+    ...(input.sourceSession ? { sourceSession: input.sourceSession } : {}),
+    ...pins };
 }
 
 export function supervisorTaskKey(id: string): string {
@@ -143,8 +180,12 @@ export function supervisorTurnOperationId(id: string, turnId: string): string {
   return "rc-turn-" + id + "-" + turnId;
 }
 
-export function supervisorBranch(id: string, repository?: string): string {
+export function supervisorBranch(id: string, repository?: string, mode?: SupervisorMode): string {
   supervisorTaskKey(id);
+  if (mode !== undefined) {
+    if (mode !== "read_only") throw new Error("Modo del supervisor inválido");
+    return ""; // Durable no-branch sentinel, never a GitHub ref.
+  }
   // Only OpenCode's own self-improvement branches derive from Staging.
   // Existing G9 and other repository tasks continue using the default branch.
   return (repository?.toLowerCase() === "aamvtrampa36-del/opencode-harness-example"
@@ -175,20 +216,35 @@ export function supervisorProject(id: string): string {
 export function assertSupervisorBoundGitHubOperation(
   operation: string | undefined,
   branch: string | undefined,
-  lockedBranch: string
+  lockedBranch: string,
+  mode?: SupervisorMode
 ): void {
+  if (mode !== undefined) {
+    if (mode !== "read_only") throw new Error("Modo del supervisor inválido");
+    if (lockedBranch !== "" || !GITHUB_READ_ONLY_OPERATIONS.has(operation ?? "")) {
+      throw new Error("Supervisor: tarea de solo lectura no puede escribir, revisar ni crear PR; operación no autorizada");
+    }
+    return;
+  }
   if (operation === "branch") throw new Error("Rama del supervisor precreada: no crear otras");
   if ((GITHUB_MUTATIONS.has(operation ?? "") || operation === "review") &&
-      branch !== lockedBranch) {
+      (!lockedBranch || branch !== lockedBranch)) {
     throw new Error("Supervisor: escritura, revisión o PR fuera de su rama bloqueada");
   }
 }
 
 export async function supervisorFingerprint(value: SupervisorStart): Promise<string> {
-  const bytes = new TextEncoder().encode(
-    value.repository.toLowerCase() + "\n" + value.prompt + "\n" + (value.model ?? "economy") +
-    "\n" + (value.sourceSession ?? "")
-  );
+  const pins = validateReadOnlyPins(value);
+  // Never change the ordinary preimage: existing durable request IDs depend on it.
+  // Read-only uses a disjoint prefix and a JSON tuple, not delimiter-joined user input.
+  const preimage = pins
+    ? "supervisor:read_only:v1\0" + JSON.stringify([
+      value.repository.toLowerCase(), value.prompt, value.model ?? "economy",
+      pins.sourceCommit, pins.sourceTree
+    ])
+    : value.repository.toLowerCase() + "\n" + value.prompt + "\n" + (value.model ?? "economy") +
+      "\n" + (value.sourceSession ?? "");
+  const bytes = new TextEncoder().encode(preimage);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
 }
@@ -220,8 +276,24 @@ export function supervisorResponse(data: unknown, status = 200): Response {
  * project using the supervisor route. Promotion is a separate trusted process.
  */
 export function supervisorPrompt(task: SupervisorStart, branch: string, project: string,
-  baseCommit: string): string {
+  baseCommit: string, sourceTree?: string): string {
   if (!/^[a-f0-9]{40}$/.test(baseCommit)) throw new Error("SHA base de la tarea inválido");
+  const pins = validateReadOnlyPins(task);
+  if (pins) {
+    if (branch !== "" || baseCommit !== pins.sourceCommit || sourceTree !== pins.sourceTree) {
+      throw new Error("read_only: rama o identidad commit/árbol no coincide con los pins solicitados");
+    }
+    return "Tarea supervisada en modo SOLO LECTURA. Repositorio autorizado: " + task.repository +
+      ". Proyecto Linux exclusivo: " + project + ". SHA base verificado: " + baseCommit +
+      "; árbol Git verificado: " + sourceTree +
+      ". No existe rama de trabajo: no crees ramas, no escribas en GitHub, no abras PR ni solicites revisión. " +
+      "La importación del Container debe verificarse contra ese commit y árbol exactos antes de preparar el modelo o ejecutar inferencia. " +
+      "Lee el código local y ejecuta pruebas locales; para leer código en GitHub usa el SHA fijado como ref, no una rama mutable. " +
+      "La copia importada no contiene .git: no uses git status, fetch ni checkout. " +
+      "Prohibido fusionar, desplegar, modificar Producción, secretos, permisos o controles de seguridad. " +
+      "Explica comandos, resultados y fallos con evidencia real. Nunca atribuyas a tu trabajo cambios del servidor o supervisor. " +
+      "Si una operación requiere permisos adicionales, informa el bloqueo.\n\nENCARGO:\n" + task.prompt;
+  }
   const selfDevelopment = task.repository.toLowerCase() === "aamvtrampa36-del/opencode-harness-example";
   return "Tarea de desarrollo supervisada y REVERSIBLE. Repositorio autorizado: " +
     task.repository + ". Proyecto Linux exclusivo: " + project + ". Rama precreada: " + branch +

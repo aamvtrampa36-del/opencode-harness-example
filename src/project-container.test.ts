@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { projectContainerName, repositoryProjectSlug, validateIsolatedRegistration } from "./project-container";
+import { projectContainerName, repositoryProjectSlug, validateIsolatedRegistration, isSupervisorProjectName, assertGeneralProjectName } from "./project-container";
 
 describe("project Container identities", () => {
+  test("supervisor project names require the task-scoped route", () => {
+    const name = "supervised-0123456789abcdef";
+    expect(isSupervisorProjectName(name)).toBe(true);
+    expect(() => assertGeneralProjectName(name)).toThrow("SUPERVISOR_PROJECT_REQUIRES_TASK_ROUTE");
+    for (const other of ["repo-example","supervised-not-a-task","project-a"]) {
+      expect(isSupervisorProjectName(other)).toBe(false);
+      expect(() => assertGeneralProjectName(other)).not.toThrow();
+    }
+  });
   test("maps distinct projects to distinct named instances", () => {
     expect(projectContainerName("project-a")).not.toBe(projectContainerName("project-b"));
     expect(() => projectContainerName("../personal")).toThrow();

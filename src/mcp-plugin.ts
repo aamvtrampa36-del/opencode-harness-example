@@ -7,7 +7,8 @@ import type { RemoteMcpConfig } from "./mcp-config";
  */
 export function remoteMcpPlugin(
   loadConfigs: () => Promise<RemoteMcpConfig[]>,
-  registerReload: (reload: () => Promise<void>) => void
+  registerReload: (reload: () => Promise<void>) => void,
+  allowRemoteTools: (sessionID: string) => Promise<boolean> = async () => true
 ): Plugin.Plugin {
   return {
     id: "personal.remote-mcp",
@@ -15,7 +16,11 @@ export function remoteMcpPlugin(
       let current = await loadConfigs();
       let previous = new Set<string>();
       if (ctx.session) {
-        await ctx.session.hook("context", async ({ agent, tools }) => {
+        await ctx.session.hook("context", async ({ sessionID, agent, tools }) => {
+          if (!await allowRemoteTools(sessionID)) {
+            for (const name of Object.keys(tools)) if (name.startsWith("personal-")) delete tools[name];
+            return;
+          }
           for (const endpoint of current) {
             const prefix = "personal-" + endpoint.id + "_";
             if (!endpoint.toolAllowlist) {

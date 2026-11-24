@@ -153,13 +153,21 @@ export class GitHubBridge {
     private readonly token: string,
     private readonly http: GitHubFetch = fetch,
     allowedRepos: readonly string[] = ALLOWED_REPOS,
-    private readonly publicationGate?: GitHubPrPublicationGate
+    private readonly publicationGate?: GitHubPrPublicationGate,
+    private readonly pilotBase?: {branch:string;sha:string;base:string}
   ) {
     if (!token) throw new Error("GITHUB_TOKEN is not configured in Cloudflare Secrets");
     this.allowed = new Set(allowedRepos.map(normalizeOwnedRepository));
   }
 
-  private async api(method: string, route: string, data?: unknown, allow404 = false): Promise<any> {
+  private reviewedBase(repo:string,branch:string,defaultBranch:string){
+    if(!this.pilotBase)return reviewedBase(repo,branch,defaultBranch);
+    if(repo.toLowerCase()!==OPENCODE_REPO.toLowerCase()||branch!==this.pilotBase.branch||
+      !STAGING_REVIEW.test(branch)||this.pilotBase.base!=="f0-c10/integracion-final-20261123"||!/^[a-f0-9]{40}$/.test(this.pilotBase.sha))throw Error("PILOT_GITHUB_BASE_INVALID");
+    return this.pilotBase.base;
+  }
+  private async api(method: string, route: string, data?: unknown, allow404 = false,
+    rejectRedirect = false): Promise<any> {
     const response = await this.http("https://api.github.com" + route, {
       method,
       headers: {
@@ -169,8 +177,12 @@ export class GitHubBridge {
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "OpenCode-Cloud"
       },
-      ...(data === undefined ? {} : { body: JSON.stringify(data) })
+      ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+      ...(rejectRedirect ? { redirect: "manual" as const } : {})
     });
+    if (rejectRedirect && response.status >= 300 && response.status < 400) {
+      throw new Error("GitHub source identity redirect refused");
+    }
     if (response.status === 404 && allow404) return null;
     const body = await response.json() as any;
     if (!response.ok) {
@@ -208,12 +220,13 @@ export class GitHubBridge {
     }
     const base = "/repos/" + repo;
     const info = await this.api("GET", base);
-    const source = reviewedBase(repo, branch, info.default_branch);
+    const source = this.reviewedBase(repo, branch, info.default_branch);
     const from = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(source));
     const sha = from?.object?.sha;
     if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) {
       throw new Error("Source branch commit is unverifiable");
     }
+    if(this.pilotBase&&sha!==this.pilotBase.sha)throw Error("PILOT_SOURCE_SHA_CHANGED");
     const ref = base + "/git/ref/heads/" + encodeURIComponent(branch);
     const existing = await this.api("GET", ref, undefined, true);
     if (existing) {
@@ -235,6 +248,64 @@ export class GitHubBridge {
       if (raced?.object?.sha === sha) return { repo, branch, source, sha, reused: true };
       throw error;
     }
+  }
+
+  /**
+   * Read-only source identity check for supervised read_only tasks. Every
+   * request is a GET: no branch, ref, PR or review is created. When no pair is
+   * supplied, the reviewed Staging base (OpenCode) or default branch is
+   * resolved read-only and its Git tree is returned for the importer.
+   */
+  async resolveReadOnlySource(
+    repoInput: string, sourceCommit?: string, sourceTree?: string
+  ): Promise<{ repo: string; source: string; commit: string; tree: string }> {
+    const repo = repoChecked(repoInput, this.allowed);
+    if ((sourceCommit === undefined) !== (sourceTree === undefined)) {
+      throw new Error("sourceCommit y sourceTree deben fijarse juntos");
+    }
+    if (sourceCommit !== undefined && !/^[a-f0-9]{40}$/.test(sourceCommit)) {
+      throw new Error("Commit de origen inválido");
+    }
+    if (sourceTree !== undefined && !/^[a-f0-9]{40}$/.test(sourceTree)) {
+      throw new Error("Árbol de origen inválido");
+    }
+    const base = "/repos/" + repo;
+    const info = await this.api("GET", base, undefined, false, true);
+    if (info?.full_name?.toLowerCase() !== repo.toLowerCase()) {
+      throw new Error("GitHub devolvió datos de repositorio inválidos");
+    }
+    let source: string;
+    let commit: string;
+    if (sourceCommit !== undefined) {
+      source = "pinned";
+      commit = sourceCommit;
+    } else {
+      source = repo.toLowerCase() === OPENCODE_REPO.toLowerCase()
+        ? OPENCODE_STAGING_BASE : info.default_branch;
+      if (typeof source !== "string" || !source) {
+        throw new Error("No se pudo identificar la base de solo lectura");
+      }
+      const ref = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(source), undefined, false, true);
+      const sha = ref?.object?.sha;
+      if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) {
+        throw new Error("Source branch commit is unverifiable");
+      }
+      commit = sha.toLowerCase();
+    }
+    const record = await this.api("GET", base + "/commits/" + commit, undefined, true, true);
+    if (!record) throw new Error("El commit de origen no existe en el repositorio autorizado");
+    const sha = record?.sha;
+    const tree = record?.commit?.tree?.sha;
+    if (typeof sha !== "string" || !/^[a-f0-9]{40}$/.test(sha) || sha.toLowerCase() !== commit) {
+      throw new Error("GitHub no confirmó el commit de origen solicitado");
+    }
+    if (typeof tree !== "string" || !/^[a-f0-9]{40}$/.test(tree)) {
+      throw new Error("GitHub no devolvió un árbol verificable");
+    }
+    if (sourceTree !== undefined && tree.toLowerCase() !== sourceTree) {
+      throw new Error("El árbol de origen no coincide con el commit verificado");
+    }
+    return { repo, source, commit, tree: tree.toLowerCase() };
   }
 
   private async replaceExact(
@@ -518,7 +589,7 @@ export class GitHubBridge {
       case "branch": {
         const branch = branchChecked(input.branch);
         const info = await this.api("GET", base);
-        const source = reviewedBase(repo, branch, info.default_branch);
+        const source = this.reviewedBase(repo, branch, info.default_branch);
         const from = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(source));
         if (typeof from?.object?.sha !== "string" || !/^[0-9a-f]{40}$/.test(from.object.sha)) {
           throw new Error("Source branch commit is unverifiable");
@@ -561,7 +632,7 @@ export class GitHubBridge {
       case "review": {
         const branch = branchChecked(input.branch);
         const info = await this.api("GET", base);
-        const source = reviewedBase(repo, branch, info.default_branch);
+        const source = this.reviewedBase(repo, branch, info.default_branch);
         const comparison = await this.api("GET", base + "/compare/" +
           encodeURIComponent(source) + "..." + encodeURIComponent(branch));
         const files = Array.isArray(comparison.files) ? comparison.files : [];
@@ -592,7 +663,7 @@ export class GitHubBridge {
           throw new Error("Pull request title must be between 1 and 160 characters");
         }
         const info = await this.api("GET", base);
-        const source = reviewedBase(repo, branch, info.default_branch);
+        const source = this.reviewedBase(repo, branch, info.default_branch);
         const desiredBody = (input.body || "").slice(0, 5000);
         const attempt = async (permit?: GitHubPrPublicationPermit): Promise<unknown> => {
         // Automatic fail-closed preflight at the *actual agent PR creation*
@@ -606,6 +677,7 @@ export class GitHubBridge {
           return sha.toLowerCase();
         };
         const [baseSha, headSha] = await Promise.all([getHead(source), getHead(branch)]);
+        if(this.pilotBase&&baseSha!==this.pilotBase.sha)throw Error("PILOT_SOURCE_SHA_CHANGED");
         // A lost POST response must never be reconciled against a DIFFERENT
         // branch HEAD, even if the branch, PR title and body have not changed.
         if (permit?.retryOnly &&

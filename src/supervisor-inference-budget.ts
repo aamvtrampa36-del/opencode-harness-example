@@ -1,27 +1,51 @@
 /**
- * F0-C10/R3-T07: candidate durable cost journal, NOT CONNECTED to the model SDK.
- * Called only by a trusted server-side inference adapter on the same T03 owner DO.
- * No scheduler, billing configuration, queue, model dispatch or provider network.
+ * F0-C10/R3-T07: durable cost journal. PILOTO-01 reuses this transaction
+ * authority at the hybrid binding adapter. No network in this module.
+ * Existing strict preflight and ordinary policies are preserved. The pilot
+ * requires separately attested, risk-bounded server-side dispatch evidence.
  */
 import type { StartGrant } from "./supervisor-admission";
 
 export type Price = { inputMicroUsdPerMillion: number; outputMicroUsdPerMillion: number; revision: string };
 export type ModelAllowance = { providerID: string; modelID: string; price: Price };
+export const PILOT_FREE = "openrouter:openrouter/free";
+export const PILOT_BACKUP = "cloudflare";
+export const PILOT_GLM = "@cf/zai-org/glm-4.7-flash";
+export const PILOT_MAX_CALLS = 20;
+/** Post-response acceptance limit, not a tokenizer certificate. */
+export const PILOT_INPUT_TOKENS = 64_000;
+export const PILOT_OUTPUT_TOKENS = 8_000;
+export const PILOT_MAX_WIRE_BYTES = 48 * 1024;
+// Published GLM context includes input, reasoning and completion. Reserve the
+// FULL context as input PLUS the output cap, never credit free account quotas.
+// Rates round UP from 5500/36400 neurons per million at $0.011/1000.
+// This is a conservative single-inference rating, not a provider invoice cap.
+export const PILOT_GLM_BILLABLE_INPUT_CEILING = 131_072;
+export const PILOT_GLM_INPUT_RATE = 61_000;
+export const PILOT_GLM_OUTPUT_RATE = 401_000;
+export const PILOT_GLM_RESERVE_MICRO_USD = 11_500;
+export const PILOT_PRICING_REVISION = "2026-11-24-context-neurons-v2";
+export const PILOT_MAX_PAID_CALLS = 13;
+export const PILOT_INFERENCE_MICRO_USD = 150_000;
+export const PILOT_WORK_MS = 15 * 60_000;
+export const PILOT_CLOSE_MS = 5 * 60_000;
+export type HybridPolicy = { session: string; instance: string; workUntil: number };
+type HybridState = { calls: number; paidCalls: number; selection: typeof PILOT_FREE | typeof PILOT_BACKUP; pending?: string };
 export type BudgetPolicy = {
   experimentId: string; totalMicroUsd: number; taskMicroUsd: number;
-  maxAttempts: number; selections: Record<string, ModelAllowance>;
+  maxAttempts: number; selections: Record<string, ModelAllowance>; hybrid?: HybridPolicy;
 };
 export type InferenceIntent = {
   requestId: string; operationId: string; callId: string; attemptId: string;
   selection: string; inputTokenCeiling: number; outputTokenCeiling: number;
 };
 type Counter = { confirmed: number; reserved: number; unknown: number };
-type Global = Counter & { version: 1; policy: string; paymentBlocked: boolean };
+type Global = Counter & { version: 1; policy: string; paymentBlocked: boolean; hybrid?: HybridState };
 type Row = { identity: string; requestId: string; operationId: string; callId: string;
   attemptId: string; attemptIds: string[]; attempts: number; selection: string;
   providerID: string; modelID: string; price: Price; inputTokenCeiling: number;
   outputTokenCeiling: number; exposure: number; state: "reserved" | "sent" | "unknown" | "rejected" | "settled";
-  reason?: string; receiptId?: string; inputTokens?: number; outputTokens?: number; charge?: number };
+  reason?: string; receiptId?: string; inputTokens?: number; outputTokens?: number; charge?: number; actualModel?: string };
 const GLOBAL = "supervisor:inference:budget:v1";
 const TASK = (id: string) => "supervisor:inference:task:" + id;
 const CALL = (id: string, call: string) => "supervisor:inference:call:" + id + ":" + call;
@@ -36,6 +60,22 @@ function requireValue(condition: unknown, label: string): asserts condition { if
 function policySnapshot(policy: BudgetPolicy): string {
   requireValue(ID.test(policy.experimentId) && int(policy.totalMicroUsd, 1, CASH_LIMIT) &&
     int(policy.taskMicroUsd, 1, policy.totalMicroUsd) && int(policy.maxAttempts, 1, 8), "BUDGET_POLICY_INVALID");
+  if (policy.hybrid) {
+    const h = policy.hybrid, free = policy.selections?.[PILOT_FREE], backup = policy.selections?.[PILOT_BACKUP];
+    requireValue(h.session === "ses_r2_" + policy.experimentId &&
+      /^[a-f0-9-]{36}$/.test(h.instance) && int(h.workUntil,1,Number.MAX_SAFE_INTEGER) &&
+      policy.totalMicroUsd === PILOT_INFERENCE_MICRO_USD && policy.taskMicroUsd === PILOT_INFERENCE_MICRO_USD &&
+      policy.maxAttempts === 1 && Object.keys(policy.selections).length === 2 &&
+      free?.providerID === "openrouter" && free.modelID === "openrouter/free" &&
+      free.price?.inputMicroUsdPerMillion === 0 && free.price?.outputMicroUsdPerMillion === 0 &&
+      backup?.providerID === "cloudflare" && backup.modelID === PILOT_GLM &&
+      free.price?.revision === PILOT_PRICING_REVISION &&
+      backup.price?.inputMicroUsdPerMillion === PILOT_GLM_INPUT_RATE &&
+      backup.price?.outputMicroUsdPerMillion === PILOT_GLM_OUTPUT_RATE &&
+      backup.price?.revision === PILOT_PRICING_REVISION &&
+      PILOT_MAX_PAID_CALLS * PILOT_GLM_RESERVE_MICRO_USD <= PILOT_INFERENCE_MICRO_USD,
+      "PILOT_POLICY_INVALID");
+  }
   const selections = Object.keys(policy.selections ?? {}).sort();
   requireValue(selections.length > 0 && selections.length <= 16, "BUDGET_POLICY_INVALID");
   const canonical: Record<string, ModelAllowance> = Object.create(null);
@@ -44,14 +84,15 @@ function policySnapshot(policy: BudgetPolicy): string {
     requireValue(/^[\w:./-]{1,160}$/.test(selection) && model &&
       ["cloudflare", "openrouter"].includes(model.providerID) &&
       typeof model.modelID === "string" && model.modelID.length > 0 && model.modelID.length < 160 &&
-      model.price && int(model.price.inputMicroUsdPerMillion, 1, PRICE_LIMIT) &&
-      int(model.price.outputMicroUsdPerMillion, 1, PRICE_LIMIT) &&
+      model.price && int(model.price.inputMicroUsdPerMillion, policy.hybrid && selection === PILOT_FREE ? 0 : 1, PRICE_LIMIT) &&
+      int(model.price.outputMicroUsdPerMillion, policy.hybrid && selection === PILOT_FREE ? 0 : 1, PRICE_LIMIT) &&
       typeof model.price.revision === "string" && model.price.revision.length > 0,
     "BUDGET_POLICY_INVALID");
     canonical[selection] = model;
   }
   return JSON.stringify({ experimentId:policy.experimentId, totalMicroUsd:policy.totalMicroUsd,
-    taskMicroUsd:policy.taskMicroUsd, maxAttempts:policy.maxAttempts, selections:canonical });
+    taskMicroUsd:policy.taskMicroUsd, maxAttempts:policy.maxAttempts, selections:canonical,
+    ...(policy.hybrid ? {hybrid:policy.hybrid} : {}) });
 }
 function reserveCost(intent: InferenceIntent, price: Price): number {
   requireValue(int(intent.inputTokenCeiling, 1, TOKENS_LIMIT) &&
@@ -69,14 +110,14 @@ function adjust(c: Counter, delta: Partial<Counter>) {
   }
 }
 /** Only valid at an actual T03 transaction boundary, not a UI/MCP caller-supplied claim. */
-async function assertT03(tx: DurableObjectTransaction, grant: StartGrant, intent: InferenceIntent) {
+async function assertT03(tx: DurableObjectTransaction, grant: StartGrant, intent: InferenceIntent, policy: BudgetPolicy) {
   requireValue(ID.test(grant.id) && grant.id === intent.requestId &&
     CALL_ID.test(intent.callId) && CALL_ID.test(intent.attemptId) &&
     typeof intent.operationId === "string", "INFERENCE_IDENTITY_INVALID");
   const ledger = await tx.get<{version:number;slots:Record<string,{token:string;generation:number;phase:string;effect?:string}>}>("supervisor:admission:v1");
   const slot = ledger?.version === 1 ? ledger.slots?.[grant.id] : undefined;
   const task = await tx.get<{model?:string;status:string;operationId?:string;sessionIdPolicy?:string;
-    pendingTurn?:{operationId:string};cancelAmbiguous?:boolean}>("supervisor:task:" + grant.id);
+    pendingTurn?:{operationId:string};cancelAmbiguous?:boolean;session?:string;project?:string;pilotInstance?:string;createdAt?:number}>("supervisor:task:" + grant.id);
   requireValue(slot && slot.token === grant.token && slot.generation === grant.generation &&
     (slot.phase === "running" || (slot.phase === "effect_unknown" &&
       ["submit", "turn_submit"].includes(slot.effect ?? ""))) &&
@@ -85,18 +126,42 @@ async function assertT03(tx: DurableObjectTransaction, grant: StartGrant, intent
     task.operationId === intent.operationId &&
     (intent.operationId === "rc-start-" + grant.id ||
       /^rc-turn-[a-f0-9]{16}-[a-f0-9]{16}$/.test(intent.operationId)) &&
-    intent.selection === (task.model ?? "economy"), "T03_FENCE_OR_MODEL_INVALID");
+    (policy.hybrid ? task.model === PILOT_BACKUP : intent.selection === (task.model ?? "economy")),
+    "T03_FENCE_OR_MODEL_INVALID");
+  if (policy.hybrid) {
+    const h = policy.hybrid;
+    requireValue(grant.id === policy.experimentId && task.session === h.session &&
+      task.project === "supervised-" + grant.id && task.pilotInstance === h.instance &&
+      typeof task.createdAt === "number" && h.workUntil === task.createdAt + PILOT_WORK_MS &&
+      Date.now() < h.workUntil && task.status === "running" && !task.pendingTurn &&
+      task.operationId === "rc-start-" + grant.id &&
+      Object.keys(ledger!.slots).length === 1 &&
+      await tx.get<string>("supervisor:session:" + h.session) === grant.id &&
+      [PILOT_FREE,PILOT_BACKUP].includes(intent.selection) &&
+      intent.inputTokenCeiling === (intent.selection===PILOT_BACKUP?PILOT_GLM_BILLABLE_INPUT_CEILING:PILOT_INPUT_TOKENS) &&
+      intent.outputTokenCeiling === PILOT_OUTPUT_TOKENS,
+      "PILOT_FENCE_SESSION_OR_DEADLINE_INVALID");
+  }
 }
 function assertIntent(intent: InferenceIntent) {
   requireValue(ID.test(intent.requestId) && CALL_ID.test(intent.callId) &&
     CALL_ID.test(intent.attemptId) && typeof intent.selection === "string", "INFERENCE_IDENTITY_INVALID");
 }
-async function readGlobal(tx: DurableObjectTransaction, snapshot: string): Promise<Global> {
+async function readGlobal(tx: DurableObjectTransaction, snapshot: string, policy: BudgetPolicy): Promise<Global> {
   const previous = await tx.get<Global>(GLOBAL);
-  if (!previous) return {version:1,policy:snapshot,paymentBlocked:false,...zero()};
+  if (!previous) return {version:1,policy:snapshot,paymentBlocked:false,...zero(),
+    ...(policy.hybrid ? {hybrid:{calls:0,paidCalls:0,selection:PILOT_FREE}} : {})};
   requireValue(previous.version === 1 && previous.policy === snapshot &&
     [previous.confirmed,previous.reserved,previous.unknown].every(x => int(x,0,CASH_LIMIT)),
   "BUDGET_POLICY_CHANGED_OR_CORRUPT");
+  if (policy.hybrid) requireValue(previous.hybrid &&
+    int(previous.hybrid.calls,0,PILOT_MAX_CALLS) &&
+    int(previous.hybrid.paidCalls,0,Math.min(PILOT_MAX_PAID_CALLS,previous.hybrid.calls)) &&
+    (previous.hybrid.selection!==PILOT_FREE || previous.hybrid.paidCalls===0) &&
+    [PILOT_FREE,PILOT_BACKUP].includes(previous.hybrid.selection) &&
+    (previous.hybrid.pending === undefined || CALL_ID.test(previous.hybrid.pending)),
+    "PILOT_LEDGER_CORRUPT");
+  else requireValue(!previous.hybrid, "PILOT_LEDGER_POLICY_MISMATCH");
   return previous;
 }
 /** Same T03 Durable Object owner. No external RPC/await other than DO storage inside the tx. */
@@ -105,10 +170,13 @@ export async function reserveInference(storage: DurableObjectStorage, grant: Sta
   assertIntent(intent);
   const snap = policySnapshot(policy), allowance = policy.selections[intent.selection];
   requireValue(allowance, "MODEL_NOT_ALLOWED");
-  const expectedExposure = reserveCost(intent, allowance.price);
+  const ratedExposure = reserveCost(intent, allowance.price);
+  const paidPilot = Boolean(policy.hybrid && intent.selection===PILOT_BACKUP);
+  if(paidPilot)requireValue(ratedExposure<=PILOT_GLM_RESERVE_MICRO_USD,"PILOT_RATING_EXCEEDS_RESERVE");
+  const expectedExposure = paidPilot ? PILOT_GLM_RESERVE_MICRO_USD : ratedExposure;
   return storage.transaction(async tx => {
-    await assertT03(tx,grant,intent);
-    const global = await readGlobal(tx,snap);
+    await assertT03(tx,grant,intent,policy);
+    const global = await readGlobal(tx,snap,policy);
     requireValue(!global.paymentBlocked, "PAYMENT_BLOCKED");
     const key = CALL(intent.requestId,intent.callId);
     const old = await tx.get<Row>(key);
@@ -121,6 +189,17 @@ export async function reserveInference(storage: DurableObjectStorage, grant: Sta
       requireValue(old.state === "rejected" && old.reason !== "402", "UPSTREAM_EFFECT_UNCERTAIN");
       requireValue(old.attempts < policy.maxAttempts && !old.attemptIds.includes(intent.attemptId),
       "INFERENCE_RETRY_DENIED");
+    }
+    if (policy.hybrid) {
+      const h=global.hybrid!;
+      requireValue(!h.pending && h.calls < PILOT_MAX_CALLS && h.selection === intent.selection && !old,
+        "PILOT_CALL_LIMIT_PENDING_OR_PROVIDER");
+      if(paidPilot){
+        requireValue(h.paidCalls<PILOT_MAX_PAID_CALLS,"PILOT_PAID_CALL_LIMIT");
+        // Lifetime count: a cheap success never replenishes a paid-call slot.
+        h.paidCalls++;
+      }
+      h.calls++; h.pending=intent.callId;
     }
     const task = await tx.get<Counter>(TASK(intent.requestId)) ?? zero();
     requireValue(total(global) + expectedExposure <= policy.totalMicroUsd &&
@@ -167,18 +246,101 @@ export function paidPreflight(input: PaidPreflight): {decision:"GO"|"STOP"; bloc
   }
   return {decision:blockers.length?"STOP":"GO",blockers};
 }
-/** Exactly one dispatch flag per attempt. Cannot itself intercept SDK subcalls. */
+/** Private server evidence, not an input schema or a client boolean. No
+ * caller-supplied claim supplies this evidence. The pilot's risk objective differs
+ * from a guaranteed invoice: do not weaken the original strict preflight. */
+/** Review a conservative account-duration scenario, not a live billing cutoff.
+ * Billable DO duration can be rounded into $12.50 blocks. For this pilot only
+ * accept a scenario that stays inside the included 400,000 GB-s. Historical
+ * data may be used explicitly as a proxy just after a billing-cycle reset.
+ * The operator must verify the underlying receipt, lag and shared activity. */
+export type PilotBillingReview = {
+  basis:"current-cycle-metered"|"previous-cycle-proxy";
+  cycleStart:number; observedThrough:number;
+  observedDurationGbSeconds:number; sharedAndLagMarginGbSeconds:number;
+  pilotAllowanceGbSeconds:number;
+};
+export function pilotBillingReviewValid(review:unknown,now:number):boolean{
+  const r=review as Partial<PilotBillingReview>|undefined;
+  const lag=72*60*60_000;
+  if(!r||!int(now,0,Number.MAX_SAFE_INTEGER)||!int(r.cycleStart,0,now)||
+    !int(r.observedThrough,Math.max(0,now-lag),now)||
+    !int(r.observedDurationGbSeconds,0,400_000)||
+    !int(r.sharedAndLagMarginGbSeconds,1,400_000)||
+    !int(r.pilotAllowanceGbSeconds,2_000,400_000))return false;
+  if(r.basis==="current-cycle-metered"){
+    if(r.observedThrough!<r.cycleStart!)return false;
+  }else if(r.basis==="previous-cycle-proxy"){
+    if(now-r.cycleStart!>lag||r.observedThrough!>r.cycleStart!)return false;
+  }else return false;
+  return r.observedDurationGbSeconds!+r.sharedAndLagMarginGbSeconds!+r.pilotAllowanceGbSeconds!<=400_000;
+}
+export type PilotDispatchEvidence = {
+  kind:"pilot-risk-bounded-v2"; experimentId:string; instance:string; validUntil:number;
+  residualRiskExplicitlyAccepted:true; exclusiveLeaseVerified:true;
+  actualSdkInterceptorVerified:true; noUncontrolledRoutesVerified:true;
+  /** Offline close controls, not a physical-stop observation. */
+  closeVerified:true; billingHeadroomReviewed:true; plannedOtherMicroUsd:number;
+  billingReview:PilotBillingReview;
+  pricingRevision:typeof PILOT_PRICING_REVISION; maxWireBytes:number;
+  freeZeroPriceReceipt:string; glmBillingBoundReceipt:string;
+};
+export function pilotDispatchEvidenceValid(policy:BudgetPolicy, proof:unknown, now=Date.now()): boolean {
+  const p=proof as Partial<PilotDispatchEvidence>|undefined;
+  return Boolean(policy.hybrid && p?.kind==="pilot-risk-bounded-v2" &&
+    p.experimentId===policy.experimentId && p.instance===policy.hybrid.instance &&
+    int(p.validUntil,now+1,policy.hybrid.workUntil) &&
+    p.residualRiskExplicitlyAccepted===true && p.exclusiveLeaseVerified===true &&
+    p.actualSdkInterceptorVerified===true && p.noUncontrolledRoutesVerified===true &&
+    p.closeVerified===true && p.billingHeadroomReviewed===true &&
+    pilotBillingReviewValid(p.billingReview,now) &&
+    int(p.plannedOtherMicroUsd,0,850_000) &&
+    p.pricingRevision===PILOT_PRICING_REVISION &&
+    int(p.maxWireBytes,1,PILOT_MAX_WIRE_BYTES) &&
+    typeof p.freeZeroPriceReceipt==="string" && /^[a-f0-9]{64}$/.test(p.freeZeroPriceReceipt) &&
+    typeof p.glmBillingBoundReceipt==="string" && /^[a-f0-9]{64}$/.test(p.glmBillingBoundReceipt));
+}
+export function pilotBudgetPolicy(id:string,instance:string,createdAt:number):BudgetPolicy {
+  return {experimentId:id,totalMicroUsd:PILOT_INFERENCE_MICRO_USD,
+    taskMicroUsd:PILOT_INFERENCE_MICRO_USD,maxAttempts:1,
+    selections:{
+      [PILOT_FREE]:{providerID:"openrouter",modelID:"openrouter/free",price:{inputMicroUsdPerMillion:0,outputMicroUsdPerMillion:0,revision:PILOT_PRICING_REVISION}},
+      [PILOT_BACKUP]:{providerID:"cloudflare",modelID:PILOT_GLM,price:{inputMicroUsdPerMillion:PILOT_GLM_INPUT_RATE,outputMicroUsdPerMillion:PILOT_GLM_OUTPUT_RATE,revision:PILOT_PRICING_REVISION}}
+    },hybrid:{session:"ses_r2_"+id,instance,workUntil:createdAt+PILOT_WORK_MS}};
+}
+/** Read selected provider; optionally switch once when the trusted key loader
+ * proves no primary request can be sent (no key). Never switch an in-flight call. */
+export async function pilotProviderSelection(storage:DurableObjectStorage,grant:StartGrant,
+  policy:BudgetPolicy, intent:InferenceIntent, primaryUnavailableBeforeSend:boolean) {
+  const snap=policySnapshot(policy);
+  requireValue(policy.hybrid,"PILOT_POLICY_REQUIRED");
+  return storage.transaction(async tx=>{
+    await assertT03(tx,grant,intent,policy);
+    const global=await readGlobal(tx,snap,policy), h=global.hybrid!;
+    requireValue(!global.paymentBlocked && !h.pending && h.calls<PILOT_MAX_CALLS,"PILOT_CALL_LIMIT_OR_UNCERTAIN_EFFECT");
+    if(primaryUnavailableBeforeSend && h.selection===PILOT_FREE) {
+      h.selection=PILOT_BACKUP;
+      await tx.put(GLOBAL,global);
+    }
+    if(h.selection===PILOT_BACKUP)requireValue(h.paidCalls<PILOT_MAX_PAID_CALLS,"PILOT_PAID_CALL_LIMIT");
+    return h.selection;
+  });
+}
+/** Exactly one dispatch flag per attempt. The pilot adapter invokes this
+ * immediately before the actual network or Workers AI binding call. */
 export async function beginInferenceDispatch(storage: DurableObjectStorage,grant:StartGrant,
-  intent:InferenceIntent,policy:BudgetPolicy,preflight:PaidPreflight) {
-  requireValue(paidPreflight({...preflight,now:Date.now()}).decision === "GO", "PAID_PREFLIGHT_STOP");
+  intent:InferenceIntent,policy:BudgetPolicy,preflight:PaidPreflight|PilotDispatchEvidence) {
+  requireValue(policy.hybrid ? pilotDispatchEvidenceValid(policy,preflight) :
+    !("kind" in preflight) && paidPreflight({...preflight,now:Date.now()}).decision === "GO", "PAID_PREFLIGHT_STOP");
   const snap=policySnapshot(policy);
   return storage.transaction(async tx=>{
-    await assertT03(tx,grant,intent);
-    const global=await readGlobal(tx,snap);
+    await assertT03(tx,grant,intent,policy);
+    const global=await readGlobal(tx,snap,policy);
     requireValue(!global.paymentBlocked,"PAYMENT_BLOCKED");
     const row=await tx.get<Row>(CALL(intent.requestId,intent.callId));
     requireValue(row && row.attemptId===intent.attemptId,"INFERENCE_RESERVATION_MISSING");
     if(row.state!=="reserved")return {proceed:false,state:row.state};
+    if(policy.hybrid) requireValue(global.hybrid?.pending===intent.callId && pilotDispatchEvidenceValid(policy,preflight), "PILOT_DISPATCH_FENCED");
     row.state="sent";
     await tx.put(CALL(intent.requestId,intent.callId),row);
     return {proceed:true,state:"sent" as const};
@@ -195,6 +357,8 @@ export async function markInferenceUnknown(storage:DurableObjectStorage,intent:I
     requireValue(global && task,"INFERENCE_LEDGER_MISSING");
     adjust(global,{reserved:-row.exposure,unknown:row.exposure});
     adjust(task,{reserved:-row.exposure,unknown:row.exposure});
+    // Even a zero-rated Free request with an invalid receipt is a stop.
+    if(global.hybrid)global.paymentBlocked=true;
     row.state="unknown";row.reason=reason;
     await tx.put(key,row);await tx.put(GLOBAL,global);await tx.put(TASK(intent.requestId),task);
     return {reused:false};
@@ -202,7 +366,7 @@ export async function markInferenceUnknown(storage:DurableObjectStorage,intent:I
 }
 /** Proof is required from a private trusted adapter; HTTP status alone is not proof. */
 export async function rejectInferenceBeforeGeneration(storage:DurableObjectStorage,intent:InferenceIntent,
-  receipt:{origin:"trusted-provider-adapter"; beforeGeneration:true; code:"429"|"3040"|"402"}) {
+  receipt:{origin:"trusted-provider-adapter"; beforeGeneration:true; code:"429"|"3040"|"402"; preGenerationSource?:"openrouter_free_tier_per_minute"|"openrouter_free_tier_per_day"}) {
   requireValue(receipt.origin==="trusted-provider-adapter" && receipt.beforeGeneration===true &&
     ["429","3040","402"].includes(receipt.code),"PREGEN_PROOF_REQUIRED");
   return storage.transaction(async tx=>{
@@ -213,6 +377,13 @@ export async function rejectInferenceBeforeGeneration(storage:DurableObjectStora
     const global=await tx.get<Global>(GLOBAL),task=await tx.get<Counter>(TASK(intent.requestId));
     requireValue(global && task,"INFERENCE_LEDGER_MISSING");
     adjust(global,{reserved:-row.exposure});adjust(task,{reserved:-row.exposure});
+    if(global.hybrid) {
+      requireValue(global.hybrid.pending===intent.callId && row.selection===PILOT_FREE &&
+        global.hybrid.selection===PILOT_FREE && receipt.code==="429" &&
+        ["openrouter_free_tier_per_minute","openrouter_free_tier_per_day"].includes(receipt.preGenerationSource??""),
+        "PILOT_FALLBACK_REQUIRES_ROUTER_PREGEN_PROOF");
+      global.hybrid.selection=PILOT_BACKUP;delete global.hybrid.pending;
+    }
     if(receipt.code==="402")global.paymentBlocked=true;
     row.state="rejected";row.reason=receipt.code;
     await tx.put(key,row);await tx.put(GLOBAL,global);await tx.put(TASK(intent.requestId),task);
@@ -221,7 +392,7 @@ export async function rejectInferenceBeforeGeneration(storage:DurableObjectStora
 }
 /** Rated cost is NOT an invoice; late receipts may settle an unknown even after slot reclaim. */
 export async function settleInference(storage:DurableObjectStorage,intent:InferenceIntent,
-  receipt:{origin:"trusted-provider-adapter"; receiptId:string; inputTokens:number; outputTokens:number}) {
+  receipt:{origin:"trusted-provider-adapter"; receiptId:string; inputTokens:number; outputTokens:number; actualModel?:string}) {
   requireValue(receipt.origin==="trusted-provider-adapter" && CALL_ID.test(receipt.receiptId) &&
     int(receipt.inputTokens,0,TOKENS_LIMIT) && int(receipt.outputTokens,0,TOKENS_LIMIT),"USAGE_RECEIPT_REQUIRED");
   return storage.transaction(async tx=>{
@@ -229,7 +400,7 @@ export async function settleInference(storage:DurableObjectStorage,intent:Infere
     requireValue(row && row.attemptId===intent.attemptId,"INFERENCE_ATTEMPT_MISMATCH");
     if(row.state==="settled") {
       requireValue(row.receiptId===receipt.receiptId && row.inputTokens===receipt.inputTokens &&
-        row.outputTokens===receipt.outputTokens,"DUPLICATE_SETTLEMENT_CONFLICT");
+        row.outputTokens===receipt.outputTokens && row.actualModel===receipt.actualModel,"DUPLICATE_SETTLEMENT_CONFLICT");
       return {reused:true,chargedMicroUsd:row.charge!};
     }
     requireValue(row.state==="sent"||row.state==="unknown","INFERENCE_NOT_BILLABLE");
@@ -243,11 +414,19 @@ export async function settleInference(storage:DurableObjectStorage,intent:Infere
     requireValue(!previous || previous===key,"PROVIDER_RECEIPT_REUSED_OTHER_CALL");
     const global=await tx.get<Global>(GLOBAL),task=await tx.get<Counter>(TASK(intent.requestId));
     requireValue(global && task,"INFERENCE_LEDGER_MISSING");
+    if(global.hybrid) {
+      requireValue(global.hybrid.pending===intent.callId && row.state==="sent" &&
+        receipt.inputTokens<=PILOT_INPUT_TOKENS && receipt.outputTokens<=PILOT_OUTPUT_TOKENS &&
+        typeof receipt.actualModel==="string" && receipt.actualModel.length>0 && receipt.actualModel.length<=160 &&
+        (row.selection!==PILOT_BACKUP || receipt.actualModel===PILOT_GLM),
+        "PILOT_TERMINAL_RECEIPT_REQUIRED");
+      delete global.hybrid.pending;
+    }
     const bucket=row.state==="unknown"?"unknown":"reserved";
     adjust(global,{[bucket]:-row.exposure,confirmed:charged});
     adjust(task,{[bucket]:-row.exposure,confirmed:charged});
     row.state="settled";row.receiptId=receipt.receiptId;row.inputTokens=receipt.inputTokens;
-    row.outputTokens=receipt.outputTokens;row.charge=charged;
+    row.outputTokens=receipt.outputTokens;row.charge=charged;row.actualModel=receipt.actualModel;
     await tx.put(key,row);await tx.put(receiptKey,key);await tx.put(GLOBAL,global);
     await tx.put(TASK(intent.requestId),task);
     return {reused:false,chargedMicroUsd:charged};
@@ -256,5 +435,6 @@ export async function settleInference(storage:DurableObjectStorage,intent:Infere
 export async function inferenceBudgetTotals(storage:Pick<DurableObjectStorage,"get">) {
   const global=await storage.get<Global>(GLOBAL);
   return global ? {confirmed:global.confirmed,reserved:global.reserved,unknown:global.unknown,
-    exposureMicroUsd:total(global),paymentBlocked:global.paymentBlocked} : null;
+    exposureMicroUsd:total(global),paymentBlocked:global.paymentBlocked,
+    ...(global.hybrid ? {pilot:{...global.hybrid}} : {})} : null;
 }

@@ -1,0 +1,73 @@
+name: F0-C10 integration checkpoint (OFFLINE ONLY)
+on:
+  push:
+    branches: [f0-c10/integracion-final-20261123]
+permissions:
+  contents: read
+concurrency:
+  group: f0-c10-final-offline
+  cancel-in-progress: true
+jobs:
+  offline:
+    if: github.event.repository.private == false && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Confirm source SHA
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+          no-cache: true
+      - id: install
+        run: bun install --frozen-lockfile
+      - name: Certified archive regressions
+        run: bun test src/github-import-source.test.ts
+      - name: Node preflight
+        run: node --test scripts/f0-c10/preflight-03-usd2.test.mjs scripts/f0-c10/operational-preflight.test.mjs
+      - name: Historical RED
+        shell: bash
+        run: |
+          set +e
+          node --test scripts/f0-c10/preflight-03-usd2-known-red.red.mjs > /tmp/f0-red.txt 2>&1
+          status=$?
+          set -e
+          cat /tmp/f0-red.txt
+          test "$status" -eq 1
+          grep -q '^# tests 2$' /tmp/f0-red.txt
+          grep -q '^# fail 2$' /tmp/f0-red.txt
+      - name: STOP receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for manifest in docs/f0-c10/PREFLIGHT_03_USD2_AUTHORIZATION.json docs/f0-c10/PREFLIGHT_03_USD2_AUTHORIZATION_REVALIDATED.json; do
+            set +e
+            node scripts/f0-c10/preflight-03-usd2.mjs --manifest "$manifest" > /tmp/f0-stop.json
+            status=$?
+            set -e
+            test "$status" -eq 2
+            node -e 'const x=require("/tmp/f0-stop.json");if(x.decision!=="STOP"||x.totalCapMicroUsd!==2000000||x.liveDispatchAuthorized!==false||x.providerHardCutoffVerified!==false)process.exit(1)'
+          done
+      - name: Specialist Node contracts and STOP safety
+        run: node --experimental-strip-types --test scripts/f0-c10/c05-t03-server.test.mjs scripts/f0-c10/c05-t04-read-only.test.mjs scripts/f0-c10/c05-t09-safety.test.mjs scripts/f0-c10/inference-durable.test.mjs
+      - run: bun test
+      - run: bun scripts/test-preview.mjs
+      - if: ${{ !cancelled() && steps.install.conclusion == 'success' }}
+        run: bun run typecheck
+      - run: bun run build
+      - run: bun scripts/check-invariants.mjs
+      - name: Exact Staging packaging (no deploy or upload)
+        run: |
+          set -euo pipefail
+          CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH=wrangler.g1.jsonc bun run build
+          node scripts/f0-c10/pilot-staging-package.mjs
+      - run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"

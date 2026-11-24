@@ -5,12 +5,13 @@
  */
 export const GITHUB_IMPORT_SOURCE = String.raw`
 import { createHash } from "node:crypto";
-import { readFile, mkdir, mkdtemp, rename, rm, lstat, writeFile } from "node:fs/promises";
+import { readFile, mkdir, mkdtemp, rename, rm, lstat, writeFile, chmod } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { gunzipSync } from "node:zlib";
 const ROOT = process.env.IMPORT_TEST_ROOT || "/workspace/projects";
-const [target] = process.argv.slice(1);
+const [target, expectedTree] = process.argv.slice(1);
 if (!/^[a-z][a-z0-9-]{0,39}$/.test(target || "")) throw Error("Invalid project");
+if (expectedTree !== undefined && !/^[a-f0-9]{40}$/.test(expectedTree)) throw Error("Invalid expected tree");
 const output = join(ROOT, target);
 try { await lstat(output); throw Error("Destination already exists"); }
 catch (e) { if (e.code !== "ENOENT") throw e; }
@@ -69,6 +70,7 @@ while(offset+512<=archive.length) {
   if(clean.startsWith("/")||clean.includes("\\")||clean.includes("\0"))throw Error("Unsafe archive path");
   const parts=clean.split("/");
   if(parts.some(x=>!x||x==="."||x===".."))throw Error("Unsafe archive path");
+  if(parts.some(x=>x.toLowerCase()===".git"))throw Error("Archive .git metadata refused");
   root ||= parts[0];
   if(parts[0]!==root)throw Error("Archive has multiple roots");
   const relative=parts.slice(1).join("/");
@@ -89,21 +91,58 @@ try {
     if(entry.type==="5")await mkdir(dst,{recursive:true});
     else {
       await mkdir(resolve(dst,".."),{recursive:true});
-      await writeFile(dst,entry.data,{flag:"wx",mode:(entry.mode&0o111)?0o755:0o644});
+      const mode=(entry.mode&0o111)?0o755:0o644;
+      await writeFile(dst,entry.data,{flag:"wx",mode});
+      if(expectedTree)await chmod(dst,mode);
     }
   }
   const files=entries.filter(e=>e.type==="0").sort((a,b)=>a.relative.localeCompare(b.relative));
+  if(!files.length)throw Error("Archive contains no files");
   const before=createHash("sha256"),after=createHash("sha256");
+  // Git object framing is defined over raw bytes, not git-add's filtered index.
+  const objectHash=(kind,bytes)=>createHash("sha1").update(kind+" "+bytes.length+"\0").update(bytes).digest();
+  const blobs=new Map();
   for(const f of files){
     before.update(f.relative+"\0");before.update(createHash("sha256").update(f.data).digest());
-    const bytes=await readFile(resolve(staged,f.relative));
+    const path=resolve(staged,f.relative);
+    const bytes=await readFile(path);
+    if(expectedTree){
+      const st=await lstat(path), mode=(f.mode&0o111)?0o755:0o644;
+      if(!st.isFile()||(st.mode&0o7777)!==mode)throw Error("Git file mode mismatch");
+      blobs.set(f.relative,{mode:mode===0o755?"100755":"100644",hash:objectHash("blob",bytes)});
+    }
     after.update(f.relative+"\0");after.update(createHash("sha256").update(bytes).digest());
   }
   const expected=before.digest("hex"), actual=after.digest("hex");
   if(expected!==actual)throw Error("Import readback hash mismatch");
+  if(expectedTree){
+    const rootTree=new Map();
+    for(const entry of entries){
+      if(!entry.relative)continue;
+      const parts=entry.relative.split("/");
+      let node=rootTree;
+      for(let i=0;i<parts.length;i++){
+        const name=parts[i];
+        if(i===parts.length-1&&entry.type==="0"){
+          node.set(name,blobs.get(entry.relative));
+        }else{
+          if(!node.has(name))node.set(name,{mode:"40000",children:new Map()});
+          node=node.get(name).children;
+        }
+      }
+    }
+    const hashTree=node=>{
+      const ordered=[...node].sort(([a,x],[b,y])=>Buffer.compare(
+        Buffer.from(a+(x.children?"/":"")),Buffer.from(b+(y.children?"/":""))));
+      const bytes=Buffer.concat(ordered.flatMap(([name,item])=>[
+        Buffer.from(item.mode+" "+name+"\0"),item.children?hashTree(item.children):item.hash]));
+      return objectHash("tree",bytes);
+    };
+    if(hashTree(rootTree).toString("hex")!==expectedTree)throw Error("Git tree hash mismatch");
+  }
   try {await lstat(output);throw Error("Destination already exists");}
   catch(e){if(e.code!=="ENOENT")throw e;}
   await rename(staged,output);
-  process.stdout.write(JSON.stringify({target,files:files.length,sha256:actual,bytes:expanded}));
+  process.stdout.write(JSON.stringify({target,files:files.length,sha256:actual,bytes:expanded,...(expectedTree?{tree:expectedTree,certification:"raw-git-tree-v1"}:{})}));
 } finally { await rm(temporary,{recursive:true,force:true}); }
 `;

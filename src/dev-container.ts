@@ -21,7 +21,7 @@ import {
 } from "./external-backup-do";
 import { RESTORE_PROJECT_SOURCE } from "./restore-project";
 import { GITHUB_IMPORT_SOURCE } from "./github-import-source";
-import { githubSourceArchive } from "./github-import";
+import { githubSourceArchive, sourceReceiptMatches, RAW_TREE_CERTIFICATION } from "./github-import";
 import { validateIsolatedRegistration, type IsolatedProject } from "./project-container";
 import { assertRecoverableContainer, SNAPSHOT_TTL_MS } from "./snapshot-policy";
 import { BUN_RUNTIME_VERSION, commandRequiresBun } from "./dev-runtime";
@@ -175,11 +175,54 @@ export class DevContainer extends DurableObject<Env> {
     super(ctx, env);
     const container = ctx.container;
     if (container?.running) {
-      void ctx.blockConcurrencyWhile(() => container.setInactivityTimeout(INACTIVITY_MS));
+      void ctx.blockConcurrencyWhile(async()=>{
+        const p=await ctx.storage.get<{closeUntil:number}>("pilot-deadline-v1");
+        await container.setInactivityTimeout(p?Math.max(1,p.closeUntil-Date.now()):INACTIVITY_MS);
+      });
     }
   }
 
+  async configurePilotDeadline(project:string,workUntil:number,closeUntil:number) {
+    const now=Date.now();
+    if(!/^supervised-[a-f0-9]{16}$/.test(project)||this.ctx.id.name!=="project-v1:"+project||
+        !Number.isSafeInteger(workUntil)||workUntil<=now||workUntil>now+900_000||closeUntil!==workUntil+300_000)
+      throw Error("PILOT_CONTAINER_DEADLINE_INVALID");
+    await this.ctx.storage.transaction(async tx=>{
+      const previous=await tx.get<{project:string;workUntil:number;closeUntil:number}>("pilot-deadline-v1");
+      if(previous){
+        if(previous.project!==project||previous.workUntil!==workUntil||previous.closeUntil!==closeUntil)
+          throw Error("PILOT_CONTAINER_DEADLINE_IMMUTABLE");
+        return;
+      }
+      if(this.ctx.container?.running||await tx.get("snapshotId")||await tx.get("lastActivity"))
+        throw Error("PILOT_CONTAINER_NOT_FRESH");
+      await tx.put("pilot-deadline-v1",{project,workUntil,closeUntil});
+    });
+    await this.scheduleCheck();
+  }
+  private async checkPilotWork(){
+    const p=await this.ctx.storage.get<{workUntil:number;closeUntil:number}>("pilot-deadline-v1");
+    if(p&&(Date.now()>=p.workUntil||await this.ctx.storage.get("pilot-close-requested-v1")))throw Error("PILOT_CONTAINER_WORK_EXPIRED");
+    return p;
+  }
+  private async pilotSignal(limit:number){
+    const p=await this.checkPilotWork();
+    const ms=p?Math.min(limit,p.workUntil-Date.now()):limit;
+    if(ms<=0)throw Error("PILOT_CONTAINER_WORK_EXPIRED");
+    return AbortSignal.timeout(ms);
+  }
+  private async scheduleCheck(){
+    const p=await this.ctx.storage.get<{workUntil:number;closeUntil:number}>("pilot-deadline-v1");
+    const now=Date.now();
+    if(p&&now>=p.closeUntil){
+      await this.ctx.storage.put("pilot-close-v1",{status:this.ctx.container?.running?"overdue":"not-running",at:now});
+      return;
+    }
+    await this.ctx.storage.setAlarm(p?Math.min(now+CHECK_MS,now<p.workUntil?p.workUntil:p.closeUntil):now+CHECK_MS);
+  }
+
   private async ensureRunning() {
+    await this.checkPilotWork();
     this.starting ??= this.startOrRecover().finally(() => { this.starting = undefined; });
     return await this.starting;
   }
@@ -192,12 +235,13 @@ export class DevContainer extends DurableObject<Env> {
       const savedAt = await this.ctx.storage.get<number>("savedAt");
       const lastActivity = await this.ctx.storage.get<number>("lastActivity");
       assertRecoverableContainer(snapshotId, savedAt, lastActivity, Date.now());
+      const pilot=await this.checkPilotWork();
       container.start({
         ...(snapshotId
           ? { containerSnapshot: { id: snapshotId } }
           : { image: "cloudflare/debian-trixie" }),
         entrypoint: ["sleep", "infinity"],
-        enableInternet: true,
+        enableInternet: !pilot,
         instance: "basic"
       });
       // If snapshot restore fails, fail closed rather than losing project data.
@@ -205,9 +249,10 @@ export class DevContainer extends DurableObject<Env> {
         await this.ctx.storage.put("lastActivity", Date.now());
       }
     }
-    await container.setInactivityTimeout(INACTIVITY_MS);
+    const pilot=await this.checkPilotWork();
+    await container.setInactivityTimeout(pilot?Math.max(1,pilot.closeUntil-Date.now()):INACTIVITY_MS);
     if ((await this.ctx.storage.getAlarm()) === null) {
-      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      await this.scheduleCheck();
     }
     return container;
   }
@@ -217,6 +262,7 @@ export class DevContainer extends DurableObject<Env> {
     const smoke = await this.ctx.storage.get<unknown>("smokeReportV1");
     return {
       smoke,
+      pilotClose: await this.ctx.storage.get("pilot-close-v1") ?? null,
       savedAt,
       snapshotExpiresAt: savedAt ? new Date(savedAt + SNAPSHOT_TTL_MS).toISOString() : null,
       running: this.ctx.container?.running ?? false,
@@ -263,7 +309,7 @@ export class DevContainer extends DurableObject<Env> {
       } finally {
         this.busy--;
         await this.ctx.storage.put("lastActivity", Date.now());
-        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+        await this.scheduleCheck();
       }
     } finally {
       release();
@@ -333,7 +379,7 @@ export class DevContainer extends DurableObject<Env> {
       } finally {
         this.busy--;
         await this.ctx.storage.put("lastActivity", Date.now());
-        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+        await this.scheduleCheck();
       }
     } finally {
       release();
@@ -384,12 +430,20 @@ export class DevContainer extends DurableObject<Env> {
    * owner's GitHub credential; the Container receives only archive bytes.
    * Never overwrites a project, even after an interrupted previous import.
    */
-  async prepareRepository(project: string, repository: string, sourceCommit?: string): Promise<{
-    project: string; repository: string; commit: string; files: number; sha256: string;
+  async prepareRepository(project: string, repository: string, sourceCommit?: string,
+    sourceTree?: string): Promise<{
+    project: string; repository: string; commit: string; tree?: string;
+    files: number; sha256: string;
   }> {
     const id = validateProject(project);
     if (sourceCommit !== undefined && !/^[a-f0-9]{40}$/.test(sourceCommit)) {
       throw new Error("Commit de origen inválido");
+    }
+    if (sourceTree !== undefined && !/^[a-f0-9]{40}$/.test(sourceTree)) {
+      throw new Error("Árbol de origen inválido");
+    }
+    if (sourceTree !== undefined && sourceCommit === undefined) {
+      throw new Error("sourceCommit es obligatorio cuando se fija sourceTree");
     }
     const previous = this.commandQueue;
     let release = () => {};
@@ -402,53 +456,73 @@ export class DevContainer extends DurableObject<Env> {
         throw Error("El repositorio ya no está autorizado");
       }
       const existing = await this.ctx.storage.get<{
-        project: string; repository: string; commit: string; files: number; sha256: string
+        project: string; repository: string; commit: string; tree?: string;
+        files: number; sha256: string; certification?: string
       }>("isolated-repository-v1");
       if (existing) {
         if (existing.project !== id || existing.repository.toLowerCase() !== repository.toLowerCase()) {
           throw Error("El entorno aislado ya pertenece a otro proyecto o repositorio");
         }
-        if (sourceCommit && existing.commit !== sourceCommit) {
-          throw Error("El proyecto ya está importado desde otro commit de origen");
+        if (sourceCommit && !sourceReceiptMatches(existing, sourceCommit, sourceTree)) {
+          throw Error("El proyecto ya está importado desde otro commit o árbol de origen");
         }
         await this.ctx.storage.delete("repo-import-pending-v1");
         await this.recordProject(id);
         return existing;
       }
+      const pilot=await this.checkPilotWork();
       const pending = await this.ctx.storage.get<{
-        project: string; repository: string; sourceCommit?: string
+        project: string; repository: string; sourceCommit?: string; sourceTree?: string
       }>("repo-import-pending-v1");
+      if(pilot&&pending)throw Error("PILOT_IMPORT_EFFECT_UNKNOWN");
       if (pending && (pending.project !== id ||
           pending.repository.toLowerCase() !== repository.toLowerCase() ||
-          (pending.sourceCommit ?? "") !== (sourceCommit ?? ""))) {
+          (pending.sourceCommit ?? "") !== (sourceCommit ?? "") ||
+          (pending.sourceTree ?? "") !== (sourceTree ?? ""))) {
         throw Error("Ya hay otra importación pendiente en este Container");
       }
       if (await this.ctx.storage.get("lastActivity") && !pending) {
         throw Error("El Container ya fue utilizado; no se importará sobre su contenido");
       }
       if (!pending) await this.ctx.storage.put("repo-import-pending-v1", {
-        project: id, repository, ...(sourceCommit ? { sourceCommit } : {})
+        project: id, repository, ...(sourceCommit ? { sourceCommit } : {}),
+        ...(sourceTree ? { sourceTree } : {})
       });
       const token = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN || await settings.getGitHubKey();
-      const source = await githubSourceArchive(repository, token || "", allowed, fetch, sourceCommit);
+      const http:typeof fetch=pilot?async(input,init)=>fetch(input,{...init,signal:AbortSignal.any([await this.pilotSignal(120_000),...(init?.signal?[init.signal]:[])])}):fetch;
+      const source = await githubSourceArchive(repository, token || "", allowed, http, sourceCommit, sourceTree);
       const container = await this.ensureRunning();
       this.busy++;
-      await this.ctx.storage.put("lastActivity", Date.now());
       try {
+        await this.ctx.storage.put("lastActivity", Date.now());
+        // Raw Git object hashes use Node only; no Git bootstrap or filters.
         const process = await container.exec(
-          ["node", "--input-type=module", "-e", GITHUB_IMPORT_SOURCE, id], { stdin: source.stream }
+          ["node", "--input-type=module", "-e", GITHUB_IMPORT_SOURCE, id,
+            ...(sourceTree ? [sourceTree] : [])],
+          { stdin: source.stream, signal: await this.pilotSignal(120_000) }
         );
-        const result = await process.output();
-        if (result.exitCode !== 0) {
-          throw Error("No se pudo importar el repositorio de forma segura: " +
-            new TextDecoder().decode(result.stderr).slice(-350));
+        const [stdout, stderr, exitCode] = await Promise.all([
+          captureBoundedOutput(process.stdout, 4_096),
+          captureBoundedOutput(process.stderr, 1_024),
+          process.exitCode
+        ]);
+        if (exitCode !== 0 || stdout.truncated || stderr.truncated) {
+          throw Error("No se pudo importar el repositorio de forma segura");
         }
-        const receipt = JSON.parse(new TextDecoder().decode(result.stdout)) as {
-          target: string; files: number; sha256: string
+        const receipt = JSON.parse(stdout.text) as {
+          target: string; files: number; sha256: string; tree?: string; certification?: string
         };
-        if (receipt.target !== id || !Number.isSafeInteger(receipt.files) || receipt.files < 1 ||
+        if (!receipt || receipt.target !== id || !Number.isSafeInteger(receipt.files) ||
+            receipt.files < 1 || receipt.files > 15_000 ||
+            typeof receipt.sha256 !== "string" ||
             !/^[a-f0-9]{64}$/.test(receipt.sha256)) throw Error("Resultado de importación inválido");
+        if (sourceTree !== undefined &&
+            (source.tree !== sourceTree || receipt.tree !== sourceTree ||
+             receipt.certification !== RAW_TREE_CERTIFICATION)) {
+          throw Error("La importación no confirmó el árbol de origen verificado");
+        }
         const record = { project: id, repository: source.repo, commit: source.commit,
+          ...(sourceTree ? { tree: sourceTree, certification: RAW_TREE_CERTIFICATION } : {}),
           files: receipt.files, sha256: receipt.sha256 };
         await this.ctx.storage.put("isolated-repository-v1", record);
         await this.ctx.storage.delete("repo-import-pending-v1");
@@ -457,7 +531,7 @@ export class DevContainer extends DurableObject<Env> {
       } finally {
         this.busy--;
         await this.ctx.storage.put("lastActivity", Date.now());
-        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+        await this.scheduleCheck();
       }
     } finally { release(); }
   }
@@ -471,7 +545,7 @@ export class DevContainer extends DurableObject<Env> {
     this.busy++;
     await this.ctx.storage.put("lastActivity", Date.now());
     try {
-      const process = await container.exec(["node", "-e", INSPECT_SOURCE, id, action, target]);
+      const process = await container.exec(["node", "-e", INSPECT_SOURCE, id, action, target],{signal:await this.pilotSignal(30_000)});
       const output = await process.output();
       const decoder = new TextDecoder();
       if (output.exitCode !== 0) {
@@ -482,7 +556,7 @@ export class DevContainer extends DurableObject<Env> {
     } finally {
       this.busy--;
       await this.ctx.storage.put("lastActivity", Date.now());
-      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      await this.scheduleCheck();
     }
   }
 
@@ -518,7 +592,7 @@ export class DevContainer extends DurableObject<Env> {
     } finally {
       this.busy--;
       await this.ctx.storage.put("lastActivity", Date.now());
-      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      await this.scheduleCheck();
     }
   }
 
@@ -546,8 +620,10 @@ export class DevContainer extends DurableObject<Env> {
     this.busy++;
     await this.ctx.storage.put("lastActivity", Date.now());
     try {
-      await this.ensureGitAvailable(container);
-      if (commandRequiresBun(command)) await this.ensureBunAvailable(container);
+      const pilot=await this.checkPilotWork();
+      if(!pilot){await this.ensureGitAvailable(container);
+        if(commandRequiresBun(command))await this.ensureBunAvailable(container);}
+      else if(commandRequiresBun(command))throw Error("PILOT_OFFLINE_USE_NODE_OR_GITHUB_CI");
       // A Node supervisor owns only this command's private process group.
       // It closes inherited pipes after bounded cleanup; detached descendants
       // remain outside this guarantee (see R2-T06 negative fixtures).
@@ -556,7 +632,7 @@ export class DevContainer extends DurableObject<Env> {
         "cd /workspace/projects/" + project,
         "exec node -e \"$2\" \"$1\""
       ].join(" && ");
-      const process = await container.exec(["bash", "-lc", wrapper, "opencode", command, LINUX_RUNNER_SOURCE]);
+      const process = await container.exec(["bash", "-lc", wrapper, "opencode", command, LINUX_RUNNER_SOURCE],pilot?{signal:await this.pilotSignal(180_000)}:undefined);
       // Drain both pipes while the process runs. output() accumulates unbounded
       // stdout/stderr *before* a later slice, which can exhaust the DO isolate.
       const [stdout, stderr, exitCode] = await Promise.all([
@@ -576,7 +652,7 @@ export class DevContainer extends DurableObject<Env> {
     } finally {
       this.busy--;
       await this.ctx.storage.put("lastActivity", Date.now());
-      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      await this.scheduleCheck();
     }
   }
 
@@ -624,18 +700,34 @@ export class DevContainer extends DurableObject<Env> {
     }
   }
 
+  /** Stop admitting work, preserve files via normal snapshot, report state. */
+  async closePilotProject(project:string){
+    if(this.ctx.id.name!=="project-v1:"+project||!/^supervised-[a-f0-9]{16}$/.test(project))throw Error("PILOT_CONTAINER_SCOPE");
+    const p=await this.ctx.storage.get<{project:string;workUntil:number;closeUntil:number}>("pilot-deadline-v1");
+    if(!p){if(this.ctx.container?.running||await this.ctx.storage.get("lastActivity"))throw Error("PILOT_CONTAINER_UNTRACKED");
+      return {running:false,close:{status:"never-started",at:Date.now()}};}
+    if(p.project!==project)throw Error("PILOT_CONTAINER_SCOPE");
+    await this.ctx.storage.put("pilot-close-requested-v1",true);
+    await this.alarm();
+    return {running:this.ctx.container?.running??false,close:await this.ctx.storage.get("pilot-close-v1")??null};
+  }
   /** Durable Object alarm: checkpoint then suspend the idle VM. */
   async alarm() {
     const container = this.ctx.container;
-    if (!container?.running) return;
+    if (!container?.running) {
+      if(await this.ctx.storage.get("pilot-deadline-v1"))await this.ctx.storage.put("pilot-close-v1",{status:"not-running",at:Date.now()});
+      return;
+    }
     if (this.busy > 0) {
-      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      await this.scheduleCheck();
       return;
     }
 
     const lastActivity = (await this.ctx.storage.get<number>("lastActivity")) ?? 0;
     const savedAt = (await this.ctx.storage.get<number>("savedAt")) ?? 0;
-    const idle = Date.now() - lastActivity >= IDLE_MS;
+    const pilot=await this.ctx.storage.get<{workUntil:number;closeUntil:number}>("pilot-deadline-v1");
+    if(pilot&&Date.now()>=pilot.closeUntil){await this.scheduleCheck();return;}
+    const idle = pilot ? Date.now()>=pilot.workUntil||Boolean(await this.ctx.storage.get("pilot-close-requested-v1")) : Date.now()-lastActivity>=IDLE_MS;
     const checkpointDue = lastActivity > savedAt && Date.now() - savedAt >= CHECKPOINT_MS;
 
     if (idle || checkpointDue) {
@@ -645,8 +737,8 @@ export class DevContainer extends DurableObject<Env> {
       } catch (error) {
         // Never destroy the only unsaved copy of a project.
         console.error("Linux checkpoint failed", error instanceof Error ? error.message : "unknown");
-        await container.setInactivityTimeout(INACTIVITY_MS);
-        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+        if(!pilot)await container.setInactivityTimeout(INACTIVITY_MS);
+        await this.scheduleCheck();
         return;
       }
     }
@@ -654,10 +746,12 @@ export class DevContainer extends DurableObject<Env> {
     if (idle && this.busy === 0 &&
         (await this.ctx.storage.get<number>("lastActivity")) === lastActivity) {
       await container.destroy("idle");
+      if(pilot)await this.ctx.storage.put("pilot-close-v1",{status:container.running?"unconfirmed":"stopped",at:Date.now()});
+      if(pilot&&container.running)await this.scheduleCheck();
       return;
     }
-    await container.setInactivityTimeout(INACTIVITY_MS);
-    await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+    if(!pilot)await container.setInactivityTimeout(INACTIVITY_MS);
+    await this.scheduleCheck();
   }
 
   /** HTTP-only static preview; isolation headers are applied by the Worker. */
@@ -849,7 +943,7 @@ export class DevContainer extends DurableObject<Env> {
       } finally {
         this.busy--;
         await this.ctx.storage.put("lastActivity", Date.now());
-        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+        await this.scheduleCheck();
       }
     } finally { release(); }
   }
@@ -903,7 +997,7 @@ export class DevContainer extends DurableObject<Env> {
       } finally {
         this.busy--;
         await this.ctx.storage.put("lastActivity", Date.now());
-        await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+        await this.scheduleCheck();
       }
     } finally {
       release();
@@ -960,7 +1054,7 @@ export class DevContainer extends DurableObject<Env> {
     } finally {
       this.busy--;
       await this.ctx.storage.put("lastActivity", Date.now());
-      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      await this.scheduleCheck();
     }
   }
 
@@ -1066,7 +1160,7 @@ export class DevContainer extends DurableObject<Env> {
     } finally {
       this.busy--;
       await this.ctx.storage.put("lastActivity", Date.now());
-      await this.ctx.storage.setAlarm(Date.now() + CHECK_MS);
+      await this.scheduleCheck();
     }
   }
 

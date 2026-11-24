@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {createReadOnlyAuthority,bindReadOnlyScope,requireReadOnlyAuthority,assertReadOnlyAction,enforceReadOnlyRoute} from '../../src/read-only-policy.ts';
+const a={mode:'read_only',object:'supervisor',session:'ses_root',task:'a'.repeat(16),project:'task-root',repository:'owner/repo',sourceCommit:'b'.repeat(40),sourceTree:'c'.repeat(40)};
+const s=bindReadOnlyScope(undefined,a); let n=0;
+const ok=(f)=>{assert.doesNotThrow(f);n++}; const no=(f)=>{assert.throws(f,/READ_ONLY_DENIED/);n++};
+ok(()=>requireReadOnlyAuthority(structuredClone(s),a));ok(()=>bindReadOnlyScope(s,{...a,repository:'OWNER/REPO'}));
+for(const k of ['object','session','task','project','repository','sourceCommit','sourceTree']) no(()=>requireReadOnlyAuthority(s,{...a,[k]:k==='task'?'d'.repeat(16):['sourceCommit','sourceTree'].includes(k)?'d'.repeat(40):k==='session'?'ses_child':k==='repository'?'other/repo':'other'}));
+no(()=>requireReadOnlyAuthority(undefined,a));no(()=>bindReadOnlyScope({project:a.project,repository:a.repository},a));no(()=>requireReadOnlyAuthority({...s,project:'wrong'},a));no(()=>requireReadOnlyAuthority({...s,readOnly:{...a,sourceTree:'d'.repeat(40)}},a));
+const run=x=>enforceReadOnlyRoute(s,a,x);ok(()=>run({kind:'github',repo:a.repository,operation:'read',ref:a.sourceCommit}));for(const operation of ['repo','pr_search','pr_info','issue_info','pr_files','pr_reviews','pr_checks'])ok(()=>run({kind:'github',repo:a.repository,operation}));
+for(const operation of ['branch','write','review','pr','replace','merge',undefined,'unknown'])no(()=>run({kind:'github',repo:a.repository,operation}));
+for(const ref of [undefined,'main','d'.repeat(40)])no(()=>run({kind:'github',repo:a.repository,operation:'read',ref}));no(()=>run({kind:'github',repo:'other/repo',operation:'repo'}));no(()=>run({kind:'github',repo:a.repository,operation:'repo',branch:'x'}));
+ok(()=>run({kind:'linux',project:a.project,operation:'inspect'}));for(const operation of ['run',undefined,'write'])no(()=>run({kind:'linux',project:a.project,operation}));no(()=>run({kind:'linux',project:'wrong',operation:'inspect'}));
+for(const kind of ['workspace-write','delegate','fork','websocket-submit','model-select','mcp','image','connector','publication','other','unknown'])no(()=>run({kind}));
+no(()=>enforceReadOnlyRoute(undefined,a,{kind:'github',repo:a.repository,operation:'repo'}));assert(Object.isFrozen(createReadOnlyAuthority(a)));n++;
+console.log(n + ' assertions PASS');

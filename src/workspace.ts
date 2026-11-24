@@ -147,7 +147,8 @@ export function workspacePlugin(
   getBoundProject?: (sessionID: string) => Promise<string>,
   imageGeneration?: ImageGenerationRunner,
   subagents?: SubagentRunner,
-  templateProposals?: TemplateProposalRunner
+  templateProposals?: TemplateProposalRunner,
+  guardEffect?: (sessionID: string) => Promise<void>
 ): Plugin.Plugin {
   const { tools, execute } = createPiTools({
     ...options,
@@ -261,6 +262,7 @@ export function workspacePlugin(
             let parsed: unknown;
             try { parsed = JSON.parse(value.templateJson); }
             catch { throw new Error("El borrador no contiene JSON válido."); }
+            await guardEffect?.(context.sessionID);
             const proposal = await templateProposals!.propose(parsed);
             return { content: JSON.stringify({ status: "pending-owner-approval", proposal: proposal.id,
               next: "La plantilla solo se activa cuando la persona propietaria la aprueba en Configurar → Plantillas." }) };
@@ -278,6 +280,7 @@ export function workspacePlugin(
             const { prompt } = input as { prompt?: unknown };
             if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 8_000)
               throw new Error("Describe la imagen en un máximo de 8000 caracteres.");
+            await guardEffect?.(context.sessionID);
             const generated = await imageGeneration!.generate(context.sessionID, prompt);
             return { content: [
               { type: "file", uri: `data:${generated.mime};base64,${generated.data}`,
@@ -338,7 +341,7 @@ export function workspacePlugin(
               assertAgentToolPermission(context.agent, "linux");
               const p = input as { project?: string; command: string };
               const target = await resolveScopedLinuxProject(context.sessionID, p.project, getBoundProject);
-              if (scopeGuard) await scopeGuard(context.sessionID, { kind: "linux", project: target });
+              if (scopeGuard) await scopeGuard(context.sessionID, { kind: "linux", project: target, operation: "run" });
               const result = await linux.run(target, p.command, context.sessionID);
               return { content: JSON.stringify(result) };
 
@@ -362,7 +365,7 @@ export function workspacePlugin(
             async execute(input, context) {
               const p = input as { project?: string; action: "list" | "read"; path: string };
               const target = await resolveScopedLinuxProject(context.sessionID, p.project, getBoundProject);
-              if (scopeGuard) await scopeGuard(context.sessionID, { kind: "linux", project: target });
+              if (scopeGuard) await scopeGuard(context.sessionID, { kind: "linux", project: target, operation: "inspect" });
               return { content: JSON.stringify(await linux.inspect(target, p.action, p.path, context.sessionID)) };
             }
           });
@@ -397,6 +400,7 @@ export function workspacePlugin(
               if (scopeGuard) await scopeGuard(context.sessionID, {
                 kind: "github", repo: (input as { repo: string }).repo,
                 operation: action,
+                ...(action === "read" ? { ref: (input as { ref?: string }).ref } : {}),
                 ...(["write", "pr", "review", "branch"].includes(action ?? "") ?
                   { branch: (input as { branch?: string }).branch } : {})
               });
@@ -415,8 +419,9 @@ export function workspacePlugin(
           ) => executeBoundRepositoryAction(
             context.sessionID, context.agent, action,
             getBoundRepository,
-            async (sessionID, repo) => scopeGuard(sessionID, { kind: "github", repo }),
-            (input) => github.execute(input)
+            async (sessionID, repo) => scopeGuard(sessionID, { kind: "github", repo, operation: action.action,
+              ...("branch" in action ? { branch: action.branch } : {}), ...("ref" in action ? { ref: action.ref } : {}) }),
+            (input) => github.execute(input, context.sessionID)
           );
           editor.add({
             name: "repo_review",
@@ -553,6 +558,7 @@ export function workspacePlugin(
               if (scopeGuard && !projectMcpRun) {
                 await scopeGuard(context.sessionID, { kind: "workspace-write" });
               }
+              if (projectMcpRun) await guardEffect?.(context.sessionID);
               const runInput = projectMcpRun && typeof input === "object" && input !== null
                 ? { ...(input as Record<string, unknown>), backend: "dynamic-mcp", cwd: undefined, env: undefined }
                 : input;

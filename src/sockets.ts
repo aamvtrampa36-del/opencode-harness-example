@@ -107,6 +107,7 @@ export class OpenCodeSessionSockets {
   readonly #saveSelectedModel: (session: string, model: ModelSelectionID) => Promise<void>;
   readonly #getModelRuns: (session: string) => Promise<ModelRun[]>;
   readonly #appendModelRun: (session: string, run: ModelRun) => Promise<void>;
+  readonly #beforeDispatch: (session: string, type: ClientMessage["type"]) => Promise<void>;
   /** One event stream per running session, or its opening. */
   readonly #watches = new Map<
     OpenCodeSessionId,
@@ -220,7 +221,8 @@ export class OpenCodeSessionSockets {
     getSelectedModel: (session: string) => Promise<ModelSelectionID | undefined> = async () => undefined,
     saveSelectedModel: (session: string, model: ModelSelectionID) => Promise<void> = async () => undefined,
     getModelRuns: (session: string) => Promise<ModelRun[]> = async () => [],
-    appendModelRun: (session: string, run: ModelRun) => Promise<void> = async () => undefined
+    appendModelRun: (session: string, run: ModelRun) => Promise<void> = async () => undefined,
+    beforeDispatch: (session: string, type: ClientMessage["type"]) => Promise<void> = async () => undefined
   ) {
     this.#harness = harness;
     this.#getWebSockets = getWebSockets;
@@ -236,6 +238,7 @@ export class OpenCodeSessionSockets {
     this.#saveSelectedModel = saveSelectedModel;
     this.#getModelRuns = getModelRuns;
     this.#appendModelRun = appendModelRun;
+    this.#beforeDispatch = beforeDispatch;
   }
 
   async #record(event: IncidentObservation): Promise<void> {
@@ -337,6 +340,7 @@ export class OpenCodeSessionSockets {
     session: OpenCodeSessionId,
     message: ClientMessage
   ): Promise<unknown> {
+    await this.#beforeDispatch(session, message.type);
     const handle = this.#harness.session(session);
     switch (message.type) {
       case "select_model": {

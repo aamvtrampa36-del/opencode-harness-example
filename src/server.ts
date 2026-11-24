@@ -3,6 +3,11 @@ import { PersonalSettings } from "./personal-settings";
 export { PersonalSettings };
 export { OpenCodeSupervisorWorkflow } from "./supervisor-workflow";
 import { DevContainer } from "./dev-container";
+import { makePilotHybridBinding, pilotHybridPlugin, type PilotContext } from "./pilot-hybrid";
+import { PILOT_REPO, PILOT_BASE, PILOT_CLAIM, parsePilotApproval, evidenceFromClaim, type PilotClaim } from "./pilot-authorization";
+declare const __OPENCODE_RELEASE_SHA__: string;
+import { PILOT_GLM, PILOT_BACKUP, PILOT_CLOSE_MS, pilotBudgetPolicy, pilotDispatchEvidenceValid, inferenceBudgetTotals,
+  type PilotDispatchEvidence } from "./supervisor-inference-budget";
 export { DevContainer };
 import { Workspace, type DurableObjectStorageLike } from "@cloudflare/computer";
 import { CodemodeBackend } from "@cloudflare/computer/backends/codemode";
@@ -26,8 +31,12 @@ import {
   reconcileSupervisorCreatedSession, supervisorCommitCreatedSession,
   reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
   reconcileSupervisorTurnEffect, inspectSupervisorAdmissionCapacity,
-  reconcileSupervisorSubmittedEffect, supervisorGrantStillOwned, type StartGrant
+  reconcileSupervisorSubmittedEffect, supervisorGrantStillOwned, type StartGrant, type AdmissionDecision,
+  supervisorVerifyReadOnlySource, supervisorBeginReadOnlyEffect, supervisorConfirmReadOnlyEffect,
+  supervisorRecordReadOnlyFailure, inspectSupervisorReadOnlyAdmission, reconcileSupervisorReadOnlyPreparation
 } from "./supervisor-admission";
+import { deferSupervisorStart } from "./supervisor-async-start";
+import { createReadOnlyAuthority, bindReadOnlyScope, requireReadOnlyAuthority, enforceReadOnlyRoute } from "./read-only-policy";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
 import { createDynamicMcpHost } from "./dynamic-mcp-bridge";
@@ -54,7 +63,7 @@ import { renderConversationMarkdown, validateExportIdentity, sessionExportRespon
 import { archiveDownloadResponse, archiveError } from "./download-response";
 import { githubRepositoryDownload } from "./github-download";
 import { checkIsolation } from "./isolation-check";
-import { projectContainerName, repositoryProjectSlug } from "./project-container";
+import { projectContainerName, repositoryProjectSlug, isSupervisorProjectName, assertGeneralProjectName } from "./project-container";
 import { checkIsolatedBackup } from "./isolated-backup-check";
 import { repositoryImportScope } from "./repository-import-scope";
 import {
@@ -84,6 +93,22 @@ export const MODEL_ID = MODEL_PRESETS.cloudflare.id;
 
 const SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED = "SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED";
 
+// C05/T03: receipt stored by the supervisor, not accepted from callers.
+type ReadOnlySourceReceipt = { project: string; repository: string; commit: string;
+  tree?: string; files: number; sha256: string };
+function assertCertifiedReadOnlyImport(task: SupervisorTask, receipt: ReadOnlySourceReceipt | undefined): void {
+  if (task.mode !== "read_only" || task.branch !== "" ||
+      !/^[a-f0-9]{40}$/.test(task.baseCommit ?? "") ||
+      task.sourceCommit !== task.baseCommit ||
+      !/^[a-f0-9]{40}$/.test(task.sourceTree ?? "") || !receipt ||
+      typeof receipt.repository !== "string" ||
+      receipt.project !== task.project || receipt.repository.toLowerCase() !== task.repository.toLowerCase() ||
+      receipt.commit !== task.baseCommit || receipt.tree !== task.sourceTree ||
+      !Number.isSafeInteger(receipt.files) || receipt.files < 1 ||
+      !/^[a-f0-9]{64}$/.test(receipt.sha256))
+    throw Error("SUPERVISOR_READ_ONLY_SOURCE_UNCERTIFIED");
+}
+
 /** A playable OpenCode instance backed by one Durable Object. */
 export class OpenCodeAgent extends DurableObject<Env> {
   // Credentials are resolved server-side. All browsers share one owner config.
@@ -104,12 +129,24 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const trace = this.phaseProbe();
     const start = await trace.run("admission", "validate", async () =>
       validateSupervisorStart(raw, await this.personalConfig.getAllowedRepositories()));
+    const pilotLane = this.pilotLaneId();
+    const pilotApproval = pilotLane ? this.pilotApproval() : undefined;
+    if (pilotLane && (start.requestId !== pilotLane || start.repository!==PILOT_REPO || start.model !== PILOT_BACKUP || start.mode || start.sourceSession || !pilotApproval))
+      return {id:start.requestId,accepted:false,confirmed:false,stop:true,reason:"PILOT_DISPATCH_STOP"};
+    // C05 has no independently verified provider/overhead cutoff. Deny new
+    // read_only work before admission or Container/SDK effects, regardless of
+    // requested model or a client claim of authorization.
+    if (start.mode === "read_only" && !this.readOnlyProviderDispatchAuthorized())
+      return { id: start.requestId, accepted: false, confirmed: false, stop: true,
+        reason: "SUPERVISOR_READ_ONLY_PROVIDER_DISPATCH_NOT_AUTHORIZED" };
     const key = supervisorTaskKey(start.requestId);
     const fingerprint = await supervisorFingerprint(start);
+    if(pilotApproval && fingerprint!==pilotApproval.fingerprint)throw Error("PILOT_PROMPT_MISMATCH");
     let old = await this.ctx.storage.get<SupervisorTask>(key);
+    if (pilotLane && old) return {id:start.requestId,accepted:false,confirmed:false,stop:true,reason:"PILOT_NO_REPLAY"};
     let reused = Boolean(old);
     if (old && old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
-    if (old && isUntrackedLegacySupervisorOperation(old)) {
+    if (old && old.mode !== "read_only" && isUntrackedLegacySupervisorOperation(old)) {
       let busy: boolean | undefined;
       try { busy = await trace.run("status", "busy", () => this.harness.session(old!.session!).busy()); }
       catch { busy = undefined; }
@@ -129,7 +166,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       // Reject unsupported new forks before durable reservation or any external effect.
       throw new Error("SUPERVISOR_FORK_IDEMPOTENCY_UNSUPPORTED");
     }
-    if (!old) {
+    if (!old && start.mode !== "read_only") {
       const selection = start.model ?? "economy";
       const model = resolveModelSelection(selection);
       if (model.providerID === "openrouter") {
@@ -139,13 +176,19 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
     const job: SupervisorTask = {
       id: start.requestId, repository: start.repository,
-      project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId, start.repository),
+      project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId, start.repository, start.mode),
+      ...(start.mode === "read_only" ? { mode: start.mode,
+        sourceCommit: start.sourceCommit, sourceTree: start.sourceTree } : {}),
       fingerprint, createdAt: old?.createdAt ?? Date.now(), status: "preparing",
+      ...(pilotLane ? {pilotInstance:this.pilotInstance} : {}),
       sessionCreationAttempted: false, sessionIdPolicy: "deterministic-v1", revision: 0,
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
+    const pilotClaim = pilotApproval ? {approval:pilotApproval,instance:this.pilotInstance,
+      objectId:this.ctx.id.toString(),startedAt:job.createdAt} : undefined;
     const admission = await trace.run("admission", "reserve", () =>
-      reserveSupervisorAdmission(this.ctx.storage, job));
+      reserveSupervisorAdmission(this.ctx.storage, job, undefined, start.mode === "read_only"
+        ? { commit: start.sourceCommit!, tree: start.sourceTree! } : undefined,pilotClaim));
     if (admission.kind === "capacity") {
       return { id: start.requestId, accepted: false,
         status: admission.reason === "CAPACITY_EXHAUSTED" ? "capacity_rejected" : "admission_stopped",
@@ -153,6 +196,26 @@ export class OpenCodeAgent extends DurableObject<Env> {
         reason: admission.reason, retryAfterMs: admission.retryAfterMs, capacity: 10 };
     }
     if (admission.kind === "reused") {
+      // Only independent positive registry or durable scope evidence may
+      // reconcile preparation. A missing Container receipt stays unknown.
+      if (admission.task.mode === "read_only" && admission.reason === "EFFECT_UNCONFIRMED" &&
+          admission.slot && ["project_reserve", "scope_bind"].includes(admission.slot.effect ?? "")) {
+        const task = admission.task;
+        const slot = admission.slot;
+        let recovered;
+        if (slot.effect === "project_reserve") {
+          const record = await this.env.DEV.getByName("personal").isolatedProject(task.project);
+          if (record?.project === task.project && record.repository?.toLowerCase() === task.repository.toLowerCase())
+            recovered = await reconcileSupervisorReadOnlyPreparation(this.ctx.storage, task.id, slot,
+              { effect: "project_reserve", project: record.project, repository: record.repository! });
+        } else if (slot.effect === "scope_bind" && task.session) {
+          await this.requireReadOnlyTaskScope(task, task.session);
+          recovered = await reconcileSupervisorReadOnlyPreparation(this.ctx.storage, task.id, slot,
+            { effect: "scope_bind", project: task.project, repository: task.repository, sessionId: task.session });
+        }
+        if (recovered) return this.dispatchSupervisorStart({ kind: "granted", ...recovered, reused: true },
+          start, trace, () => { throw Error("SUPERVISOR_READ_ONLY_DEFER_REQUIRED"); });
+      }
       // A positive exact-ID read is the only evidence used to reconcile an
       // interrupted session_create. No enumeration, transcript or blind
       // second create is permitted here. The transaction transfers the
@@ -190,8 +253,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
         const recovered = await trace.run("admission", "reconcile", () =>
           reconcileSupervisorCreatedSession(this.ctx.storage, admission.task.id, id, pinnedSlot));
         if (recovered.kind === "recovered")
-          return this.withSupervisorStartLock(start.requestId, async () =>
-            this.advanceSupervisedTask(recovered.task, start, true, recovered.grant, trace), recovered.task);
+          return this.dispatchSupervisorStart({ kind: "granted", task: recovered.task, grant: recovered.grant, reused: true }, start, trace, () =>
+            this.withSupervisorStartLock(start.requestId, async () =>
+              this.advanceSupervisedTask(recovered.task, start, true, recovered.grant, trace), recovered.task));
         return { ...this.supervisorTaskReceipt(
           await this.supervisedRecord(admission.task.id), true),
           accepted: false, confirmed: false, reconciliation: recovered.reason };
@@ -202,7 +266,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
     old = admission.task;
     reused = admission.reused;
-    return this.withSupervisorStartLock(start.requestId, async () => {
+    return this.dispatchSupervisorStart(admission, start, trace, () => this.withSupervisorStartLock(start.requestId, async () => {
       const saved = await this.ctx.storage.get<SupervisorTask>(key);
       if (!saved) throw new Error("La reserva de la tarea desapareció");
       if (["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(saved.status) ||
@@ -212,13 +276,37 @@ export class OpenCodeAgent extends DurableObject<Env> {
         return this.supervisorTaskReceipt(saved, true);
       }
       return this.advanceSupervisedTask(saved, start, reused, admission.grant, trace);
-    }, old);
+    }, old));
+  }
+
+  // Only a durably granted read_only start can reach this asynchronous path.
+  // An admission receipt is not a native submit receipt. On an outer failure,
+  // leave the durable journal intact for reconciliation; never write a stale
+  // "failed" record from a waitUntil callback.
+  private dispatchSupervisorStart(decision: Extract<AdmissionDecision, { kind: "granted" }>,
+    start: ReturnType<typeof validateSupervisorStart>, trace: PhaseProbe,
+    resume: () => Promise<unknown>): Promise<unknown> | Record<string, unknown> {
+    const task = decision.task;
+    if (task.mode !== "read_only") return resume();
+    const deferred = deferSupervisorStart(decision, {
+      waitUntil: work => this.ctx.waitUntil(work),
+      readCurrent: id => this.ctx.storage.transaction(async tx => ({
+        task: await tx.get<SupervisorTask>(supervisorTaskKey(id)),
+        slot: await supervisorAdmissionSlot(tx, id)
+      })),
+      withStartLock: (id, run, current) => this.withSupervisorStartLock(id, run, current),
+      advance: (current, grant, reused) => this.advanceSupervisedTask(current, start, reused, grant, trace)
+    });
+    if (!deferred) throw Error("SUPERVISOR_ASYNC_GRANT_REQUIRED");
+    return { ...this.supervisorTaskReceipt(task, decision.reused), ...deferred,
+      admitted: true, admissionOnly: true };
   }
 
   private supervisorTaskReceipt(task: SupervisorTask, reused: boolean): Record<string, unknown> {
     return { id: task.id, repository: task.repository, branch: task.branch, project: task.project,
       baseCommit: task.baseCommit, session: task.session, status: task.status, error: task.error,
       operationId: task.operationId, model: task.model, ...(task.forkedFrom ? { forkedFrom: task.forkedFrom } : {}),
+      ...(task.mode === "read_only" ? { mode: task.mode, sourceCommit: task.sourceCommit, sourceTree: task.sourceTree } : {}),
       reused };
   }
 
@@ -243,31 +331,174 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
   }
 
+  // Atomically fence task writes without holding a transaction across RPC.
+  private async updatePreparingSupervisorTask(grant: StartGrant,
+    change: (fresh: SupervisorTask) => SupervisorTask): Promise<SupervisorTask> {
+    return this.ctx.storage.transaction(async tx => {
+      const key = supervisorTaskKey(grant.id);
+      const fresh = await tx.get<SupervisorTask>(key);
+      if (!fresh || fresh.status !== "preparing" || fresh.pendingTurn || fresh.cancelAmbiguous ||
+          !await supervisorGrantStillOwned(tx, grant))
+        throw Error("ADMISSION_FENCE_REJECTED");
+      const next = { ...change(fresh), revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
+      await tx.put(key, next);
+      return next;
+    });
+  }
+
+  private async requireReadOnlySourceReceipt(task: SupervisorTask): Promise<ReadOnlySourceReceipt> {
+    const journal = await inspectSupervisorReadOnlyAdmission(this.ctx.storage, task.id);
+    const evidence = journal?.receipts.find(r => r.evidence.effect === "container_import")?.evidence;
+    const receipt = evidence && { project: evidence.project, repository: evidence.repository,
+      commit: evidence.commit ?? "", tree: evidence.tree, files: evidence.files ?? 0, sha256: evidence.sha256 ?? "" };
+    if (!journal || journal.sourceVerifiedAt === undefined || journal.fingerprint !== task.fingerprint ||
+        journal.project !== task.project || journal.repository !== task.repository ||
+        journal.pins.commit !== task.baseCommit || journal.pins.tree !== task.sourceTree)
+      throw Error("SUPERVISOR_READ_ONLY_SOURCE_UNCERTIFIED");
+    assertCertifiedReadOnlyImport(task, receipt);
+    return receipt!;
+  }
+
+  /** T02 owns the single admission journal; each positive RPC receipt advances
+   * one cursor. Never replay a pending effect, even after a lease timeout. */
+  private async prepareSupervisedReadOnlySource(job: SupervisorTask,
+    start: ReturnType<typeof validateSupervisorStart>, grant: StartGrant): Promise<SupervisorTask> {
+    if (job.mode !== "read_only" || job.branch !== "" || start.sourceSession ||
+        !start.sourceCommit || !start.sourceTree || job.sourceCommit !== start.sourceCommit ||
+        job.sourceTree !== start.sourceTree)
+      throw Error("SUPERVISOR_READ_ONLY_PINS_REQUIRED");
+    const storage = this.ctx.storage;
+    const journal = await inspectSupervisorReadOnlyAdmission(storage, job.id);
+    if (!journal || journal.pending || journal.pins.commit !== start.sourceCommit ||
+        journal.pins.tree !== start.sourceTree || journal.fingerprint !== job.fingerprint)
+      throw Error("SUPERVISOR_READ_ONLY_JOURNAL_UNAVAILABLE");
+    if (journal.sourceVerifiedAt === undefined) {
+      const verified = await this.githubRunner.resolveReadOnlySource(job.repository, start.sourceCommit, start.sourceTree);
+      job = await supervisorVerifyReadOnlySource(storage, grant, verified);
+    }
+    if (journal.receipts.length === 0) {
+      job = await supervisorBeginReadOnlyEffect(storage, grant, "project_reserve");
+      const record = await this.env.DEV.getByName("personal").reserveIsolatedProject(job.project, job.repository);
+      job = await supervisorConfirmReadOnlyEffect(storage, grant, {
+        effect: "project_reserve", project: record.project, repository: record.repository ?? ""
+      });
+    }
+    if (journal.receipts.length < 2) {
+      job = await supervisorBeginReadOnlyEffect(storage, grant, "container_import");
+      const dev = this.env.DEV.getByName(projectContainerName(job.project));
+      const receipt = await dev.prepareRepository(job.project, job.repository, job.baseCommit, job.sourceTree);
+      assertCertifiedReadOnlyImport(job, receipt);
+      job = await supervisorConfirmReadOnlyEffect(storage, grant, { ...receipt, effect: "container_import" });
+    }
+    await this.requireReadOnlySourceReceipt(job);
+    return job;
+  }
+
+  // Production cannot enable this gate via request fields, environment flags,
+  // source verification or admission. A future operational gate requires an
+  // independently verified cutoff. The offline projected test host replaces
+  // this method only on its synthetic instance with all effect ports mocked.
+  private readOnlyProviderDispatchAuthorized(): boolean { return false; }
+
+  private async advanceReadOnlyTask(job: SupervisorTask, start: ReturnType<typeof validateSupervisorStart>,
+    reused: boolean, grant: StartGrant, trace: PhaseProbe): Promise<Record<string, unknown>> {
+    const storage = this.ctx.storage;
+    try {
+      if (!this.readOnlyProviderDispatchAuthorized()) throw Error("SUPERVISOR_READ_ONLY_PROVIDER_DISPATCH_NOT_AUTHORIZED");
+      job = await this.prepareSupervisedReadOnlySource(job, start, grant);
+      const journal = await inspectSupervisorReadOnlyAdmission(storage, job.id);
+      if (!journal || journal.pending) throw Error("SUPERVISOR_READ_ONLY_JOURNAL_UNAVAILABLE");
+      const done = journal.receipts.length;
+      if (done < 3) {
+        job = await supervisorBeginReadOnlyEffect(storage, grant, "session_create");
+        const expected = r2SessionId(job.id);
+        const sessionId = await trace.run("session_create", "create", () => this.harness.create({ id: expected }));
+        if (sessionId !== expected) throw Error("SUPERVISOR_SESSION_ID_MISMATCH");
+        job = await supervisorConfirmReadOnlyEffect(storage, grant, { effect: "session_create",
+          project: job.project, repository: job.repository, sessionId });
+      }
+      if (done < 4) {
+        job = await supervisorBeginReadOnlyEffect(storage, grant, "scope_bind");
+        await storage.transaction(async tx => {
+          const fresh = await tx.get<SupervisorTask>(supervisorTaskKey(grant.id));
+          const slot = await supervisorAdmissionSlot(tx, grant.id);
+          if (!fresh || fresh.mode !== "read_only" || fresh.status !== "preparing" ||
+              fresh.cancelAmbiguous || fresh.pendingTurn || fresh.session !== r2SessionId(grant.id) ||
+              fresh.baseCommit !== job.baseCommit || fresh.sourceTree !== job.sourceTree ||
+              slot?.phase !== "effect_unknown" || slot.effect !== "scope_bind" ||
+              !await supervisorGrantStillOwned(tx, grant) ||
+              await tx.get<string>("supervisor:session:" + fresh.session) !== fresh.id ||
+              this.ctx.id.name !== SUPERVISOR_WORKSPACE)
+            throw Error("ADMISSION_FENCE_REJECTED");
+          const key = scopeStorageKey(fresh.session);
+          const authority = createReadOnlyAuthority({ mode: "read_only", object: this.ctx.id.toString(),
+            session: fresh.session, task: fresh.id, project: fresh.project, repository: fresh.repository,
+            sourceCommit: fresh.baseCommit!, sourceTree: fresh.sourceTree! });
+          await tx.put(key, bindReadOnlyScope(await tx.get<ProjectScope>(key), authority));
+        });
+        job = await supervisorConfirmReadOnlyEffect(storage, grant, { effect: "scope_bind",
+          project: job.project, repository: job.repository, sessionId: job.session });
+      }
+      await this.requireReadOnlyTaskScope(job, job.session!);
+      if (done < 5) {
+        job = await supervisorBeginReadOnlyEffect(storage, grant, "configure_agent");
+        await trace.run("configure", "setAgent", () => this.harness.session(job.session!).setAgent("build"));
+        job = await supervisorConfirmReadOnlyEffect(storage, grant, { effect: "configure_agent",
+          project: job.project, repository: job.repository, sessionId: job.session, agent: "build" });
+      }
+      if (done < 6) {
+        const selected = await this.supervisorModel(job.model ?? "economy");
+        job = await supervisorBeginReadOnlyEffect(storage, grant, "configure_model");
+        await trace.run("configure", "setModel", () => this.harness.session(job.session!).setModel({ providerID: selected.providerID, id: selected.id }));
+        job = await supervisorConfirmReadOnlyEffect(storage, grant, { effect: "configure_model",
+          project: job.project, repository: job.repository, sessionId: job.session, model: job.model ?? "economy" });
+      }
+      // Admission/source proof alone never authorizes provider dispatch.
+      if (!this.readOnlyProviderDispatchAuthorized()) throw Error("SUPERVISOR_READ_ONLY_PROVIDER_DISPATCH_NOT_AUTHORIZED");
+      if (done >= 7) return this.supervisorTaskReceipt(await this.supervisedRecord(job.id), true);
+      const prompt = supervisorPrompt(start, job.branch, job.project, job.baseCommit!, job.sourceTree);
+      job = await supervisorBeginReadOnlyEffect(storage, grant, "submit");
+      const receipt = await trace.run("submit", "initial", () => this.harness.session(job.session!).submit(
+        prompt, { operationId: job.operationId!, whenBusy: "followUp" }));
+      if (receipt.accepted !== true) throw Error("READ_ONLY_SUBMIT_UNCONFIRMED");
+      job = await supervisorConfirmReadOnlyEffect(storage, grant, { effect: "submit",
+        project: job.project, repository: job.repository, sessionId: job.session,
+        operationId: job.operationId, accepted: true });
+      return { ...this.supervisorTaskReceipt(job, reused),
+        accepted: true, confirmed: job.status === "running" };
+    } catch {
+      const fresh = await supervisorRecordReadOnlyFailure(storage, grant);
+      return this.supervisorTaskReceipt(fresh ?? await this.supervisedRecord(job.id), reused);
+    }
+  }
+
   private async advanceSupervisedTask(
     job: SupervisorTask, start: ReturnType<typeof validateSupervisorStart>, reused: boolean,
     grant: StartGrant, trace: PhaseProbe
   ) {
+    if (job.mode === "read_only") return this.advanceReadOnlyTask(job, start, reused, grant, trace);
     const key = supervisorTaskKey(job.id);
     try {
+      if(this.pilotLaneId())await this.requirePilotTask(job);
       if (!job.baseCommit) {
         // The deterministic branch reservation safely recovers after a lost GitHub response.
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "github_branch");
         const branchResult = await trace.run("github_branch", "ensure", () =>
-          this.githubRunner.ensureSupervisorBranch(job.repository, job.branch));
+          this.githubRunner.ensureSupervisorBranch(job.repository, job.branch, job.pilotInstance?job:undefined));
         const sha = supervisorBaseCommit(branchResult, job.repository);
         await supervisorConfirmExternalEffect(this.ctx.storage, grant, "github_branch", { confirmed: true });
-        job.baseCommit = sha;
-        job.updatedAt = Date.now();
-        await this.ctx.storage.put(key, job);
+        job = await this.updatePreparingSupervisorTask(grant, fresh => {
+          if (fresh.baseCommit && fresh.baseCommit !== sha) throw Error("SUPERVISOR_BASE_CHANGED");
+          return { ...fresh, baseCommit: sha };
+        });
       }
+      if(this.pilotLaneId())await this.requirePilotTask(job);
       if (!job.session) {
         if (job.sessionIdPolicy !== "deterministic-v1" || start.sourceSession ||
             supervisorSessionCreationDisposition(job) !== "create") {
           // Legacy random-id and interrupted fork effects are never replayed.
-          job.status = "unknown";
-          job.error = "SUPERVISOR_LEGACY_OR_SESSION_CREATION_UNCONFIRMED";
-          job.updatedAt = Date.now();
-          await this.ctx.storage.put(key, job);
+          job = await this.updatePreparingSupervisorTask(grant, fresh => ({ ...fresh,
+            status: "unknown", error: "SUPERVISOR_LEGACY_OR_SESSION_CREATION_UNCONFIRMED" }));
           return this.supervisorTaskReceipt(job, reused);
         }
         // T03 writes a fenced intent before the external effect. The ID is
@@ -275,11 +506,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
         // generate another random session. Never release an ambiguous lease.
         const sessionId = r2SessionId(job.id);
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "session_create");
-        job.sessionCreationAttempted = true;
-        job.updatedAt = Date.now();
         // A reconciling caller cannot prove native existence until this
         // marker is durable. Failures cannot release an unknown slot.
-        await this.ctx.storage.put(key, job);
+        job = await this.updatePreparingSupervisorTask(grant, fresh =>
+          ({ ...fresh, sessionCreationAttempted: true }));
         const createdId = await trace.run("session_create", "create", () =>
           this.harness.create({ id: sessionId }));
         if (createdId !== sessionId) throw new Error("SUPERVISOR_SESSION_ID_MISMATCH");
@@ -299,6 +529,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       }
       await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
       const handle = this.harness.session(job.session!);
+      if(this.pilotLaneId())await this.requirePilotTask(job);
       if (!job.operationId) {
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "configure");
         await trace.run("configure", "setAgent", () => handle.setAgent("build"));
@@ -309,7 +540,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
         const prepared = await this.ctx.storage.transaction(async tx => {
           const fresh = await tx.get<SupervisorTask>(key);
           if (!fresh || fresh.session !== job.session || fresh.status !== "preparing" ||
-              fresh.operationId || fresh.pendingTurn || fresh.cancelAmbiguous) return fresh;
+              fresh.operationId || fresh.pendingTurn || fresh.cancelAmbiguous ||
+              !await supervisorGrantStillOwned(tx, grant)) return fresh;
           const updated: SupervisorTask = { ...fresh,
             operationId: supervisorStartOperationId(job.id), status: "running",
             revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
@@ -348,16 +580,17 @@ export class OpenCodeAgent extends DurableObject<Env> {
         return updated;
       });
     }
-    if (job.status === "failed" || !job.session || !job.operationId || !job.baseCommit) {
+    if (job.status !== "running" || !job.session || !job.operationId || !job.baseCommit) {
       return this.supervisorTaskReceipt(job, reused);
     }
     try {
+      if(this.pilotLaneId())await this.requirePilotTask(job);
       await supervisorBeginExternalEffect(this.ctx.storage, grant, "submit");
       const submitSession = job.session;
       const submitCommit = job.baseCommit;
       const submitOperation = job.operationId;
       const receipt = await trace.run("submit", "initial", () => this.harness.session(submitSession).submit(
-        supervisorPrompt(start, job.branch, job.project, submitCommit),
+        supervisorPrompt(start, job.branch, job.project, submitCommit, job.sourceTree),
         { operationId: submitOperation, whenBusy: "followUp" }
       ));
       await supervisorConfirmExternalEffect(this.ctx.storage, grant, "submit",
@@ -366,15 +599,17 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const committed = await this.ctx.storage.transaction(async tx => {
         const fresh = await tx.get<SupervisorTask>(key);
         if (!fresh) throw new Error("SUPERVISOR_TASK_MISSING_AFTER_SUBMIT");
-        if (fresh.status === "cancel_requested" || fresh.status === "cancelled" ||
-            fresh.pendingTurn || fresh.operationId !== job.operationId) return fresh;
+        if (!["running", "unknown"].includes(fresh.status) || fresh.cancelAmbiguous ||
+            fresh.pendingTurn || fresh.operationId !== job.operationId ||
+            !await supervisorGrantStillOwned(tx, grant)) return fresh;
         const updated: SupervisorTask = { ...fresh, status: "running",
           error: undefined, revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
         await tx.put(key, updated);
         return updated;
       });
       return { ...this.supervisorTaskReceipt(committed, reused),
-        accepted: receipt.accepted, confirmed: committed.status !== "cancel_requested" };
+        accepted: receipt.accepted, confirmed: committed.status === "running" &&
+          committed.operationId === job.operationId && !committed.cancelAmbiguous };
     } catch (error) {
       // The durable operation may have been accepted before the RPC failed.
       // Keep the same operationId so a retry can retrieve the original receipt.
@@ -382,8 +617,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const committed = await this.ctx.storage.transaction(async tx => {
         const fresh = await tx.get<SupervisorTask>(key);
         if (!fresh) throw new Error("SUPERVISOR_TASK_MISSING_AFTER_SUBMIT");
-        if (fresh.status === "cancel_requested" || fresh.status === "cancelled" ||
-            fresh.pendingTurn || fresh.operationId !== job.operationId) return fresh;
+        if (!["running", "unknown"].includes(fresh.status) || fresh.cancelAmbiguous ||
+            fresh.pendingTurn || fresh.operationId !== job.operationId ||
+            !await supervisorGrantStillOwned(tx, grant)) return fresh;
         const updated: SupervisorTask = { ...fresh, status: "unknown",
           error: detail, revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
         await tx.put(key, updated);
@@ -498,23 +734,31 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async remoteSupervisorSelectModel(id: string, model: string): Promise<unknown> {
+    if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     this.assertStagingRemote();
-    const selected = await this.supervisorModel(model);
     const task = await this.supervisedRecord(id);
+    if (task.mode === "read_only") throw Error("SUPERVISOR_READ_ONLY_MODEL_CHANGE_FORBIDDEN");
+    const selected = await this.supervisorModel(model);
     if (!task.session || ["cancelled", "cancel_requested", "failed"].includes(task.status)) {
       throw new Error("Sesión no disponible");
     }
     const handle = this.harness.session(task.session);
     if (await handle.busy()) throw new Error("La operación activa debe concluir antes del cambio");
     await handle.setModel({ providerID: selected.providerID, id: selected.id });
-    task.model = selected.selection;
-    task.updatedAt = Date.now();
-    await this.ctx.storage.put(supervisorTaskKey(id), task);
+    await this.ctx.storage.transaction(async tx => {
+      const fresh = await tx.get<SupervisorTask>(supervisorTaskKey(id));
+      if (!fresh || fresh.session !== task.session || fresh.revision !== task.revision ||
+          fresh.status !== task.status || fresh.operationId !== task.operationId || fresh.pendingTurn)
+        throw Error("SUPERVISOR_MODEL_CHANGE_RECONCILIATION_REQUIRED");
+      await tx.put(supervisorTaskKey(id), { ...fresh, model: selected.selection,
+        revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() });
+    });
     return { environment: "staging", taskId: id, session: task.session,
       selection: selected.selection, providerID: selected.providerID, id: selected.id };
   }
 
   async remoteSupervisorContinue(raw: unknown): Promise<unknown> {
+    if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     this.assertStagingRemote();
     const trace = this.phaseProbe();
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Comando inválido");
@@ -531,6 +775,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const turnId = v.turnId;
     const prompt = v.prompt.trim();
     const operationId = supervisorTurnOperationId(id, turnId);
+    const initial = await this.supervisedRecord(id);
+    if (initial.mode === "read_only") {
+      await this.requireReadOnlyTaskScope(initial, initial.session!);
+      return { taskId: id, accepted: false, confirmed: false, stop: true,
+        reason: "SUPERVISOR_READ_ONLY_PROVIDER_DISPATCH_NOT_AUTHORIZED" };
+    }
     // The one T03 admission ledger and T04 turn journal are updated inside
     // the same transaction, including readmission of a completed task.
     const reservation = await trace.run("admission", "reserve", () =>
@@ -612,6 +862,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async remoteSupervisorMcpCall(input: { server: string; name: string; arguments?: Record<string, unknown> }): Promise<unknown> {
+    if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     this.assertStagingRemote();
     const host = createDynamicMcpHost(() => this.personalConfig.getRemoteMcps());
     return { targetWorker: "opencode-g1-staging", server: input.server, tool: input.name,
@@ -745,6 +996,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return await trace.run("cleanup", "artifactVerify", () => verifiedArtifactDownload(record));
   }
 
+  async closePilotTask(id:string){
+    this.assertStagingRemote();
+    if(id!==this.pilotLaneId())throw Error("PILOT_SESSION_FORBIDDEN");
+    const task=await this.supervisedRecord(id);
+    if(!task.pilotInstance)throw Error("PILOT_TASK_FENCED");
+    const cancellation=await this.cancelSupervisedTask(id);
+    const container=await this.env.DEV.getByName(projectContainerName(task.project)).closePilotProject(task.project).catch(()=>({running:null,close:null}));
+    return {id,cancellation,container,verified:false};
+  }
   async remoteSupervisorTaskStatusSnapshot(id: string): Promise<unknown> {
     this.assertStagingRemote();
     if (!/^[a-f0-9]{16}$/.test(id)) throw new Error("SUPERVISOR_TASK_ID_INVALID");
@@ -753,6 +1013,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return {
       id: task.id, repository: task.repository, project: task.project,
       branch: task.branch, session: task.session, operationId: task.operationId,
+      ...(task.mode === "read_only" ? { mode: task.mode, baseCommit: task.baseCommit, sourceCommit: task.sourceCommit, sourceTree: task.sourceTree } : {}),
       status: task.status, recordedStatus: task.status, error: task.error?.slice(0, 200),
       updatedAt: task.updatedAt, asOf: task.updatedAt, source: "supervisor-task-ledger",
       admissionState: slot?.phase ?? "legacy_or_released",
@@ -776,16 +1037,17 @@ export class OpenCodeAgent extends DurableObject<Env> {
       ...(admission?.effect ? { admissionEffect: admission.effect } : {}),
       branch: job.branch, baseCommit: job.baseCommit, session: job.session, startedAt: job.createdAt,
       updatedAt: job.updatedAt, operationId: job.operationId, model: job.model, error: job.error,
-      ...(job.forkedFrom ? { forkedFrom: job.forkedFrom } : {}) };
+      ...(job.forkedFrom ? { forkedFrom: job.forkedFrom } : {}),
+      ...(job.mode === "read_only" ? { mode: job.mode, sourceCommit: job.sourceCommit, sourceTree: job.sourceTree } : {}) };
     if (!job.session) {
       const uncertain = job.sessionCreationAttempted === true;
-      return { ...base, status: uncertain ? "unknown" : job.status,
+      return { ...base, status: uncertain && job.status !== "cancel_requested" ? "unknown" : job.status,
         error: uncertain ? (job.error ?? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED") : job.error,
         reviewRequired: true, passed: false, verified: false };
     }
     // A stored "failed" with a native operationId can still have a later
     // completion receipt: reconcile instead of hiding it as terminal.
-    if (["cancelled", "failed", "preparing"].includes(job.status) && !job.operationId)
+    if (["cancelled", "failed", "preparing", "cancel_requested"].includes(job.status) && !job.operationId)
       return { ...base, status: job.status, reviewRequired: true, passed: false, verified: false };
     const handle = this.harness.session(job.session);
     const waitController = new AbortController();
@@ -927,6 +1189,14 @@ export class OpenCodeAgent extends DurableObject<Env> {
         const admissionActive = await hasSupervisorAdmissionSlot(tx, id);
         if (fresh.session) return { kind: "bound" as const, task: fresh };
         if (!canConfirmSupervisorPreSessionCancellation(fresh, Boolean(lock) || admissionActive)) {
+          if (fresh.mode === "read_only" && ["preparing", "unknown"].includes(fresh.status)) {
+            // Record intent even while import is in flight; never claim its
+            // effects were cancelled or clear the unknown admission slot.
+            const next: SupervisorTask = { ...fresh, status: "cancel_requested",
+              cancelAmbiguous: true, revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
+            await tx.put(key, next);
+            return { kind: "uncertain" as const, task: next };
+          }
           return { kind: "uncertain" as const, task: fresh };
         }
         if (["cancelled", "failed", "finished", "unanswered"].includes(fresh.status)) {
@@ -940,7 +1210,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         return { id, status: "cancelled", confirmed: true, reason: "start not entered; no session creation attempted" };
       }
       if (outcome.kind === "uncertain") {
-        return { id, status: "unknown", confirmed: false,
+        return { id, status: outcome.task.status === "cancel_requested" ? "cancel_requested" : "unknown", confirmed: false,
           recordedStatus: outcome.task.status, reason: "SUPERVISOR_SESSION_START_UNCONFIRMED" };
       }
       job = outcome.task;
@@ -954,7 +1224,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (["cancelled", "failed", "finished", "unanswered"].includes(fresh.status))
         return { kind: "terminal" as const, task: fresh };
       if (!fresh.session || !fresh.operationId) {
-        const uncertain: SupervisorTask = { ...fresh, status: "unknown",
+        const uncertain: SupervisorTask = { ...fresh,
+          status: fresh.mode === "read_only" ? "cancel_requested" : "unknown",
+          ...(fresh.mode === "read_only" ? { cancelAmbiguous: true } : {}),
           error: "OpenCode operation id missing",
           revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
         await tx.put(supervisorTaskKey(id), uncertain);
@@ -969,7 +1241,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       return { kind: "abort" as const, task: next };
     });
     if (intent.kind === "terminal") return { id, status: intent.task.status };
-    if (intent.kind === "uncertain") return { id, status: "unknown",
+    if (intent.kind === "uncertain") return { id, status: intent.task.status,
       confirmed: false, reason: intent.task.error };
     if (intent.kind === "existing") return { id, status: "cancel_requested",
       confirmed: false, reason: "ABORT_RECEIPT_RECONCILIATION_PENDING" };
@@ -1000,6 +1272,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async supervisedTaskReview(id: string): Promise<unknown> {
     this.assertStagingRemote();
     const job = await this.supervisedRecord(id);
+    if (job.mode === "read_only") throw Error("SUPERVISOR_READ_ONLY_REVIEW_FORBIDDEN");
     const result = await this.githubRunner.execute({
       action: "review", repo: job.repository, branch: job.branch
     });
@@ -1019,6 +1292,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   private async runConnector(connectorID: string, event: ConnectorEvent): Promise<ConnectorOutput> {
     if (connectorID !== "token-economizer") throw new Error("Conector no admitido.");
+    // Native lifecycle hooks must not call a remote connector for read_only.
+    try { await this.denyReadOnlySessionEffect(event.sessionID); } catch { return {}; }
     if (!(await this.personalConfig.connectorSettings()).tokenEconomizerEnabled) return {};
     try {
       const project = event.project || "global";
@@ -1096,6 +1371,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   private async generateSessionImage(sessionID: string, prompt: string) {
+    await this.denyReadOnlySessionEffect(sessionID);
     const [model, key] = await Promise.all([
       this.sessionImageModel(sessionID),
       Promise.resolve((this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY)
@@ -1107,6 +1383,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   private async startSubagent(parentSession: string, task: string, kind: "analysis" | "decision"): Promise<{ session: string }> {
+    if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
+    // Delegation must not bypass the source pin or admission accounting.
+    // T04 may replace this fail-closed guard with an audited inherited scope.
+    const parentScope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(parentSession));
+    if (await this.readOnlyTaskForScope(parentScope, parentSession)) throw Error("SUPERVISOR_READ_ONLY_DELEGATION_UNAVAILABLE");
     const sessions = await this.harness.sessions.list();
     const parent = sessions.find(item => item.id === parentSession);
     if (!parent) throw new Error("La conversación principal ya no existe.");
@@ -1165,6 +1446,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   /** This selection is fixed per OpenCode conversation, not an LLM instruction. */
   async bindSessionScope(sessionID: string, input: unknown): Promise<void> {
     const next = validateProjectScope(input, await this.personalConfig.getAllowedRepositories());
+    if (this.ctx.id?.name !== SUPERVISOR_WORKSPACE) assertGeneralProjectName(next.project);
     const key = scopeStorageKey(sessionID);
     await this.ctx.storage.transaction(async tx => {
       const old = await tx.get<ProjectScope>(key);
@@ -1175,6 +1457,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   async inheritSessionScope(source: string, target: string, project: string): Promise<void> {
     const old = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(source));
+    if (await this.readOnlyTaskForScope(old, source)) throw Error("SUPERVISOR_READ_ONLY_DELEGATION_UNAVAILABLE");
     if (old) {
       if (old.project !== project) throw new Error("La sesión delegada no puede cambiar de proyecto");
       await this.bindSessionScope(target, old);
@@ -1183,16 +1466,77 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
   }
 
-  async enforceSessionScope(sessionID: string, action: ScopedToolAction): Promise<void> {
+  // Derive from the immutable project binding, not from tool arguments or
+  // only the native root session mapping (delegated sessions share scope).
+  private async requireReadOnlyTaskScope(task: SupervisorTask, sessionID: string) {
+    await this.requireReadOnlySourceReceipt(task);
+    if (task.session !== sessionID || this.ctx.id.name !== SUPERVISOR_WORKSPACE)
+      throw Error("SUPERVISOR_READ_ONLY_SCOPE_MISMATCH");
+    const [scope, reverse] = await Promise.all([
+      this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID)),
+      this.ctx.storage.get<string>("supervisor:session:" + sessionID)
+    ]);
+    if (reverse !== task.id) throw Error("SUPERVISOR_READ_ONLY_SCOPE_MISMATCH");
+    const expected = createReadOnlyAuthority({ mode: "read_only", object: this.ctx.id.toString(),
+      session: sessionID, task: task.id, project: task.project, repository: task.repository,
+      sourceCommit: task.baseCommit!, sourceTree: task.sourceTree! });
+    requireReadOnlyAuthority(scope, expected);
+    return { scope, expected };
+  }
+
+  private async readOnlyTaskForScope(scope: ProjectScope | undefined, sessionID: string): Promise<SupervisorTask | undefined> {
+    const reverse = await this.ctx.storage.get<string>("supervisor:session:" + sessionID);
+    const match = /^supervised-([a-f0-9]{16})$/.exec(scope?.project ?? "");
+    // A deterministic root cannot fall back to an ordinary session during
+    // the interval between native session creation and durable scope binding.
+    const root = /^ses_r2_([a-f0-9]{16})$/.exec(sessionID);
+    if (!match && !reverse && !scope?.readOnly) {
+      if (root && this.ctx.id.name === SUPERVISOR_WORKSPACE) {
+        const expected = await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(root[1]));
+        if (!expected || expected.mode === "read_only") throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
+      }
+      return undefined;
+    }
+    if (this.ctx.id?.name !== SUPERVISOR_WORKSPACE || !match || reverse && reverse !== match[1]) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
+    const task = await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(match[1]));
+    if (!task) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
+    if (task.mode !== "read_only") {
+      if (scope?.readOnly) throw Error("SUPERVISOR_READ_ONLY_SCOPE_MISMATCH");
+      return undefined;
+    }
+    if (task.project !== scope?.project || task.repository.toLowerCase() !== scope.repository?.toLowerCase() ||
+        ["cancel_requested", "cancelled", "failed", "unknown"].includes(task.status))
+      throw Error("SUPERVISOR_READ_ONLY_SCOPE_MISMATCH");
+    await this.requireReadOnlyTaskScope(task, sessionID);
+    return task;
+  }
+
+  private async denyReadOnlySessionEffect(sessionID: string): Promise<void> {
+    if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
+    if (this.ctx.id?.name === SUPERVISOR_WORKSPACE && !scope) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
+    if (await this.readOnlyTaskForScope(scope, sessionID)) throw Error("SUPERVISOR_READ_ONLY_EFFECT_FORBIDDEN");
+  }
+
+  async enforceSessionScope(sessionID: string, action: ScopedToolAction): Promise<void> {
+    if(this.pilotLaneId())await this.pilotContext(sessionID);
+    const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
+    if (this.ctx.id?.name === SUPERVISOR_WORKSPACE && !scope) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
     assertScopedTool(scope, action);
+    const readOnly = await this.readOnlyTaskForScope(scope, sessionID);
+    if (readOnly) {
+      const authority = await this.requireReadOnlyTaskScope(readOnly, sessionID);
+      enforceReadOnlyRoute(authority.scope, authority.expected, action);
+      if (action.kind === "github")
+        assertSupervisorBoundGitHubOperation(action.operation, action.branch, readOnly.branch, readOnly.mode);
+    }
     if(action.kind === "github"){
       const supervisedId = await this.ctx.storage.get<string>("supervisor:session:" + sessionID);
       if (supervisedId) {
         const task = await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(supervisedId));
         if (!task || task.session !== sessionID || task.status === "cancelled" || task.status === "failed")
           throw new Error("Supervisor: sesión no autorizada");
-        assertSupervisorBoundGitHubOperation(action.operation, action.branch, task.branch);
+        assertSupervisorBoundGitHubOperation(action.operation, action.branch, task.branch, task.mode);
       }
       // Retain the branch guard for both legacy and new isolated G9 sessions.
       for (const key of ["g9-selfdev-v1", "g9-native-e2e-v2"]) {
@@ -1483,22 +1827,54 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const match = /^opencode\/staging-([a-f0-9]{16})$/.exec(input.branch);
     const task = match
       ? await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(match[1])) : undefined;
+    if (task?.mode === "read_only") throw Error("SUPERVISOR_READ_ONLY_PUBLICATION_FORBIDDEN");
     assertSupervisedPublicationScope(input, sessionID, task);
+    const pilot=this.pilotLaneId()?await this.pilotContext(sessionID):undefined;
     const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
       || await this.personalConfig.getGitHubKey();
     if (!key) throw Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
-    return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
+    return new GitHubBridge(key, this.pilotGitHubFetch(pilot?.proof.validUntil),
       await this.personalConfig.getAllowedRepositories(),
       new DurableGitHubPublicationGate(this.ctx.storage, Date.now, async (tx, scope) => {
         const match = /^opencode\/staging-([a-f0-9]{16})$/.exec(scope.branch);
         const current = match
           ? await tx.get<SupervisorTask>(supervisorTaskKey(match[1])) : undefined;
+        if (current?.mode === "read_only") throw Error("SUPERVISOR_READ_ONLY_PUBLICATION_FORBIDDEN");
         assertSupervisedPublicationScope(input, sessionID, current);
-      })).execute(input);
+      }),pilot?{branch:input.branch,sha:task!.baseCommit!,base:PILOT_BASE}:undefined).execute(input);
   }
 
   private readonly githubRunner = {
     execute: async (input: Parameters<GitHubBridge["execute"]>[0], sessionID?: string) => {
+      const pilot=this.pilotLaneId()?await this.pilotContext(sessionID??""):undefined;
+      const pilotTask=pilot?await this.supervisedRecord(pilot.grant.id):undefined;
+      if(pilotTask){
+        if(input.repo.toLowerCase()!==PILOT_REPO||("branch" in input&&input.branch!==pilotTask.branch)||input.action==="branch")throw Error("PILOT_GITHUB_SCOPE");
+        if(input.action==="read"){
+          if(input.ref&&![pilotTask.baseCommit,pilotTask.branch].includes(input.ref))throw Error("PILOT_GITHUB_REF");
+          input={...input,ref:input.ref??pilotTask.baseCommit};
+        }
+        if(input.action==="write"&&!["src/client.tsx","src/client-repository-mode.test.ts"].includes(input.path))throw Error("PILOT_GITHUB_PATH");
+      }
+      if (sessionID) {
+        const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
+        const task = await this.readOnlyTaskForScope(scope, sessionID);
+        if (task) {
+          await this.requireReadOnlySourceReceipt(task);
+          assertSupervisorBoundGitHubOperation(input.action, "branch" in input ? input.branch : undefined, task.branch, task.mode);
+          if (input.repo.toLowerCase() !== task.repository.toLowerCase())
+            throw Error("SUPERVISOR_READ_ONLY_SCOPE_MISMATCH");
+          if (input.action === "read") {
+            if (input.ref !== undefined && input.ref !== task.baseCommit)
+              throw Error("SUPERVISOR_READ_ONLY_REF_MISMATCH");
+            input = { ...input, ref: task.baseCommit };
+          }
+          const authority = await this.requireReadOnlyTaskScope(task, sessionID);
+          enforceReadOnlyRoute(authority.scope, authority.expected, { kind: "github",
+            repo: input.repo, operation: input.action, branch: "branch" in input ? input.branch : undefined,
+            ref: "ref" in input ? input.ref : undefined });
+        }
+      }
       // The shared supervisor DO is the only allowed publisher of its Staging
       // branches. A project DO cannot create an independent storage lock.
       if (input.action === "pr" &&
@@ -1514,15 +1890,25 @@ export class OpenCodeAgent extends DurableObject<Env> {
         || await this.personalConfig.getGitHubKey();
       if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
       // Wrap the global fetch so it is called with the correct receiver in Workers.
-      return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
-        await this.personalConfig.getAllowedRepositories()).execute(input);
+      return new GitHubBridge(key, this.pilotGitHubFetch(pilot?.proof.validUntil),
+        await this.personalConfig.getAllowedRepositories(),undefined,pilotTask?{branch:pilotTask.branch,sha:pilotTask.baseCommit!,base:PILOT_BASE}:undefined).execute(input);
     },
-    ensureSupervisorBranch: async (repo: string, branch: string) => {
+    resolveReadOnlySource: async (repo: string, sourceCommit: string, sourceTree: string) => {
+      const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
+        || await this.personalConfig.getGitHubKey();
+      if (!key) throw Error("Conecta GitHub para verificar la fuente");
+      return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
+        await this.personalConfig.getAllowedRepositories()).resolveReadOnlySource(repo, sourceCommit, sourceTree);
+    },
+    ensureSupervisorBranch: async (repo: string, branch: string, pilotTask?:SupervisorTask) => {
+      const proof=pilotTask?await this.requirePilotTask(pilotTask):undefined;
+      const approval=pilotTask?this.pilotApproval(pilotTask.createdAt):undefined;
+      if(this.pilotLaneId()&&(!proof||!approval))throw Error("PILOT_BRANCH_AUTHORIZATION");
       const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
         || await this.personalConfig.getGitHubKey();
       if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
-      return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
-        await this.personalConfig.getAllowedRepositories()).ensureSupervisorBranch(repo, branch);
+      return new GitHubBridge(key, this.pilotGitHubFetch(proof?.validUntil),
+        await this.personalConfig.getAllowedRepositories(),undefined,approval?{branch,sha:approval.releaseSha,base:PILOT_BASE}:undefined).ensureSupervisorBranch(repo, branch);
     }
   };
   async isOpenRouterConfigured(): Promise<boolean> {
@@ -1740,10 +2126,60 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   // Workers AI over the AI binding, as an OpenCode provider plugin.
-  readonly ai = createAI({ binding: this.env.AI });
+  private readonly pilotInstance = crypto.randomUUID();
+  private pilotLaneId():string|undefined {
+    const id=(this.env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
+    if(!id || this.ctx.id?.name!==SUPERVISOR_WORKSPACE)return undefined;
+    if(!/^[a-f0-9]{16}$/.test(id))throw Error("PILOT_ID_INVALID");
+    return id;
+  }
+  // The deployment owner supplies independently reviewed receipt digests
+  // only in a separately authorized Staging version. No binding in source.
+  private pilotApproval(now=Date.now()){
+    const id=this.pilotLaneId();
+    if(!id)return undefined;
+    this.assertStagingRemote();
+    return parsePilotApproval((this.env as Env & {OPENCODE_PILOT_AUTHORIZATION?:string}).OPENCODE_PILOT_AUTHORIZATION,
+      typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"",id,now);
+  }
+  private async pilotDispatchEvidence(task:SupervisorTask):Promise<PilotDispatchEvidence|undefined> {
+    const claim=await this.ctx.storage.get<PilotClaim>(PILOT_CLAIM);
+    return evidenceFromClaim(claim,this.pilotApproval(task.createdAt),this.pilotInstance,this.ctx.id.toString(),task);
+  }
+  private async requirePilotTask(task:SupervisorTask){
+    if(!this.pilotLaneId())return;
+    const proof=await this.pilotDispatchEvidence(task);
+    if(!proof)throw Error("PILOT_DISPATCH_STOP");
+    return proof;
+  }
+  private pilotGitHubFetch(until?:number):typeof fetch{
+    return (url,init)=>{
+      if(until===undefined)return globalThis.fetch(url,init);
+      const ms=until-Date.now();
+      if(ms<=0)throw Error("PILOT_WORK_EXPIRED");
+      return globalThis.fetch(url,{...init,redirect:"error",signal:AbortSignal.any([AbortSignal.timeout(Math.min(ms,30_000)),...(init?.signal?[init.signal]:[])])});
+    };
+  }
+  private async pilotContext(sessionID:string):Promise<PilotContext> {
+    const id=this.pilotLaneId();
+    if(!id || sessionID!==r2SessionId(id))throw Error("PILOT_SESSION_FORBIDDEN");
+    const task=await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(id));
+    const slot=await supervisorAdmissionSlot(this.ctx.storage,id);
+    if(!task || !slot || task.session!==sessionID || task.pilotInstance!==this.pilotInstance ||
+        task.status!=="running" || task.model!==PILOT_BACKUP)throw Error("PILOT_TASK_FENCED");
+    const policy=pilotBudgetPolicy(id,this.pilotInstance,task.createdAt),proof=await this.pilotDispatchEvidence(task);
+    if(!proof || !pilotDispatchEvidenceValid(policy,proof))throw Error("PILOT_DISPATCH_STOP");
+    const totals=await inferenceBudgetTotals(this.ctx.storage);
+    if(totals?.paymentBlocked || totals?.pilot?.pending)throw Error("PILOT_INFERENCE_EFFECT_UNCERTAIN");
+    return {storage:this.ctx.storage,grant:{id,token:slot.token,generation:slot.generation},policy,proof};
+  }
+  readonly ai = createAI({ binding: this.pilotLaneId() ?
+    makePilotHybridBinding(this.env.AI,session=>this.pilotContext(session),
+      async()=> (this.env as Env & {OPENROUTER_API_KEY?:string}).OPENROUTER_API_KEY || await this.personalConfig.getOpenRouterKey())
+    : this.env.AI });
   // Register every native preset BEFORE the harness initializes. A plain
   // {providerID, id} selector does not add a model to OpenCode's provider.
-  private readonly registeredWorkersModels = NATIVE_WORKERS_AI_MODELS.map(id => this.ai(id));
+  private readonly registeredWorkersModels = NATIVE_WORKERS_AI_MODELS.filter(id=>!this.pilotLaneId() || id===PILOT_GLM).map(id => this.ai(id));
   // Files in the object's own storage. `exec` runs JavaScript in a Worker
   // Loader isolate with no network of its own. `git` turns on
   // `workspace.git`, which `codemode:git` uses to clone over HTTPS from the host.
@@ -1791,13 +2227,20 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   /** Route each project to its own Container, never the shared legacy VM. */
-  private async isolatedProject(project: string, sessionID?: string) {
+  private async isolatedProject(project: string, sessionID?: string, operation: "run" | "inspect" = "run") {
+    if (isSupervisorProjectName(project) && (!sessionID || this.ctx.id?.name !== SUPERVISOR_WORKSPACE))
+      throw Error("SUPERVISOR_SCOPE_SESSION_REQUIRED");
     const scope = sessionID ? await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID)) : undefined;
-    if (sessionID) assertScopedTool(scope, { kind: "linux", project });
-    const registry = this.env.DEV.getByName("personal");
-    await registry.reserveIsolatedProject(project, scope?.repository);
-    const dev = this.env.DEV.getByName(projectContainerName(project));
+    if (sessionID) assertScopedTool(scope, { kind: "linux", project, operation });
     let sourceCommit: string | undefined;
+    let sourceTree: string | undefined;
+    const readOnly = sessionID ? await this.readOnlyTaskForScope(scope, sessionID) : undefined;
+    if (readOnly) {
+      const authority = await this.requireReadOnlyTaskScope(readOnly, sessionID!);
+      enforceReadOnlyRoute(authority.scope, authority.expected, { kind: "linux", project, operation });
+      sourceCommit = readOnly.baseCommit;
+      sourceTree = readOnly.sourceTree;
+    }
     if (sessionID) {
       const taskId = await this.ctx.storage.get<string>("supervisor:session:" + sessionID);
       if (taskId) {
@@ -1808,9 +2251,22 @@ export class OpenCodeAgent extends DurableObject<Env> {
           throw new Error("La fuente de la tarea supervisada no está fijada a su SHA base");
         }
         sourceCommit = task.baseCommit;
+        if (task.mode === "read_only") {
+          await this.requireReadOnlySourceReceipt(task);
+          sourceTree = task.sourceTree;
+        }
       }
     }
-    if (scope?.repository) await dev.prepareRepository(project, scope.repository, sourceCommit);
+    const pilot=this.pilotLaneId()?await this.pilotContext(sessionID??""):undefined;
+    if(pilot && project!=="supervised-"+pilot.grant.id)throw Error("PILOT_PROJECT_FORBIDDEN");
+    const registry = this.env.DEV.getByName("personal");
+    await registry.reserveIsolatedProject(project, scope?.repository);
+    const dev = this.env.DEV.getByName(projectContainerName(project));
+    if(pilot)await dev.configurePilotDeadline(project,pilot.policy.hybrid!.workUntil,pilot.policy.hybrid!.workUntil+PILOT_CLOSE_MS);
+    if (scope?.repository) {
+      const receipt = await dev.prepareRepository(project, scope.repository, sourceCommit, sourceTree);
+      if (readOnly) assertCertifiedReadOnlyImport(readOnly, receipt);
+    }
     return dev;
   }
 
@@ -1829,7 +2285,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     },
     inspect: async (project: string, action: "list" | "read", path: string, sessionID?: string) => {
       try {
-        return await (await this.isolatedProject(project, sessionID)).inspect(project, action, path);
+        return await (await this.isolatedProject(project, sessionID, "inspect")).inspect(project, action, path);
       } catch (error) {
         await this.noteIncident({ source: "linux", project, tool: "inspect_linux",
           code: classifyAgentFailure(error instanceof Error ? error.message : "") });
@@ -1846,7 +2302,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         config: { default_agent: "build" },
         // Native OpenRouter discovery is opt-in and only activated when
         // the private Cloudflare Secret is available.
-        models: { fetch: true },
+        models: { fetch: !this.pilotLaneId() },
         // OpenCode is silent unless given a log writer.
         log: {
           level: "warn",
@@ -1859,19 +2315,25 @@ export class OpenCodeAgent extends DurableObject<Env> {
         },
         plugins: [
           this.ai.plugin,
+          ...(this.pilotLaneId() ? [pilotHybridPlugin(r2SessionId(this.pilotLaneId()!),id=>this.pilotContext(id))] : []),
           tokenEconomizerAdapter(
-            async () => (await this.personalConfig.connectorSettings()).tokenEconomizerEnabled,
+            async () => !this.pilotLaneId() && (await this.personalConfig.connectorSettings()).tokenEconomizerEnabled,
             (connectorID, event) => this.runConnector(connectorID, event),
             sessionID => this.sessionProject(sessionID)
           ),
           openRouterCredentialPlugin(
-            async () => (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
-              || await this.personalConfig.getOpenRouterKey(),
+            async () => this.pilotLaneId() ? undefined : ((this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
+              || await this.personalConfig.getOpenRouterKey()),
             (connect) => { this.providerConnection.connect = connect; }
           ),
           remoteMcpPlugin(
-            () => this.personalConfig.getRemoteMcps(),
-            (reload) => { this.mcpLifecycle.reload = reload; }
+            // Native MCP registration is DO-wide, not task-scoped. The supervisor
+            // cannot safely register unmetered native tools for read_only and ordinary
+            // sessions together. Ordinary owner workspaces retain their native tools;
+            // the existing explicit supervisor MCP control API remains separate.
+            () => this.ctx.id.name === SUPERVISOR_WORKSPACE ? Promise.resolve([]) : this.personalConfig.getRemoteMcps(),
+            (reload) => { this.mcpLifecycle.reload = reload; },
+            async sessionID => { try { await this.denyReadOnlySessionEffect(sessionID); return true; } catch { return false; } }
           ),
           workspacePlugin(this.workspace, {}, this.linuxRunner, this.githubRunner,
             (sessionID, action) => this.enforceSessionScope(sessionID, action),
@@ -1883,13 +2345,14 @@ export class OpenCodeAgent extends DurableObject<Env> {
                 .some(item => item.id === sessionID && Boolean(item.parent)),
               start: (sessionID, task, kind) => this.startSubagent(sessionID, task, kind),
               result: (parentSession, childSession) => this.subagentResult(parentSession, childSession) },
-            { propose: value => this.personalConfig.proposeSpecialization(value) })
+            { propose: value => this.personalConfig.proposeSpecialization(value) },
+            sessionID => this.denyReadOnlySessionEffect(sessionID))
         ]
       }),
     // Low effort: with more, the model sometimes writes its whole answer
     // into its reasoning.
     defaults: {
-      model: this.ai(MODEL_ID),
+      model: this.ai(this.pilotLaneId()?PILOT_GLM:MODEL_ID),
       agent: "build"
     }
   });
@@ -1913,6 +2376,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const key = "session-model-runs-v1:" + sessionID;
       const previous = (await this.ctx.storage.get<import("./protocol").ModelRun[]>(key)) ?? [];
       await this.ctx.storage.put(key, [...previous, run].slice(-50));
+    },
+    async (sessionID, type) => {
+      // Supervisor native socket mutations bypass the durable task journal.
+      // Passive resync remains available; task actions use the supervisor API.
+      if (type !== "resync" && this.ctx.id.name === SUPERVISOR_WORKSPACE)
+        throw Error("SUPERVISOR_DIRECT_SOCKET_EFFECT_FORBIDDEN");
+      if (type !== "resync") await this.denyReadOnlySessionEffect(sessionID);
     }
   );
   readonly webSockets = new WebSockets(this.sockets.options());
@@ -1930,9 +2400,15 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
+      // Generic owner routes are not task authority. Even a GET can prepare
+      // a repository or wake its Container. Task artifact routes remain available.
+      const projectRoute = /^\/api\/dev\/(?:backup|restore|download|verify|preview)\/([^/]+)(?:\/|$)/.exec(url.pathname);
+      if (projectRoute && isSupervisorProjectName(projectRoute[1]))
+        return Response.json({ error: "SUPERVISOR_PROJECT_REQUIRES_TASK_ROUTE" }, { status: 403 });
       const personal = env.SETTINGS.getByName("personal");
       const projectRegistry = env.DEV.getByName("personal");
       const readableProject = async (name: string) => {
+        assertGeneralProjectName(name);
         const record = await projectRegistry.isolatedProject(name);
         if (!record) return projectRegistry;
         const dev = env.DEV.getByName(projectContainerName(name));
@@ -2448,7 +2924,7 @@ export default {
       }
       if (url.pathname === "/api/dev/backups" && request.method === "GET") {
         const isolated = await projectRegistry.listIsolatedProjects();
-        const others = await Promise.all(isolated.map(p =>
+        const others = await Promise.all(isolated.filter(p => !isSupervisorProjectName(p.project)).map(p =>
           env.DEV.getByName(projectContainerName(p.project)).listBackups()));
         return Response.json({ backups: [...await projectRegistry.listBackups(), ...others.flat()] },
           { headers: { "Cache-Control": "no-store" } });
@@ -2488,6 +2964,7 @@ export default {
           if (raw.length > 300) return Response.json({ error: "Request too large" }, { status: 413 });
           const input = JSON.parse(raw) as { target?: string };
           const source = restoreMatch[1], target = input.target ?? "";
+          assertGeneralProjectName(target);
           const sourceDev = await readableProject(source);
           const metadata = (await sourceDev.listBackups()).find(item => item.project === source);
           if (!metadata) throw Error("No hay respaldo guardado");
@@ -2509,7 +2986,7 @@ export default {
       }
       if (url.pathname === "/api/dev/projects" && request.method === "GET") {
         const isolated = await projectRegistry.listIsolatedProjects();
-        const projects = await Promise.all(isolated.map(p =>
+        const projects = await Promise.all(isolated.filter(p => !isSupervisorProjectName(p.project)).map(p =>
           env.DEV.getByName(projectContainerName(p.project)).listProjects()));
         return Response.json({
           projects: [...await projectRegistry.listProjects(), ...projects.flat()]
@@ -2617,6 +3094,7 @@ export default {
         const body = await request.text();
         if (body.length > 300) return Response.json({ error: "Solicitud demasiado grande" }, { status: 413 });
         const { project } = JSON.parse(body) as { project: string };
+        if (isSupervisorProjectName(project)) return Response.json({ error: "SUPERVISOR_PROJECT_REQUIRES_TASK_ROUTE" }, { status: 403 });
         if (!await projectRegistry.isolatedProject(project)) {
           const listing = await projectRegistry.inspect(project, "list", "") as {
             entries: { name: string; type: string }[]
@@ -2647,6 +3125,7 @@ export default {
           return Response.json({ error: "Request too large" }, { status: 413 });
         }
         const { project, command } = JSON.parse(body) as { project: string; command: string };
+        if (isSupervisorProjectName(project)) return Response.json({ error: "SUPERVISOR_PROJECT_REQUIRES_TASK_ROUTE" }, { status: 403 });
         try {
           if (!await projectRegistry.isolatedProject(project)) await projectRegistry.reserveIsolatedProject(project);
           const result = await (await readableProject(project)).run(project, command);

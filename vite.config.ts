@@ -5,6 +5,7 @@ import agents from "agents/vite";
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  define: { __OPENCODE_RELEASE_SHA__: JSON.stringify(process.env.GITHUB_SHA ?? "") },
   plugins: [
     {
       // effect, which OpenCode is built on, ships the Scalar API reference

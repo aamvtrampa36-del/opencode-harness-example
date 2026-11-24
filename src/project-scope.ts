@@ -1,12 +1,13 @@
 import { normalizeOwnedRepository } from "./github";
+import { assertReadOnlyAction, requireReadOnlyAuthority, type ReadOnlyAuthority } from "./read-only-policy";
 
 const SLUG = /^[a-z][a-z0-9-]{0,39}$/;
 const SESSION_ID = /^ses[A-Za-z0-9_]{1,64}$/;
 
-export type ProjectScope = { project: string; repository?: string };
+export type ProjectScope = { project: string; repository?: string; readOnly?: ReadOnlyAuthority };
 export type ScopedToolAction =
-  | { kind: "linux"; project: string }
-  | { kind: "github"; repo: string; operation?: string; branch?: string }
+  | { kind: "linux"; project: string; operation?: string }
+  | { kind: "github"; repo: string; operation?: string; branch?: string; ref?: string }
   | { kind: "workspace-write" };
 
 export function validSessionId(id: unknown): id is string {
@@ -34,6 +35,8 @@ export function validateProjectScope(input: unknown, approved: readonly string[]
 
 /** One immutable project+repository binding per conversation, until a new chat. */
 export function requireSameScope(existing: ProjectScope | undefined, next: ProjectScope): ProjectScope {
+  // Client validation strips readOnly; only fenced admission may bind it.
+  if (next.readOnly) requireReadOnlyAuthority(existing, next.readOnly);
   if (!existing) return next;
   if (existing.project !== next.project ||
       (existing.repository ?? "").toLowerCase() !== (next.repository ?? "").toLowerCase()) {
@@ -44,6 +47,10 @@ export function requireSameScope(existing: ProjectScope | undefined, next: Proje
 
 /** Tool arguments are treated as untrusted even when an LLM generated them. */
 export function assertScopedTool(scope: ProjectScope | undefined, tool: ScopedToolAction): void {
+  if (scope?.readOnly) {
+    // Defense in depth. Executors must also compare with independent durable task/session identity.
+    assertReadOnlyAction(requireReadOnlyAuthority(scope, scope.readOnly), tool);
+  }
   if (tool.kind === "workspace-write") {
     // The shared Workspace is the fallback for conversations with no project.
     // A project-bound session must use its isolated Linux or GitHub tools.
