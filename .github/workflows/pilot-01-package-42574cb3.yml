@@ -1,0 +1,76 @@
+name: PILOTO-01 exact Staging package (NO DEPLOY)
+on:
+  push:
+    branches: [f0-c10/pilot-01-package-42574cb3]
+    paths: [".github/workflows/pilot-01-package-42574cb3.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: pilot-01-package-42574cb3
+  cancel-in-progress: false
+jobs:
+  package:
+    if: github.event.repository.private == false && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+      SOURCE_SHA: "42574cb3f5ee0cbfab2ce54176145c089edc41df"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "42574cb3f5ee0cbfab2ce54176145c089edc41df"
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+          no-cache: true
+      - name: Exact source and packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          export GITHUB_SHA="$SOURCE_SHA"
+          bun install --frozen-lockfile
+          bun run build
+          CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH=wrangler.g1.jsonc bun run build
+          export TMPDIR="$(mktemp -d)"
+          node scripts/f0-c10/pilot-staging-package.mjs | tee "$RUNNER_TEMP/pilot-package.log"
+          export RECEIPT="$RUNNER_TEMP/pilot-package.log"
+          node --input-type=module <<'JS'
+          import {readFileSync,writeFileSync} from 'node:fs';
+          import assert from 'node:assert/strict';
+          const lines=readFileSync(process.env.RECEIPT,'utf8').split('\n').filter(x=>x.startsWith('PILOT_STAGING_PACKAGE '));
+          assert.equal(lines.length,1);
+          const actual=JSON.parse(lines[0].slice('PILOT_STAGING_PACKAGE '.length));
+          const expected={source:process.env.SOURCE_SHA,principalConfig:"482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",mcpConfig:"31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",assets:{files:308,sha256:"be169d6ee98822f733d89029136f925d59cef10ff6932c1988e5fb1e97e51fe7"},build:{files:768,sha256:"293ed81d578c6ff8b0ed6ce574e8ba806a0a9da7692a93923902f52d7243c806"},bindings:["DEV","OpenCodeAgent","SESSION_BK","SETTINGS"],migration:"v4",principal:{files:229,sha256:"0e62752e284a49ce226fb270bf488ad90d51e662e97b38ed51752ac5c664ae5a"},mcp:{files:3,sha256:"a64dce8728ad3d0b50d158e7917797a47c2de902d25ea1a972f13ca878cdabe4"},deployed:false};
+          assert.deepEqual(actual,expected);
+          writeFileSync(process.env.RUNNER_TEMP+'/pilot-receipt.json',JSON.stringify(actual,null,2));
+          JS
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+          shopt -s nullglob
+          packages=("$TMPDIR"/pilot-staging-*)
+          test "${#packages[@]}" -eq 1
+          test -d "${packages[0]}/principal"
+          test -d "${packages[0]}/mcp"
+          mkdir "$RUNNER_TEMP/pilot-output"
+          tar -czf "$RUNNER_TEMP/pilot-output/staging-bundles.tar.gz" -C "${packages[0]}" principal mcp
+          tar -czf "$RUNNER_TEMP/pilot-output/staging-build.tar.gz" dist wrangler.g1.jsonc wrangler.mcp-staging.jsonc
+          cp "$RUNNER_TEMP/pilot-receipt.json" "$RUNNER_TEMP/pilot-output/"
+          cd "$RUNNER_TEMP/pilot-output"
+          sha256sum staging-bundles.tar.gz staging-build.tar.gz pilot-receipt.json > SHA256SUMS
+          cat SHA256SUMS
+      - name: Retain verified packages (1 day)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pilot-01-staging-42574cb3
+          path: ${{ runner.temp }}/pilot-output/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
