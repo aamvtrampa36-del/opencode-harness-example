@@ -57,3 +57,6 @@ export async function foldSupervisorToolLog(
   if (!validSupervisorToolCounts(metrics)) throw new Error("SUPERVISOR_METRICS_INVALID");
   return {metrics, complete, eventsRead};
 }
+
+// Logical evidence counts must never be interpreted as physical native activity.
+export { logicalPhaseCounts } from './metralla-m02-phase-evidence';
