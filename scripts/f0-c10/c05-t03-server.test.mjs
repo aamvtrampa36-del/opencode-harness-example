@@ -50,7 +50,9 @@ export async function runT03ImportCases(source) {
   const v=between("function assertCertifiedReadOnlyImport(", "/** A playable OpenCode");
   const verify=new Function("task","receipt",v.slice(v.indexOf("{")+1,v.lastIndexOf("}")));
   const m=between("private async prepareSupervisedReadOnlySource(", "private async advanceReadOnlyTask(");
-  const body=m.slice(m.indexOf("{")+1,m.lastIndexOf("}"));
+  const end=m.indexOf("\n  }\n");
+  assert(end>m.indexOf("{"),"import method boundary");
+  const body=m.slice(m.indexOf("{")+1,end);
   const make=new Function("inspectSupervisorReadOnlyAdmission","supervisorVerifyReadOnlySource","supervisorBeginReadOnlyEffect","supervisorConfirmReadOnlyEffect","projectContainerName","assertCertifiedReadOnlyImport","return async function(job,start,grant){"+body+"}");
   const start={sourceCommit:"a".repeat(40),sourceTree:"b".repeat(40)};
   const original={id:"0000000000000001",fingerprint:"fp",mode:"read_only",branch:"",project:"supervised-0000000000000001",repository:"owner/repo",status:"preparing",...start};
