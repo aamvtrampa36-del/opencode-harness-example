@@ -39,7 +39,7 @@ export function digestDirectory(root) {
   walk(base);
   if(!records.length)throw Error("Empty package");
   records.sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0);
-  return {files:records.length,sha256:createHash("sha256").update(JSON.stringify(records)).digest("hex")};
+  return {files:records.length,sha256:createHash("sha256").update(JSON.stringify(records)).digest("hex"),manifest:records};
 }
 const git=(...args)=>execFileSync("git",args,{encoding:"utf8"}).trim();
 function main(){

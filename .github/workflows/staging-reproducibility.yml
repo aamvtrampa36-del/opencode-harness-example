@@ -1,0 +1,90 @@
+name: Staging reproducibility (offline)
+on:
+  push:
+    branches: [maintenance/saneamiento-03-20261124, staging/reconciled-20261124]
+permissions:
+  contents: read
+concurrency:
+  group: staging-repro-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [a, b]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      EXPECTED_SHA: ${{ github.sha }}
+      REPLICA: ${{ matrix.replica }}
+      TZ: UTC
+      LC_ALL: C.UTF-8
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: node --test scripts/staging-release-receipt-check.mjs scripts/staging-reproducibility-check.mjs
+      - run: bun scripts/test-preview.mjs
+      - run: bun run typecheck
+      - run: bun run build
+      - run: bun scripts/check-invariants.mjs
+      - name: Build and record exact files
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/repro"
+          mkdir -p "$ROOT/configuration"
+          cp wrangler.jsonc "$RUNNER_TEMP/original.jsonc"
+          trap 'cp "$RUNNER_TEMP/original.jsonc" wrangler.jsonc' EXIT
+          cp wrangler.g1.jsonc wrangler.jsonc
+          bun run build
+          bunx --no-install wrangler deploy --dry-run --outdir "$ROOT/principal"
+          cp dist/opencode_g1_staging/wrangler.json "$ROOT/configuration/principal-effective.json"
+          cp -a dist/client "$ROOT/assets"
+          cp "$RUNNER_TEMP/original.jsonc" wrangler.jsonc
+          bunx --no-install wrangler deploy --dry-run --config wrangler.mcp-staging.jsonc --outdir "$ROOT/mcp"
+          cp wrangler.g1.jsonc wrangler.mcp-staging.jsonc "$ROOT/configuration/"
+          node scripts/staging-reproducibility.mjs record "$ROOT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: staging-repro-${{ matrix.replica }}
+          path: ${{ runner.temp }}/repro
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+  compare:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: staging-repro-a
+          path: replica-a
+      - uses: actions/download-artifact@v4
+        with:
+          name: staging-repro-b
+          path: replica-b
+      - run: node scripts/staging-reproducibility.mjs compare replica-a replica-b
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: staging-repro-comparison
+          path: repro-comparison.json
+          if-no-files-found: warn
+          retention-days: 7
