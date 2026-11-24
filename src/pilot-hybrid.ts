@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode/plugin";
+import { pilotFetchNoRedirect } from "./pilot-http";
 import type { StartGrant } from "./supervisor-admission";
 import { PILOT_FREE, PILOT_BACKUP, PILOT_GLM, PILOT_INPUT_TOKENS, PILOT_OUTPUT_TOKENS, PILOT_GLM_BILLABLE_INPUT_CEILING, PILOT_MAX_WIRE_BYTES,
   type BudgetPolicy, type PilotDispatchEvidence, type InferenceIntent, pilotDispatchEvidenceValid,
@@ -97,7 +98,7 @@ export function makePilotHybridBinding(binding:Ai, context:(session:string)=>Pro
           let response:Response;
           if(selection===PILOT_FREE){
             check(key,"PILOT_FREE_KEY_MISSING");
-            response=await request(ENDPOINT,{method:"POST",redirect:"error",signal,
+            response=await pilotFetchNoRedirect(request,ENDPOINT,{method:"POST",signal,
               headers:{"Authorization":"Bearer "+key,"Content-Type":"application/json"},
               body:encoded});
           }else{

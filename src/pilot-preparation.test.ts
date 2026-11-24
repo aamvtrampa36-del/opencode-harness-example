@@ -1,5 +1,5 @@
 import {test,expect} from "bun:test";
-import {makePreparationReceipt,preparationReceiptValid,pilotImageDigest,pilotRuntimeMatches,pilotBootDisposition,type PilotPreparationInput} from "./pilot-preparation";
+import {makePreparationReceipt,preparationReceiptValid,pilotImageDigest,pilotRuntimeMatches,pilotBootDisposition,pilotPinnedImage,type PilotPreparationInput} from "./pilot-preparation";
 const label="12345678-1234-1234-1234-123456789abc",id="0123456789abcdef",now=1000;
 const input:PilotPreparationInput={requestId:id,project:"supervised-"+id,session:"ses_r2_"+id,
  repository:"aamvtrampa36-del/opencode-harness-example",releaseSha:"a".repeat(40),sourceCommit:"b".repeat(40),
@@ -31,4 +31,12 @@ test("durable boot intent forbids replacement after lost start, lost VM or DO re
  expect(pilotBootDisposition(prior,label,true)).toBe("existing");
  expect(pilotBootDisposition(prior,label,false)).toBe("stop");
  expect(pilotBootDisposition(prior,crypto.randomUUID(),true)).toBe("stop");
+});
+
+test("before admission require a Wrangler-prepared named immutable image, not the managed alias",()=>{
+ const ref="registry.cloudflare.com/account/pilot@"+input.imageDigest;
+ expect(pilotPinnedImage({pilot:ref},input.imageDigest)).toBe(ref);
+ for(const images of [undefined,{}, {pilot:"cloudflare/debian-trixie"},{pilot:input.imageDigest},
+   {pilot:"registry.cloudflare.com/account/pilot@sha256:"+"0".repeat(64)}, {other:ref}, {pilot:"registry.other.invalid/account/pilot@"+input.imageDigest}])
+   expect(()=>pilotPinnedImage(images,input.imageDigest)).toThrow("PILOT_PINNED_IMAGE_NOT_PREPARED");
 });

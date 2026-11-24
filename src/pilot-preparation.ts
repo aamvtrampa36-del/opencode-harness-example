@@ -25,6 +25,15 @@ export function pilotImageDigest(image:unknown):string|null{
   const m=/^(?:[A-Za-z0-9_./:-]+@)?sha256:([a-f0-9]{64})$/.exec(image);
   return m?"sha256:"+m[1]:null;
 }
+/** inspect() echoes the reference passed to start(), not a resolved digest.
+ * Accept only the immutable named image prepared by Wrangler in this version.
+ * A managed mutable tag or a bare historical digest is not a runnable image. */
+export function pilotPinnedImage(images:unknown,expectedDigest:string):string{
+  const image=(images as {pilot?:unknown}|null|undefined)?.pilot;
+  if(typeof image!=="string"||!/^registry\.cloudflare\.com\/[A-Za-z0-9_./:-]+@sha256:[a-f0-9]{64}$/.test(image)||
+     pilotImageDigest(image)!==expectedDigest)throw Error("PILOT_PINNED_IMAGE_NOT_PREPARED");
+  return image;
+}
 export function pilotRuntimeMatches(info:unknown,bootLabel:string,imageDigest:string):boolean{
   const i=info as {image?:unknown;labels?:Record<string,unknown>}|null;
   return !!i&&uuid(bootLabel)&&pilotImageDigest(i.image)===imageDigest&&i.labels?.pilotboot===bootLabel;

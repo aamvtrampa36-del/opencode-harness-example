@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { makePreparationReceipt, preparationReceiptValid, pilotRuntimeMatches, pilotBootDisposition, validPreparationInput, type PilotPreparationInput, type PilotPreparationReceipt } from "./pilot-preparation";
+import { makePreparationReceipt, preparationReceiptValid, pilotRuntimeMatches, pilotBootDisposition, pilotPinnedImage, validPreparationInput, type PilotPreparationInput, type PilotPreparationReceipt } from "./pilot-preparation";
 import { MAX_SHELL_OUTPUT, validateCommand, validateProject } from "./dev-guard";
 import { captureBoundedOutput } from "./bounded-process-output";
 import { PREVIEW_SOURCE, PREVIEW_PORT } from "./preview-server";
@@ -204,7 +204,7 @@ export class DevContainer extends DurableObject<Env> {
     await this.scheduleCheck();
   }
   private async checkPilotWork(){
-    const p=await this.ctx.storage.get<{workUntil:number;closeUntil:number}>("pilot-deadline-v1");
+    const p=await this.ctx.storage.get<{project:string;workUntil:number;closeUntil:number}>("pilot-deadline-v1");
     if(p&&(Date.now()>=p.workUntil||await this.ctx.storage.get("pilot-close-requested-v1")))throw Error("PILOT_CONTAINER_WORK_EXPIRED");
     return p;
   }
@@ -232,6 +232,21 @@ export class DevContainer extends DurableObject<Env> {
     return await this.starting;
   }
 
+  /** Read-only pre-admission gate. Merely inspect the existing version image
+   * map; never start a VM, create a deadline or consume a pilot claim here. */
+  async preflightPilotImage(project:string,imageDigest:string):Promise<{imageDigest:string}>{
+    const lane=(this.env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
+    if(!lane||project!=="supervised-"+lane||this.ctx.id.name!=="project-v1:"+project||
+       !(this.env as Env & {OPENCODE_PILOT_AUTHORIZATION?:string}).OPENCODE_PILOT_AUTHORIZATION)
+      throw Error("PILOT_PREPARATION_SCOPE");
+    if(!this.ctx.container||this.ctx.container.running||await this.ctx.storage.get("pilot-close-requested-v1")||
+       await this.ctx.storage.get("pilot-boot-v1")||await this.ctx.storage.get("pilot-preparation-intent-v1")||
+       await this.ctx.storage.get("pilot-deadline-v1")||await this.ctx.storage.get("snapshotId")||await this.ctx.storage.get("lastActivity"))
+      throw Error("PILOT_CONTAINER_NOT_FRESH");
+    pilotPinnedImage((this.ctx.container as unknown as {images?:Record<string,string>}).images,imageDigest);
+    return {imageDigest};
+  }
+
   private async startOrRecover() {
     const container = this.ctx.container;
     if (!container) throw new Error("Linux Container binding is not deployed");
@@ -245,7 +260,11 @@ export class DevContainer extends DurableObject<Env> {
       const lastActivity = await this.ctx.storage.get<number>("lastActivity");
       assertRecoverableContainer(snapshotId, savedAt, lastActivity, Date.now());
       let label:string|undefined;
+      let image="cloudflare/debian-trixie";
       if(pilot){
+        const intent=await this.ctx.storage.get<PilotPreparationInput>("pilot-preparation-intent-v1");
+        if(!intent||!validPreparationInput(intent)||intent.project!==pilot.project||intent.workUntil!==pilot.workUntil||intent.closeUntil!==pilot.closeUntil)throw Error("PILOT_PREPARATION_SCOPE");
+        image=pilotPinnedImage((container as unknown as {images?:Record<string,string>}).images,intent.imageDigest);
         if(snapshotId||lastActivity||prior)throw Error("PILOT_CONTAINER_NOT_FRESH");
         label=crypto.randomUUID();
         // Write ahead: a lost start response must not create a second VM.
@@ -255,7 +274,7 @@ export class DevContainer extends DurableObject<Env> {
       container.start({
         ...(snapshotId
           ? { containerSnapshot: { id: snapshotId } }
-          : { image: "cloudflare/debian-trixie" }),
+          : { image }),
         entrypoint: ["sleep", "infinity"],
         enableInternet: !pilot,
         instance: "basic",
@@ -722,6 +741,7 @@ export class DevContainer extends DurableObject<Env> {
     const lane=(this.env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
     if(!validPreparationInput(input)||lane!==input.requestId||this.ctx.id.name!=="project-v1:"+input.project||
         Date.now()>=input.workUntil)throw Error("PILOT_PREPARATION_SCOPE");
+    await this.preflightPilotImage(input.project,input.imageDigest);
     await this.ctx.storage.transaction(async tx=>{
       if(await tx.get("pilot-preparation-intent-v1")||await tx.get("pilot-close-requested-v1"))throw Error("PILOT_PREPARATION_NO_REPLAY");
       await tx.put("pilot-preparation-intent-v1",input);

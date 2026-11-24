@@ -53,6 +53,8 @@ async function fixture(){
    return response(mode==="bad-model"?"other-model":m,0);}} as unknown as Ai;
  const bind=makePilotHybridBinding(raw,async(s)=>{if(s!==session)throw Error("wrong session");return ctx;},async()=>key,
    (async(url:any,init:any)=>{free++;expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(init.redirect).toBe("manual");
+    if(mode==="redirect")return new Response(null,{status:307,headers:{Location:"https://example.invalid/redirect"}});
     const b=JSON.parse(init.body);expect(b.model).toBe("openrouter/free");expect(b.provider.max_price.prompt).toBe(0);expect(b.max_tokens).toBe(8000);
     if(mode==="quota")return Response.json({error:{code:429,metadata:{limit_source:"openrouter_free_tier_per_minute"}}},{status:429});
     if(mode==="ambiguous")return Response.json({error:{code:429}},{status:429});
@@ -73,7 +75,7 @@ test("explicit router quota refusal switches once, same session, shared count",a
 test("missing key is pre-send unavailability",async()=>{
  const f=await fixture();f.missingKey();await f.call();expect(f.counts()).toEqual([0,1]);
 });
-for(const mode of ["ambiguous","cost"])test("sticky unknown: "+mode,async()=>{
+for(const mode of ["ambiguous","cost","redirect"])test("sticky unknown: "+mode,async()=>{
  const f=await fixture();f.mode(mode);await expect(f.call()).rejects.toThrow("PILOT_PROVIDER_OUTCOME_UNKNOWN");
  await expect(f.call()).rejects.toThrow();expect(f.counts()).toEqual([1,0]);
 });

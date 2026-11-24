@@ -4,6 +4,7 @@ export { PersonalSettings };
 export { OpenCodeSupervisorWorkflow } from "./supervisor-workflow";
 import { DevContainer } from "./dev-container";
 import { makePilotHybridBinding, pilotHybridPlugin, type PilotContext } from "./pilot-hybrid";
+import { pilotFetchNoRedirect } from "./pilot-http";
 import { preparationInput, preparationReceiptValid, durablePreparationValid } from "./pilot-preparation";
 import { PILOT_REPO, PILOT_BASE, PILOT_CLAIM, parsePilotApproval, evidenceFromClaim, type PilotClaim } from "./pilot-authorization";
 declare const __OPENCODE_RELEASE_SHA__: string;
@@ -193,6 +194,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if(pilotClaim){
       const cert=await historicalCertificate(this.ctx.storage);
       if(!cert||cert.digest!==pilotClaim.approval.reconciliationDigest)throw Error("HISTORICAL_PILOT_CERTIFICATE_REQUIRED");
+      const image=await this.env.DEV.getByName(projectContainerName(job.project)).preflightPilotImage(job.project,pilotClaim.approval.containerImageDigest);
+      if(image.imageDigest!==pilotClaim.approval.containerImageDigest)throw Error("PILOT_PINNED_IMAGE_NOT_PREPARED");
       nativeQuiescence=await this.observeHistoricalNative(Date.now()+60_000);
       // Keep the original 15+5 minute budget, starting after the read-only
       // census. No task/claim/provider effect occurred during that census.
@@ -2264,7 +2267,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if(until===undefined)return globalThis.fetch(url,init);
       const ms=until-Date.now();
       if(ms<=0)throw Error("PILOT_WORK_EXPIRED");
-      return globalThis.fetch(url,{...init,redirect:"error",signal:AbortSignal.any([AbortSignal.timeout(Math.min(ms,30_000)),...(init?.signal?[init.signal]:[])])});
+      return pilotFetchNoRedirect(globalThis.fetch,url,{...init,signal:AbortSignal.any([AbortSignal.timeout(Math.min(ms,30_000)),...(init?.signal?[init.signal]:[])])});
     };
   }
   private async pilotContext(sessionID:string):Promise<PilotContext> {
