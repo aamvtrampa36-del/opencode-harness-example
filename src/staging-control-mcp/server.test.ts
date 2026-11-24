@@ -281,18 +281,24 @@ describe("OpenCode staging MCP server", () => {
         prompt: "Continúa desde la conversación indicada con una rama aislada", model: "economy",
         sourceSession: "sesAbc123" });
       const startsBeforeInvalidFork = startCount;
+      const defaultCallsBeforeInvalidFork = defaultSupervisorCalls;
+      const customCallsBeforeInvalidFork = customSupervisorCalls;
       const invalidFork = await client.callTool({ name: "staging_start_task", arguments: {
         requestId: "d1234567890bcdef", prompt: "Intenta hacer fork sin aportar un workspace válido",
         sourceSession: "sesAbc123"
       } });
       expect(invalidFork.isError).toBe(true);
       expect(startCount).toBe(startsBeforeInvalidFork);
+      expect(defaultSupervisorCalls).toBe(defaultCallsBeforeInvalidFork);
+      expect(customSupervisorCalls).toBe(customCallsBeforeInvalidFork);
       const workspaceWithoutFork = await client.callTool({ name: "staging_start_task", arguments: {
         requestId: "e1234567890bcdef", prompt: "No reutilices el workspace sin una sesión de origen",
         workspace
       } });
       expect(workspaceWithoutFork.isError).toBe(true);
       expect(startCount).toBe(startsBeforeInvalidFork);
+      expect(defaultSupervisorCalls).toBe(defaultCallsBeforeInvalidFork);
+      expect(customSupervisorCalls).toBe(customCallsBeforeInvalidFork);
 
       const defaultCallsBeforeTaskStatus = defaultSupervisorCalls;
       const taskStatus = await client.callTool({ name: "staging_task_status", arguments: { id: "a1234567890bcdef" } });
@@ -436,4 +442,34 @@ describe("managed Linux runtime selection", () => {
     expect(commandRequiresBun("node --version && npm --version")).toBe(false);
     expect(commandRequiresBun("echo bun is a runtime")).toBe(false);
   });
+});
+
+
+describe("invalid task envelope has no supervisor effect", () => {
+  const valid = { requestId: "a1234567890bcdef", prompt: "Inspect the isolated project safely" };
+  const commit = "a".repeat(40), tree = "b".repeat(40);
+  for (const [name, args] of [
+    ["tree without commit", { ...valid, mode: "read_only", sourceTree: tree }],
+    ["commit without tree", { ...valid, mode: "read_only", sourceCommit: commit }],
+    ["pins in ordinary mode", { ...valid, sourceCommit: commit, sourceTree: tree }],
+    ["uppercase id", { ...valid, requestId: "A1234567890BCDEF" }],
+    ["short prompt", { ...valid, prompt: "short" }],
+    ["invalid mode", { ...valid, mode: "write_all" }]
+  ] as const) {
+    test(name, async () => {
+      let resolutions = 0;
+      const server = createStagingControlServer({
+        async readHealth() { throw Error("unexpected health"); },
+        supervisor() { resolutions++; throw Error("unexpected supervisor"); }
+      });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: "negative-envelope-test", version: "1.0.0" });
+      await server.connect(st); await client.connect(ct);
+      try {
+        const result = await client.callTool({ name: "staging_start_task", arguments: args });
+        expect(result.isError).toBe(true);
+        expect(resolutions).toBe(0);
+      } finally { await client.close(); await server.close(); }
+    });
+  }
 });

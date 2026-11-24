@@ -74,10 +74,14 @@ This example is the only documentation for them for now.
 
 ## Run locally
 
+Use the pinned Bun runtime declared in package.json (1.4.4).
+
 ```sh
-pnpm install
-pnpm run start
+bun install --frozen-lockfile
+bun run start
 ```
+
+For offline development, targeted tests and Staging packaging, see [Development and release](docs/maintenance/DEVELOPMENT_AND_RELEASE.md). A dry-run does not publish or certify the live Worker.
 
 The example uses the remote Workers AI binding, which may incur Workers AI
 usage. It needs no API key. If your Wrangler login can see more than one

@@ -49,3 +49,38 @@ describe("bounded supervisor status event log accounting", () => {
       .rejects.toThrow("SUPERVISOR_EVENT_BUDGET_INVALID");
   });
 });
+
+describe("incremental accounting edge contracts", () => {
+  test("empty log preserves a copied checkpoint", async () => {
+    const checkpoint = { cursor: 9, toolCalls: 4, completedTools: 2, failedTools: 1 };
+    async function* empty() {}
+    const r = await foldSupervisorToolLog(empty(), checkpoint);
+    expect(r.metrics).toEqual(checkpoint);
+    expect(r.metrics).not.toBe(checkpoint);
+    expect(r.complete).toBe(true);
+    expect(r.eventsRead).toBe(0);
+  });
+  test("legacy top-level sequence works without durable wrapper", async () => {
+    async function* log(){ yield {seq:1,type:"session.tool.called"}; yield {seq:2,type:"session.tool.success"}; }
+    expect((await foldSupervisorToolLog(log())).metrics).toEqual({cursor:2,toolCalls:1,completedTools:1,failedTools:0});
+  });
+  test("an exact event-budget page is complete if the iterator ends", async () => {
+    async function* log(){ yield event(1,"session.tool.called"); yield event(2,"session.tool.success"); }
+    const r = await foldSupervisorToolLog(log(), EMPTY_SUPERVISOR_TOOL_COUNTS, 2);
+    expect(r.complete).toBe(true); expect(r.eventsRead).toBe(2);
+  });
+  test("a truncated page closes the iterator", async () => {
+    let closed=false;
+    async function* log(){ try { for(let i=1;i<=5;i++)yield event(i,"session.tool.called"); } finally { closed=true; } }
+    expect((await foldSupervisorToolLog(log(), EMPTY_SUPERVISOR_TOOL_COUNTS, 1)).complete).toBe(false);
+    expect(closed).toBe(true);
+  });
+  test("duplicate events do not increment a durable checkpoint", async () => {
+    async function* log(){yield event(1,"session.tool.called"); yield event(1,"session.tool.called");}
+    expect((await foldSupervisorToolLog(log())).metrics.toolCalls).toBe(1);
+  });
+  test("counter overflow fails instead of returning a precision-lost count", async () => {
+    async function* log(){yield event(2,"session.tool.called");}
+    await expect(foldSupervisorToolLog(log(), {cursor:1,toolCalls:Number.MAX_SAFE_INTEGER,completedTools:0,failedTools:0})).rejects.toThrow("SUPERVISOR_METRICS_INVALID");
+  });
+});

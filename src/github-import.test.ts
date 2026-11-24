@@ -56,3 +56,40 @@ describe("private GitHub source preparation", () => {
     expect(requests).toBe(0);
   });
 });
+
+
+describe("GitHub archive metadata and stream boundaries", () => {
+  const repo="aamvtrampa36-del/opencode-harness-example", sha="a".repeat(40), tree="b".repeat(40);
+  function port(responses: Response[], calls: string[]) {
+    return (async (url: string|URL|Request) => {
+      calls.push(String(url)); const response=responses.shift();
+      if(!response)throw Error("unexpected HTTP"); return response;
+    }) as typeof fetch;
+  }
+  const metadata=()=>Response.json({full_name:repo,default_branch:"main"});
+  test("metadata for another repository stops before source fetch", async () => {
+    const calls:string[]=[];
+    await expect(githubSourceArchive(repo,"token",[repo],port([Response.json({full_name:"aamvtrampa36-del/other",default_branch:"main"})],calls),sha)).rejects.toThrow("inválidos");
+    expect(calls).toHaveLength(1);
+  });
+  test("missing default branch is not a valid repository receipt", async () => {
+    const calls:string[]=[];
+    await expect(githubSourceArchive(repo,"token",[repo],port([Response.json({full_name:repo})],calls),sha)).rejects.toThrow("inválidos");
+    expect(calls).toHaveLength(1);
+  });
+  test("commit identity mismatch stops even if returned tree is correct", async () => {
+    const calls:string[]=[];
+    await expect(githubSourceArchive(repo,"token",[repo],port([metadata(),Response.json({sha:"c".repeat(40),commit:{tree:{sha:tree}}})],calls),sha,tree)).rejects.toThrow("no confirmó");
+    expect(calls).toHaveLength(2);
+  });
+  test("missing tree receipt never reaches the archive endpoint", async () => {
+    const calls:string[]=[];
+    await expect(githubSourceArchive(repo,"token",[repo],port([metadata(),Response.json({sha,commit:{}})],calls),sha,tree)).rejects.toThrow("árbol verificable");
+    expect(calls).toHaveLength(2);
+  });
+  test("an empty successful archive response is rejected", async () => {
+    const calls:string[]=[];
+    await expect(githubSourceArchive(repo,"token",[repo],port([metadata(),new Response(null,{status:204})],calls),sha)).rejects.toThrow("descargar");
+    expect(calls).toHaveLength(2);
+  });
+});

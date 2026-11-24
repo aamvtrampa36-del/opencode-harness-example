@@ -1,0 +1,41 @@
+name: Saneamiento offline
+on:
+  pull_request:
+    branches: [staging/reconciled-20261124]
+permissions:
+  contents: read
+concurrency:
+  group: saneamiento-offline-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: node --test scripts/staging-release-receipt-check.mjs
+      - run: bun scripts/test-preview.mjs
+      - run: bun run typecheck
+      - run: bun run build
+      - run: bun scripts/check-invariants.mjs
+      - name: Package both Staging Workers offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp wrangler.jsonc "$RUNNER_TEMP/wrangler-original.jsonc"
+          trap 'cp "$RUNNER_TEMP/wrangler-original.jsonc" wrangler.jsonc' EXIT
+          cp wrangler.g1.jsonc wrangler.jsonc
+          bun run build
+          bunx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/staging-principal"
+          cp "$RUNNER_TEMP/wrangler-original.jsonc" wrangler.jsonc
+          bunx --no-install wrangler deploy --dry-run --config wrangler.mcp-staging.jsonc --outdir "$RUNNER_TEMP/staging-mcp"
+          node scripts/staging-release-receipt.mjs "$RUNNER_TEMP/staging-principal" "$RUNNER_TEMP/staging-mcp" dist/client
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"

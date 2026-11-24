@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MODEL_PRESETS, NATIVE_WORKERS_AI_MODELS, isModelPreset, resolveModelSelection, usableModelSelection } from "./model-presets";
+import { MODEL_PRESETS, NATIVE_WORKERS_AI_MODELS, isModelPreset, isModelSelection, isOpenRouterSelection, resolveModelSelection, usableModelSelection } from "./model-presets";
 
 describe("model authorization", () => {
   test("recognizes only allowlisted identifiers", () => {
@@ -56,5 +56,28 @@ describe("model authorization", () => {
   test("premium inference is never the default preset", () => {
     expect(MODEL_PRESETS.reasoning.tier).toBe("premium");
     expect(Object.keys(MODEL_PRESETS)[0]).toBe("cloudflare");
+  });
+});
+
+
+describe("catalogue selection syntax (not availability)", () => {
+  test("preserves a provider model variant with colon suffix", () => {
+    const id = "openrouter:vendor/model:free";
+    expect(isOpenRouterSelection(id)).toBe(true);
+    expect(resolveModelSelection(id)).toEqual({providerID:"openrouter",id:"vendor/model:free"});
+  });
+  test("rejects URLs, whitespace and missing provider segment", () => {
+    for(const value of ["openrouter:https://x/y","openrouter:vendor/a b","openrouter:model","openrouter:/model"]){
+      expect(isModelSelection(value)).toBe(false);
+    }
+  });
+  test("enforces the full selection length boundary", () => {
+    const prefix="openrouter:vendor/";
+    expect(isOpenRouterSelection(prefix+"a".repeat(160-prefix.length))).toBe(true);
+    expect(isOpenRouterSelection(prefix+"a".repeat(161-prefix.length))).toBe(false);
+  });
+  test("rejects inherited preset names instead of resolving them", () => {
+    expect(isModelSelection("constructor")).toBe(false);
+    expect(isModelSelection("toString")).toBe(false);
   });
 });
