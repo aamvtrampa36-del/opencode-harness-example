@@ -19,6 +19,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       enabled: ${{ steps.plan.outputs.enabled }}
+      reconcile: ${{ steps.plan.outputs.reconcile }}
       base: ${{ steps.plan.outputs.base }}
       head: ${{ steps.plan.outputs.head }}
       tree: ${{ steps.plan.outputs.tree }}
@@ -76,13 +77,13 @@ jobs:
         run: bun scripts/check-invariants.mjs
   apply:
     needs: [prepare, full-validate]
-    if: needs.prepare.outputs.enabled == 'true' && needs.full-validate.result == 'success'
+    if: always() && needs.prepare.result == 'success' && (needs.prepare.outputs.reconcile == 'true' || (needs.prepare.outputs.enabled == 'true' && needs.full-validate.result == 'success'))
     permissions:
       contents: write
       pull-requests: read
       actions: read
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -94,7 +95,7 @@ jobs:
           EXPECTED_HEAD: ${{ needs.prepare.outputs.head }}
           EXPECTED_TREE: ${{ needs.prepare.outputs.tree }}
           EXPECTED_REQUEST_ID: ${{ needs.prepare.outputs.request_id }}
-          VALIDATION_RESULT: success
+          VALIDATION_RESULT: ${{ needs.prepare.outputs.reconcile != 'true' && 'success' || 'reconcile' }}
           GH_TOKEN: ${{ github.token }}
         run: python3 .agent-ops/integrate_exact.py apply
       - name: Preserve integration evidence
