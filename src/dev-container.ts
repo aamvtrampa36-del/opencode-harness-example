@@ -21,7 +21,7 @@ import {
 } from "./external-backup-do";
 import { RESTORE_PROJECT_SOURCE } from "./restore-project";
 import { GITHUB_IMPORT_SOURCE } from "./github-import-source";
-import { githubSourceArchive, sourceReceiptMatches } from "./github-import";
+import { githubSourceArchive, sourceReceiptMatches, RAW_TREE_CERTIFICATION } from "./github-import";
 import { validateIsolatedRegistration, type IsolatedProject } from "./project-container";
 import { assertRecoverableContainer, SNAPSHOT_TTL_MS } from "./snapshot-policy";
 import { BUN_RUNTIME_VERSION, commandRequiresBun } from "./dev-runtime";
@@ -411,7 +411,7 @@ export class DevContainer extends DurableObject<Env> {
       }
       const existing = await this.ctx.storage.get<{
         project: string; repository: string; commit: string; tree?: string;
-        files: number; sha256: string
+        files: number; sha256: string; certification?: string
       }>("isolated-repository-v1");
       if (existing) {
         if (existing.project !== id || existing.repository.toLowerCase() !== repository.toLowerCase()) {
@@ -444,30 +444,36 @@ export class DevContainer extends DurableObject<Env> {
       const source = await githubSourceArchive(repository, token || "", allowed, fetch, sourceCommit, sourceTree);
       const container = await this.ensureRunning();
       this.busy++;
-      await this.ctx.storage.put("lastActivity", Date.now());
       try {
-        // Git tree verification runs before normal Linux commands bootstrap Git.
-        if (sourceTree) await this.ensureGitAvailable(container);
+        await this.ctx.storage.put("lastActivity", Date.now());
+        // Raw Git object hashes use Node only; no Git bootstrap or filters.
         const process = await container.exec(
           ["node", "--input-type=module", "-e", GITHUB_IMPORT_SOURCE, id,
-            ...(sourceTree ? [sourceTree] : [])], { stdin: source.stream }
+            ...(sourceTree ? [sourceTree] : [])],
+          { stdin: source.stream, signal: AbortSignal.timeout(120_000) }
         );
-        const result = await process.output();
-        if (result.exitCode !== 0) {
-          throw Error("No se pudo importar el repositorio de forma segura: " +
-            new TextDecoder().decode(result.stderr).slice(-350));
+        const [stdout, stderr, exitCode] = await Promise.all([
+          captureBoundedOutput(process.stdout, 4_096),
+          captureBoundedOutput(process.stderr, 1_024),
+          process.exitCode
+        ]);
+        if (exitCode !== 0 || stdout.truncated || stderr.truncated) {
+          throw Error("No se pudo importar el repositorio de forma segura");
         }
-        const receipt = JSON.parse(new TextDecoder().decode(result.stdout)) as {
-          target: string; files: number; sha256: string; tree?: string
+        const receipt = JSON.parse(stdout.text) as {
+          target: string; files: number; sha256: string; tree?: string; certification?: string
         };
-        if (receipt.target !== id || !Number.isSafeInteger(receipt.files) || receipt.files < 1 ||
+        if (!receipt || receipt.target !== id || !Number.isSafeInteger(receipt.files) ||
+            receipt.files < 1 || receipt.files > 15_000 ||
+            typeof receipt.sha256 !== "string" ||
             !/^[a-f0-9]{64}$/.test(receipt.sha256)) throw Error("Resultado de importación inválido");
         if (sourceTree !== undefined &&
-            (source.tree !== sourceTree || receipt.tree !== sourceTree)) {
+            (source.tree !== sourceTree || receipt.tree !== sourceTree ||
+             receipt.certification !== RAW_TREE_CERTIFICATION)) {
           throw Error("La importación no confirmó el árbol de origen verificado");
         }
         const record = { project: id, repository: source.repo, commit: source.commit,
-          ...(sourceTree ? { tree: sourceTree } : {}),
+          ...(sourceTree ? { tree: sourceTree, certification: RAW_TREE_CERTIFICATION } : {}),
           files: receipt.files, sha256: receipt.sha256 };
         await this.ctx.storage.put("isolated-repository-v1", record);
         await this.ctx.storage.delete("repo-import-pending-v1");
