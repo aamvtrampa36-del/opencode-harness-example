@@ -4,6 +4,7 @@ export { PersonalSettings };
 export { OpenCodeSupervisorWorkflow } from "./supervisor-workflow";
 import { DevContainer } from "./dev-container";
 import { makePilotHybridBinding, pilotHybridPlugin, type PilotContext } from "./pilot-hybrid";
+import { preparationInput, preparationReceiptValid, durablePreparationValid } from "./pilot-preparation";
 import { PILOT_REPO, PILOT_BASE, PILOT_CLAIM, parsePilotApproval, evidenceFromClaim, type PilotClaim } from "./pilot-authorization";
 declare const __OPENCODE_RELEASE_SHA__: string;
 import { PILOT_GLM, PILOT_BACKUP, PILOT_CLOSE_MS, pilotBudgetPolicy, pilotDispatchEvidenceValid, inferenceBudgetTotals,
@@ -528,6 +529,21 @@ export class OpenCodeAgent extends DurableObject<Env> {
         });
       }
       await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
+      if(this.pilotLaneId()){
+        await this.requirePilotTask(job);
+        if(job.pilotPreparation)throw Error("PILOT_PREPARATION_NO_REPLAY");
+        const claim=await this.ctx.storage.get<PilotClaim>(PILOT_CLAIM);
+        if(!claim)throw Error("PILOT_AUTHORIZATION_REQUIRED");
+        const input=await preparationInput(claim,job,grant);
+        await supervisorBeginExternalEffect(this.ctx.storage,grant,"pilot_prepare");
+        await this.env.DEV.getByName("personal").reserveIsolatedProject(job.project,job.repository);
+        const dev=this.env.DEV.getByName(projectContainerName(job.project));
+        const receipt=await dev.preparePilotProject(input);
+        if(!await preparationReceiptValid(receipt,input)||!await dev.assertPilotPreparation(receipt))
+          throw Error("PILOT_PREPARATION_INVALID");
+        job=await this.updatePreparingSupervisorTask(grant,fresh=>({...fresh,pilotPreparation:receipt}));
+        await supervisorConfirmExternalEffect(this.ctx.storage,grant,"pilot_prepare",{confirmed:true});
+      }
       const handle = this.harness.session(job.session!);
       if(this.pilotLaneId())await this.requirePilotTask(job);
       if (!job.operationId) {
@@ -553,6 +569,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
         job = prepared;
       }
     } catch (error) {
+      if(job.pilotInstance){
+        // No model has been submitted yet. Close intent wins over late preparation.
+        await this.env.DEV.getByName(projectContainerName(job.project)).closePilotProject(job.project).catch(()=>undefined);
+      }
       if (error instanceof Error && error.message === "ADMISSION_FENCE_REJECTED") {
         // A fenced-out stale starter cannot overwrite the new owner's record.
         return this.supervisorTaskReceipt(await this.supervisedRecord(job.id), true);
@@ -584,7 +604,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       return this.supervisorTaskReceipt(job, reused);
     }
     try {
-      if(this.pilotLaneId())await this.requirePilotTask(job);
+      if(this.pilotLaneId())await this.pilotContext(job.session);
       await supervisorBeginExternalEffect(this.ctx.storage, grant, "submit");
       const submitSession = job.session;
       const submitCommit = job.baseCommit;
@@ -1018,6 +1038,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       updatedAt: task.updatedAt, asOf: task.updatedAt, source: "supervisor-task-ledger",
       admissionState: slot?.phase ?? "legacy_or_released",
       ...(slot?.effect ? { admissionEffect: slot.effect } : {}),
+      ...(task.pilotPreparation?{pilotPreparation:{digest:task.pilotPreparation.digest,image:task.pilotPreparation.imageDigest,preparedAt:task.pilotPreparation.preparedAt,sourceCommit:task.pilotPreparation.input.sourceCommit}}:{}),
       snapshot: true, nativeReconciled: false,
       pendingTurn: Boolean(task.pendingTurn),
       cancelAmbiguous: Boolean(task.cancelAmbiguous),
@@ -1176,6 +1197,24 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async cancelSupervisedTask(id: string): Promise<unknown> {
     this.assertStagingRemote();
     let job = await this.supervisedRecord(id);
+    if(this.pilotLaneId()&&id!==this.pilotLaneId())throw Error("PILOT_SESSION_FORBIDDEN");
+    if(job.pilotInstance&&!job.operationId){
+      // Fence submit before attempting closure, including during import.
+      const stopped=await this.ctx.storage.transaction(async tx=>{
+        const fresh=await tx.get<SupervisorTask>(supervisorTaskKey(id));
+        if(!fresh||fresh.operationId)return false;
+        if(!["failed","cancelled","finished","unanswered"].includes(fresh.status))
+          await tx.put(supervisorTaskKey(id),{...fresh,status:"cancel_requested",cancelAmbiguous:true,
+            revision:(fresh.revision??0)+1,updatedAt:Date.now()});
+        return true;
+      });
+      if(stopped){
+        const container=await this.env.DEV.getByName(projectContainerName(job.project)).closePilotProject(job.project)
+          .catch(()=>({running:null,close:null}));
+        return {id,status:"cancel_requested",confirmed:false,container,reason:"PILOT_PREPARATION_CLOSED_OR_PENDING"};
+      }
+      job=await this.supervisedRecord(id);
+    }
     if (["cancelled", "failed", "finished", "unanswered"].includes(job.status))
       return { id, status: job.status };
     if (!job.session) {
@@ -1908,7 +1947,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         || await this.personalConfig.getGitHubKey();
       if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
       return new GitHubBridge(key, this.pilotGitHubFetch(proof?.validUntil),
-        await this.personalConfig.getAllowedRepositories(),undefined,approval?{branch,sha:approval.releaseSha,base:PILOT_BASE}:undefined).ensureSupervisorBranch(repo, branch);
+        await this.personalConfig.getAllowedRepositories(),undefined,approval?{branch,sha:approval.sourceCommit,base:PILOT_BASE}:undefined).ensureSupervisorBranch(repo, branch);
     }
   };
   async isOpenRouterConfigured(): Promise<boolean> {
@@ -1916,6 +1955,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return Boolean(envKey || await this.personalConfig.getOpenRouterKey());
   }
   async refreshOpenRouter(): Promise<{ active: boolean }> {
+    if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     const key = (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
       || await this.personalConfig.getOpenRouterKey();
     if (!key || !this.providerConnection.connect) return { active: false };
@@ -2129,7 +2169,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   private readonly pilotInstance = crypto.randomUUID();
   private pilotLaneId():string|undefined {
     const id=(this.env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
-    if(!id || this.ctx.id?.name!==SUPERVISOR_WORKSPACE)return undefined;
+    if(!id)return undefined;
     if(!/^[a-f0-9]{16}$/.test(id))throw Error("PILOT_ID_INVALID");
     return id;
   }
@@ -2139,10 +2179,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const id=this.pilotLaneId();
     if(!id)return undefined;
     this.assertStagingRemote();
+    if(this.ctx.id.name!==SUPERVISOR_WORKSPACE)throw Error("PILOT_EXCLUSIVE_WORKSPACE");
     return parsePilotApproval((this.env as Env & {OPENCODE_PILOT_AUTHORIZATION?:string}).OPENCODE_PILOT_AUTHORIZATION,
       typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"",id,now);
   }
-  private async pilotDispatchEvidence(task:SupervisorTask):Promise<PilotDispatchEvidence|undefined> {
+  private async pilotDispatchEvidence(task:SupervisorTask):Promise<Omit<PilotDispatchEvidence,"preparationDigest">|undefined> {
     const claim=await this.ctx.storage.get<PilotClaim>(PILOT_CLAIM);
     return evidenceFromClaim(claim,this.pilotApproval(task.createdAt),this.pilotInstance,this.ctx.id.toString(),task);
   }
@@ -2162,13 +2203,20 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
   private async pilotContext(sessionID:string):Promise<PilotContext> {
     const id=this.pilotLaneId();
-    if(!id || sessionID!==r2SessionId(id))throw Error("PILOT_SESSION_FORBIDDEN");
+    if(!id || this.ctx.id.name!==SUPERVISOR_WORKSPACE || sessionID!==r2SessionId(id))throw Error("PILOT_SESSION_FORBIDDEN");
     const task=await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(id));
     const slot=await supervisorAdmissionSlot(this.ctx.storage,id);
     if(!task || !slot || task.session!==sessionID || task.pilotInstance!==this.pilotInstance ||
         task.status!=="running" || task.model!==PILOT_BACKUP)throw Error("PILOT_TASK_FENCED");
-    const policy=pilotBudgetPolicy(id,this.pilotInstance,task.createdAt),proof=await this.pilotDispatchEvidence(task);
-    if(!proof || !pilotDispatchEvidenceValid(policy,proof))throw Error("PILOT_DISPATCH_STOP");
+    const policy=pilotBudgetPolicy(id,this.pilotInstance,task.createdAt),admission=await this.pilotDispatchEvidence(task);
+    const grant={id,token:slot.token,generation:slot.generation};
+    const claim=await this.ctx.storage.get<PilotClaim>(PILOT_CLAIM);
+    if(!admission||!task.pilotPreparation||!await durablePreparationValid(task,claim,grant))
+      throw Error("PILOT_PREPARATION_REQUIRED");
+    const dev=this.env.DEV.getByName(projectContainerName(task.project));
+    if(!await dev.assertPilotPreparation(task.pilotPreparation))throw Error("PILOT_CONTAINER_IDENTITY_MISMATCH");
+    const proof:PilotDispatchEvidence={...admission,preparationDigest:task.pilotPreparation.digest};
+    if(!pilotDispatchEvidenceValid(policy,proof))throw Error("PILOT_DISPATCH_STOP");
     const totals=await inferenceBudgetTotals(this.ctx.storage);
     if(totals?.paymentBlocked || totals?.pilot?.pending)throw Error("PILOT_INFERENCE_EFFECT_UNCERTAIN");
     return {storage:this.ctx.storage,grant:{id,token:slot.token,generation:slot.generation},policy,proof};
@@ -2262,7 +2310,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const registry = this.env.DEV.getByName("personal");
     await registry.reserveIsolatedProject(project, scope?.repository);
     const dev = this.env.DEV.getByName(projectContainerName(project));
-    if(pilot)await dev.configurePilotDeadline(project,pilot.policy.hybrid!.workUntil,pilot.policy.hybrid!.workUntil+PILOT_CLOSE_MS);
+    if(pilot){
+      const task=await this.supervisedRecord(pilot.grant.id);
+      if(!task.pilotPreparation)throw Error("PILOT_PREPARATION_REQUIRED");
+      sourceTree=task.pilotPreparation.input.sourceTree;
+    }
     if (scope?.repository) {
       const receipt = await dev.prepareRepository(project, scope.repository, sourceCommit, sourceTree);
       if (readOnly) assertCertifiedReadOnlyImport(readOnly, receipt);
@@ -2400,6 +2452,9 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
+      const pilot=(env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
+      if(pilot&&!url.pathname.startsWith(SUPERVISOR_API_PREFIX+"/")&&!(url.pathname==="/api/health"&&request.method==="GET"))
+        return Response.json({error:"PILOT_EXCLUSIVE_WORKSPACE"},{status:503});
       // Generic owner routes are not task authority. Even a GET can prepare
       // a repository or wake its Container. Task artifact routes remain available.
       const projectRoute = /^\/api\/dev\/(?:backup|restore|download|verify|preview)\/([^/]+)(?:\/|$)/.exec(url.pathname);

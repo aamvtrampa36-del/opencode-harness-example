@@ -75,6 +75,8 @@ export function makePilotHybridBinding(binding:Ai, context:(session:string)=>Pro
         inputTokenCeiling:selection===PILOT_BACKUP?PILOT_GLM_BILLABLE_INPUT_CEILING:PILOT_INPUT_TOKENS,outputTokenCeiling:PILOT_OUTPUT_TOKENS});
       const selection=await pilotProviderSelection(c.storage,c.grant,c.policy,makeIntent(PILOT_FREE),!key);
       const one=async(selection:string):Promise<Response|null>=>{
+        const fresh=await context(session);
+        check(fresh.grant.token===c.grant.token&&fresh.grant.generation===c.grant.generation&&fresh.proof.preparationDigest===c.proof.preparationDigest,"PILOT_PREPARATION_CHANGED");
         const i=makeIntent(selection);
         const payload=selection===PILOT_FREE?{...body,model:"openrouter/free",max_tokens:PILOT_OUTPUT_TOKENS,n:1,stream:false,
           provider:{max_price:{prompt:0,completion:0,request:0,image:0,audio:0},require_parameters:true,allow_fallbacks:false}}:

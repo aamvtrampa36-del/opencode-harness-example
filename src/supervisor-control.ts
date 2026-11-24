@@ -40,6 +40,8 @@ export type SupervisorTask = {
   session?: string;
   /** Server-only process identity; a restarted pilot cannot resume dispatch. */
   pilotInstance?: string;
+  /** Server-only, immutable preparation receipt; never accepted from MCP input. */
+  pilotPreparation?: import("./pilot-preparation").PilotPreparationReceipt;
   /** Durable write-ahead marker. If a session creation RPC lost its response,
    * never invoke create/fork again without independent reconciliation. */
   sessionCreationAttempted?: boolean;

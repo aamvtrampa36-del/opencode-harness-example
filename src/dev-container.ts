@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { makePreparationReceipt, preparationReceiptValid, pilotRuntimeMatches, validPreparationInput, type PilotPreparationInput, type PilotPreparationReceipt } from "./pilot-preparation";
 import { MAX_SHELL_OUTPUT, validateCommand, validateProject } from "./dev-guard";
 import { captureBoundedOutput } from "./bounded-process-output";
 import { PREVIEW_SOURCE, PREVIEW_PORT } from "./preview-server";
@@ -158,6 +159,7 @@ export type LinuxResult = {
 
 export class DevContainer extends DurableObject<Env> {
   private busy = 0;
+  private readonly pilotContainerOwner=crypto.randomUUID();
   private previewStarting?: Promise<void>;
   private starting?: Promise<NonNullable<DurableObjectState["container"]>>;
   private commandQueue: Promise<void> = Promise.resolve();
@@ -188,6 +190,7 @@ export class DevContainer extends DurableObject<Env> {
         !Number.isSafeInteger(workUntil)||workUntil<=now||workUntil>now+900_000||closeUntil!==workUntil+300_000)
       throw Error("PILOT_CONTAINER_DEADLINE_INVALID");
     await this.ctx.storage.transaction(async tx=>{
+      if(await tx.get("pilot-close-requested-v1"))throw Error("PILOT_CONTAINER_WORK_EXPIRED");
       const previous=await tx.get<{project:string;workUntil:number;closeUntil:number}>("pilot-deadline-v1");
       if(previous){
         if(previous.project!==project||previous.workUntil!==workUntil||previous.closeUntil!==closeUntil)
@@ -222,7 +225,9 @@ export class DevContainer extends DurableObject<Env> {
   }
 
   private async ensureRunning() {
-    await this.checkPilotWork();
+    const pilot=await this.checkPilotWork();
+    const lane=(this.env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
+    if(lane&&(!pilot||this.ctx.id.name!=="project-v1:supervised-"+lane))throw Error("PILOT_EXCLUSIVE_CONTAINER");
     this.starting ??= this.startOrRecover().finally(() => { this.starting = undefined; });
     return await this.starting;
   }
@@ -230,26 +235,38 @@ export class DevContainer extends DurableObject<Env> {
   private async startOrRecover() {
     const container = this.ctx.container;
     if (!container) throw new Error("Linux Container binding is not deployed");
+    const pilot=await this.checkPilotWork();
+    const prior=pilot?await this.ctx.storage.get<{owner:string;label:string}>("pilot-boot-v1"):undefined;
+    if(pilot&&prior&&(prior.owner!==this.pilotContainerOwner||!container.running))throw Error("PILOT_CONTAINER_LOST_NO_RESTART");
+    if(pilot&&container.running&&!prior)throw Error("PILOT_CONTAINER_UNTRACKED");
     if (!container.running) {
       const snapshotId = await this.ctx.storage.get<string>("snapshotId");
       const savedAt = await this.ctx.storage.get<number>("savedAt");
       const lastActivity = await this.ctx.storage.get<number>("lastActivity");
       assertRecoverableContainer(snapshotId, savedAt, lastActivity, Date.now());
-      const pilot=await this.checkPilotWork();
+      let label:string|undefined;
+      if(pilot){
+        if(snapshotId||lastActivity||prior)throw Error("PILOT_CONTAINER_NOT_FRESH");
+        label=crypto.randomUUID();
+        // Write ahead: a lost start response must not create a second VM.
+        await this.ctx.storage.put("pilot-boot-v1",{owner:this.pilotContainerOwner,label});
+        await this.checkPilotWork();
+      }
       container.start({
         ...(snapshotId
           ? { containerSnapshot: { id: snapshotId } }
           : { image: "cloudflare/debian-trixie" }),
         entrypoint: ["sleep", "infinity"],
         enableInternet: !pilot,
-        instance: "basic"
+        instance: "basic",
+        ...(label?{labels:{pilotboot:label}}:{})
       });
       // If snapshot restore fails, fail closed rather than losing project data.
       if (!(await this.ctx.storage.get<number>("lastActivity"))) {
         await this.ctx.storage.put("lastActivity", Date.now());
       }
     }
-    const pilot=await this.checkPilotWork();
+    await this.checkPilotWork();
     await container.setInactivityTimeout(pilot?Math.max(1,pilot.closeUntil-Date.now()):INACTIVITY_MS);
     if ((await this.ctx.storage.getAlarm()) === null) {
       await this.scheduleCheck();
@@ -433,7 +450,7 @@ export class DevContainer extends DurableObject<Env> {
   async prepareRepository(project: string, repository: string, sourceCommit?: string,
     sourceTree?: string): Promise<{
     project: string; repository: string; commit: string; tree?: string;
-    files: number; sha256: string;
+    files: number; sha256: string; certification?:string;
   }> {
     const id = validateProject(project);
     if (sourceCommit !== undefined && !/^[a-f0-9]{40}$/.test(sourceCommit)) {
@@ -700,14 +717,77 @@ export class DevContainer extends DurableObject<Env> {
     }
   }
 
+  /** Only the supervisor's typed RPC uses this path. No SDK/model calls. */
+  async preparePilotProject(input:PilotPreparationInput):Promise<PilotPreparationReceipt>{
+    const lane=(this.env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
+    if(!validPreparationInput(input)||lane!==input.requestId||this.ctx.id.name!=="project-v1:"+input.project||
+        Date.now()>=input.workUntil)throw Error("PILOT_PREPARATION_SCOPE");
+    await this.ctx.storage.transaction(async tx=>{
+      if(await tx.get("pilot-preparation-intent-v1")||await tx.get("pilot-close-requested-v1"))throw Error("PILOT_PREPARATION_NO_REPLAY");
+      await tx.put("pilot-preparation-intent-v1",input);
+    });
+    this.busy++;
+    try{
+      await this.configurePilotDeadline(input.project,input.workUntil,input.closeUntil);
+      const source=await this.prepareRepository(input.project,input.repository,input.sourceCommit,input.sourceTree);
+      if(source.commit!==input.sourceCommit||source.tree!==input.sourceTree||source.certification!==RAW_TREE_CERTIFICATION||
+         source.repository!==input.repository||source.project!==input.project)throw Error("PILOT_SOURCE_UNCERTIFIED");
+      const boot=await this.ctx.storage.get<{owner:string;label:string}>("pilot-boot-v1");
+      if(!boot||boot.owner!==this.pilotContainerOwner)throw Error("PILOT_CONTAINER_LOST_NO_RESTART");
+      const runtime=await this.pilotRuntimeProbe(boot.label,input.imageDigest);
+      const receipt=await makePreparationReceipt({schema:"pilot-preparation-v1",input,
+        containerObject:this.ctx.id.toString(),containerOwner:this.pilotContainerOwner,bootLabel:boot.label,
+        bootId:runtime.bootId,imageDigest:input.imageDigest,nodeVersion:runtime.nodeVersion,os:"debian-trixie",
+        sourceDigest:source.sha256,sourceFiles:source.files,preparedAt:Date.now()});
+      if(!await preparationReceiptValid(receipt,input))throw Error("PILOT_PREPARATION_INVALID");
+      await this.ctx.storage.transaction(async tx=>{
+        if(await tx.get("pilot-close-requested-v1")||await tx.get("pilot-preparation-v1")||Date.now()>=input.workUntil)
+          throw Error("PILOT_PREPARATION_FENCED");
+        await tx.put("pilot-preparation-v1",receipt);
+      });
+      return receipt;
+    }finally{this.busy--;await this.scheduleCheck();}
+  }
+
+  private async pilotRuntimeProbe(label:string,image:string):Promise<{bootId:string;nodeVersion:string}>{
+    const container=this.ctx.container;
+    const signal=await this.pilotSignal(15000);
+    if(!container?.running||!pilotRuntimeMatches(await container.inspect(),label,image))
+      throw Error("PILOT_CONTAINER_IDENTITY_MISMATCH");
+    const proc=await container.exec(["node","-e",
+      "const fs=require('node:fs'),cp=require('node:child_process');const os=fs.readFileSync('/etc/os-release','utf8');if(!/^ID=debian$/m.test(os)||!/^VERSION_CODENAME=trixie$/m.test(os)||process.versions.node.split('.')[0]!=='24'||cp.spawnSync('/bin/bash',['-c','exit 0']).status!==0)process.exit(2);console.log(JSON.stringify({bootId:fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim(),nodeVersion:process.versions.node}))"
+      ],{signal});
+    const [stdout,stderr,exitCode]=await Promise.all([captureBoundedOutput(proc.stdout,1024),
+      captureBoundedOutput(proc.stderr,1024),proc.exitCode]);
+    if(exitCode!==0||stdout.truncated||stderr.truncated||!container.running||
+        !pilotRuntimeMatches(await container.inspect(),label,image))throw Error("PILOT_RUNTIME_INCOMPATIBLE");
+    const runtime=JSON.parse(stdout.text) as {bootId:string;nodeVersion:string};
+    await this.checkPilotWork();
+    return runtime;
+  }
+
+  /** Recheck the actual running VM; never invoke ensureRunning on this route. */
+  async assertPilotPreparation(receipt:PilotPreparationReceipt):Promise<boolean>{
+    const stored=await this.ctx.storage.get<PilotPreparationReceipt>("pilot-preparation-v1");
+    if(!stored||receipt.digest!==stored.digest||receipt.containerObject!==this.ctx.id.toString()||
+       receipt.containerOwner!==this.pilotContainerOwner||!await preparationReceiptValid(receipt,stored.input)||
+       !await this.checkPilotWork())return false;
+    this.busy++;
+    try{
+      const r=await this.pilotRuntimeProbe(receipt.bootLabel,receipt.imageDigest);
+      return r.bootId===receipt.bootId&&r.nodeVersion===receipt.nodeVersion&&
+        !await this.ctx.storage.get("pilot-close-requested-v1");
+    }finally{this.busy--;}
+  }
+
   /** Stop admitting work, preserve files via normal snapshot, report state. */
   async closePilotProject(project:string){
     if(this.ctx.id.name!=="project-v1:"+project||!/^supervised-[a-f0-9]{16}$/.test(project))throw Error("PILOT_CONTAINER_SCOPE");
+    await this.ctx.storage.put("pilot-close-requested-v1",true);
     const p=await this.ctx.storage.get<{project:string;workUntil:number;closeUntil:number}>("pilot-deadline-v1");
     if(!p){if(this.ctx.container?.running||await this.ctx.storage.get("lastActivity"))throw Error("PILOT_CONTAINER_UNTRACKED");
       return {running:false,close:{status:"never-started",at:Date.now()}};}
     if(p.project!==project)throw Error("PILOT_CONTAINER_SCOPE");
-    await this.ctx.storage.put("pilot-close-requested-v1",true);
     await this.alarm();
     return {running:this.ctx.container?.running??false,close:await this.ctx.storage.get("pilot-close-v1")??null};
   }

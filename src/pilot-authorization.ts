@@ -12,6 +12,7 @@ const RECEIPTS=["sdkOffline","routeControls","closeControls","billingHeadroom","
 type EvidenceName=typeof RECEIPTS[number];
 export type PilotApproval={
   schema:"pilot-release-v2";environment:"staging";requestId:string;releaseSha:string;
+  sourceCommit:string;sourceTree:string;containerImageDigest:string;
   fingerprint:string;notBefore:number;expiresAt:number;ciRun:string;approvalRef:string;
   residualRisk:"accepted-bounded-trial";plannedOtherMicroUsd:number;
   evidence:Record<EvidenceName,string>;pricingRevision:typeof PILOT_PRICING_REVISION;maxWireBytes:number;
@@ -31,7 +32,8 @@ export function parsePilotApproval(raw:unknown,releaseSha:string,lane:string,now
   try{
     const p=JSON.parse(raw) as PilotApproval;
     if(!p||p.schema!=="pilot-release-v2"||p.environment!=="staging"||p.requestId!==lane||
-      p.releaseSha!==releaseSha||!hash(p.fingerprint)||!int(p.notBefore,0,now)||!int(p.expiresAt,now+PILOT_WORK_MS+PILOT_CLOSE_MS,now+60*60_000)||
+      p.releaseSha!==releaseSha||!SHA.test(p.sourceCommit)||!SHA.test(p.sourceTree)||
+      typeof p.containerImageDigest!=="string"||!/^sha256:[a-f0-9]{64}$/.test(p.containerImageDigest)||!hash(p.fingerprint)||!int(p.notBefore,0,now)||!int(p.expiresAt,now+PILOT_WORK_MS+PILOT_CLOSE_MS,now+60*60_000)||
       typeof p.ciRun!=="string"||!/^\d{1,20}$/.test(p.ciRun)||
       typeof p.approvalRef!=="string"||p.approvalRef.length<8||p.approvalRef.length>160||
       p.residualRisk!=="accepted-bounded-trial"||!int(p.plannedOtherMicroUsd,0,850_000)||
@@ -51,7 +53,7 @@ export function validatePilotClaim(claim:PilotClaim,task:SupervisorTask,now:numb
 /** Committed atomically with T03 admission, never reclaimed by TTL.
  * Process identity fences a restarted isolate. */
 export function evidenceFromClaim(claim:PilotClaim|undefined,approval:PilotApproval|undefined,
-  instance:string,objectId:string,task:SupervisorTask,now=Date.now()):PilotDispatchEvidence|undefined{
+  instance:string,objectId:string,task:SupervisorTask,now=Date.now()):Omit<PilotDispatchEvidence,"preparationDigest">|undefined{
   if(!claim||!approval||claim.instance!==instance||claim.objectId!==objectId||
     claim.startedAt!==task.createdAt||task.pilotInstance!==instance||task.id!==approval.requestId||
     task.fingerprint!==approval.fingerprint||task.repository!==PILOT_REPO||

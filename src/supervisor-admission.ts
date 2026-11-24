@@ -15,7 +15,7 @@ import { scopeStorageKey, type ProjectScope } from "./project-scope";
 const LEDGER_KEY = "supervisor:admission:v1";
 const DEFAULT_CAPACITY = 10;
 const LEASE_MS = 60_000;
-type StartEffect = "github_branch" | "session_create" | "configure" | "submit" | "turn_submit" | ReadOnlyStartEffect;
+type StartEffect = "github_branch" | "session_create" | "pilot_prepare" | "configure" | "submit" | "turn_submit" | ReadOnlyStartEffect;
 type SlotPhase = "reserved" | "effect_unknown" | "running";
 export type AdmissionSlot = {
   token: string; generation: number; expiresAt: number;

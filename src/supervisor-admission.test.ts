@@ -193,7 +193,7 @@ test("pilot authorization is single-use, exact-release, fingerprint and process 
   const s=new DurableFake(), now=1000, instance="12345678-1234-1234-1234-123456789abc", objectId="a".repeat(64);
   const candidate={...task(50),createdAt:now,model:"cloudflare" as const,pilotInstance:instance};
   const receipt="b".repeat(64), release="c".repeat(40);
-  const approval:PilotApproval={schema:"pilot-release-v2",environment:"staging",requestId:candidate.id,releaseSha:release,fingerprint:candidate.fingerprint,notBefore:now-1,expiresAt:now+1800000,ciRun:"1234",approvalRef:"synthetic-test-only",residualRisk:"accepted-bounded-trial",plannedOtherMicroUsd:500000,
+  const approval:PilotApproval={schema:"pilot-release-v2",environment:"staging",requestId:candidate.id,releaseSha:release,sourceCommit:release,sourceTree:"d".repeat(40),containerImageDigest:"sha256:"+receipt,fingerprint:candidate.fingerprint,notBefore:now-1,expiresAt:now+1800000,ciRun:"1234",approvalRef:"synthetic-test-only",residualRisk:"accepted-bounded-trial",plannedOtherMicroUsd:500000,
     evidence:{sdkOffline:receipt,routeControls:receipt,closeControls:receipt,billingHeadroom:receipt,freeZeroPrice:receipt,glmBillingBound:receipt},
     pricingRevision:PILOT_PRICING_REVISION,maxWireBytes:10000,
     billingReview:{basis:"previous-cycle-proxy",cycleStart:now-100,observedThrough:now-200,observedDurationGbSeconds:50000,sharedAndLagMarginGbSeconds:30000,pilotAllowanceGbSeconds:2000}};

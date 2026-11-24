@@ -5,6 +5,9 @@
  * requires separately attested, risk-bounded server-side dispatch evidence.
  */
 import type { StartGrant } from "./supervisor-admission";
+import type { SupervisorTask } from "./supervisor-control";
+import type { PilotClaim } from "./pilot-authorization";
+import { durablePreparationValid } from "./pilot-preparation";
 
 export type Price = { inputMicroUsdPerMillion: number; outputMicroUsdPerMillion: number; revision: string };
 export type ModelAllowance = { providerID: string; modelID: string; price: Price };
@@ -116,8 +119,7 @@ async function assertT03(tx: DurableObjectTransaction, grant: StartGrant, intent
     typeof intent.operationId === "string", "INFERENCE_IDENTITY_INVALID");
   const ledger = await tx.get<{version:number;slots:Record<string,{token:string;generation:number;phase:string;effect?:string}>}>("supervisor:admission:v1");
   const slot = ledger?.version === 1 ? ledger.slots?.[grant.id] : undefined;
-  const task = await tx.get<{model?:string;status:string;operationId?:string;sessionIdPolicy?:string;
-    pendingTurn?:{operationId:string};cancelAmbiguous?:boolean;session?:string;project?:string;pilotInstance?:string;createdAt?:number}>("supervisor:task:" + grant.id);
+  const task = await tx.get<SupervisorTask>("supervisor:task:" + grant.id);
   requireValue(slot && slot.token === grant.token && slot.generation === grant.generation &&
     (slot.phase === "running" || (slot.phase === "effect_unknown" &&
       ["submit", "turn_submit"].includes(slot.effect ?? ""))) &&
@@ -141,6 +143,7 @@ async function assertT03(tx: DurableObjectTransaction, grant: StartGrant, intent
       intent.inputTokenCeiling === (intent.selection===PILOT_BACKUP?PILOT_GLM_BILLABLE_INPUT_CEILING:PILOT_INPUT_TOKENS) &&
       intent.outputTokenCeiling === PILOT_OUTPUT_TOKENS,
       "PILOT_FENCE_SESSION_OR_DEADLINE_INVALID");
+    requireValue(await durablePreparationValid(task,await tx.get<PilotClaim>("supervisor:pilot:single-use-v1"),grant), "PILOT_PREPARATION_REQUIRED");
   }
 }
 function assertIntent(intent: InferenceIntent) {
@@ -283,7 +286,7 @@ export type PilotDispatchEvidence = {
   closeVerified:true; billingHeadroomReviewed:true; plannedOtherMicroUsd:number;
   billingReview:PilotBillingReview;
   pricingRevision:typeof PILOT_PRICING_REVISION; maxWireBytes:number;
-  freeZeroPriceReceipt:string; glmBillingBoundReceipt:string;
+  freeZeroPriceReceipt:string; glmBillingBoundReceipt:string; preparationDigest:string;
 };
 export function pilotDispatchEvidenceValid(policy:BudgetPolicy, proof:unknown, now=Date.now()): boolean {
   const p=proof as Partial<PilotDispatchEvidence>|undefined;
@@ -297,6 +300,7 @@ export function pilotDispatchEvidenceValid(policy:BudgetPolicy, proof:unknown, n
     int(p.plannedOtherMicroUsd,0,850_000) &&
     p.pricingRevision===PILOT_PRICING_REVISION &&
     int(p.maxWireBytes,1,PILOT_MAX_WIRE_BYTES) &&
+    typeof p.preparationDigest==="string" && /^[a-f0-9]{64}$/.test(p.preparationDigest) &&
     typeof p.freeZeroPriceReceipt==="string" && /^[a-f0-9]{64}$/.test(p.freeZeroPriceReceipt) &&
     typeof p.glmBillingBoundReceipt==="string" && /^[a-f0-9]{64}$/.test(p.glmBillingBoundReceipt));
 }
@@ -340,7 +344,11 @@ export async function beginInferenceDispatch(storage: DurableObjectStorage,grant
     const row=await tx.get<Row>(CALL(intent.requestId,intent.callId));
     requireValue(row && row.attemptId===intent.attemptId,"INFERENCE_RESERVATION_MISSING");
     if(row.state!=="reserved")return {proceed:false,state:row.state};
-    if(policy.hybrid) requireValue(global.hybrid?.pending===intent.callId && pilotDispatchEvidenceValid(policy,preflight), "PILOT_DISPATCH_FENCED");
+    if(policy.hybrid) {
+      const task=await tx.get<SupervisorTask>("supervisor:task:"+grant.id);
+      requireValue(global.hybrid?.pending===intent.callId && pilotDispatchEvidenceValid(policy,preflight) &&
+        "preparationDigest" in preflight && task?.pilotPreparation?.digest===preflight.preparationDigest, "PILOT_DISPATCH_FENCED");
+    }
     row.state="sent";
     await tx.put(CALL(intent.requestId,intent.callId),row);
     return {proceed:true,state:"sent" as const};
