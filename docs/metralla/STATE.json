@@ -1,0 +1,480 @@
+{
+  "planVersion": "1.0",
+  "promptRevision": "R2",
+  "revision": 1,
+  "expectedPreviousRevision": 0,
+  "expectedParentCommit": "837dce9b283f6b4b0b2ba939407883ec95be726a",
+  "date": "2026-11-24",
+  "actor": "ChatGPT via GitHub, Cloudflare Admin and OpenCode Remote (reads only)",
+  "repository": "aamvtrampa36-del/opencode-harness-example",
+  "B0": {
+    "sha": "837dce9b283f6b4b0b2ba939407883ec95be726a",
+    "tree": "79a5fb65f0f0cd825e2f2dd37defca692317da8c",
+    "branch": "f0-c10/r4-preparation-42574cb3",
+    "ci": [
+      45435628191,
+      45435628291
+    ],
+    "level": "offline"
+  },
+  "C1": null,
+  "activeWave": "B",
+  "packages": {
+    "M00": {
+      "status": "COMPLETE PASS",
+      "dependsOn": [],
+      "branch": "metralla/control",
+      "authorization": "L-A_GRANTED",
+      "receipt": "docs/metralla/receipts/M00.md",
+      "owner": "ChatGPT coordinator P01"
+    },
+    "M01": {
+      "status": "READY",
+      "dependsOn": [
+        "M00"
+      ],
+      "branch": "metralla/m01",
+      "authorization": "L-B_PER_PROMPT_REQUIRED",
+      "receipt": null,
+      "owner": "admisión y recuperación"
+    },
+    "M02": {
+      "status": "READY",
+      "dependsOn": [
+        "M00"
+      ],
+      "branch": "metralla/m02",
+      "authorization": "L-B_PER_PROMPT_REQUIRED",
+      "receipt": null,
+      "owner": "memoria, telemetría y Remote"
+    },
+    "M03": {
+      "status": "READY",
+      "dependsOn": [
+        "M00"
+      ],
+      "branch": "metralla/m03",
+      "authorization": "L-B_PER_PROMPT_REQUIRED",
+      "receipt": null,
+      "owner": "Linux y recuperación física"
+    },
+    "M04": {
+      "status": "READY",
+      "dependsOn": [
+        "M00"
+      ],
+      "branch": "metralla/m04",
+      "authorization": "L-B_PER_PROMPT_REQUIRED",
+      "receipt": null,
+      "owner": "inferencia y costes"
+    },
+    "M05": {
+      "status": "READY",
+      "dependsOn": [
+        "M00"
+      ],
+      "branch": "metralla/m05",
+      "authorization": "L-B_PER_PROMPT_REQUIRED",
+      "receipt": null,
+      "owner": "GitHub"
+    },
+    "M06": {
+      "status": "READY",
+      "dependsOn": [
+        "M00"
+      ],
+      "branch": "metralla/m06",
+      "authorization": "L-B_PER_PROMPT_REQUIRED",
+      "receipt": null,
+      "owner": "resultados y artefactos"
+    },
+    "M07": {
+      "status": "READY",
+      "dependsOn": [
+        "M00"
+      ],
+      "branch": "metralla/m07",
+      "authorization": "L-B_PER_PROMPT_REQUIRED",
+      "receipt": null,
+      "owner": "evaluación y harness"
+    },
+    "M08": {
+      "status": "WAITING",
+      "dependsOn": [
+        "M01",
+        "M02",
+        "M03",
+        "M04",
+        "M05",
+        "M06",
+        "M07"
+      ],
+      "branch": "metralla/integracion-01",
+      "authorization": "L-C_REQUIRED",
+      "receipt": null,
+      "owner": null
+    },
+    "M09": {
+      "status": "WAITING",
+      "dependsOn": [
+        "M08"
+      ],
+      "branch": "metralla/control",
+      "authorization": "L-D_PENDING",
+      "receipt": null,
+      "owner": null
+    },
+    "M10": {
+      "status": "WAITING",
+      "dependsOn": [
+        "M09"
+      ],
+      "branch": "metralla/control",
+      "authorization": "L-E_PENDING",
+      "receipt": null,
+      "owner": null
+    },
+    "M11": {
+      "status": "WAITING",
+      "dependsOn": [
+        "M10"
+      ],
+      "branch": "metralla/control",
+      "authorization": "L-F_PENDING",
+      "receipt": null,
+      "owner": null
+    },
+    "M12": {
+      "status": "WAITING",
+      "dependsOn": [
+        "M11"
+      ],
+      "branch": "metralla/control",
+      "authorization": "L-G_PENDING",
+      "receipt": null,
+      "owner": null
+    },
+    "M13": {
+      "status": "WAITING",
+      "dependsOn": [
+        "M12"
+      ],
+      "branch": "metralla/control",
+      "authorization": "L-H_REQUIRED",
+      "receipt": null,
+      "owner": null
+    }
+  },
+  "subencargos": {
+    "P01": {
+      "package": "M00",
+      "dependsOn": [],
+      "status": "COMPLETE PASS"
+    },
+    "P02": {
+      "package": "M01",
+      "dependsOn": [
+        "P01"
+      ],
+      "status": "READY",
+      "branch": "metralla/m01"
+    },
+    "P03": {
+      "package": "M01",
+      "dependsOn": [
+        "P02"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m01"
+    },
+    "P04": {
+      "package": "M01",
+      "dependsOn": [
+        "P03"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m01"
+    },
+    "P05": {
+      "package": "M01",
+      "dependsOn": [
+        "P04"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m01"
+    },
+    "P06": {
+      "package": "M02",
+      "dependsOn": [
+        "P01"
+      ],
+      "status": "READY",
+      "branch": "metralla/m02"
+    },
+    "P07": {
+      "package": "M02",
+      "dependsOn": [
+        "P06"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m02"
+    },
+    "P08": {
+      "package": "M02",
+      "dependsOn": [
+        "P07"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m02"
+    },
+    "P09": {
+      "package": "M02",
+      "dependsOn": [
+        "P08"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m02"
+    },
+    "P10": {
+      "package": "M03",
+      "dependsOn": [
+        "P01"
+      ],
+      "status": "READY",
+      "branch": "metralla/m03"
+    },
+    "P11": {
+      "package": "M03",
+      "dependsOn": [
+        "P10"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m03"
+    },
+    "P12": {
+      "package": "M03",
+      "dependsOn": [
+        "P11"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m03"
+    },
+    "P13": {
+      "package": "M04",
+      "dependsOn": [
+        "P01"
+      ],
+      "status": "READY",
+      "branch": "metralla/m04"
+    },
+    "P14": {
+      "package": "M04",
+      "dependsOn": [
+        "P13"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m04"
+    },
+    "P15": {
+      "package": "M04",
+      "dependsOn": [
+        "P14"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m04"
+    },
+    "P16": {
+      "package": "M05",
+      "dependsOn": [
+        "P01"
+      ],
+      "status": "READY",
+      "branch": "metralla/m05"
+    },
+    "P17": {
+      "package": "M05",
+      "dependsOn": [
+        "P16"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m05"
+    },
+    "P18": {
+      "package": "M05",
+      "dependsOn": [
+        "P17"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m05"
+    },
+    "P19": {
+      "package": "M06",
+      "dependsOn": [
+        "P01"
+      ],
+      "status": "READY",
+      "branch": "metralla/m06"
+    },
+    "P20": {
+      "package": "M06",
+      "dependsOn": [
+        "P19"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m06"
+    },
+    "P21": {
+      "package": "M06",
+      "dependsOn": [
+        "P20"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m06"
+    },
+    "P22": {
+      "package": "M07",
+      "dependsOn": [
+        "P01"
+      ],
+      "status": "READY",
+      "branch": "metralla/m07"
+    },
+    "P23": {
+      "package": "M07",
+      "dependsOn": [
+        "P22"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m07"
+    },
+    "P24": {
+      "package": "M07",
+      "dependsOn": [
+        "P23"
+      ],
+      "status": "WAITING",
+      "branch": "metralla/m07"
+    },
+    "P25": {
+      "package": "M08",
+      "dependsOn": [
+        "P05",
+        "P09",
+        "P12",
+        "P15",
+        "P18",
+        "P21",
+        "P24"
+      ],
+      "status": "WAITING"
+    },
+    "P26": {
+      "package": "M09",
+      "dependsOn": [
+        "P25"
+      ],
+      "status": "WAITING"
+    },
+    "P27": {
+      "package": "M10",
+      "dependsOn": [
+        "P26"
+      ],
+      "status": "WAITING"
+    },
+    "P28": {
+      "package": "M11",
+      "dependsOn": [
+        "P27"
+      ],
+      "status": "WAITING"
+    },
+    "P29": {
+      "package": "M12",
+      "dependsOn": [
+        "P28"
+      ],
+      "status": "WAITING"
+    },
+    "P30": {
+      "package": "M13",
+      "dependsOn": [
+        "P29"
+      ],
+      "status": "WAITING"
+    }
+  },
+  "authorization": {
+    "L-A": "GRANTED by owner P01; zero inference",
+    "L-B": "REQUIRED per specialist prompt; no implicit transfer",
+    "L-C": "REQUIRED exact integration branch",
+    "L-D": "PENDING C1/readback/rollback/repair scope",
+    "L-E": "PENDING G0 exact task",
+    "L-F": "PENDING 2/4 + negatives",
+    "L-G": "PENDING 3x10",
+    "L-H": "REQUIRED audit; final owner acceptance separate"
+  },
+  "runtime": {
+    "source": "335cfd81abcc43c202605b035a3f3ca78ef31051",
+    "tree": "e29075d995d3c345e4a807abf79c5491bff32bd8",
+    "principal": {
+      "worker": "opencode-g1-staging",
+      "version": "425eb97e-e040-4200-83f3-780119e79831",
+      "deployment": "9b84a9d7-bd6d-417c-85d9-0b9525479b7d",
+      "percentage": 100
+    },
+    "mcp": {
+      "worker": "opencode-staging-control-mcp",
+      "version": "10f22ddc-8c9c-4eb3-9c09-4e616e89d787",
+      "deployment": "f34203b0-0315-44a0-8d81-0f17e79da7d3",
+      "percentage": 100
+    },
+    "sourceEvidence": "R4_ACTIVATION_SEQUENCE.md and CF deployment GET; source not inferred from new candidate",
+    "readyHttp": true,
+    "activeSlots": 1,
+    "capacityIndexed": 10,
+    "nativeOperationsMeasured": false,
+    "r4Freeze": null,
+    "pilot": {
+      "id": "42574cb3f5ee0cbf",
+      "consumed": true,
+      "status": "unknown",
+      "recordedStatus": "cancel_requested",
+      "admissionState": "effect_unknown",
+      "effect": "github_branch",
+      "nativeReconciled": false,
+      "cancelAmbiguous": true,
+      "passed": false,
+      "verified": false
+    },
+    "historical": {
+      "digest": "74c19c0c3685dad24e1b1969b47342f23a8e830ba6d32f3e31fbcc0e7937b60e",
+      "tasks": 131,
+      "nativeSessions": 140,
+      "rows": 588,
+      "unknownHistoricalOutcomes": 17,
+      "historyPreserved": true,
+      "archivedSlots": 0,
+      "historicalOutcomesResolved": false
+    },
+    "liveGate": "STOP"
+  },
+  "blockers": [
+    "Live STOP: consumed pilot github_branch effect_unknown; indexed active slot 1; native physical activity not measured",
+    "C1 and immutable image/pilot reference not certified for live",
+    "Budget, operator exclusion, future lot approvals pending",
+    "Historical 17 outcomes unresolved and preserved"
+  ],
+  "next": [
+    "P02",
+    "P06",
+    "P10",
+    "P13",
+    "P16",
+    "P19",
+    "P22"
+  ],
+  "receiptPath": "docs/metralla/receipts/M00.md",
+  "receiptHashPolicy": "use Git blob SHA and published commit externally, no self hash",
+  "lockPolicy": "STATE is not a runtime lease. Expected parent/revision, non-force ref CAS; one writer per lane; handoff verified from predecessor receipt. M08 coordinator updates STATE after reading all seven package receipts."
+}
