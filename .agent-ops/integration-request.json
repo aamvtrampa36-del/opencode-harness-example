@@ -1,0 +1,6 @@
+{
+  "schema": "agent-integration-refresh/v1",
+  "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
+  "request_id": "initial-reconcile-5527fce60775",
+  "reason": "Reconcile verified queue and isolated integration receipt; no product writes"
+}
