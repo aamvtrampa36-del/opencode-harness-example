@@ -92,8 +92,9 @@ CDF CLOUD Producción no se validó en esta aceptación: su OAuth mostró `CDF_O
 
 OpenCode Cloud queda verificado para el uso personal probado: chat móvil, ejecución Linux aislada, vista previa, aprendizaje de TokenEconomizer y lectura de CDF WorkBench. La aceptación no certifica recuperación prolongada, generación real de imágenes, escritura/PR de GitHub, ni CDF CLOUD Producción; no los presentes como verificados.
 
-## Incidentes del runner y mantenimiento
+## Incidentes y mantenimiento (2026-11-24)
 
-- [Informe histórico del 21-11-2026, con actualización de estado](OPEN_CODE_TOOL_FAILURES_2026-11-21.md): hechos, riesgos y mitigaciones; no es un PASS de concurrencia.
-- [Evidencia original de OpenCode, tarea 0a62c322d8f44b8d](opencode-remote-control-e2e/0a62c322d8f44b8d.md): límites del contrato MCP histórico y reconciliación posterior.
-- [SANEAMIENTO-01](maintenance/SANEAMIENTO_01.md): equivalencias de PR y límites de integración/despliegue.
+- [Informe histórico del runner y actualización](OPEN_CODE_TOOL_FAILURES_2026-11-21.md).
+- [Evidencia original OpenCode #80](opencode-remote-control-e2e/0a62c322d8f44b8d.md).
+- [Registro SANEAMIENTO-01](maintenance/SANEAMIENTO_01.md) y [guía de desarrollo/publicación](maintenance/DEVELOPMENT_AND_RELEASE.md).
+- La referencia de fuente Staging no es sinónimo de versión activa. Consulta el SHA, el árbol, CI, paquete y la pareja de versiones; STOP_LIVE sigue vigente.

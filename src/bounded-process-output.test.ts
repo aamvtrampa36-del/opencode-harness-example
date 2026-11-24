@@ -70,3 +70,38 @@ describe("bounded process output", () => {
     expect(stderr.truncated).toBe(true);
   });
 });
+
+
+describe("bounded pipe edge contracts", () => {
+  test("empty chunks and empty stream retain zero bytes", async () => {
+    expect(await captureBoundedOutput(chunks("", "", ""), 3)).toEqual({ text: "", truncated: false, totalBytes: 0, omittedBytes: 0 });
+  });
+  test("odd budget retains ceil prefix and floor suffix", async () => {
+    const r = await captureBoundedOutput(chunks("ab", "cdefghij"), 5);
+    expect(r.text.startsWith("abc")).toBe(true);
+    expect(r.text.endsWith("ij")).toBe(true);
+    expect(r.omittedBytes).toBe(5);
+  });
+  test("a single byte budget retains the prefix and no suffix", async () => {
+    const r = await captureBoundedOutput(chunks("a", "z"), 1);
+    expect(r.text.startsWith("a")).toBe(true);
+    expect(r.omittedBytes).toBe(1);
+    expect(r.totalBytes).toBe(2);
+  });
+  test("UTF-8 character split across actual binary chunks is reassembled", async () => {
+    const bytes = encoder.encode("a🧪b");
+    const stream = new ReadableStream<Uint8Array>({start(c) { c.enqueue(bytes.slice(0, 3)); c.enqueue(bytes.slice(3)); c.close(); }});
+    expect((await captureBoundedOutput(stream, bytes.length)).text).toBe("a🧪b");
+  });
+  test("pipe errors propagate and release the stream reader", async () => {
+    const stream = new ReadableStream<Uint8Array>({start(c) { c.error(Error("pipe broken")); }});
+    await expect(captureBoundedOutput(stream, 8)).rejects.toThrow("pipe broken");
+    expect(stream.locked).toBe(false);
+  });
+  test("noninteger and infinite limits fail before reading", async () => {
+    const stream = chunks("a");
+    await expect(captureBoundedOutput(stream, 1.5)).rejects.toThrow(RangeError);
+    await expect(captureBoundedOutput(stream, Infinity)).rejects.toThrow(RangeError);
+    expect(stream.locked).toBe(false);
+  });
+});

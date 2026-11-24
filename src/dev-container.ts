@@ -20,7 +20,7 @@ import {
 } from "./external-backup-do";
 import { RESTORE_PROJECT_SOURCE } from "./restore-project";
 import { GITHUB_IMPORT_SOURCE } from "./github-import-source";
-import { githubSourceArchive } from "./github-import";
+import { githubSourceArchive, sourceReceiptMatches } from "./github-import";
 import { validateIsolatedRegistration, type IsolatedProject } from "./project-container";
 import { assertRecoverableContainer, SNAPSHOT_TTL_MS } from "./snapshot-policy";
 import { BUN_RUNTIME_VERSION, commandRequiresBun } from "./dev-runtime";
@@ -300,12 +300,20 @@ export class DevContainer extends DurableObject<Env> {
    * owner's GitHub credential; the Container receives only archive bytes.
    * Never overwrites a project, even after an interrupted previous import.
    */
-  async prepareRepository(project: string, repository: string, sourceCommit?: string): Promise<{
-    project: string; repository: string; commit: string; files: number; sha256: string;
+  async prepareRepository(project: string, repository: string, sourceCommit?: string,
+    sourceTree?: string): Promise<{
+    project: string; repository: string; commit: string; tree?: string;
+    files: number; sha256: string;
   }> {
     const id = validateProject(project);
     if (sourceCommit !== undefined && !/^[a-f0-9]{40}$/.test(sourceCommit)) {
       throw new Error("Commit de origen inválido");
+    }
+    if (sourceTree !== undefined && !/^[a-f0-9]{40}$/.test(sourceTree)) {
+      throw new Error("Árbol de origen inválido");
+    }
+    if (sourceTree !== undefined && sourceCommit === undefined) {
+      throw new Error("sourceCommit es obligatorio cuando se fija sourceTree");
     }
     const previous = this.commandQueue;
     let release = () => {};
@@ -318,41 +326,47 @@ export class DevContainer extends DurableObject<Env> {
         throw Error("El repositorio ya no está autorizado");
       }
       const existing = await this.ctx.storage.get<{
-        project: string; repository: string; commit: string; files: number; sha256: string
+        project: string; repository: string; commit: string; tree?: string;
+        files: number; sha256: string
       }>("isolated-repository-v1");
       if (existing) {
         if (existing.project !== id || existing.repository.toLowerCase() !== repository.toLowerCase()) {
           throw Error("El entorno aislado ya pertenece a otro proyecto o repositorio");
         }
-        if (sourceCommit && existing.commit !== sourceCommit) {
-          throw Error("El proyecto ya está importado desde otro commit de origen");
+        if (sourceCommit && !sourceReceiptMatches(existing, sourceCommit, sourceTree)) {
+          throw Error("El proyecto ya está importado desde otro commit o árbol de origen");
         }
         await this.ctx.storage.delete("repo-import-pending-v1");
         await this.recordProject(id);
         return existing;
       }
       const pending = await this.ctx.storage.get<{
-        project: string; repository: string; sourceCommit?: string
+        project: string; repository: string; sourceCommit?: string; sourceTree?: string
       }>("repo-import-pending-v1");
       if (pending && (pending.project !== id ||
           pending.repository.toLowerCase() !== repository.toLowerCase() ||
-          (pending.sourceCommit ?? "") !== (sourceCommit ?? ""))) {
+          (pending.sourceCommit ?? "") !== (sourceCommit ?? "") ||
+          (pending.sourceTree ?? "") !== (sourceTree ?? ""))) {
         throw Error("Ya hay otra importación pendiente en este Container");
       }
       if (await this.ctx.storage.get("lastActivity") && !pending) {
         throw Error("El Container ya fue utilizado; no se importará sobre su contenido");
       }
       if (!pending) await this.ctx.storage.put("repo-import-pending-v1", {
-        project: id, repository, ...(sourceCommit ? { sourceCommit } : {})
+        project: id, repository, ...(sourceCommit ? { sourceCommit } : {}),
+        ...(sourceTree ? { sourceTree } : {})
       });
       const token = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN || await settings.getGitHubKey();
-      const source = await githubSourceArchive(repository, token || "", allowed, fetch, sourceCommit);
+      const source = await githubSourceArchive(repository, token || "", allowed, fetch, sourceCommit, sourceTree);
       const container = await this.ensureRunning();
       this.busy++;
       await this.ctx.storage.put("lastActivity", Date.now());
       try {
+        // Git tree verification runs before normal Linux commands bootstrap Git.
+        if (sourceTree) await this.ensureGitAvailable(container);
         const process = await container.exec(
-          ["node", "--input-type=module", "-e", GITHUB_IMPORT_SOURCE, id], { stdin: source.stream }
+          ["node", "--input-type=module", "-e", GITHUB_IMPORT_SOURCE, id,
+            ...(sourceTree ? [sourceTree] : [])], { stdin: source.stream }
         );
         const result = await process.output();
         if (result.exitCode !== 0) {
@@ -360,11 +374,16 @@ export class DevContainer extends DurableObject<Env> {
             new TextDecoder().decode(result.stderr).slice(-350));
         }
         const receipt = JSON.parse(new TextDecoder().decode(result.stdout)) as {
-          target: string; files: number; sha256: string
+          target: string; files: number; sha256: string; tree?: string
         };
         if (receipt.target !== id || !Number.isSafeInteger(receipt.files) || receipt.files < 1 ||
             !/^[a-f0-9]{64}$/.test(receipt.sha256)) throw Error("Resultado de importación inválido");
+        if (sourceTree !== undefined &&
+            (source.tree !== sourceTree || receipt.tree !== sourceTree)) {
+          throw Error("La importación no confirmó el árbol de origen verificado");
+        }
         const record = { project: id, repository: source.repo, commit: source.commit,
+          ...(sourceTree ? { tree: sourceTree } : {}),
           files: receipt.files, sha256: receipt.sha256 };
         await this.ctx.storage.put("isolated-repository-v1", record);
         await this.ctx.storage.delete("repo-import-pending-v1");

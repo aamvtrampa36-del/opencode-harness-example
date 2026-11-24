@@ -83,3 +83,36 @@ describe("download boundary is valid for failures and binary archives", () => {
     expect(await response.text()).toContain("hello");
   });
 });
+
+
+describe("archive HTTP edge contracts", () => {
+  test("successful response without a body is not an attachment", async () => {
+    const r=await archiveDownloadResponse("app",new Response(null,{status:204}),"zip");
+    expect(r.status).toBe(502); expect(r.headers.get("content-disposition")).toBeNull();
+  });
+  test("failed upstream body is cancelled rather than buffered", async () => {
+    let cancelled=false;
+    const body=new ReadableStream<Uint8Array>({cancel(){cancelled=true;}});
+    const r=await archiveDownloadResponse("app",new Response(body,{status:503}),"zip");
+    expect(r.status).toBe(502); expect(cancelled).toBe(true);
+  });
+  test("ZIP attachment name is locally derived rather than taken from upstream", async () => {
+    const r=await archiveDownloadResponse("app",new Response("PK",{headers:{"Content-Disposition":"inline; filename=untrusted.html"}}),"zip");
+    expect(r.headers.get("content-disposition")).toBe('attachment; filename="app-github.zip"');
+    expect(r.headers.get("content-type")).toBe("application/zip");
+  });
+  test("invalid and zero length are not advertised as trusted lengths", async () => {
+    for(const length of ["0","invalid","-1"]){
+      const r=await archiveDownloadResponse("app",new Response("PK",{headers:{"Content-Length":length}}),"zip");
+      expect(r.headers.get("content-length")).toBeNull();
+    }
+  });
+  test("private/no-sniff/no-referrer headers survive error and success", async () => {
+    for(const response of [new Response("PK"),new Response("no",{status:403})]){
+      const r=await archiveDownloadResponse("app",response,"zip");
+      expect(r.headers.get("cache-control")).toBe("no-store, private");
+      expect(r.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(r.headers.get("referrer-policy")).toBe("no-referrer");
+    }
+  });
+});

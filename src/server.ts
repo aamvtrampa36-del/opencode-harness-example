@@ -51,7 +51,7 @@ import {
   supervisorBaseCommit, supervisorBranch, supervisorFingerprint, supervisorProject,
   supervisorPrompt, supervisorResponse, supervisorTaskKey, supervisorStartOperationId,
   supervisorTurnOperationId, classifySupervisorOperation, isUntrackedLegacySupervisorOperation,
-  validateSupervisorStart, type SupervisorTask
+  deferSupervisorStart, preflightReadOnlySource, validateSupervisorStart, type SupervisorTask
 } from "./supervisor-control";
 
 export const MODEL_ID = MODEL_PRESETS.cloudflare.id;
@@ -98,9 +98,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
     const job: SupervisorTask = {
       id: start.requestId, repository: start.repository,
-      project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId, start.repository),
+      project: supervisorProject(start.requestId), branch: supervisorBranch(start.requestId, start.repository, start.mode),
       fingerprint, createdAt: old?.createdAt ?? Date.now(), status: "preparing",
-      model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
+      model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {}),
+      ...(start.mode ? { mode: start.mode } : {}),
+      ...(start.sourceTree ? { sourceTree: start.sourceTree } : {})
     };
     if (!old) {
       // Atomic reservation prevents duplicate branches and duplicate model spending.
@@ -114,7 +116,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       reused = !reservation.created;
       if (old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
     }
-    return this.withSupervisorStartLock(start.requestId, async () => {
+    const resume = () => this.withSupervisorStartLock(start.requestId, async () => {
       const saved = await this.ctx.storage.get<SupervisorTask>(key);
       if (!saved) throw new Error("La reserva de la tarea desapareció");
       if (["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(saved.status)) {
@@ -122,12 +124,30 @@ export class OpenCodeAgent extends DurableObject<Env> {
       }
       return this.advanceSupervisedTask(saved, start, reused);
     }, old);
+    if (start.mode === "read_only") {
+      // Git import may bootstrap the managed container and exceed the MCP RPC deadline.
+      // Reply from the durable reservation and continue without client intervention.
+      // The tree still must be verified before any model setup or inference.
+      const receipt = this.supervisorTaskReceipt(old, reused);
+      deferSupervisorStart(work => this.ctx.waitUntil(work), resume, async error => {
+        const current = await this.ctx.storage.get<SupervisorTask>(key);
+        if (current && ["preparing", "unknown"].includes(current.status)) {
+          current.status = "failed";
+          current.error = error instanceof Error ? error.message.slice(0, 230) : "Inicio diferido fallido";
+          current.updatedAt = Date.now();
+          await this.ctx.storage.put(key, current);
+        }
+      });
+      return { ...receipt, accepted: true, retryAfterMs: 1_000 };
+    }
+    return resume();
   }
 
   private supervisorTaskReceipt(task: SupervisorTask, reused: boolean): Record<string, unknown> {
     return { id: task.id, repository: task.repository, branch: task.branch, project: task.project,
       baseCommit: task.baseCommit, session: task.session, status: task.status, error: task.error,
       operationId: task.operationId, model: task.model, ...(task.forkedFrom ? { forkedFrom: task.forkedFrom } : {}),
+      ...(task.mode ? { mode: task.mode } : {}), ...(task.sourceTree ? { sourceTree: task.sourceTree } : {}),
       reused };
   }
 
@@ -139,7 +159,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const acquired = await this.ctx.storage.transaction(async tx => {
       const existing = await tx.get<{ token: string; expiresAt: number }>(key);
       if (existing && existing.expiresAt > Date.now()) return false;
-      await tx.put(key, { token, expiresAt: Date.now() + 60_000 });
+      await tx.put(key, { token, expiresAt: Date.now() + 240_000 });
       return true;
     });
     if (!acquired) return { ...this.supervisorTaskReceipt(current, true), retryAfterMs: 1_000 };
@@ -158,9 +178,17 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const key = supervisorTaskKey(job.id);
     try {
       if (!job.baseCommit) {
-        // The deterministic branch reservation safely recovers after a lost GitHub response.
-        const branchResult = await this.githubRunner.ensureSupervisorBranch(job.repository, job.branch);
-        job.baseCommit = supervisorBaseCommit(branchResult, job.repository);
+        if (job.mode === "read_only") {
+          // Read-only tasks verify an immutable commit and tree without creating a branch.
+          const verified = await this.githubRunner.resolveReadOnlySource(
+            job.repository, start.sourceCommit, start.sourceTree);
+          job.baseCommit = verified.commit;
+          job.sourceTree = verified.tree;
+        } else {
+          // The deterministic branch reservation safely recovers after a lost GitHub response.
+          const branchResult = await this.githubRunner.ensureSupervisorBranch(job.repository, job.branch);
+          job.baseCommit = supervisorBaseCommit(branchResult, job.repository);
+        }
         job.updatedAt = Date.now();
         await this.ctx.storage.put(key, job);
       }
@@ -181,6 +209,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
         await this.ctx.storage.put(key, job);
       }
       await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
+      // A read_only import/tree mismatch must fail before any model setup or inference.
+      await preflightReadOnlySource(job.mode, () => this.isolatedProject(job.project, job.session));
       const handle = this.harness.session(job.session!);
       if (!job.operationId) {
         await handle.setAgent("build");
@@ -203,7 +233,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
     try {
       const receipt = await this.harness.session(job.session).submit(
-        supervisorPrompt(start, job.branch, job.project, job.baseCommit),
+        supervisorPrompt(start, job.branch, job.project, job.baseCommit, job.sourceTree),
         { operationId: job.operationId, whenBusy: "followUp" }
       );
       job.status = "running";
@@ -456,7 +486,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const base = { id: job.id, repository: job.repository, project: job.project,
       branch: job.branch, baseCommit: job.baseCommit, session: job.session, startedAt: job.createdAt,
       updatedAt: job.updatedAt, operationId: job.operationId, model: job.model, error: job.error,
-      ...(job.forkedFrom ? { forkedFrom: job.forkedFrom } : {}) };
+      ...(job.forkedFrom ? { forkedFrom: job.forkedFrom } : {}),
+      ...(job.mode ? { mode: job.mode } : {}), ...(job.sourceTree ? { sourceTree: job.sourceTree } : {}) };
     if (!job.session || ["cancelled", "failed", "preparing"].includes(job.status))
       return { ...base, status: job.status, reviewRequired: true, passed: false, verified: false };
     const handle = this.harness.session(job.session);
@@ -586,6 +617,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async supervisedTaskReview(id: string): Promise<unknown> {
     this.assertStagingRemote();
     const job = await this.supervisedRecord(id);
+    if (job.mode === "read_only") {
+      throw new Error("La tarea de solo lectura no tiene rama que revisar");
+    }
     const result = await this.githubRunner.execute({
       action: "review", repo: job.repository, branch: job.branch
     });
@@ -781,7 +815,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         const task = await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(supervisedId));
         if (!task || task.session !== sessionID || task.status === "cancelled" || task.status === "failed")
           throw new Error("Supervisor: sesión no autorizada");
-        assertSupervisorBoundGitHubOperation(action.operation, action.branch, task.branch);
+        assertSupervisorBoundGitHubOperation(action.operation, action.branch, task.branch, task.mode);
       }
       // Retain the branch guard for both legacy and new isolated G9 sessions.
       for (const key of ["g9-selfdev-v1", "g9-native-e2e-v2"]) {
@@ -1068,6 +1102,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
       return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
         await this.personalConfig.getAllowedRepositories()).ensureSupervisorBranch(repo, branch);
+    },
+    resolveReadOnlySource: async (repo: string, sourceCommit?: string, sourceTree?: string) => {
+      const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
+        || await this.personalConfig.getGitHubKey();
+      if (!key) throw new Error("Conecta GitHub desde Configuración para trabajar con repositorios privados.");
+      return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
+        await this.personalConfig.getAllowedRepositories()).resolveReadOnlySource(repo, sourceCommit, sourceTree);
     }
   };
   async isOpenRouterConfigured(): Promise<boolean> {
@@ -1339,6 +1380,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     await registry.reserveIsolatedProject(project, scope?.repository);
     const dev = this.env.DEV.getByName(projectContainerName(project));
     let sourceCommit: string | undefined;
+    let sourceTree: string | undefined;
     if (sessionID) {
       const taskId = await this.ctx.storage.get<string>("supervisor:session:" + sessionID);
       if (taskId) {
@@ -1349,9 +1391,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
           throw new Error("La fuente de la tarea supervisada no está fijada a su SHA base");
         }
         sourceCommit = task.baseCommit;
+        sourceTree = task.mode === "read_only" ? task.sourceTree : undefined;
+        if (task.mode === "read_only" && (!sourceTree || !/^[a-f0-9]{40}$/.test(sourceTree))) {
+          throw new Error("La tarea de solo lectura requiere un árbol de origen verificado");
+        }
       }
     }
-    if (scope?.repository) await dev.prepareRepository(project, scope.repository, sourceCommit);
+    if (scope?.repository) await dev.prepareRepository(project, scope.repository, sourceCommit, sourceTree);
     return dev;
   }
 

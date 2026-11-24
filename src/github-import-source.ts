@@ -4,13 +4,15 @@
  * The destination is published only after all files pass a readback digest.
  */
 export const GITHUB_IMPORT_SOURCE = String.raw`
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile, mkdir, mkdtemp, rename, rm, lstat, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { gunzipSync } from "node:zlib";
 const ROOT = process.env.IMPORT_TEST_ROOT || "/workspace/projects";
-const [target] = process.argv.slice(1);
+const [target, expectedTree] = process.argv.slice(1);
 if (!/^[a-z][a-z0-9-]{0,39}$/.test(target || "")) throw Error("Invalid project");
+if (expectedTree !== undefined && !/^[a-f0-9]{40}$/.test(expectedTree)) throw Error("Invalid expected tree");
 const output = join(ROOT, target);
 try { await lstat(output); throw Error("Destination already exists"); }
 catch (e) { if (e.code !== "ENOENT") throw e; }
@@ -69,6 +71,7 @@ while(offset+512<=archive.length) {
   if(clean.startsWith("/")||clean.includes("\\")||clean.includes("\0"))throw Error("Unsafe archive path");
   const parts=clean.split("/");
   if(parts.some(x=>!x||x==="."||x===".."))throw Error("Unsafe archive path");
+  if(parts.some(x=>x.toLowerCase()===".git"))throw Error("Archive .git metadata refused");
   root ||= parts[0];
   if(parts[0]!==root)throw Error("Archive has multiple roots");
   const relative=parts.slice(1).join("/");
@@ -101,9 +104,18 @@ try {
   }
   const expected=before.digest("hex"), actual=after.digest("hex");
   if(expected!==actual)throw Error("Import readback hash mismatch");
+  if(expectedTree){
+    const env={...process.env,HOME:temporary,GIT_CONFIG_NOSYSTEM:"1",GIT_CONFIG_GLOBAL:"/dev/null",GIT_TERMINAL_PROMPT:"0"};
+    try{
+      execFileSync("git",["init","--quiet"],{cwd:staged,env,stdio:["ignore","pipe","pipe"]});
+      execFileSync("git",["add","--force","--all"],{cwd:staged,env,stdio:["ignore","pipe","pipe"]});
+      const tree=execFileSync("git",["write-tree"],{cwd:staged,env,encoding:"utf8",stdio:["ignore","pipe","pipe"]}).trim().toLowerCase();
+      if(!/^[a-f0-9]{40}$/.test(tree)||tree!==expectedTree)throw Error("Git tree hash mismatch");
+    } finally { await rm(join(staged,".git"),{recursive:true,force:true}); }
+  }
   try {await lstat(output);throw Error("Destination already exists");}
   catch(e){if(e.code!=="ENOENT")throw e;}
   await rename(staged,output);
-  process.stdout.write(JSON.stringify({target,files:files.length,sha256:actual,bytes:expanded}));
+  process.stdout.write(JSON.stringify({target,files:files.length,sha256:actual,bytes:expanded,...(expectedTree?{tree:expectedTree}:{})}));
 } finally { await rm(temporary,{recursive:true,force:true}); }
 `;

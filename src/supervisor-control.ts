@@ -19,6 +19,11 @@ export type SupervisorStart = {
   model?: ModelSelectionID;
   /** Optional exact OpenCode session to fork. Its conversation is inherited, its files are not. */
   sourceSession?: string;
+  /** Read-only tasks never create a branch, PR or GitHub review. */
+  mode?: "read_only";
+  /** Optional immutable commit and Git tree pair, verified by GitHub before inference. */
+  sourceCommit?: string;
+  sourceTree?: string;
 };
 
 export type SupervisorTask = {
@@ -33,6 +38,9 @@ export type SupervisorTask = {
     "cancel_requested" | "cancelled" | "unknown";
   /** Immutable source commit used to seed this task's isolated Linux project. */
   baseCommit?: string;
+  /** Exact Git tree verified for a read_only import; absent for normal tasks. */
+  sourceTree?: string;
+  mode?: "read_only";
   model?: ModelSelectionID;
   operationId?: string;
   error?: string;
@@ -89,12 +97,37 @@ export function validateSupervisorStart(raw: unknown, approved: readonly string[
       (typeof input.sourceSession !== "string" || !/^ses[A-Za-z0-9_]{1,64}$/.test(input.sourceSession))) {
     throw new Error("La sesión de origen debe ser un ID OpenCode válido");
   }
-  if (Object.keys(input).some(key => !["requestId", "repository", "prompt", "model", "sourceSession"].includes(key))) {
+  if (input.mode !== undefined && input.mode !== "read_only") {
+    throw new Error("Modo del supervisor inválido");
+  }
+  const readOnly = input.mode === "read_only";
+  if (input.sourceCommit !== undefined &&
+      (typeof input.sourceCommit !== "string" || !/^[a-f0-9]{40}$/.test(input.sourceCommit))) {
+    throw new Error("sourceCommit debe ser un SHA de 40 caracteres hexadecimales en minúscula");
+  }
+  if (input.sourceTree !== undefined &&
+      (typeof input.sourceTree !== "string" || !/^[a-f0-9]{40}$/.test(input.sourceTree))) {
+    throw new Error("sourceTree debe ser un SHA de 40 caracteres hexadecimales en minúscula");
+  }
+  if ((input.sourceCommit === undefined) !== (input.sourceTree === undefined)) {
+    throw new Error("sourceCommit y sourceTree deben indicarse juntos");
+  }
+  if (readOnly && (input.sourceCommit === undefined || input.sourceTree === undefined)) {
+    throw new Error("read_only requiere sourceCommit y sourceTree");
+  }
+  if (!readOnly && (input.sourceCommit !== undefined || input.sourceTree !== undefined)) {
+    throw new Error("sourceCommit y sourceTree solo se admiten en modo read_only");
+  }
+  if (Object.keys(input).some(key => !["requestId", "repository", "prompt", "model", "sourceSession",
+    "mode", "sourceCommit", "sourceTree"].includes(key))) {
     throw new Error("Parámetros del supervisor desconocidos");
   }
   return { requestId: input.requestId, repository, prompt: input.prompt.trim(),
     ...(input.model ? { model: input.model } : {}),
-    ...(input.sourceSession ? { sourceSession: input.sourceSession } : {}) };
+    ...(input.sourceSession ? { sourceSession: input.sourceSession } : {}),
+    ...(input.mode ? { mode: input.mode } : {}),
+    ...(input.sourceCommit ? { sourceCommit: input.sourceCommit } : {}),
+    ...(input.sourceTree ? { sourceTree: input.sourceTree } : {}) };
 }
 
 export function supervisorTaskKey(id: string): string {
@@ -114,8 +147,10 @@ export function supervisorTurnOperationId(id: string, turnId: string): string {
   return "rc-turn-" + id + "-" + turnId;
 }
 
-export function supervisorBranch(id: string, repository?: string): string {
+export function supervisorBranch(id: string, repository?: string, mode?: "read_only"): string {
   supervisorTaskKey(id);
+  // Read-only tasks have no branch at all; they never write to GitHub.
+  if (mode === "read_only") return "";
   // Only OpenCode's own self-improvement branches derive from Staging.
   // Existing G9 and other repository tasks continue using the default branch.
   return (repository?.toLowerCase() === "aamvtrampa36-del/opencode-harness-example"
@@ -146,8 +181,13 @@ export function supervisorProject(id: string): string {
 export function assertSupervisorBoundGitHubOperation(
   operation: string | undefined,
   branch: string | undefined,
-  lockedBranch: string
+  lockedBranch: string,
+  mode?: "read_only"
 ): void {
+  if (mode === "read_only" &&
+      (GITHUB_MUTATIONS.has(operation ?? "") || operation === "review")) {
+    throw new Error("Supervisor: tarea de solo lectura no puede escribir, revisar ni crear PR");
+  }
   if (operation === "branch") throw new Error("Rama del supervisor precreada: no crear otras");
   if ((GITHUB_MUTATIONS.has(operation ?? "") || operation === "review") &&
       branch !== lockedBranch) {
@@ -158,7 +198,8 @@ export function assertSupervisorBoundGitHubOperation(
 export async function supervisorFingerprint(value: SupervisorStart): Promise<string> {
   const bytes = new TextEncoder().encode(
     value.repository.toLowerCase() + "\n" + value.prompt + "\n" + (value.model ?? "economy") +
-    "\n" + (value.sourceSession ?? "")
+    "\n" + (value.sourceSession ?? "") + "\n" + (value.mode ?? "") +
+    "\n" + (value.sourceCommit ?? "") + "\n" + (value.sourceTree ?? "")
   );
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
@@ -191,8 +232,27 @@ export function supervisorResponse(data: unknown, status = 200): Response {
  * project using the supervisor route. Promotion is a separate trusted process.
  */
 export function supervisorPrompt(task: SupervisorStart, branch: string, project: string,
-  baseCommit: string): string {
+  baseCommit: string, sourceTree?: string): string {
   if (!/^[a-f0-9]{40}$/.test(baseCommit)) throw new Error("SHA base de la tarea inválido");
+  if (task.mode === "read_only") {
+    if (sourceTree !== undefined && !/^[a-f0-9]{40}$/.test(sourceTree)) {
+      throw new Error("Árbol base de la tarea inválido");
+    }
+    return "Tarea de desarrollo supervisada y REVERSIBLE en modo SOLO LECTURA. Repositorio autorizado: " +
+      task.repository + ". Proyecto Linux exclusivo: " + project +
+      ". SHA base verificado: " + baseCommit +
+      (sourceTree ? "; árbol Git verificado: " + sourceTree : "") +
+      ". Esta tarea no crea rama ni PR: no crees ramas, no escribas en GitHub, no abras PR ni solicites revisión. " +
+      "El Container se importará y verificará desde ese commit y árbol exactos antes de que puedas razonar o ejecutar; " +
+      "si la importación o el árbol no coinciden, la tarea falla sin inferencia. " +
+      "La copia importada no contiene .git: no uses git status, fetch ni checkout. " +
+      "Puedes leer el código autorizado y ejecutar pruebas locales. " +
+      "Prohibido fusionar, desplegar, modificar Producción, secretos, permisos o controles de seguridad. " +
+      "Explica comandos, resultados, pruebas fallidas y correctas con evidencia real. " +
+      "Nunca atribuyas a tu trabajo cambios hechos por el servidor o el supervisor. " +
+      "Si una operación requiere permisos adicionales, informa el bloqueo.\n\nENCARGO:\n" +
+      task.prompt;
+  }
   const selfDevelopment = task.repository.toLowerCase() === "aamvtrampa36-del/opencode-harness-example";
   return "Tarea de desarrollo supervisada y REVERSIBLE. Repositorio autorizado: " +
     task.repository + ". Proyecto Linux exclusivo: " + project + ". Rama precreada: " + branch +
@@ -214,4 +274,23 @@ export function supervisorPrompt(task: SupervisorStart, branch: string, project:
     "Nunca atribuyas a tu trabajo cambios hechos por el servidor o el supervisor. " +
     "Si una operación requiere permisos adicionales, informa el bloqueo.\n\nENCARGO:\n" +
     task.prompt;
+}
+
+/** Schedule slow initialization outside the MCP request while keeping the DO active.
+ * The caller persists any unexpected failure; the lifetime promise settles cleanly. */
+export function deferSupervisorStart(
+  waitUntil: (work: Promise<void>) => void,
+  work: () => Promise<unknown>,
+  onError: (error: unknown) => Promise<void>
+): void {
+  waitUntil(Promise.resolve().then(work).then(() => undefined, onError));
+}
+
+/** A read_only task must import and verify its exact source tree before any
+ * model setup or inference. Normal tasks keep their existing lazy import. */
+export async function preflightReadOnlySource(
+  mode: SupervisorTask["mode"] | undefined,
+  importSource: () => Promise<unknown>
+): Promise<void> {
+  if (mode === "read_only") await importSource();
 }

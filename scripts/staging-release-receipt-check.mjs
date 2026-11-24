@@ -1,0 +1,21 @@
+import {test} from "node:test";
+import assert from "node:assert/strict";
+import {mkdtempSync,writeFileSync,mkdirSync,symlinkSync,rmSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {validateBuildReceipt,digestDirectory,STAGING_WORKERS} from "./staging-release-receipt.mjs";
+const expected={commit:"a".repeat(40),tree:"b".repeat(40),runId:"123"};
+const receipt=()=>({schema:"opencode-staging-package/v1",kind:"dry-run",deployed:false,...expected,workers:STAGING_WORKERS.map(([name,config])=>({name,config,configSha256:"c".repeat(64),bundleSha256:"d".repeat(64),files:2})),assetsSha256:"e".repeat(64),assetFiles:3});
+test("complete paired offline receipt is valid, not a deployment",()=>assert.equal(validateBuildReceipt(receipt(),expected),true));
+test("different commit cannot reuse package evidence",()=>assert.throws(()=>validateBuildReceipt({...receipt(),commit:"f".repeat(40)},expected),/Source/));
+test("same commit but different tree is rejected",()=>assert.throws(()=>validateBuildReceipt({...receipt(),tree:"f".repeat(40)},expected),/Source/));
+test("different CI run cannot borrow the receipt",()=>assert.throws(()=>validateBuildReceipt({...receipt(),runId:"456"},expected),/CI/));
+test("a dry-run receipt cannot claim deployed",()=>assert.throws(()=>validateBuildReceipt({...receipt(),deployed:true},expected),/offline/));
+test("missing worker rejects partial package",()=>{const r=receipt();r.workers.pop();assert.throws(()=>validateBuildReceipt(r,expected),/both/);});
+test("duplicate worker does not substitute for MCP",()=>{const r=receipt();r.workers[1]=r.workers[0];assert.throws(()=>validateBuildReceipt(r,expected),/identity/);});
+test("production or wrong config is rejected",()=>{const r=receipt();r.workers[0].config="wrangler.jsonc";assert.throws(()=>validateBuildReceipt(r,expected),/package/);});
+test("malformed digest or empty bundle rejects",()=>{const r=receipt();r.workers[0].files=0;assert.throws(()=>validateBuildReceipt(r,expected),/package/);r.workers[0].files=1;r.workers[0].bundleSha256="not-a-digest";assert.throws(()=>validateBuildReceipt(r,expected),/package/);});
+test("empty asset manifest rejects",()=>assert.throws(()=>validateBuildReceipt({...receipt(),assetFiles:0},expected),/asset/));
+function scratch(fn){const d=mkdtempSync(join(tmpdir(),"oc-package-"));try{return fn(d);}finally{rmSync(d,{recursive:true,force:true});}}
+test("directory digest is stable, includes path and changes with bytes",()=>scratch(d=>{mkdirSync(join(d,"sub"));writeFileSync(join(d,"sub","b"),"b");writeFileSync(join(d,"a"),"a");const first=digestDirectory(d);assert.equal(first.files,2);assert.deepEqual(digestDirectory(d),first);writeFileSync(join(d,"a"),"changed");assert.notEqual(digestDirectory(d).sha256,first.sha256);}));
+test("empty directory and symbolic links fail closed",()=>scratch(d=>{assert.throws(()=>digestDirectory(d),/Empty/);writeFileSync(join(d,"a"),"a");symlinkSync(join(d,"a"),join(d,"link"));assert.throws(()=>digestDirectory(d),/Symlink/);}));

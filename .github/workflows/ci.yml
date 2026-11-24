@@ -2,7 +2,7 @@ name: OpenCode validation
 
 on:
   push:
-    branches: [feat/staging-conversation-markdown-export-20261111, feat/staging-supervisor-control-20261111, feat/opencode-staging-base-20261112, feat/opencode-staging-mcp-final-20261118, staging/opencode-g1-20261118, fix/opencode-rpc-compatible-triage-20261120, staging/opencode-g1-rpc-safe-20261120]
+    branches: [feat/staging-conversation-markdown-export-20261111, feat/staging-supervisor-control-20261111, feat/opencode-staging-base-20261112, feat/opencode-staging-mcp-final-20261118, staging/opencode-g1-20261118, fix/opencode-rpc-compatible-triage-20261120, staging/opencode-g1-rpc-safe-20261120, opencode/staging-c0de5a1260a11f01]
   pull_request:
     branches: [main, staging/opencode-g1-20261118, staging/opencode-g1-rpc-safe-20261120]
   workflow_dispatch:
@@ -37,3 +37,10 @@ jobs:
         run: bun run build
       - name: Validate security and project invariants
         run: bun scripts/check-invariants.mjs
+      - name: Live read_only SHA certification on deployed staging
+        if: contains(github.event.head_commit.message, '[read-only-live]')
+        run: bun run test:staging:control:mcp
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          OPENCODE_STAGING_READ_ONLY_E2E: "true"

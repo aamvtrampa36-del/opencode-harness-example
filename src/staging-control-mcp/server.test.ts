@@ -248,6 +248,25 @@ describe("OpenCode staging MCP server", () => {
         prompt: "Inspecciona el modo staging y corrige una prueba"
       });
 
+      const commit = "a".repeat(40), tree = "b".repeat(40);
+      const readOnly = await client.callTool({ name: "staging_start_task", arguments: {
+        requestId: "f1234567890bcdef", prompt: "Analiza el código sin escribir ni abrir una PR",
+        mode: "read_only", sourceCommit: commit, sourceTree: tree
+      } });
+      expect(readOnly.isError).not.toBe(true);
+      expect(started).toEqual({
+        requestId: "f1234567890bcdef", repository: STAGING_REPOSITORY,
+        prompt: "Analiza el código sin escribir ni abrir una PR", mode: "read_only",
+        sourceCommit: commit, sourceTree: tree
+      });
+      const startsBeforeMissingPins = startCount;
+      const missingPins = await client.callTool({ name: "staging_start_task", arguments: {
+        requestId: "0123456789abcdef", prompt: "Intenta solo lectura sin fijar commit ni árbol",
+        mode: "read_only"
+      } });
+      expect(missingPins.isError).toBe(true);
+      expect(startCount).toBe(startsBeforeMissingPins);
+
       const workspace = "7bd8f26f-b2b8-4e4d-9abc-0678294c33ab";
       const fork = await client.callTool({ name: "staging_start_task", arguments: {
         requestId: "c1234567890bcdef", prompt: "Continúa desde la conversación indicada con una rama aislada",
@@ -394,6 +413,13 @@ describe("OpenCode staging MCP server", () => {
       expect(payload).not.toHaveProperty("workspace");
       expect(JSON.stringify(payload)).not.toContain(SUPERVISOR_OBJECT);
       expect(statusReads).toBe(1);
+      const readOnly = await client.callTool({
+        name: "staging_start_task",
+        arguments: { requestId: id, prompt: "Repite la consulta de estado idempotente",
+          mode: "read_only", sourceCommit: "a".repeat(40), sourceTree: "b".repeat(40) }
+      });
+      expect(JSON.parse(textContent(readOnly))).toMatchObject({ id, reused: true, status: "running" });
+      expect(statusReads).toBe(1);
     } finally {
       await client.close();
       await server.close();
@@ -416,4 +442,34 @@ describe("managed Linux runtime selection", () => {
     expect(commandRequiresBun("node --version && npm --version")).toBe(false);
     expect(commandRequiresBun("echo bun is a runtime")).toBe(false);
   });
+});
+
+
+describe("invalid task envelope has no supervisor effect", () => {
+  const valid = { requestId: "a1234567890bcdef", prompt: "Inspect the isolated project safely" };
+  const commit = "a".repeat(40), tree = "b".repeat(40);
+  for (const [name, args] of [
+    ["tree without commit", { ...valid, mode: "read_only", sourceTree: tree }],
+    ["commit without tree", { ...valid, mode: "read_only", sourceCommit: commit }],
+    ["pins in ordinary mode", { ...valid, sourceCommit: commit, sourceTree: tree }],
+    ["uppercase id", { ...valid, requestId: "A1234567890BCDEF" }],
+    ["short prompt", { ...valid, prompt: "short" }],
+    ["invalid mode", { ...valid, mode: "write_all" }]
+  ] as const) {
+    test(name, async () => {
+      let resolutions = 0;
+      const server = createStagingControlServer({
+        async readHealth() { throw Error("unexpected health"); },
+        supervisor() { resolutions++; throw Error("unexpected supervisor"); }
+      });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: "negative-envelope-test", version: "1.0.0" });
+      await server.connect(st); await client.connect(ct);
+      try {
+        const result = await client.callTool({ name: "staging_start_task", arguments: args });
+        expect(result.isError).toBe(true);
+        expect(resolutions).toBe(0);
+      } finally { await client.close(); await server.close(); }
+    });
+  }
 });

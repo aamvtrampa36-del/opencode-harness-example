@@ -39,6 +39,7 @@ const runOpenRouterCheck = process.env.OPENCODE_STAGING_OPENROUTER_CHECK === "tr
 const runRepairCheck = process.env.OPENCODE_STAGING_REPAIR_E2E === "true";
 const runDelegationCheck = process.env.OPENCODE_STAGING_DELEGATION_E2E === "true";
 const runRecoveryCheck = process.env.OPENCODE_STAGING_RECOVERY_E2E === "true";
+const runReadOnlyCheck = process.env.OPENCODE_STAGING_READ_ONLY_E2E === "true";
 const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
   requestInit: {
     headers: {
@@ -305,6 +306,85 @@ try {
     }
   }
 
+  let readOnlyCheck;
+  if (runReadOnlyCheck) {
+    const requestId = randomUUID().replaceAll("-", "").slice(0, 16);
+    const repository = "aamvtrampa36-del/opencode-harness-example";
+    // Pinned to the independently CI-approved deployment SHA and its Git tree.
+    const sourceCommit = "fb123432439abb5ecc7506f34e55447c804c0eca";
+    const sourceTree = "73f6520ea6a785624d79813d4c431b2566a719c6";
+    const prompt = "Certificación funcional de importación Git por SHA en modo read_only. " +
+      "Usa la herramienta linux para ejecutar exactamente: ls -l src/supervisor-control.ts && echo SHA_CERTIFIED_LINUX_OK. " +
+      "Reporta el código de salida y el marcador exacto. No escribas archivos, no abras ramas ni PR, no modifiques GitHub.";
+    console.log("Starting read_only SHA runtime task: " + requestId);
+    const started = parseResult(await client.callTool({ name: "staging_start_task", arguments: {
+      requestId, prompt, repository, model: "economy", mode: "read_only", sourceCommit, sourceTree
+    } }), "read_only SHA task start");
+    assert.equal(started.mode, "read_only", "Runtime must preserve the read_only mode.");
+    assert.equal(started.branch, "", "read_only must not reserve a GitHub branch.");
+    assert.equal(started.id, requestId);
+    assert.equal(started.accepted, true, "The first RPC must acknowledge the durable reservation.");
+    assert.ok(["preparing", "running"].includes(started.status), "No false failed/unknown at acceptance.");
+    assert.equal(started.sourceTree, sourceTree, "The pinned tree must survive reservation.");
+    assert.equal(started.reused, false);
+    const duplicate = parseResult(await client.callTool({ name: "staging_start_task", arguments: {
+      requestId, prompt, repository, model: "economy", mode: "read_only", sourceCommit, sourceTree
+    } }), "idempotent read_only start");
+    assert.equal(duplicate.id, requestId);
+    assert.equal(duplicate.reused, true, "Repeated requestId must reuse the reservation.");
+    assert.equal(duplicate.branch, "", "Retry must not create a branch.");
+    const completed = await pollTask(client, requestId);
+    assert.equal(completed.status, "finished", "Read-only model must finish without a manual turn.");
+    assert.equal(completed.baseCommit, sourceCommit, "Runtime must certify exact commit before inference.");
+    assert.equal(completed.sourceTree, sourceTree, "Runtime must certify exact tree before inference.");
+    assert.equal(completed.failedTools, 0);
+    assert.ok(completed.completedTools >= 1, "Runtime must execute a real Linux tool.");
+    if (duplicate.session) assert.equal(completed.session, duplicate.session, "Retry must not fork a session.");
+    const transcript = await getTaskTranscript(client, requestId);
+    assert.match(transcript, /Herramienta: linux\b/, "Transcript must prove a Linux tool call.");
+    assert.match(transcript, /SHA_CERTIFIED_LINUX_OK/, "Linux must observe the imported source.");
+    assert.doesNotMatch(transcript, /"action"\s*:\s*"(?:branch|write|pr|review)"/,
+      "Read-only task must not perform a GitHub write.");
+    const conflict = await client.callTool({ name: "staging_start_task", arguments: {
+      requestId, prompt: prompt + " Modificado", repository, model: "economy",
+      mode: "read_only", sourceCommit, sourceTree
+    } });
+    assert.equal(conflict.isError, true, "Conflicting idempotency fingerprints must be rejected.");
+    const invalidPair = await client.callTool({ name: "staging_start_task", arguments: {
+      requestId: randomUUID().replaceAll("-", "").slice(0, 16), prompt, repository,
+      mode: "read_only", sourceCommit
+    } });
+    assert.equal(invalidPair.isError, true, "Missing sourceTree must be rejected at MCP.");
+    const unauthorized = await client.callTool({ name: "staging_start_task", arguments: {
+      requestId: randomUUID().replaceAll("-", "").slice(0, 16), prompt,
+      repository: "aamvtrampa36-del/not-authorized", mode: "read_only", sourceCommit, sourceTree
+    } });
+    assert.equal(unauthorized.isError, true, "Unauthorized repository must be rejected.");
+    const negativeCases = [
+      { label: "wrong-tree", commit: sourceCommit, tree: "f".repeat(40) },
+      { label: "unknown-commit", commit: "0".repeat(40), tree: sourceTree }
+    ];
+    for (const negative of negativeCases) {
+      const negativeId = randomUUID().replaceAll("-", "").slice(0, 16);
+      const accepted = parseResult(await client.callTool({ name: "staging_start_task", arguments: {
+        requestId: negativeId, prompt, repository, mode: "read_only", model: "economy",
+        sourceCommit: negative.commit, sourceTree: negative.tree
+      } }), negative.label + " reservation");
+      assert.equal(accepted.id, negativeId);
+      assert.equal(accepted.branch, "");
+      const denied = await pollTask(client, negativeId);
+      assert.equal(denied.status, "failed", negative.label + " must fail before inference.");
+      assert.equal(denied.session, undefined, negative.label + " must not open a session.");
+      assert.equal(denied.operationId, undefined, negative.label + " must not submit inference.");
+    }
+    readOnlyCheck = {
+      requestId, repository, sourceCommit, sourceTree, status: completed.status,
+      completedTools: completed.completedTools, branch: started.branch,
+      transcriptSha256: createHash("sha256").update(transcript).digest("hex"),
+      transcriptBytes: Buffer.byteLength(transcript)
+    };
+  }
+
   const evidence = {
     checkedAt: new Date().toISOString(),
     targetWorker: parsed.targetWorker,
@@ -325,6 +405,7 @@ try {
       ...(runRepairCheck ? ["real isolated Linux red-to-green repair using Cloudflare economy"] : []),
       ...(runDelegationCheck ? ["delegated Staging engineering task with GitHub repo_read, Linux tests and branch review"] : []),
       ...(runRecoveryCheck ? ["client disconnect/reconnect, idempotent task retry, continuation retry and transcript recovery"] : []),
+      ...(runReadOnlyCheck ? ["live read_only import of CI-approved commit and exact tree, verified by Linux"] : []),
       ...(runOpenRouterCheck ? ["tools/call staging_openrouter_check and poll status (OpenRouter + Bun + Linux proof)"] : [])
     ]
   };
@@ -332,6 +413,7 @@ try {
   if (repairCheck) evidence.repairCheck = repairCheck;
   if (delegationCheck) evidence.delegationCheck = delegationCheck;
   if (recoveryCheck) evidence.recoveryCheck = recoveryCheck;
+  if (readOnlyCheck) evidence.readOnlyCheck = readOnlyCheck;
   const outputPath = join(process.env.RUNNER_TEMP ?? "/tmp", "opencode-staging-control-mcp.json");
   await writeFile(outputPath, JSON.stringify(evidence, null, 2) + "\n", { mode: 0o600 });
   console.log(`OpenCode staging MCP E2E passed; evidence saved to ${outputPath}`);

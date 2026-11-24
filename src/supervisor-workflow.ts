@@ -16,7 +16,8 @@ import {
 import type { SessionBackupDrillAgent } from "./session-sql-backup-do";
 
 type SupervisorWorkflowCommand =
-  | { action: "start"; requestId: string; repository: string; prompt: string }
+  | { action: "start"; requestId: string; repository: string; prompt: string;
+      mode?: "read_only"; sourceCommit?: string; sourceTree?: string }
   | { action: "status" | "cancel" | "review"; id: string }
   | { action: "recovery_drill" }
   | { action: "joint_prepare" }
@@ -341,10 +342,14 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
       const args = command as Record<string, unknown>;
       const host = this.env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE);
       if (args.action === "start") {
-        if (Object.keys(args).some(k => !["action", "requestId", "repository", "prompt"].includes(k)))
+        if (Object.keys(args).some(k => !["action", "requestId", "repository", "prompt",
+          "mode", "sourceCommit", "sourceTree"].includes(k)))
           throw new Error("UNKNOWN_SUPERVISOR_FIELD");
         return host.startSupervisedTask({
-          requestId: args.requestId, repository: args.repository, prompt: args.prompt
+          requestId: args.requestId, repository: args.repository, prompt: args.prompt,
+          ...(args.mode ? { mode: args.mode } : {}),
+          ...(args.sourceCommit ? { sourceCommit: args.sourceCommit } : {}),
+          ...(args.sourceTree ? { sourceTree: args.sourceTree } : {})
         } as SupervisorStart);
       }
       if (args.action === "status" || args.action === "cancel" || args.action === "review") {

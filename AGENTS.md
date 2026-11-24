@@ -39,3 +39,7 @@ Este repositorio ejecuta un **OpenCode Workerd embebido y experimental**, no la 
 ## Informe de cada intervención
 
 Explica qué observaste, qué cambiaste, cuáles verificaciones ejecutaste realmente y qué quedó sin demostrar. La reducción de complejidad debe conservar capacidades y recuperación; no basta con contar menos archivos.
+
+## Validación focal y publicación
+
+- Consulta [la guía de desarrollo y publicación Staging](docs/maintenance/DEVELOPMENT_AND_RELEASE.md) para localizar pruebas por superficie y distinguir recibos de fuente, paquete y runtime. Usa `bun test <archivo>` durante iteración; suite completa y CI del árbol exacto antes de integrar. No ejecutes E2E vivo por defecto.
