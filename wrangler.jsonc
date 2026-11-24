@@ -67,8 +67,28 @@
     }
   ],
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "redact_query_string": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true,
+      "invocation_logs": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
+    },
+    "issues": {
+      "enabled": true
+    }
   },
+  "placement": { "mode": "smart" },
+  // Keep dynamic, authenticated and MCP responses out of shared Workers Cache.
+  // Workers Static Assets remain independently cached by Cloudflare.
+  "cache": { "enabled": false, "cross_version_cache": false },
   "containers": [
     {
       "class_name": "DevContainer",
