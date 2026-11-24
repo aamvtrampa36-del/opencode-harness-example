@@ -1,4 +1,5 @@
 import { normalizeOwnedRepository } from "./github";
+import { githubRestNoRedirect, githubArchiveResponse } from "./metralla-m05-source";
 
 export const RAW_TREE_CERTIFICATION = "raw-git-tree-v1" as const;
 export type SourceReceipt = { commit: string; tree?: string; certification?: string };
@@ -9,7 +10,7 @@ export function sourceReceiptMatches(
   sourceCommit: string | undefined,
   sourceTree: string | undefined
 ): boolean {
-  if (sourceCommit === undefined) return true;
+  if (sourceCommit === undefined) return sourceTree === undefined;
   if (existing.commit !== sourceCommit) return false;
   return (existing.tree ?? "") === (sourceTree ?? "") &&
     (sourceTree === undefined || existing.certification === RAW_TREE_CERTIFICATION);
@@ -52,7 +53,7 @@ export async function githubSourceArchive(
     "X-GitHub-Api-Version": "2022-11-28",
     "User-Agent": "OpenCode-Cloud"
   };
-  const info = await http(base, { headers, redirect: "manual", signal: AbortSignal.timeout(45_000) });
+  const info = await githubRestNoRedirect(http, base, { headers, signal: AbortSignal.timeout(45_000) });
   if (!info.ok) throw Error("No se pudo consultar el repositorio en GitHub");
   const metadata = await info.json() as { full_name?: string; default_branch?: string };
   if (metadata.full_name?.toLowerCase() !== repo.toLowerCase() ||
@@ -61,8 +62,8 @@ export async function githubSourceArchive(
   }
   let commit = sourceCommit;
   if (sourceTree !== undefined) {
-    const verified = await http(base + "/commits/" + commit, {
-      headers, redirect: "manual", signal: AbortSignal.timeout(45_000)
+    const verified = await githubRestNoRedirect(http, base + "/commits/" + commit, {
+      headers, signal: AbortSignal.timeout(45_000)
     });
     if (!verified.ok) {
       if (verified.status === 404) throw Error("El commit de origen no existe en el repositorio autorizado");
@@ -80,33 +81,13 @@ export async function githubSourceArchive(
     }
     if (tree !== sourceTree) throw Error("El árbol de origen no coincide con el commit verificado");
   } else if (!commit) {
-    const ref = await http(base + "/commits/" + encodeURIComponent(metadata.default_branch),
-      { headers, redirect: "manual", signal: AbortSignal.timeout(45_000) });
+    const ref = await githubRestNoRedirect(http, base + "/commits/" + encodeURIComponent(metadata.default_branch),
+      { headers, signal: AbortSignal.timeout(45_000) });
     if (!ref.ok) throw Error("No se pudo identificar el commit del repositorio");
     commit = (await ref.json() as { sha?: string }).sha;
   }
   if (!commit || !/^[a-f0-9]{40}$/.test(commit)) throw Error("GitHub devolvió un commit inválido");
-  const signal = AbortSignal.timeout(90_000);
-  let archive = await http(base + "/tarball/" + commit, {
-    headers, redirect: "manual", signal
-  });
-  // Workers forward Authorization even across hosts in follow mode.
-  // The GitHub API provides a temporary codeload URL for private archives.
-  if ([301, 302, 303, 307, 308].includes(archive.status)) {
-    const location = archive.headers.get("Location");
-    let target: URL;
-    try { target = new URL(location || ""); }
-    catch { throw Error("Redirección de archivo GitHub inválida"); }
-    if (target.origin !== "https://codeload.github.com" || target.username || target.password || target.hash) {
-      throw Error("Redirección de archivo GitHub no autorizada");
-    }
-    // Never send the account credential to the archive host or log its temporary URL.
-    try {
-      archive = await http(target.href, {
-        headers: { "User-Agent": "OpenCode-Cloud" }, redirect: "manual", signal
-      });
-    } catch { throw Error("No se pudo descargar el archivo temporal de GitHub"); }
-  }
+  const archive = await githubArchiveResponse(http, repo, "tarball", headers, AbortSignal.timeout(90_000), commit);
   if (!archive.ok || !archive.body) throw Error("No se pudo descargar el código del repositorio");
   return { repo, commit, ...(sourceTree ? { tree: sourceTree } : {}), stream: archive.body };
 }

@@ -1,4 +1,5 @@
-import { normalizeOwnedRepository } from "./github";
+import { normalizeOwnedRepository, GitHubBridge } from "./github";
+import { githubArchiveResponse, freezeGitHubSourcePin, type GitHubSourcePin } from "./metralla-m05-source";
 import { archiveDownloadResponse, archiveError } from "./download-response";
 
 /** Download an authorized private repository as a ZIP from GitHub itself.
@@ -8,7 +9,8 @@ export async function githubRepositoryDownload(
   repoInput: string,
   token: string,
   allowedRepos: readonly string[],
-  http: typeof fetch = fetch
+  http: typeof fetch = fetch,
+  sourcePin?: GitHubSourcePin
 ): Promise<Response> {
   const repo = normalizeOwnedRepository(repoInput);
   if (!allowedRepos.some(x => x.toLowerCase() === repo.toLowerCase())) {
@@ -17,17 +19,17 @@ export async function githubRepositoryDownload(
   if (!token) return archiveError(422, "Conecta GitHub en Configuración antes de descargar este repositorio.");
   let response: Response;
   try {
-    response = await http("https://api.github.com/repos/" + repo + "/zipball", {
-      method: "GET",
-      headers: {
+    const pin = sourcePin ? freezeGitHubSourcePin(sourcePin) : undefined;
+    if (pin) {
+      if (pin.repo !== repo.toLowerCase()) return archiveError(403, "El repositorio no coincide con la fuente fijada.");
+      await new GitHubBridge(token, http, allowedRepos).resolveReadOnlySource(repo, pin.commit, pin.tree);
+    }
+    response = await githubArchiveResponse(http, repo, "zipball", {
         "Authorization": "Bearer " + token,
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "OpenCode-Cloud"
-      },
-      redirect: "follow",
-      signal: AbortSignal.timeout(45_000)
-    });
+      }, AbortSignal.timeout(45_000), pin?.commit);
   } catch {
     return archiveError(502, "No se pudo conectar con GitHub para descargar el repositorio.");
   }

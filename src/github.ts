@@ -7,6 +7,8 @@
  * writes ONLY to opencode/* review branches. No merging, force-push, deletion,
  * releases or production deployments.
  */
+import { githubRestNoRedirect, freezeGitHubSourcePin, assertPinnedGitHubAction, assertGitHubSourceIdentity, type GitHubSourcePin } from "./metralla-m05-source";
+
 export const ALLOWED_REPOS = [
   "aamvtrampa36-del/cdf-cloud-engine",
   "aamvtrampa36-del/CDF-WorkBench-",
@@ -149,26 +151,37 @@ export interface GitHubPrPublicationGate {
 
 export class GitHubBridge {
   private readonly allowed: ReadonlySet<string>;
+  private readonly sourcePin?: GitHubSourcePin;
   constructor(
     private readonly token: string,
     private readonly http: GitHubFetch = fetch,
     allowedRepos: readonly string[] = ALLOWED_REPOS,
     private readonly publicationGate?: GitHubPrPublicationGate,
-    private readonly pilotBase?: {branch:string;sha:string;base:string}
+    private readonly pilotBase?: {branch:string;sha:string;base:string},
+    sourcePin?: GitHubSourcePin
   ) {
     if (!token) throw new Error("GITHUB_TOKEN is not configured in Cloudflare Secrets");
     this.allowed = new Set(allowedRepos.map(normalizeOwnedRepository));
+    this.sourcePin = sourcePin ? freezeGitHubSourcePin(sourcePin) : undefined;
+    if (this.sourcePin) {
+      repoChecked(this.sourcePin.repo, this.allowed);
+      if (pilotBase && (pilotBase.branch !== this.sourcePin.branch || pilotBase.sha !== this.sourcePin.commit || pilotBase.base !== this.sourcePin.base)) throw Error("GITHUB_SOURCE_PIN_PILOT_MISMATCH");
+    }
   }
 
   private reviewedBase(repo:string,branch:string,defaultBranch:string){
+    if (this.sourcePin) {
+      assertPinnedGitHubAction(this.sourcePin, {repo, operation:"branch", branch});
+      return this.sourcePin.base;
+    }
     if(!this.pilotBase)return reviewedBase(repo,branch,defaultBranch);
     if(repo.toLowerCase()!==OPENCODE_REPO.toLowerCase()||branch!==this.pilotBase.branch||
       !STAGING_REVIEW.test(branch)||this.pilotBase.base!=="f0-c10/integracion-final-20261123"||!/^[a-f0-9]{40}$/.test(this.pilotBase.sha))throw Error("PILOT_GITHUB_BASE_INVALID");
     return this.pilotBase.base;
   }
   private async api(method: string, route: string, data?: unknown, allow404 = false,
-    rejectRedirect = false): Promise<any> {
-    const response = await this.http("https://api.github.com" + route, {
+    _rejectRedirect = false): Promise<any> {
+    const response = await githubRestNoRedirect(this.http, "https://api.github.com" + route, {
       method,
       headers: {
         "Authorization": "Bearer " + this.token,
@@ -178,11 +191,8 @@ export class GitHubBridge {
         "User-Agent": "OpenCode-Cloud"
       },
       ...(data === undefined ? {} : { body: JSON.stringify(data) }),
-      ...(rejectRedirect ? { redirect: "manual" as const } : {})
+      signal: AbortSignal.timeout(45_000)
     });
-    if (rejectRedirect && response.status >= 300 && response.status < 400) {
-      throw new Error("GitHub source identity redirect refused");
-    }
     if (response.status === 404 && allow404) return null;
     const body = await response.json() as any;
     if (!response.ok) {
@@ -205,6 +215,16 @@ export class GitHubBridge {
     return body;
   }
 
+  /** Verify the selected immutable source before a scoped mutation. The pin is
+   * injected by server-owned admission; it is not accepted from GitHubAction. */
+  private async verifyPinnedSource(repo: string, info: any, baseCommit: unknown): Promise<void> {
+    if (!this.sourcePin) return;
+    if (info?.full_name?.toLowerCase() !== this.sourcePin.repo || baseCommit !== this.sourcePin.commit)
+      throw Error("GITHUB_SOURCE_IDENTITY_DIVERGENT");
+    const record = await this.api("GET", "/repos/" + repo + "/commits/" + this.sourcePin.commit);
+    assertGitHubSourceIdentity(this.sourcePin, {repo:info.full_name, baseCommit, commit:record?.sha, tree:record?.commit?.tree?.sha});
+  }
+
   /**
    * Idempotent branch reservation for the supervisor. The agent-facing branch
    * action remains non-idempotent; this helper only accepts deterministic
@@ -215,6 +235,7 @@ export class GitHubBridge {
   }> {
     const repo = repoChecked(repoInput, this.allowed);
     const branch = branchChecked(branchInput);
+    if (this.sourcePin) assertPinnedGitHubAction(this.sourcePin, {repo, operation:"branch", branch});
     if (!/^opencode\/(?:staging|supervised)-[a-f0-9]{16}$/.test(branch)) {
       throw new Error("Solo se aceptan ramas deterministas del supervisor");
     }
@@ -227,6 +248,7 @@ export class GitHubBridge {
       throw new Error("Source branch commit is unverifiable");
     }
     if(this.pilotBase&&sha!==this.pilotBase.sha)throw Error("PILOT_SOURCE_SHA_CHANGED");
+    await this.verifyPinnedSource(repo, info, sha);
     const ref = base + "/git/ref/heads/" + encodeURIComponent(branch);
     const existing = await this.api("GET", ref, undefined, true);
     if (existing) {
@@ -244,6 +266,13 @@ export class GitHubBridge {
     } catch (error) {
       // A concurrent retry may have won the create race. Accept only the
       // exact source commit reserved above; never overwrite or force-update.
+      if (this.sourcePin) {
+        try {
+          const observed = await this.api("GET", ref, undefined, true);
+          if (observed?.object?.sha === sha) return { repo, branch, source, sha, reused: true };
+        } catch { /* A failed read is not evidence of absence. */ }
+        throw Error("GITHUB_BRANCH_EFFECT_UNKNOWN");
+      }
       const raced = await this.api("GET", ref, undefined, true);
       if (raced?.object?.sha === sha) return { repo, branch, source, sha, reused: true };
       throw error;
@@ -433,6 +462,18 @@ export class GitHubBridge {
   async execute(input: GitHubAction): Promise<unknown> {
     const repo = repoChecked(input.repo, this.allowed);
     const base = "/repos/" + repo;
+    if (this.sourcePin) {
+      assertPinnedGitHubAction(this.sourcePin, {...input, operation:input.action});
+      if (input.action === "branch") {
+        const result = await this.ensureSupervisorBranch(repo, input.branch);
+        return {...result, ref:"refs/heads/" + result.branch};
+      }
+      if (input.action === "write" || input.action === "pr") {
+        const info = await this.api("GET", base);
+        const from = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(this.sourcePin.base));
+        await this.verifyPinnedSource(repo, info, from?.object?.sha);
+      }
+    }
     switch (input.action) {
       case "repo": {
         const info = await this.api("GET", base);
