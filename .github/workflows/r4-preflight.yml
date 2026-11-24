@@ -1,0 +1,50 @@
+name: R4 exact offline preflight (NO DEPLOY)
+on:
+  push:
+    branches: [f0-c10/r4-preparation-42574cb3]
+    paths: [".github/workflows/r4-preflight.yml"]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  preflight:
+    if: github.event.repository.private == false && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "7547fc981e0279f50c027bf5cfa3912c31caa5ae"
+          persist-credentials: false
+      - name: Exact verifier and negative cases
+        run: |
+          test "$(git rev-parse HEAD)" = 7547fc981e0279f50c027bf5cfa3912c31caa5ae
+          python3 scripts/f0-c10/r4-preflight.py --self-test
+      - name: Retrieve exact diagnostic ZIP bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/r4"
+          cd "$RUNNER_TEMP/r4"
+          curl --fail --silent --show-error --location --max-time 60 --max-filesize 104857600 -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/aamvtrampa36-del/opencode-harness-example/actions/artifacts/14891381103/zip" -o a.zip
+          curl --fail --silent --show-error --location --max-time 60 --max-filesize 104857600 -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/aamvtrampa36-del/opencode-harness-example/actions/artifacts/14891465366/zip" -o b.zip
+      - name: Verify raw and normalized package integrity and STOP
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/r4-report"
+          set +e
+          python3 scripts/f0-c10/r4-preflight.py --a "$RUNNER_TEMP/r4/a.zip" --b "$RUNNER_TEMP/r4/b.zip" --sha-a 69e7c466de1a0a4b3065b0f53042986250fe0b8c5e3f3f26feeb51f20c6d7ca5 --sha-b cba4bb8d081fb20157659e6f1a6cb3166fd8cd69378581a72e00eebf83359ee2 > "$RUNNER_TEMP/r4-report/preflight.json"
+          rc=$?
+          set -e
+          cat "$RUNNER_TEMP/r4-report/preflight.json"
+          test "$rc" -eq 2
+          python3 -c 'import json,sys;x=json.load(open(sys.argv[1]));assert x["packageIntegrity"]=="PASS" and x["reproducibility"]=="PASS_METADATA_ONLY" and x["releaseDecision"]=="STOP" and not x["providerDispatchAuthorized"] and not x["completePass"]' "$RUNNER_TEMP/r4-report/preflight.json"
+          cp scripts/f0-c10/r4-preflight.py "$RUNNER_TEMP/r4-report/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r4-preflight-report
+          path: ${{ runner.temp }}/r4-report/
+          retention-days: 1
+          if-no-files-found: error
