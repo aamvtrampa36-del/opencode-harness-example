@@ -1,0 +1,141 @@
+name: Staging reproducibility (offline)
+on:
+  push:
+    branches: [maintenance/saneamiento-03-20261124, staging/reconciled-20261124]
+permissions:
+  contents: read
+concurrency:
+  group: staging-repro-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [a, b]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      EXPECTED_SHA: ${{ github.sha }}
+      REPLICA: ${{ matrix.replica }}
+      TZ: UTC
+      LC_ALL: C.UTF-8
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+          no-cache: true
+      - run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: node --test scripts/staging-release-receipt-check.mjs scripts/staging-reproducibility-check.mjs scripts/staging-package-finalize-check.mjs scripts/staging-release-guard-check.mjs
+      - run: bun scripts/test-preview.mjs
+      - run: bun run typecheck
+      - run: bun run build
+      - run: bun scripts/check-invariants.mjs
+      - name: Build and record exact files
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/repro"
+          mkdir -p "$ROOT/configuration"
+          cp wrangler.jsonc "$RUNNER_TEMP/original.jsonc"
+          trap 'cp "$RUNNER_TEMP/original.jsonc" wrangler.jsonc' EXIT
+          cp wrangler.g1.jsonc wrangler.jsonc
+          bun run build
+          bunx --no-install wrangler deploy --dry-run --outdir "$ROOT/principal"
+          cp dist/opencode_g1_staging/wrangler.json "$ROOT/configuration/principal-effective.json"
+          cp -a dist/client "$ROOT/assets"
+          cp "$RUNNER_TEMP/original.jsonc" wrangler.jsonc
+          bunx --no-install wrangler deploy --dry-run --config wrangler.mcp-staging.jsonc --outdir "$ROOT/mcp"
+          cp wrangler.g1.jsonc wrangler.mcp-staging.jsonc "$ROOT/configuration/"
+          node scripts/staging-package-finalize.mjs "$ROOT"
+          # Confirm the relocatable config can package the exact compiled entry and assets,
+          # without re-bundling source or making any API write.
+          bunx --no-install wrangler deploy --dry-run --no-bundle --config "$ROOT/configuration/principal-effective.json" --outdir "$RUNNER_TEMP/recheck-main"
+          bunx --no-install wrangler deploy --dry-run --no-bundle --config "$ROOT/configuration/mcp-effective.json" --outdir "$RUNNER_TEMP/recheck-mcp"
+          node scripts/staging-release-guard.mjs handoff "$ROOT/principal" "$RUNNER_TEMP/recheck-main" principal
+          node scripts/staging-release-guard.mjs handoff "$ROOT/mcp" "$RUNNER_TEMP/recheck-mcp" mcp
+          (cd "$ROOT" && tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner --mode='u+rwX,go+rX,go-w' -cf - principal mcp assets configuration | gzip -n > payload.tar.gz)
+          node scripts/staging-reproducibility.mjs record "$ROOT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: staging-repro-${{ matrix.replica }}
+          path: |
+            ${{ runner.temp }}/repro/payload.tar.gz
+            ${{ runner.temp }}/repro/receipt.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+  compare:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: staging-repro-a
+          path: replica-a
+      - uses: actions/download-artifact@v4
+        with:
+          name: staging-repro-b
+          path: replica-b
+      - run: |
+          tar -xzf replica-a/payload.tar.gz -C replica-a
+          tar -xzf replica-b/payload.tar.gz -C replica-b
+          node scripts/staging-reproducibility.mjs compare replica-a replica-b
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: staging-repro-comparison
+          path: repro-comparison.json
+          if-no-files-found: warn
+          retention-days: 7
+  live-readback:
+    # Explicit maintenance lane only; read-only checks, no provider dispatch.
+    if: github.ref == 'refs/heads/staging/reconciled-20261124' && contains(github.event.head_commit.message, '[staging-readback]')
+    needs: compare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+          no-cache: true
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: staging-repro-a
+          path: replica-a
+      - run: tar -xzf replica-a/payload.tar.gz -C replica-a
+      - name: Authenticated asset and RPC readback (no task starts)
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: node scripts/staging-live-readback.mjs replica-a/assets
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: staging-live-readback
+          path: staging-readback.json
+          if-no-files-found: warn
+          retention-days: 7
