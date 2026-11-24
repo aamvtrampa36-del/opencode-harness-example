@@ -4,7 +4,7 @@ import argparse, datetime as dt, hashlib, importlib.util, json, math, pathlib, r
 spec=importlib.util.spec_from_file_location("r4_preflight",pathlib.Path(__file__).with_name("r4-preflight.py"))
 v=importlib.util.module_from_spec(spec);spec.loader.exec_module(v)
 BASE="f0-c10/integracion-final-20261123"
-PIN="e98e57a3bc0c860440a4a116e57644b990ed5105764567b0cb1158a929b575"
+PIN="e98e57a3bc0c860440a4a4a116e57644b990ed5105764567b0cb1158a929b575"
 UUID=r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"
 def ts(x): return dt.datetime.fromisoformat(x.replace("Z","+00:00"))
 def expected_bindings(c):
