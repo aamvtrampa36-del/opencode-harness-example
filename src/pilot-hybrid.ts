@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode/plugin";
 import type { StartGrant } from "./supervisor-admission";
-import { PILOT_FREE, PILOT_BACKUP, PILOT_GLM, PILOT_INPUT_TOKENS, PILOT_OUTPUT_TOKENS,
+import { PILOT_FREE, PILOT_BACKUP, PILOT_GLM, PILOT_INPUT_TOKENS, PILOT_OUTPUT_TOKENS, PILOT_GLM_BILLABLE_INPUT_CEILING, PILOT_MAX_WIRE_BYTES,
   type BudgetPolicy, type PilotDispatchEvidence, type InferenceIntent, pilotDispatchEvidenceValid,
   pilotProviderSelection, reserveInference, beginInferenceDispatch, rejectInferenceBeforeGeneration,
   settleInference, markInferenceUnknown } from "./supervisor-inference-budget";
@@ -31,7 +31,7 @@ function shape(input:unknown): Record<string,unknown> {
   for(const k of ["tools","tool_choice","temperature","top_p","stop","seed","frequency_penalty","presence_penalty","response_format"])
     if(p[k]!==undefined)body[k]=p[k];
   // Conservative wire-size gate; not a certified provider tokenizer.
-  check(new TextEncoder().encode(JSON.stringify(body)).length<=48*1024,"PILOT_INPUT_WIRE_LIMIT");
+  check(new TextEncoder().encode(JSON.stringify(body)).length<=PILOT_MAX_WIRE_BYTES,"PILOT_INPUT_WIRE_LIMIT");
   return body;
 }
 async function readJson(r:Response) {
@@ -71,17 +71,18 @@ export function makePilotHybridBinding(binding:Ai, context:(session:string)=>Pro
       const body=shape(input);
       const key=await loadKey();
       const makeIntent=(selection:string):InferenceIntent=>({requestId:c.grant.id,operationId:"rc-start-"+c.grant.id,
-        callId:crypto.randomUUID(),attemptId:"attempt_1",selection,inputTokenCeiling:PILOT_INPUT_TOKENS,outputTokenCeiling:PILOT_OUTPUT_TOKENS});
+        callId:crypto.randomUUID(),attemptId:"attempt_1",selection,
+        inputTokenCeiling:selection===PILOT_BACKUP?PILOT_GLM_BILLABLE_INPUT_CEILING:PILOT_INPUT_TOKENS,outputTokenCeiling:PILOT_OUTPUT_TOKENS});
       const selection=await pilotProviderSelection(c.storage,c.grant,c.policy,makeIntent(PILOT_FREE),!key);
       const one=async(selection:string):Promise<Response|null>=>{
         const i=makeIntent(selection);
         const payload=selection===PILOT_FREE?{...body,model:"openrouter/free",max_tokens:PILOT_OUTPUT_TOKENS,n:1,stream:false,
           provider:{max_price:{prompt:0,completion:0,request:0,image:0,audio:0},require_parameters:true,allow_fallbacks:false}}:
           {...body,max_completion_tokens:PILOT_OUTPUT_TOKENS,n:1,stream:false,parallel_tool_calls:false};
-        const encoded=JSON.stringify(payload), bound=selection===PILOT_FREE?c.proof.inputBounds?.free:c.proof.inputBounds?.glm;
-        // Must cover the final wire shape, including templates/tools and all
-        // allowed provider tokenizers. Bytes alone are not token proof.
-        check(bound&&new TextEncoder().encode(encoded).length<=bound.maxWireBytes&&bound.maxInputTokens<=PILOT_INPUT_TOKENS,"PILOT_INPUT_BOUND_UNCERTIFIED");
+        const encoded=JSON.stringify(payload);
+        // Size is a request-shape control only; GLM reserves the documented
+        // context ceiling, Free has zero price. Both require post-usage proof.
+        check(new TextEncoder().encode(encoded).length<=c.proof.maxWireBytes,"PILOT_INPUT_WIRE_LIMIT");
         const remaining=Math.min(120_000,c.policy.hybrid!.workUntil-Date.now(),c.proof.validUntil-Date.now());
         check(remaining>0 && !options.signal?.aborted,"PILOT_DEADLINE");
         const signal=AbortSignal.any([AbortSignal.timeout(remaining),...(options.signal?[options.signal]:[])]);
@@ -121,14 +122,18 @@ export function makePilotHybridBinding(binding:Ai, context:(session:string)=>Pro
           check(reasoning===undefined||(Number.isSafeInteger(reasoning)&&reasoning>=0&&reasoning<=output),"PILOT_REASONING_USAGE_UNVERIFIED");
           check(u.prompt_tokens<=PILOT_INPUT_TOKENS&&output<=PILOT_OUTPUT_TOKENS,"PILOT_TOKEN_LIMIT");
           if(selection===PILOT_FREE)check(u.cost===0&&typeof data.model==="string"&&data.model.length>0&&data.model.length<=160,"PILOT_FREE_COST_UNVERIFIED");
+          else check(data.model===PILOT_GLM,"PILOT_GLM_MODEL_UNVERIFIED");
           const result=Response.json(data);
           check(!signal.aborted,"PILOT_DEADLINE");
           await settleInference(c.storage,i,{origin:"trusted-provider-adapter",receiptId:await receiptId(data.id),
             inputTokens:u.prompt_tokens,outputTokens:output,actualModel:selection===PILOT_FREE?data.model:PILOT_GLM});
           return result;
-        }catch{
+        }catch(error){
           // Never retry or switch on a timeout, ambiguous outcome or bad receipt.
-          await markInferenceUnknown(c.storage,i,"PILOT_PROVIDER_OUTCOME_UNKNOWN");
+          // Preserve the full reservation and block effects even if Free was rated zero.
+          const reason=error instanceof Error && ["PILOT_TOKEN_LIMIT","PILOT_FREE_COST_UNVERIFIED","PILOT_GLM_MODEL_UNVERIFIED"].includes(error.message)
+            ? error.message : "PILOT_PROVIDER_OUTCOME_UNKNOWN";
+          await markInferenceUnknown(c.storage,i,reason);
           throw Error("PILOT_PROVIDER_OUTCOME_UNKNOWN");
         }
       };

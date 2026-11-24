@@ -4,6 +4,7 @@ import { reserveSupervisorAdmission, supervisorBeginExternalEffect,
   reconcileSupervisorSubmittedEffect, type StartGrant } from "./supervisor-admission";
 import type { SupervisorTask } from "./supervisor-control";
 import { PILOT_CLAIM, parsePilotApproval, evidenceFromClaim, type PilotApproval, type PilotClaim } from "./pilot-authorization";
+import { PILOT_PRICING_REVISION } from "./supervisor-inference-budget";
 
 /** Test double with serialized, rollback-capable durable transactions. */
 class DurableFake {
@@ -192,12 +193,17 @@ test("pilot authorization is single-use, exact-release, fingerprint and process 
   const s=new DurableFake(), now=1000, instance="12345678-1234-1234-1234-123456789abc", objectId="a".repeat(64);
   const candidate={...task(50),createdAt:now,model:"cloudflare" as const,pilotInstance:instance};
   const receipt="b".repeat(64), release="c".repeat(40);
-  const approval:PilotApproval={schema:"pilot-release-v1",environment:"staging",requestId:candidate.id,releaseSha:release,fingerprint:candidate.fingerprint,notBefore:now-1,expiresAt:now+1800000,ciRun:"1234",approvalRef:"synthetic-test-only",residualRisk:"accepted-bounded-trial",plannedOtherMicroUsd:500000,
-    evidence:{sdkOffline:receipt,routeControls:receipt,closeControls:receipt,billingHeadroom:receipt,freeInputBound:receipt,glmInputBound:receipt},
-    inputBounds:{free:{maxWireBytes:10000,maxInputTokens:64000,receipt},glm:{maxWireBytes:10000,maxInputTokens:64000,receipt}}};
+  const approval:PilotApproval={schema:"pilot-release-v2",environment:"staging",requestId:candidate.id,releaseSha:release,fingerprint:candidate.fingerprint,notBefore:now-1,expiresAt:now+1800000,ciRun:"1234",approvalRef:"synthetic-test-only",residualRisk:"accepted-bounded-trial",plannedOtherMicroUsd:500000,
+    evidence:{sdkOffline:receipt,routeControls:receipt,closeControls:receipt,billingHeadroom:receipt,freeZeroPrice:receipt,glmBillingBound:receipt},
+    pricingRevision:PILOT_PRICING_REVISION,maxWireBytes:10000,
+    billingReview:{basis:"previous-cycle-proxy",cycleStart:now-100,observedThrough:now-200,observedDurationGbSeconds:50000,sharedAndLagMarginGbSeconds:30000,pilotAllowanceGbSeconds:2000}};
   expect(parsePilotApproval(undefined,release,candidate.id,now)).toBeUndefined();
   expect(parsePilotApproval(JSON.stringify(approval),"d".repeat(40),candidate.id,now)).toBeUndefined();
-  expect(parsePilotApproval(JSON.stringify({...approval,inputBounds:{}}),release,candidate.id,now)).toBeUndefined();
+  expect(parsePilotApproval(JSON.stringify({...approval,schema:"pilot-release-v1"}),release,candidate.id,now)).toBeUndefined();
+  expect(parsePilotApproval(JSON.stringify({...approval,pricingRevision:"unknown"}),release,candidate.id,now)).toBeUndefined();
+  expect(parsePilotApproval(JSON.stringify({...approval,billingReview:{...approval.billingReview,observedDurationGbSeconds:399999}}),release,candidate.id,now)).toBeUndefined();
+  expect(parsePilotApproval(JSON.stringify({...approval,billingReview:{...approval.billingReview,observedThrough:now+1}}),release,candidate.id,now)).toBeUndefined();
+  expect(parsePilotApproval(JSON.stringify({...approval,evidence:{...approval.evidence,glmBillingBound:""}}),release,candidate.id,now)).toBeUndefined();
   const claim:PilotClaim={approval,instance,objectId,startedAt:now};
   await expect(reserveSupervisorAdmission(s.asDO(),candidate,now)).rejects.toThrow("PILOT_AUTHORIZATION_REQUIRED");
   await expect(reserveSupervisorAdmission(s.asDO(),{...candidate,fingerprint:"e".repeat(64)},now,undefined,claim)).rejects.toThrow("PILOT_AUTHORIZATION_INVALID");

@@ -1,6 +1,6 @@
 import { test,expect } from "bun:test";
 import { makePilotHybridBinding } from "./pilot-hybrid";
-import { PILOT_GLM, pilotBudgetPolicy, inferenceBudgetTotals, type PilotDispatchEvidence } from "./supervisor-inference-budget";
+import { PILOT_GLM, PILOT_PRICING_REVISION, PILOT_GLM_RESERVE_MICRO_USD, PILOT_MAX_PAID_CALLS, PILOT_INFERENCE_MICRO_USD, pilotBudgetPolicy, inferenceBudgetTotals, type PilotDispatchEvidence } from "./supervisor-inference-budget";
 import type { PilotContext } from "./pilot-hybrid";
 import { createAI } from "agents/models/opencode";
 
@@ -19,17 +19,19 @@ function fixture(){
      rows.clear();for(const [k,v] of draft)rows.set(k,v);return result;
    }finally{release();}
  }} as unknown as DurableObjectStorage;
- const proof:PilotDispatchEvidence={kind:"pilot-risk-bounded-v1",experimentId:id,instance,validUntil:createdAt+800000,
+ const proof:PilotDispatchEvidence={kind:"pilot-risk-bounded-v2",experimentId:id,instance,validUntil:createdAt+800000,
    residualRiskExplicitlyAccepted:true,exclusiveLeaseVerified:true,actualSdkInterceptorVerified:true,noUncontrolledRoutesVerified:true,
-   closeVerified:true,billingHeadroomVerified:true,plannedOtherMicroUsd:500000,
-   inputBounds:{free:{maxWireBytes:48*1024,maxInputTokens:64000,receipt:"a".repeat(64)},glm:{maxWireBytes:48*1024,maxInputTokens:64000,receipt:"b".repeat(64)}}};
+   closeVerified:true,billingHeadroomReviewed:true,plannedOtherMicroUsd:500000,
+   billingReview:{basis:"current-cycle-metered",cycleStart:createdAt-1000,observedThrough:createdAt,observedDurationGbSeconds:50000,sharedAndLagMarginGbSeconds:30000,pilotAllowanceGbSeconds:2000},
+   maxWireBytes:48*1024,pricingRevision:PILOT_PRICING_REVISION,freeZeroPriceReceipt:"a".repeat(64),glmBillingBoundReceipt:"b".repeat(64)};
  const ctx:PilotContext={storage,grant:{id,token:"token",generation:1},policy,proof};
  let free=0,paid=0;let mode="ok";let key:string|undefined="offline-dummy";
  const response=(model:string,cost:number)=>Response.json({id:crypto.randomUUID(),object:"chat.completion",created:1,model,
    choices:[{index:0,message:{role:"assistant",content:"ok"},finish_reason:"stop"}],
-   usage:{prompt_tokens:20,completion_tokens:5,total_tokens:25,cost}});
+   usage:{prompt_tokens:mode==="input-limit"?64001:20,completion_tokens:5,total_tokens:mode==="input-limit"?64006:25,cost}});
  const raw={run:async(m:string,b:any,o:any)=>{paid++;expect(m).toBe(PILOT_GLM);expect(b.max_completion_tokens).toBe(8000);
-   expect(o.gateway).toBeUndefined();return response(m,0);}} as unknown as Ai;
+   expect(o.gateway).toBeUndefined();expect((await inferenceBudgetTotals(storage))?.reserved).toBe(PILOT_GLM_RESERVE_MICRO_USD);
+   return response(mode==="bad-model"?"other-model":m,0);}} as unknown as Ai;
  const bind=makePilotHybridBinding(raw,async(s)=>{if(s!==session)throw Error("wrong session");return ctx;},async()=>key,
    (async(url:any,init:any)=>{free++;expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");
     const b=JSON.parse(init.body);expect(b.model).toBe("openrouter/free");expect(b.provider.max_price.prompt).toBe(0);expect(b.max_tokens).toBe(8000);
@@ -76,8 +78,40 @@ test("pinned Agents model language hook actually reaches the metered binding",as
  expect(parts).toBeGreaterThan(0);expect(f.counts()).toEqual([1,0]);
 });
 
-test("input certificate must cover final serialized payload before dispatch",async()=>{
- const f=fixture();f.ctx.proof.inputBounds.free.maxWireBytes=50;
- await expect(f.call()).rejects.toThrow("PILOT_INPUT_BOUND_UNCERTIFIED");
+test("wire limit covers final serialized payload before dispatch",async()=>{
+ const f=fixture();f.ctx.proof.maxWireBytes=50;
+ await expect(f.call()).rejects.toThrow("PILOT_INPUT_WIRE_LIMIT");
  expect(f.counts()).toEqual([0,0]);
+});
+
+test("GLM reserves full context exposure before each send; cheap receipts do not replenish paid slots",async()=>{
+ const f=fixture();f.missingKey();
+ for(let n=0;n<PILOT_MAX_PAID_CALLS;n++)expect((await f.call()).ok).toBe(true);
+ await expect(f.call()).rejects.toThrow("PILOT_PAID_CALL_LIMIT");
+ expect(f.counts()).toEqual([0,13]);
+ const totals=await inferenceBudgetTotals(f.storage);
+ expect(totals?.pilot?.paidCalls).toBe(13);
+ expect(totals?.pilot?.calls).toBe(13);
+ expect(13*PILOT_GLM_RESERVE_MICRO_USD).toBeLessThanOrEqual(PILOT_INFERENCE_MICRO_USD);
+});
+test("combined counter still includes rejected Free call after economic revision",async()=>{
+ const f=fixture();
+ for(let n=0;n<7;n++)await f.call();
+ f.mode("quota");await f.call();f.mode("ok");
+ for(let n=0;n<11;n++)await f.call();
+ await expect(f.call()).rejects.toThrow();
+ expect(f.counts()).toEqual([8,12]);expect((await inferenceBudgetTotals(f.storage))?.pilot?.calls).toBe(20);
+});
+for(const mode of ["input-limit","bad-model"])test("paid usage/model violation keeps full reserve and blocks all new sends: "+mode,async()=>{
+ const f=fixture();f.missingKey();f.mode(mode);
+ await expect(f.call()).rejects.toThrow("PILOT_PROVIDER_OUTCOME_UNKNOWN");
+ const totals=await inferenceBudgetTotals(f.storage);
+ expect(totals?.unknown).toBe(PILOT_GLM_RESERVE_MICRO_USD);
+ expect(totals?.paymentBlocked).toBe(true);
+ await expect(f.call()).rejects.toThrow();expect(f.counts()).toEqual([0,1]);
+});
+test("Free usage over post-acceptance limit stops even though monetary reservation is zero",async()=>{
+ const f=fixture();f.mode("input-limit");await expect(f.call()).rejects.toThrow();
+ expect((await inferenceBudgetTotals(f.storage))?.paymentBlocked).toBe(true);
+ await expect(f.call()).rejects.toThrow();expect(f.counts()).toEqual([1,0]);
 });

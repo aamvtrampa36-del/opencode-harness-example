@@ -6,7 +6,7 @@ import { DevContainer } from "./dev-container";
 import { makePilotHybridBinding, pilotHybridPlugin, type PilotContext } from "./pilot-hybrid";
 import { PILOT_REPO, PILOT_BASE, PILOT_CLAIM, parsePilotApproval, evidenceFromClaim, type PilotClaim } from "./pilot-authorization";
 declare const __OPENCODE_RELEASE_SHA__: string;
-import { PILOT_GLM, PILOT_BACKUP, PILOT_CLOSE_MS, pilotBudgetPolicy, pilotDispatchEvidenceValid,
+import { PILOT_GLM, PILOT_BACKUP, PILOT_CLOSE_MS, pilotBudgetPolicy, pilotDispatchEvidenceValid, inferenceBudgetTotals,
   type PilotDispatchEvidence } from "./supervisor-inference-budget";
 export { DevContainer };
 import { Workspace, type DurableObjectStorageLike } from "@cloudflare/computer";
@@ -2169,6 +2169,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
         task.status!=="running" || task.model!==PILOT_BACKUP)throw Error("PILOT_TASK_FENCED");
     const policy=pilotBudgetPolicy(id,this.pilotInstance,task.createdAt),proof=await this.pilotDispatchEvidence(task);
     if(!proof || !pilotDispatchEvidenceValid(policy,proof))throw Error("PILOT_DISPATCH_STOP");
+    const totals=await inferenceBudgetTotals(this.ctx.storage);
+    if(totals?.paymentBlocked || totals?.pilot?.pending)throw Error("PILOT_INFERENCE_EFFECT_UNCERTAIN");
     return {storage:this.ctx.storage,grant:{id,token:slot.token,generation:slot.generation},policy,proof};
   }
   readonly ai = createAI({ binding: this.pilotLaneId() ?
