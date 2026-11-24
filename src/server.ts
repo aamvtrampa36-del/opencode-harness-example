@@ -58,7 +58,7 @@ import { renderConversationMarkdown, validateExportIdentity, sessionExportRespon
 import { archiveDownloadResponse, archiveError } from "./download-response";
 import { githubRepositoryDownload } from "./github-download";
 import { checkIsolation } from "./isolation-check";
-import { projectContainerName, repositoryProjectSlug } from "./project-container";
+import { projectContainerName, repositoryProjectSlug, isSupervisorProjectName, assertGeneralProjectName } from "./project-container";
 import { checkIsolatedBackup } from "./isolated-backup-check";
 import { repositoryImportScope } from "./repository-import-scope";
 import {
@@ -1415,6 +1415,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   /** This selection is fixed per OpenCode conversation, not an LLM instruction. */
   async bindSessionScope(sessionID: string, input: unknown): Promise<void> {
     const next = validateProjectScope(input, await this.personalConfig.getAllowedRepositories());
+    if (this.ctx.id?.name !== SUPERVISOR_WORKSPACE) assertGeneralProjectName(next.project);
     const key = scopeStorageKey(sessionID);
     await this.ctx.storage.transaction(async tx => {
       const old = await tx.get<ProjectScope>(key);
@@ -1465,7 +1466,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       }
       return undefined;
     }
-    if (!match || reverse && reverse !== match[1]) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
+    if (this.ctx.id?.name !== SUPERVISOR_WORKSPACE || !match || reverse && reverse !== match[1]) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
     const task = await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(match[1]));
     if (!task) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
     if (task.mode !== "read_only") {
@@ -2130,7 +2131,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   /** Route each project to its own Container, never the shared legacy VM. */
   private async isolatedProject(project: string, sessionID?: string, operation: "run" | "inspect" = "run") {
-    if (!sessionID && /^supervised-[a-f0-9]{16}$/.test(project))
+    if (isSupervisorProjectName(project) && (!sessionID || this.ctx.id?.name !== SUPERVISOR_WORKSPACE))
       throw Error("SUPERVISOR_SCOPE_SESSION_REQUIRED");
     const scope = sessionID ? await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID)) : undefined;
     if (sessionID) assertScopedTool(scope, { kind: "linux", project, operation });
@@ -2225,7 +2226,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
             (connect) => { this.providerConnection.connect = connect; }
           ),
           remoteMcpPlugin(
-            () => this.personalConfig.getRemoteMcps(),
+            // Native MCP registration is DO-wide, not task-scoped. The supervisor
+            // cannot safely register unmetered native tools for read_only and ordinary
+            // sessions together. Ordinary owner workspaces retain their native tools;
+            // the existing explicit supervisor MCP control API remains separate.
+            () => this.ctx.id.name === SUPERVISOR_WORKSPACE ? Promise.resolve([]) : this.personalConfig.getRemoteMcps(),
             (reload) => { this.mcpLifecycle.reload = reload; },
             async sessionID => { try { await this.denyReadOnlySessionEffect(sessionID); return true; } catch { return false; } }
           ),
@@ -2294,9 +2299,15 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
+      // Generic owner routes are not task authority. Even a GET can prepare
+      // a repository or wake its Container. Task artifact routes remain available.
+      const projectRoute = /^\/api\/dev\/(?:backup|restore|download|verify|preview)\/([^/]+)(?:\/|$)/.exec(url.pathname);
+      if (projectRoute && isSupervisorProjectName(projectRoute[1]))
+        return Response.json({ error: "SUPERVISOR_PROJECT_REQUIRES_TASK_ROUTE" }, { status: 403 });
       const personal = env.SETTINGS.getByName("personal");
       const projectRegistry = env.DEV.getByName("personal");
       const readableProject = async (name: string) => {
+        assertGeneralProjectName(name);
         const record = await projectRegistry.isolatedProject(name);
         if (!record) return projectRegistry;
         const dev = env.DEV.getByName(projectContainerName(name));
@@ -2812,7 +2823,7 @@ export default {
       }
       if (url.pathname === "/api/dev/backups" && request.method === "GET") {
         const isolated = await projectRegistry.listIsolatedProjects();
-        const others = await Promise.all(isolated.map(p =>
+        const others = await Promise.all(isolated.filter(p => !isSupervisorProjectName(p.project)).map(p =>
           env.DEV.getByName(projectContainerName(p.project)).listBackups()));
         return Response.json({ backups: [...await projectRegistry.listBackups(), ...others.flat()] },
           { headers: { "Cache-Control": "no-store" } });
@@ -2852,6 +2863,7 @@ export default {
           if (raw.length > 300) return Response.json({ error: "Request too large" }, { status: 413 });
           const input = JSON.parse(raw) as { target?: string };
           const source = restoreMatch[1], target = input.target ?? "";
+          assertGeneralProjectName(target);
           const sourceDev = await readableProject(source);
           const metadata = (await sourceDev.listBackups()).find(item => item.project === source);
           if (!metadata) throw Error("No hay respaldo guardado");
@@ -2873,7 +2885,7 @@ export default {
       }
       if (url.pathname === "/api/dev/projects" && request.method === "GET") {
         const isolated = await projectRegistry.listIsolatedProjects();
-        const projects = await Promise.all(isolated.map(p =>
+        const projects = await Promise.all(isolated.filter(p => !isSupervisorProjectName(p.project)).map(p =>
           env.DEV.getByName(projectContainerName(p.project)).listProjects()));
         return Response.json({
           projects: [...await projectRegistry.listProjects(), ...projects.flat()]
@@ -2981,6 +2993,7 @@ export default {
         const body = await request.text();
         if (body.length > 300) return Response.json({ error: "Solicitud demasiado grande" }, { status: 413 });
         const { project } = JSON.parse(body) as { project: string };
+        if (isSupervisorProjectName(project)) return Response.json({ error: "SUPERVISOR_PROJECT_REQUIRES_TASK_ROUTE" }, { status: 403 });
         if (!await projectRegistry.isolatedProject(project)) {
           const listing = await projectRegistry.inspect(project, "list", "") as {
             entries: { name: string; type: string }[]
@@ -3011,6 +3024,7 @@ export default {
           return Response.json({ error: "Request too large" }, { status: 413 });
         }
         const { project, command } = JSON.parse(body) as { project: string; command: string };
+        if (isSupervisorProjectName(project)) return Response.json({ error: "SUPERVISOR_PROJECT_REQUIRES_TASK_ROUTE" }, { status: 403 });
         try {
           if (!await projectRegistry.isolatedProject(project)) await projectRegistry.reserveIsolatedProject(project);
           const result = await (await readableProject(project)).run(project, command);

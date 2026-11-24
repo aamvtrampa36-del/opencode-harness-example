@@ -275,6 +275,22 @@ async function rejectOrTerminal(f:Fixture, requiredEvent:string) {
 }
 
 describe("C05/T07 real server method contract (offline; RED until combined)", () => {
+  test("a foreign owner workspace cannot bind or access a reserved supervisor project", async () => {
+    const f = await fixture(undefined, false);
+    const {agent} = f.newAgent();
+    const project = "supervised-" + ID;
+    agent.ctx.id.name = "ordinary-owner-workspace";
+    await expect(agent.bindSessionScope("ses_foreign", {project, repository: REPO})).rejects.toThrow("SUPERVISOR_PROJECT_REQUIRES_TASK_ROUTE");
+    // Simulate a scope left by an older build. Executor must still reject.
+    await f.storage.put("g8-scope:ses_foreign", {project, repository: REPO});
+    await expect(agent.isolatedProject(project, "ses_foreign")).rejects.toThrow("SUPERVISOR_SCOPE_SESSION_REQUIRED");
+    await expect(agent.enforceSessionScope("ses_foreign", {kind:"linux", project, operation:"run"})).rejects.toThrow("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
+    expect(f.count("project")).toBe(0);
+    expect(f.count("import")).toBe(0);
+    expect(f.count("http")).toBe(0);
+    await agent.bindSessionScope("ses_normal", {project:"ordinary-project",repository: REPO});
+    expect(await agent.sessionProject("ses_normal")).toBe("ordinary-project");
+  });
   test("default provider gate stops before durable reservation, Container or SDK effects", async () => {
     const f=await fixture(undefined,false); const a=await launch(f);
     expect(a.receipt).toMatchObject({accepted:false,confirmed:false,stop:true,reason:"SUPERVISOR_READ_ONLY_PROVIDER_DISPATCH_NOT_AUTHORIZED"});

@@ -1,6 +1,15 @@
 import { validateProject } from "./dev-guard";
 import { normalizeOwnedRepository } from "./github";
 
+/** Supervisor names are server-owned, not an ordinary project selector. */
+export function isSupervisorProjectName(value: unknown): boolean {
+  return typeof value === "string" && /^supervised-[a-f0-9]{16}$/.test(value);
+}
+
+export function assertGeneralProjectName(value: unknown): void {
+  if (isSupervisorProjectName(value)) throw Error("SUPERVISOR_PROJECT_REQUIRES_TASK_ROUTE");
+}
+
 /** A distinct Durable Object name ensures a distinct Container per project. */
 export function projectContainerName(project: unknown): string {
   return "project-v1:" + validateProject(project);
