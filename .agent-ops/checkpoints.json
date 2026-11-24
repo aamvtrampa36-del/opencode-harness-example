@@ -10,7 +10,7 @@
     "recovery": "Inspect only current checkpoint and changed evidence. Check actual Issue/PR state, HEAD/base and dependencies. Resume only if useful, authorized and compatible; blocked/stale/resolved/cancelled tasks are not retried by default. After two attempts with no material progress mark blocked with reason; reopen only on new evidence. No automatic merge/deploy or expansion of permissions. States: available, active, recoverable, blocked, obsolete, cancelled, completed. A terminal state is not a candidate. For a blocked task, require a changed dependency or materially new evidence. Do not reopen a completed/obsolete/cancelled task; create a new task only if a distinct current objective warrants it.",
     "checkpoint": "Persist after claim, first useful evidence and each material milestone before further risky work. Keep objective, acceptance, issue/PR, branch, base/head SHA, evidence, completed, pending, next action, blocker, session/operation ID and progress counters. A completed checkpoint requires actual evidence meeting acceptance. Store references, not copied logs. Release on completion/pause. An expired lease permits revalidation and new generation, not blind continuation. Keep only the latest task per lane in this file; before replacement preserve evidence in the relevant Issue/PR or Git history. Never change policy/schema during ordinary checkpoint updates."
   },
-  "revision": 9,
+  "revision": 10,
   "reservation": null,
   "lanes": {
     "integration-selftest": {
@@ -69,7 +69,7 @@
   },
   "composition_v1": {
     "schema": "agent-composition/v1",
-    "source": "fc04d256d08a56ae1679b405c24c8cf8b2d8be39",
+    "source": "d082275cb56f1805ed047af850c5083afe438334",
     "source_blob": "04d8b4780e2e3c3e53e12c585665f4da17b1a18c",
     "script": ".agent-ops/compose.mjs",
     "workflow": ".github/workflows/agent-context.yml",
@@ -85,16 +85,19 @@
       "pr": 105,
       "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
       "head": "a320b1eb8346e9e9b1390699306aef24056dda52",
-      "run": 45432726141,
-      "job": 138582141431,
-      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45432726141",
+      "run": 45476482973,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45476482973",
       "decision": "DO_NOT_RESUME",
       "coverage": "COMPLETE_READS",
-      "selftest": "PASS",
-      "backend_calls": 7,
-      "raw_bytes": 83950,
-      "compact_bytes": 2346,
-      "collection_ms": 2053
+      "backend_calls": 8,
+      "raw_bytes": 125837,
+      "compact_bytes": 2646,
+      "collection_ms": 2610,
+      "targeted_tree_match": false,
+      "queue_current": true,
+      "entry_current": true,
+      "integration": "BLOCKED",
+      "acceptance": "NOT_ESTABLISHED"
     },
     "policy": "Read-only context with live queue identity and exact targeted tree match; no authority. Historical receipts retain original run identities. Verify current refs and source versions before reuse.",
     "cloudflare_diagnostics": {
@@ -176,15 +179,20 @@
       "receipt": ".agent-ops/main-integration-receipt.json",
       "trigger": "CAS update request on ops branch; workflow push event; same per-repo concurrency group as queue",
       "mode": "IDLE_NO_ELIGIBLE_CANDIDATE",
-      "source_commit": "15c72099314d21c87994e8382bd3e2687eb188ed",
-      "script_blob": "78dfb4583881c9d409b99567994738d12f09caa9",
+      "source_commit": "56707f4607a1fdfad10241a2138be25582554e57",
+      "script_blob": "215226259f7f1d0d413fa3febd260e5f8811bd04",
       "acceptance_evidence": {
-        "run": 45476656330,
-        "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45476656330",
+        "run": 45477281354,
+        "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45477281354",
         "cross_layer": "PASS_ISOLATED",
         "product_ci": "SKIPPED_IDLE",
         "main_apply": "SKIPPED_IDLE",
-        "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623"
+        "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
+        "history_reconciliation": true,
+        "handoff_guard": true,
+        "separate_release_rejected": true,
+        "lease_guard": true,
+        "consumed_dedup": true
       },
       "deployment_policy": "Every main change may deploy via existing trigger; requires separate explicit release clearance; never infer from integration authorization.",
       "handoff": "Agent-authored AGENT_REVIEWED marker (not personal owner approval); exact handoff_v2, matching lane task, functional PASS references, separate deployment assessment and general owner authorization. Never manufacture consent. Lease acquired by actuator after CI. See script and unified protocol."
@@ -194,15 +202,33 @@
   "consolidation_v1": {
     "schema": "agent-consolidation/v1",
     "protocol": ".agent-ops/PROTOCOL.md",
-    "run": 45476656330,
-    "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45476656330",
+    "run": 45477281354,
+    "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45477281354",
     "status": "PASS_ISOLATED",
     "scope": "Actual validator, composition, classifier, Git CAS and recovery function; synthetic API/checkpoint transport; no main writes",
     "remaining": [
-      "No eligible product candidate; full product apply not exercised",
-      "No independent proof of personal consent through shared owner connection",
+      "No eligible product candidate; full product CI/apply not exercised",
+      "OpenCode new task rejected by supervisor PILOT_DISPATCH_STOP",
       "Cooperative external-writer boundary",
-      "No independent live Cloudflare attestation inside Actions"
-    ]
+      "Agent/ops trust and separate release grant; no independent cryptographic proof of personal approval",
+      "No independent live Cloudflare attestation inside Actions",
+      "New automation end-to-end scheduled execution not yet observed"
+    ],
+    "source_commit": "56707f4607a1fdfad10241a2138be25582554e57",
+    "validation_cache_measurement_ms": {
+      "first": 48,
+      "cached": 11
+    },
+    "live_composition_run": 45476482973,
+    "opencode_test": {
+      "id": "c0df20261124c001",
+      "accepted": false,
+      "reason": "PILOT_DISPATCH_STOP"
+    },
+    "cloudflare_trigger_observation": {
+      "date": "2026-11-24",
+      "scope": "12 CDF/OpenCode Workers; main triggers: cdf-te-hooks-bridge selected paths, cdf-workbench-mirror all paths, opencode-harness-example all paths",
+      "authority": "read-only observation; not deployment clearance"
+    }
   }
 }
