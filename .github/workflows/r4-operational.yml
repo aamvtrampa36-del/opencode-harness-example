@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: "8f03a6ee80ad2084834e087d2fd6c4ab1b3a3ac7"
+          ref: "23ac425f7027fb99dc2d51d29a8a10ee180fdb08"
           persist-credentials: false
       - name: Retrieve verified package pair
         env:
@@ -29,7 +29,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 8f03a6ee80ad2084834e087d2fd6c4ab1b3a3ac7
+          test "$(git rev-parse HEAD)" = 23ac425f7027fb99dc2d51d29a8a10ee180fdb08
           mkdir "$RUNNER_TEMP/report"
           set +e
           python3 scripts/f0-c10/r4-operational.py --a "$RUNNER_TEMP/r4/a.zip" --b "$RUNNER_TEMP/r4/b.zip" --sha-a 69e7c466de1a0a4b3065b0f53042986250fe0b8c5e3f3f26feeb51f20c6d7ca5 --sha-b cba4bb8d081fb20157659e6f1a6cb3166fd8cd69378581a72e00eebf83359ee2 --observations docs/f0-c10/R4_OBSERVATIONS_20261124.json --stage-dir "$RUNNER_TEMP/stage-only" --self-test > "$RUNNER_TEMP/report/operational.json"
