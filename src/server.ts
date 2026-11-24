@@ -7,7 +7,7 @@ import { makePilotHybridBinding, pilotHybridPlugin, type PilotContext } from "./
 import { preparationInput, preparationReceiptValid, durablePreparationValid } from "./pilot-preparation";
 import { PILOT_REPO, PILOT_BASE, PILOT_CLAIM, parsePilotApproval, evidenceFromClaim, type PilotClaim } from "./pilot-authorization";
 declare const __OPENCODE_RELEASE_SHA__: string;
-import { PILOT_GLM, PILOT_BACKUP, PILOT_CLOSE_MS, pilotBudgetPolicy, pilotDispatchEvidenceValid, inferenceBudgetTotals,
+import { PILOT_GLM, PILOT_BACKUP, pilotBudgetPolicy, pilotDispatchEvidenceValid, inferenceBudgetTotals,
   type PilotDispatchEvidence } from "./supervisor-inference-budget";
 export { DevContainer };
 import { Workspace, type DurableObjectStorageLike } from "@cloudflare/computer";

@@ -1,7 +1,8 @@
 {
   "extends": "agents/tsconfig",
   "compilerOptions": {
-    "types": ["@cloudflare/workers-types", "vite/client"]
+    "types": ["@cloudflare/workers-types", "vite/client"],
+    "allowImportingTsExtensions": true
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "env.d.ts"],
   "exclude": ["src/**/*.test.ts"]

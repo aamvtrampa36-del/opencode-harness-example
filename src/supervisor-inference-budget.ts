@@ -7,7 +7,7 @@
 import type { StartGrant } from "./supervisor-admission";
 import type { SupervisorTask } from "./supervisor-control";
 import type { PilotClaim } from "./pilot-authorization";
-import { durablePreparationValid } from "./pilot-preparation";
+import { durablePreparationValid } from "./pilot-preparation.ts";
 
 export type Price = { inputMicroUsdPerMillion: number; outputMicroUsdPerMillion: number; revision: string };
 export type ModelAllowance = { providerID: string; modelID: string; price: Price };

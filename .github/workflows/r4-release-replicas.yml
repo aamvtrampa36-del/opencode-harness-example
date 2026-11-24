@@ -1,0 +1,58 @@
+name: R4 new candidate reproducibility (OFFLINE ONLY)
+on:
+  push:
+    branches: [f0-c10/r4-preparation-42574cb3]
+    paths: ['src/**','scripts/f0-c10/r4-release-*','scripts/f0-c10/r4-promotion-preflight.mjs','.github/workflows/r4-release-replicas.yml']
+permissions:
+  contents: read
+concurrency:
+  group: r4-new-release-replicas
+  cancel-in-progress: true
+jobs:
+  replicas:
+    if: github.event.repository.private == false && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [a,b]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.5"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+          no-cache: true
+      - name: Stage-only content
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/receipt"
+          for role in principal mcp; do
+            bash scripts/f0-c10/r4-release-build.sh "$role" "$GITHUB_SHA" "$RUNNER_TEMP/r4-$role" | tee "$RUNNER_TEMP/$role.log"
+          done
+          node --input-type=module -e 'import fs from "node:fs";const rows=["principal","mcp"].map(r=>{const l=fs.readFileSync(process.env.RUNNER_TEMP+"/"+r+".log","utf8").split("\n").filter(s=>s.startsWith("R4_RELEASE_INVENTORY "));if(l.length!==1)throw Error("missing receipt");return JSON.parse(l[0].slice(21))});fs.writeFileSync(process.env.RUNNER_TEMP+"/receipt/receipt.json",JSON.stringify(rows))'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r4-candidate-${{ matrix.replica }}
+          path: ${{ runner.temp }}/receipt/receipt.json
+          retention-days: 1
+          if-no-files-found: error
+  compare:
+    needs: replicas
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r4-candidate-*
+          path: replicas
+      - run: node scripts/f0-c10/r4-promotion-preflight.mjs "$GITHUB_SHA" replicas/r4-candidate-a/receipt.json replicas/r4-candidate-b/receipt.json
