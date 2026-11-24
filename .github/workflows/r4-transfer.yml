@@ -1,0 +1,38 @@
+name: R4 artifact transport probe (NO DEPLOY)
+on:
+  push:
+    branches: [f0-c10/r4-preparation-42574cb3]
+    paths: [".github/workflows/r4-transfer.yml"]
+permissions:
+  contents: read
+jobs:
+  produce:
+    if: github.event.repository.private == false && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - run: |
+          mkdir probe
+          printf 'R4-42574cb3-artifact-transfer-v1\n' > probe/probe.txt
+          cd probe
+          sha256sum probe.txt > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r4-transfer-probe
+          path: probe/
+          retention-days: 1
+          if-no-files-found: error
+  consume:
+    needs: produce
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: r4-transfer-probe
+          path: probe
+      - run: |
+          cd probe
+          sha256sum -c SHA256SUMS
+          test "$(cat probe.txt)" = R4-42574cb3-artifact-transfer-v1
