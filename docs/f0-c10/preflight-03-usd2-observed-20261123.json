@@ -1,0 +1,58 @@
+{
+  "schema": "f0-c10.preflight-03.approved-ceiling.v1",
+  "observedDate": "2026-11-23",
+  "budget": {
+    "source": "owner explicit instruction in this conversation",
+    "currency": "USD",
+    "approvedMaximumCents": 200,
+    "approvedMaximumMicroUsd": 2000000,
+    "interpretation": "TOTAL across all attributable F0-C10 trial services, not per task/model/provider",
+    "perServiceAllocations": "NOT_SPECIFIED",
+    "permittedSpendNow": false,
+    "hardBilledStopProven": false,
+    "observedMonetarySpendUsd": "NOT_MEASURED",
+    "pipelineCostIncluded": true,
+    "noImplicitRenewal": true
+  },
+  "cloudflareReadonly": {
+    "modernSpendPolicies": {
+      "path": "GET /accounts/{account_id}/billing/spend-policies",
+      "status": "BLOCKED",
+      "http": 403,
+      "detail": "Authentication error / cannot inspect existing modern spend rules"
+    },
+    "aiGateway": {
+      "id": "default",
+      "rateLimit": null
+    },
+    "deprecatedSpendLimit": {
+      "enabled": false,
+      "scope": "legacy endpoint only; not evidence modern policies absent"
+    },
+    "sourceDeploy": {
+      "principal": {
+        "deployment": "36ef84b3-0f99-4dd4-ab8e-c11ee450dd23",
+        "version": "3546687b-4cd2-4e22-8ea9-ee5ea8fd02cb",
+        "percentage": 100
+      },
+      "mcp": {
+        "deployment": "9fdaf22d-beeb-44a0-ab68-77ecd5745fa1",
+        "version": "196240c0-1052-47b3-aaa7-02cf5baa87f0",
+        "percentage": 100
+      }
+    }
+  },
+  "execution": {
+    "providerDispatchAuthorized": false,
+    "noLiveLoad": true,
+    "noDeploy": true,
+    "noAccountMutations": true
+  },
+  "evidenceCautions": [
+    "HTTP 403 is not evidence of absence of spend policies",
+    "eventual-consistency provider spend limits may not enforce an absolute $2 billed ceiling",
+    "per-DO ledgers do not aggregate across Workers/accounts without a single enforced owner",
+    "snapshot is read-only, unsigned, and cannot mint a GO",
+    "service-level limit allocation and outstanding CI/infrastructure costs are unknown"
+  ]
+}

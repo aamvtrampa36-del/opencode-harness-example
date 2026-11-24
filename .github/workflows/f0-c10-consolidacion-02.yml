@@ -1,0 +1,86 @@
+name: F0-C10 CONSOLIDACION-02 exact source gate (NO LIVE)
+
+on:
+  push:
+    branches: [f0-c10/consolidacion-01-20261123]
+    paths: [".github/workflows/f0-c10-consolidacion-02.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: f0-c10-consolidacion-02-once
+  cancel-in-progress: false
+
+jobs:
+  exact-offline:
+    if: github.event.before == '1810f4958196d4386d1ac55e2e2bdf60758b9d33' && github.run_attempt == 1 && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+      EXPECTED_SOURCE: "1810f4958196d4386d1ac55e2e2bdf60758b9d33"
+      WORKFLOW_PATH: ".github/workflows/f0-c10-consolidacion-02.yml"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify workflow-only commit and pin original source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_SOURCE"
+          test "$(git diff --name-status "$EXPECTED_SOURCE" HEAD)" = "$(printf 'A\t%s' "$WORKFLOW_PATH")"
+          git checkout --detach "$EXPECTED_SOURCE"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          echo "Validated source SHA: $(git rev-parse HEAD)"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+          no-cache: true
+      - name: Install locked dependencies (no persistent cache)
+        run: bun install --frozen-lockfile
+      - name: Node authorization and operational preflight
+        run: node --test scripts/f0-c10/preflight-03-usd2.test.mjs scripts/f0-c10/operational-preflight.test.mjs
+      - name: Known historical RED cases (exactly two expected failures)
+        shell: bash
+        run: |
+          set +e
+          node --test scripts/f0-c10/preflight-03-usd2-known-red.red.mjs > /tmp/f0-red.txt 2>&1
+          status=$?
+          set -e
+          cat /tmp/f0-red.txt
+          test "$status" -eq 1
+          grep -q '^# tests 2$' /tmp/f0-red.txt
+          grep -q '^# fail 2$' /tmp/f0-red.txt
+      - name: Verify both manifests stay STOP
+        shell: bash
+        run: |
+          set -euo pipefail
+          for manifest in docs/f0-c10/PREFLIGHT_03_USD2_AUTHORIZATION.json docs/f0-c10/PREFLIGHT_03_USD2_AUTHORIZATION_REVALIDATED.json; do
+            set +e
+            node scripts/f0-c10/preflight-03-usd2.mjs --manifest "$manifest" > /tmp/f0-stop.json
+            status=$?
+            set -e
+            test "$status" -eq 2
+            node -e 'const x=require("/tmp/f0-stop.json");if(x.decision!=="STOP"||x.totalCapMicroUsd!==2000000||x.liveDispatchAuthorized!==false||x.providerHardCutoffVerified!==false)process.exit(1)'
+            cat /tmp/f0-stop.json
+          done
+      - name: Bun complete suite
+        run: bun test
+      - name: Local static preview
+        run: bun scripts/test-preview.mjs
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Compile Workers and web (no deploy)
+        run: bun run build
+      - name: Project invariants
+        run: bun scripts/check-invariants.mjs
+      - name: Confirm tested source
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"

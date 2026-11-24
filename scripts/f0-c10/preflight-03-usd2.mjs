@@ -36,9 +36,13 @@ export function evaluateUsd2ApprovalReceipt(input){
     REQUIRED_EVIDENCE.every(k=>guarantees[k]===false),
     "USD2_UNTRUSTED_JSON_CANNOT_PROVE_GO");
   requireCondition(input.gate==="STOP","USD2_FORGED_GO");
-  requireCondition(cf.spendPoliciesModern?.result==="HTTP_403"&&
-    cf.spendPoliciesModern?.verifiedActivePolicy===null,
-    "USD2_BILLING_OBSERVATION_INVALID");
+  // Historical receipts remain valid; a later successful empty list is not a cutoff.
+  const observed=cf.spendPoliciesModern;
+  const historicalBilling=observed?.result==="HTTP_403"&&observed.listedPolicyCount===undefined;
+  const emptyBilling=observed?.result==="HTTP_200_EMPTY"&&
+    observed.listedPolicyCount===0&&observed.previousResult==="HTTP_403";
+  requireCondition(observed?.method==="GET"&&observed.verifiedActivePolicy===null&&
+    (historicalBilling||emptyBilling),"USD2_BILLING_OBSERVATION_INVALID");
   requireCondition(Object.keys(costs).length===REQUIRED_COSTS.length&&
     REQUIRED_COSTS.every(k=>Object.hasOwn(costs,k)&&costs[k]===null),
     "USD2_COST_DATA_NOT_YET_VERIFIABLE");
@@ -48,7 +52,8 @@ export function evaluateUsd2ApprovalReceipt(input){
     budgetQuotesVerified:false,providerHardCutoffVerified:false,
     isolatedLiveLeaseVerified:false,allCostsMeasured:false,
     decision:"STOP",liveDispatchAuthorized:false,
-    reason:"PROVIDER_BILLING_403_AND_ALL_SERVICE_CUTOFF_NOT_PROVEN"
+    reason:historicalBilling?"PROVIDER_BILLING_403_AND_ALL_SERVICE_CUTOFF_NOT_PROVEN":
+      "NO_SPEND_POLICIES_LISTED_AND_ALL_SERVICE_CUTOFF_NOT_PROVEN"
   };
 }
 function main(args){

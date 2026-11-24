@@ -76,3 +76,8 @@ No se comprobó ningún importe de factura actual; el coste real de GitHub Actio
 **PRÓXIMA ACCIÓN ÚNICA:** obtener visibilidad de políticas actuales y preparar un entorno **realmente aislado** con límite eficaz demostrable antes de solicitar prueba de pago. Si los US$2 no se pueden garantizar, `STOP`.
 
 **Estado #90:** `PARTIAL / NO COMPLETE PASS`.
+
+
+## CONSOLIDACION-01 — revalidación posterior del 23-11-2026
+
+Véase [F0_C10_CONSOLIDACION_01.md](F0_C10_CONSOLIDACION_01.md). Cloudflare ADMIN GET de Spend Policies ya devuelve éxito y lista vacía (0); el 403 previo es histórico. #375 conserva ETag y bindings de #374, con cache_options distinto. No demuestra procedencia binaria GitHub ni corte financiero. El recibo original permanece intacto; el nuevo manifiesto revalidado conserva STOP y todos los costes desconocidos. #160 aporta cuatro regresiones transaccionales al candidato #161, sin duplicar ledger, workflow ni constante de techo. Las tres rutas divergentes de Staging ya contienen la reparación funcional en #161; no se sobrescriben las guardas transaccionales R2/R3. Estado PARTIAL / STOP_LIVE; CI combinado del nuevo HEAD pendiente. Ningún cierre, merge, deploy ni llamada de inferencia.

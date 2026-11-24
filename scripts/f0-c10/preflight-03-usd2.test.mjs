@@ -80,3 +80,28 @@ test("missing or malformed file fails closed, never authorizes a charge",()=>{
   assert.match(result.stderr,/USD2_FAIL_CLOSED/);
   assert.equal(result.stdout,"");
 });
+
+const revalidatedFile=fileURLToPath(new URL("../../docs/f0-c10/PREFLIGHT_03_USD2_AUTHORIZATION_REVALIDATED.json",import.meta.url));
+const revalidated=()=>JSON.parse(readFileSync(revalidatedFile,"utf8"));
+test("historical 403 and later empty policy list are distinct STOP observations",()=>{
+  const old=evaluateUsd2ApprovalReceipt(fresh());
+  const now=evaluateUsd2ApprovalReceipt(revalidated());
+  assert.equal(old.reason,"PROVIDER_BILLING_403_AND_ALL_SERVICE_CUTOFF_NOT_PROVEN");
+  assert.equal(now.reason,"NO_SPEND_POLICIES_LISTED_AND_ALL_SERVICE_CUTOFF_NOT_PROVEN");
+  assert.deepEqual([now.totalCapMicroUsd,now.decision,now.liveDispatchAuthorized,now.providerHardCutoffVerified],[2_000_000,"STOP",false,false]);
+});
+test("empty-list observation cannot be forged into policy enforcement",()=>{
+  for(const patch of [{listedPolicyCount:1},{listedPolicyCount:null},{previousResult:"OK"},{verifiedActivePolicy:true},{method:"POST"},{result:"OK"}]){
+    const x=revalidated();Object.assign(x.cloudflareReadOnly.spendPoliciesModern,patch);
+    assert.throws(()=>evaluateUsd2ApprovalReceipt(x),/USD2_BILLING_OBSERVATION_INVALID/);
+  }
+  const x=revalidated();x.guarantees.providerHardCutoffVerified=true;
+  assert.throws(()=>evaluateUsd2ApprovalReceipt(x),/USD2_UNTRUSTED_JSON_CANNOT_PROVE_GO/);
+});
+test("CLI revalidated receipt exits 2, never dispatches",()=>{
+  const result=spawnSync(process.execPath,[cliFile,"--manifest",revalidatedFile],{encoding:"utf8",timeout:5000});
+  assert.equal(result.status,2);
+  assert.equal(result.stderr,"");
+  assert.equal(JSON.parse(result.stdout).decision,"STOP");
+  assert.equal(JSON.parse(result.stdout).liveDispatchAuthorized,false);
+});
