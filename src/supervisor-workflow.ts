@@ -1,5 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
-import { SUPERVISOR_WORKSPACE, supervisorTaskKey, type SupervisorStart } from "./supervisor-control";
+import { SUPERVISOR_WORKSPACE, supervisorTaskKey } from "./supervisor-control";
+import { workflowStartInput } from "./staging-control-mcp/start-contract";
+import { boundedMcpJsonText } from "./staging-control-mcp/bounded-response";
 import { drillProjectNames } from "./container-recovery";
 import {
   assertR2Bucket, createTamperedProbe, deleteRunPrefix, externalBackupProjectNames
@@ -16,7 +18,8 @@ import {
 import type { SessionBackupDrillAgent } from "./session-sql-backup-do";
 
 type SupervisorWorkflowCommand =
-  | { action: "start"; requestId: string; repository: string; prompt: string }
+  | ({ action: "start"; requestId: string; repository: string; prompt: string } &
+      import("./staging-control-mcp/start-contract").ReadOnlyStartFields)
   | { action: "status" | "cancel" | "review"; id: string }
   | { action: "recovery_drill" }
   | { action: "joint_prepare" }
@@ -341,11 +344,13 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
       const args = command as Record<string, unknown>;
       const host = this.env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE);
       if (args.action === "start") {
-        if (Object.keys(args).some(k => !["action", "requestId", "repository", "prompt"].includes(k)))
-          throw new Error("UNKNOWN_SUPERVISOR_FIELD");
-        return host.startSupervisedTask({
-          requestId: args.requestId, repository: args.repository, prompt: args.prompt
-        } as SupervisorStart);
+        const input = workflowStartInput(args);
+        // One backend call only; a read_only admission receipt must not wait on import.
+        const receipt = await host.startSupervisedTask(input);
+        // A Workflow operation completing is not independent task verification.
+        return input.mode === "read_only"
+          ? JSON.parse(boundedMcpJsonText(receipt, undefined, undefined, true))
+          : receipt;
       }
       if (args.action === "status" || args.action === "cancel" || args.action === "review") {
         if (Object.keys(args).some(k => !["action", "id"].includes(k)))
