@@ -34,13 +34,15 @@ function record(root){
   const commit=git("rev-parse","HEAD"),tree=git("rev-parse","HEAD^{tree}");
   if(commit!==process.env.EXPECTED_SHA||git("status","--porcelain","--untracked-files=no"))throw Error("Unexpected checkout");
   const inputs={commit,tree,lockfile:hash("bun.lock"),bun:command("bun","--version"),node:process.version,wrangler:JSON.parse(readFileSync("node_modules/wrangler/package.json","utf8")).version,vite:JSON.parse(readFileSync("node_modules/vite/package.json","utf8")).version,image:process.env.ImageOS??"unknown",imageVersion:process.env.ImageVersion??"unknown",arch:process.arch,platform:process.platform,sourceDateEpoch:process.env.SOURCE_DATE_EPOCH,timezone:process.env.TZ,locale:process.env.LC_ALL};
-  const receipt={schema:"opencode-repro-build/v1",replica:process.env.REPLICA,runId:process.env.GITHUB_RUN_ID,inputs,groups:manifest(root)};
+  const receipt={schema:"opencode-repro-build/v1",replica:process.env.REPLICA,runId:process.env.GITHUB_RUN_ID,inputs,groups:manifest(root),archiveSha256:hash(join(root,"payload.tar.gz"))};
   writeFileSync(join(root,"receipt.json"),JSON.stringify(receipt,null,2)+"\n");
-  console.log(JSON.stringify({replica:receipt.replica,inputs,groups:Object.fromEntries(groups.map(k=>[k,{files:receipt.groups[k].files,sha256:receipt.groups[k].sha256}]))}));
+  console.log(JSON.stringify({replica:receipt.replica,inputs,archiveSha256:receipt.archiveSha256,groups:Object.fromEntries(groups.map(k=>[k,{files:receipt.groups[k].files,sha256:receipt.groups[k].sha256}]))}));
 }
 function compare(aDir,bDir){
   const a=JSON.parse(readFileSync(join(aDir,"receipt.json"),"utf8")),b=JSON.parse(readFileSync(join(bDir,"receipt.json"),"utf8"));
   compareInputs(a,b);
+  for(const [r,d] of [[a,aDir],[b,bDir]])if(r.archiveSha256!==hash(join(d,"payload.tar.gz")))throw Error("Archive readback mismatch");
+  const archiveEqual=readFileSync(join(aDir,"payload.tar.gz")).equals(readFileSync(join(bDir,"payload.tar.gz")));
   if(JSON.stringify(a.groups)!==JSON.stringify(manifest(aDir))||JSON.stringify(b.groups)!==JSON.stringify(manifest(bDir)))throw Error("Artifact readback mismatch");
   const differences=diffManifests(a.groups,b.groups);
   for(const d of differences.slice(0,40)){
@@ -59,7 +61,12 @@ function compare(aDir,bDir){
       }
     }
   }
-  const result={schema:"opencode-repro-comparison/v1",commit:a.inputs.commit,tree:a.inputs.tree,runId:a.runId,replicas:[a.replica,b.replica],passed:differences.length===0,differenceCount:differences.length,differences:differences.slice(0,40),groups:Object.fromEntries(groups.map(k=>[k,{a:a.groups[k].sha256,b:b.groups[k].sha256,files:a.groups[k].files}]))};
+  const result={schema:"opencode-repro-comparison/v1",commit:a.inputs.commit,tree:a.inputs.tree,runId:a.runId,replicas:[a.replica,b.replica],passed:differences.length===0&&archiveEqual,archiveEqual,archiveSha256:[a.archiveSha256,b.archiveSha256],differenceCount:differences.length,differences:differences.slice(0,40),groups:Object.fromEntries(groups.map(k=>[k,{a:a.groups[k].sha256,b:b.groups[k].sha256,files:a.groups[k].files}]))};
+  const principal=a.groups.principal.manifest.filter(([p])=>p!=="README.md");
+  if(principal.some(([p])=>!p.endsWith(".js")&&!p.endsWith(".mjs")))throw Error("Unexpected principal module type");
+  const mcp=a.groups.mcp.manifest.find(([p])=>p==="worker.js");
+  if(!mcp)throw Error("Missing MCP entry");
+  result.executable={principalModules:principal.length,principalManifestSha256:createHash("sha256").update(JSON.stringify(principal)).digest("hex"),mcpEntrySha256:mcp[1]};
   console.log(JSON.stringify(result));writeFileSync("repro-comparison.json",JSON.stringify(result,null,2)+"\n");
   if(!result.passed)process.exitCode=1;
 }
