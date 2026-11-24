@@ -10,7 +10,7 @@
     "recovery": "Inspect only current checkpoint and changed evidence. Check actual Issue/PR state, HEAD/base and dependencies. Resume only if useful, authorized and compatible; blocked/stale/resolved/cancelled tasks are not retried by default. After two attempts with no material progress mark blocked with reason; reopen only on new evidence. No automatic merge/deploy or expansion of permissions. States: available, active, recoverable, blocked, obsolete, cancelled, completed. A terminal state is not a candidate. For a blocked task, require a changed dependency or materially new evidence. Do not reopen a completed/obsolete/cancelled task; create a new task only if a distinct current objective warrants it.",
     "checkpoint": "Persist after claim, first useful evidence and each material milestone before further risky work. Keep objective, acceptance, issue/PR, branch, base/head SHA, evidence, completed, pending, next action, blocker, session/operation ID and progress counters. A completed checkpoint requires actual evidence meeting acceptance. Store references, not copied logs. Release on completion/pause. An expired lease permits revalidation and new generation, not blind continuation. Keep only the latest task per lane in this file; before replacement preserve evidence in the relevant Issue/PR or Git history. Never change policy/schema during ordinary checkpoint updates."
   },
-  "revision": 2,
+  "revision": 3,
   "reservation": null,
   "lanes": {
     "integration-selftest": {
@@ -37,5 +37,34 @@
       "operation_id": "rc-start-c0df20261124a001",
       "note": "Read-only synthetic integration test; supervisor passed=false (not a code-change acceptance), review and tool transcript independently verify read behavior."
     }
+  },
+  "validation_v1": {
+    "workflow": ".github/workflows/agent-validation.yml",
+    "request": ".agent-ops/validation-request.json",
+    "static": ".agent-ops/validate_task.py",
+    "ci_receipt": ".agent-ops/ci_receipt.mjs",
+    "evidence": {
+      "pr": 105,
+      "head": "a320b1eb8346e9e9b1390699306aef24056dda52",
+      "base": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
+      "static_id": "b33dc031b19d34de21b954ffb7520039ce38a85056171011cfaf6d96913f5ca6",
+      "static_status": "FAIL",
+      "ci_status": "CACHED",
+      "ci_run": 44993774642,
+      "run": 45429311156,
+      "next": "Only if PR remains a useful current objective inspect git diff --check and correct in its authorized branch; do not repeat existing CI solely because this receipt exists.",
+      "remote": {
+        "id": "c0df20261124b001",
+        "session": "ses_df1c6b0b7ff9cWPPCUUdVlHbKx",
+        "selftest": "PASS",
+        "tools": 14,
+        "private_git": "BLOCKED exit 128; GitHub Actions fallback verified",
+        "runtime_reset": "Transcript OOM; task resumed and completed selftest."
+      },
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45429311156",
+      "original_ci_url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/44993774642"
+    },
+    "scope": "Synthetic and exact Git refs only; not product acceptance or deployment. Targeted receipts bind base/head/tree. No repeated validation when identical evidence remains applicable.",
+    "selftests": "PASS on GitHub Actions in all three projects; RED/GREEN, cache reuse/invalidation, 4 profiles, 8 CI evidence cases"
   }
 }
