@@ -91,3 +91,9 @@ CDF CLOUD Producción no se validó en esta aceptación: su OAuth mostró `CDF_O
 - CDF WorkBench Staging sí tuvo lectura real en esta aceptación; CDF CLOUD Producción no, por su error OAuth temporal descrito arriba. No hay respaldo automático de proyectos grandes ni prueba de navegación en dos dispositivos. Los modos de agentes utilizan sesiones nativas; no constituyen caché de repositorios versionada.
 
 OpenCode Cloud queda verificado para el uso personal probado: chat móvil, ejecución Linux aislada, vista previa, aprendizaje de TokenEconomizer y lectura de CDF WorkBench. La aceptación no certifica recuperación prolongada, generación real de imágenes, escritura/PR de GitHub, ni CDF CLOUD Producción; no los presentes como verificados.
+
+## Incidentes del runner y mantenimiento
+
+- [Informe histórico del 21-11-2026, con actualización de estado](OPEN_CODE_TOOL_FAILURES_2026-11-21.md): hechos, riesgos y mitigaciones; no es un PASS de concurrencia.
+- [Evidencia original de OpenCode, tarea 0a62c322d8f44b8d](opencode-remote-control-e2e/0a62c322d8f44b8d.md): límites del contrato MCP histórico y reconciliación posterior.
+- [SANEAMIENTO-01](maintenance/SANEAMIENTO_01.md): equivalencias de PR y límites de integración/despliegue.

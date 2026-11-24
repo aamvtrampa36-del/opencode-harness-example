@@ -262,18 +262,24 @@ describe("OpenCode staging MCP server", () => {
         prompt: "Continúa desde la conversación indicada con una rama aislada", model: "economy",
         sourceSession: "sesAbc123" });
       const startsBeforeInvalidFork = startCount;
+      const defaultCallsBeforeInvalidFork = defaultSupervisorCalls;
+      const customCallsBeforeInvalidFork = customSupervisorCalls;
       const invalidFork = await client.callTool({ name: "staging_start_task", arguments: {
         requestId: "d1234567890bcdef", prompt: "Intenta hacer fork sin aportar un workspace válido",
         sourceSession: "sesAbc123"
       } });
       expect(invalidFork.isError).toBe(true);
       expect(startCount).toBe(startsBeforeInvalidFork);
+      expect(defaultSupervisorCalls).toBe(defaultCallsBeforeInvalidFork);
+      expect(customSupervisorCalls).toBe(customCallsBeforeInvalidFork);
       const workspaceWithoutFork = await client.callTool({ name: "staging_start_task", arguments: {
         requestId: "e1234567890bcdef", prompt: "No reutilices el workspace sin una sesión de origen",
         workspace
       } });
       expect(workspaceWithoutFork.isError).toBe(true);
       expect(startCount).toBe(startsBeforeInvalidFork);
+      expect(defaultSupervisorCalls).toBe(defaultCallsBeforeInvalidFork);
+      expect(customSupervisorCalls).toBe(customCallsBeforeInvalidFork);
 
       const defaultCallsBeforeTaskStatus = defaultSupervisorCalls;
       const taskStatus = await client.callTool({ name: "staging_task_status", arguments: { id: "a1234567890bcdef" } });

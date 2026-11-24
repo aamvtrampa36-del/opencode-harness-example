@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -165,12 +165,30 @@ describe("selftest CLI independent acceptance gates (real subprocess)", () => {
     expect(result.status).toBe(2);
     expect(String(result.stderr)).toContain("does not match the actual Git HEAD");
   });
-  test("cannot claim reused artifacts without a matching prior receipt", () => {
-    const head = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
-    expect(head.status).toBe(0);
-    const result = run("--commit", head.stdout.trim(), "--reuse-dist");
-    expect(result.status).toBe(2);
-    expect(String(result.stderr)).toContain("--reuse-dist requires --resume");
+  test("cannot claim reused artifacts without a matching prior receipt in a source archive", () => {
+    // OpenCode imports source tarballs, not Git checkouts. Run the real CLI
+    // from an isolated copy of its entry point and local dependencies, with
+    // no .git and no dist, so this gate never depends on the runner's HEAD.
+    const scratch = mkdtempSync(join(tmpdir(), "opencode-selftest-archive-"));
+    try {
+      mkdirSync(join(scratch, "scripts"));
+      mkdirSync(join(scratch, "src"));
+      for (const path of ["scripts/selftest.mjs", "src/preview-server.ts", "src/selftest-core.ts", "src/dev-guard.ts"]) {
+        copyFileSync(new URL("../" + path, import.meta.url), join(scratch, path));
+      }
+      writeFileSync(join(scratch, "package.json"), '{"type":"module"}\n');
+      const receiptPath = join(scratch, "receipt.json");
+      const result = spawnSync(process.execPath,
+        [join(scratch, "scripts/selftest.mjs"), "--branch", "opencode/verify-safety",
+         "--receipt", receiptPath, "--allow-uncommitted", "--reuse-dist"],
+        { cwd: scratch, encoding: "utf8", timeout: 30_000, env: process.env });
+      expect(result.status).toBe(2);
+      expect(String(result.stderr)).toContain("--reuse-dist requires --resume");
+      const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+      expect(receipt).toMatchObject({ verdict: "fail-closed", commit: null, commitLinked: false });
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
   test("a partial --only preflight never passes as a complete candidate", () => {
     const result = run("--allow-uncommitted", "--only", "preflight");
