@@ -2,8 +2,8 @@
   "schema": "agent-integration-queue/v1",
   "repository": "aamvtrampa36-del/opencode-harness-example",
   "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
-  "source_commit": "de9a5734c267a8089cab87cbb82fb0edc07ad7e5",
-  "run_id": 45435141800,
+  "source_commit": "d5a3c4218e46ee188ec78923a8a5d7e2570c1833",
+  "run_id": 45435493643,
   "policy": {
     "main_writes": "DISABLED_UNVERIFIED_SERVER_GATE",
     "merge_queue": "not configured",
@@ -44,10 +44,17 @@
       "conflict": false,
       "tree_equal": false,
       "status": "BLOCKED",
-      "next": "draft; no promotion by integrator",
+      "next": "draft; no promotion by integrator; inspect recorded static defect before retry",
       "priority": 1,
       "authorization": "NONE_FOR_MAIN",
       "validation_reference": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45429311156",
+      "validation": {
+        "exact_refs": true,
+        "static": "FAIL",
+        "ci": "CACHED",
+        "targeted_tree_match": false,
+        "acceptance": "NOT_ESTABLISHED"
+      },
       "file_count": 4,
       "paths": [
         "docs/INFORME_REPARACION_SALIDA_LINUX_STAGING_2026-11-22.md",
@@ -78,6 +85,13 @@
       "priority": 0,
       "authorization": "NONE_FOR_MAIN",
       "validation_reference": null,
+      "validation": {
+        "exact_refs": false,
+        "static": null,
+        "ci": null,
+        "targeted_tree_match": false,
+        "acceptance": "NOT_ESTABLISHED"
+      },
       "file_count": 2,
       "paths": [
         "tests/g9-proof/add.mjs",
@@ -106,6 +120,13 @@
       "priority": 0,
       "authorization": "NONE_FOR_MAIN",
       "validation_reference": null,
+      "validation": {
+        "exact_refs": false,
+        "static": null,
+        "ci": null,
+        "targeted_tree_match": false,
+        "acceptance": "NOT_ESTABLISHED"
+      },
       "file_count": 9,
       "paths": [
         "docs/SELFTEST.md",
@@ -141,6 +162,13 @@
       "priority": 0,
       "authorization": "NONE_FOR_MAIN",
       "validation_reference": null,
+      "validation": {
+        "exact_refs": false,
+        "static": null,
+        "ci": null,
+        "targeted_tree_match": false,
+        "acceptance": "NOT_ESTABLISHED"
+      },
       "file_count": 6,
       "paths": [
         "docs/backup-restore-verification.md",
@@ -173,6 +201,13 @@
       "priority": 0,
       "authorization": "NONE_FOR_MAIN",
       "validation_reference": null,
+      "validation": {
+        "exact_refs": false,
+        "static": null,
+        "ci": null,
+        "targeted_tree_match": false,
+        "acceptance": "NOT_ESTABLISHED"
+      },
       "file_count": 11,
       "paths": [
         "docs/SESIONES_SQL_BACKUP_B2_STAGING_2026-11-13.md",
@@ -210,6 +245,13 @@
       "priority": 0,
       "authorization": "NONE_FOR_MAIN",
       "validation_reference": null,
+      "validation": {
+        "exact_refs": false,
+        "static": null,
+        "ci": null,
+        "targeted_tree_match": false,
+        "acceptance": "NOT_ESTABLISHED"
+      },
       "file_count": 4,
       "paths": [
         "experiments/harness-wait-20261115/LICENSE-Cloudflare.txt",
@@ -240,6 +282,13 @@
       "priority": 0,
       "authorization": "NONE_FOR_MAIN",
       "validation_reference": null,
+      "validation": {
+        "exact_refs": false,
+        "static": null,
+        "ci": null,
+        "targeted_tree_match": false,
+        "acceptance": "NOT_ESTABLISHED"
+      },
       "file_count": 9,
       "paths": [
         "experiments/snapshot-delta-20261115/README.md",
@@ -275,6 +324,13 @@
       "priority": 0,
       "authorization": "NONE_FOR_MAIN",
       "validation_reference": null,
+      "validation": {
+        "exact_refs": false,
+        "static": null,
+        "ci": null,
+        "targeted_tree_match": false,
+        "acceptance": "NOT_ESTABLISHED"
+      },
       "file_count": 9,
       "paths": [
         "experiments/history-tail-20261115/README.md",
@@ -310,6 +366,13 @@
       "priority": 0,
       "authorization": "NONE_FOR_MAIN",
       "validation_reference": null,
+      "validation": {
+        "exact_refs": false,
+        "static": null,
+        "ci": null,
+        "targeted_tree_match": false,
+        "acceptance": "NOT_ESTABLISHED"
+      },
       "file_count": 9,
       "paths": [
         "experiments/pinned-read-20261115/README.md",
@@ -345,6 +408,13 @@
       "priority": 0,
       "authorization": "NONE_FOR_MAIN",
       "validation_reference": null,
+      "validation": {
+        "exact_refs": false,
+        "static": null,
+        "ci": null,
+        "targeted_tree_match": false,
+        "acceptance": "NOT_ESTABLISHED"
+      },
       "file_count": 8,
       "paths": [
         "experiments/context-plan-tools-20261115/README.md",
@@ -379,6 +449,13 @@
       "priority": 0,
       "authorization": "NONE_FOR_MAIN",
       "validation_reference": null,
+      "validation": {
+        "exact_refs": false,
+        "static": null,
+        "ci": null,
+        "targeted_tree_match": false,
+        "acceptance": "NOT_ESTABLISHED"
+      },
       "file_count": 2,
       "paths": [
         "tests/g9-proof/add.mjs",
@@ -407,6 +484,13 @@
       "priority": 0,
       "authorization": "NONE_FOR_MAIN",
       "validation_reference": null,
+      "validation": {
+        "exact_refs": false,
+        "static": null,
+        "ci": null,
+        "targeted_tree_match": false,
+        "acceptance": "NOT_ESTABLISHED"
+      },
       "file_count": 8,
       "paths": [
         "docs/STAGING_REMOTE_CONTROL_MCP_20261118.md",
@@ -441,6 +525,13 @@
       "priority": 0,
       "authorization": "NONE_FOR_MAIN",
       "validation_reference": null,
+      "validation": {
+        "exact_refs": false,
+        "static": null,
+        "ci": null,
+        "targeted_tree_match": false,
+        "acceptance": "NOT_ESTABLISHED"
+      },
       "file_count": 10,
       "paths": [
         ".github/workflows/ci.yml",
@@ -477,6 +568,13 @@
       "priority": 0,
       "authorization": "NONE_FOR_MAIN",
       "validation_reference": null,
+      "validation": {
+        "exact_refs": false,
+        "static": null,
+        "ci": null,
+        "targeted_tree_match": false,
+        "acceptance": "NOT_ESTABLISHED"
+      },
       "file_count": 17,
       "paths": [
         ".github/workflows/ci.yml",
@@ -634,5 +732,5 @@
       ]
     }
   ],
-  "elapsed_ms": 3636
+  "elapsed_ms": 1901
 }
