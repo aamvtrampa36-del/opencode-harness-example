@@ -1,0 +1,77 @@
+name: Agent integration queue
+on:
+  push:
+    branches: [ops/task-checkpoints-v1]
+    paths:
+      - '.agent-ops/integrator.py'
+      - '.agent-ops/integration-request.json'
+      - '.github/workflows/agent-integration.yml'
+permissions:
+  contents: write
+  pull-requests: read
+  actions: read
+concurrency:
+  group: agent-integration-queue
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify isolated integrations and race rejection
+        run: python3 .agent-ops/integrator.py selftest
+      - name: Prepare current queue without executing candidates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .agent-ops/integrator.py scan
+      - name: Publish queue by blob CAS on operational branch only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64,json,os,pathlib,subprocess,re
+          repo=os.environ["GITHUB_REPOSITORY"]
+          branch="ops/task-checkpoints-v1"
+          path=".agent-ops/integration-queue.json"
+          assert repo in {"aamvtrampa36-del/cdf-cloud-engine","aamvtrampa36-del/CDF-WorkBench-","aamvtrampa36-del/opencode-harness-example"}
+          assert os.environ["GITHUB_REF"]=="refs/heads/"+branch
+          q=json.loads(pathlib.Path("integration-queue-result.json").read_text())
+          assert q["schema"]=="agent-integration-queue/v1" and q["repository"]==repo and q["source_commit"]==os.environ["GITHUB_SHA"]
+          assert q["policy"]["main_writes"]=="DISABLED_UNVERIFIED_SERVER_GATE"
+          assert len(q["entries"])<=100 and all(x["authorization"]=="NONE_FOR_MAIN" for x in q["entries"])
+          def gh(path):
+              return json.loads(subprocess.check_output(["gh","api",path],timeout=25))
+          actual=gh("repos/"+repo+"/git/ref/heads/main")["object"]["sha"]
+          if actual!=q["main"]: raise SystemExit("main changed; queue not published")
+          root="repos/"+repo+"/contents/"
+          for trusted in (".agent-ops/integrator.py",".github/workflows/agent-integration.yml"):
+              expected=subprocess.check_output(["git","rev-parse","HEAD:"+trusted],text=True).strip()
+              if gh(root+trusted+"?ref=ops%2Ftask-checkpoints-v1")["sha"]!=expected: raise SystemExit("integrator changed; queue not published")
+          old=pathlib.Path(path)
+          body={"branch":branch,"message":"Refresh verified integration queue snapshot [skip ci]","content":base64.b64encode(pathlib.Path("integration-queue-result.json").read_bytes()).decode()}
+          if old.exists():
+              prev=json.loads(old.read_text())
+              fields=("main","entries","overlaps","coverage","policy","counts")
+              if all(prev.get(k)==q.get(k) for k in fields):
+                  print(json.dumps({"publication":"UNCHANGED","previous_run":prev["run_id"]}))
+                  raise SystemExit(0)
+              body["sha"]=subprocess.check_output(["git","rev-parse","HEAD:"+path],text=True).strip()
+          p=subprocess.run(["gh","api","--method","PUT",root+path,"--input","-"],input=json.dumps(body),text=True,capture_output=True,timeout=25)
+          if p.returncode: raise SystemExit("queue CAS failed; reread current queue before retry")
+          r=json.loads(p.stdout)
+          new=gh(root+path+"?ref=ops%2Ftask-checkpoints-v1")
+          assert new["sha"]==r["content"]["sha"]
+          print(json.dumps({"publication":"PASS","commit":r["commit"]["sha"],"blob":new["sha"],"entries":len(q["entries"])}))
+          PY
+      - name: Persist detailed integration evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: agent-integration-receipt
+          path: integration-queue-result.json
+          retention-days: 14
+          if-no-files-found: ignore
