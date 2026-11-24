@@ -24,12 +24,14 @@ export function runT03Checks(source) {
   const start=block("async startSupervisedTask(", "private supervisorTaskReceipt");
   ordered(start,"reserveSupervisorAdmission(","this.dispatchSupervisorStart(");
   ordered(start,"if (task.mode !== \"read_only\") return resume()","this.ctx.waitUntil","admissionOnly: true");
-  const prep=block("private async prepareSupervisedReadOnlySource(", "private async advanceSupervisedTask(");
-  ordered(prep,"resolveReadOnlySource(","updatePreparingSupervisorTask(","supervisorBeginExternalEffect(","reserveIsolatedProject(","prepareRepository(","assertCertifiedReadOnlyImport(job, receipt)","supervisorGrantStillOwned(tx, grant)","tx.put(readOnlySourceReceiptKey","supervisorConfirmExternalEffect(");
+  const prep=block("private async prepareSupervisedReadOnlySource(", "private async advanceReadOnlyTask(");
+  ordered(prep,"resolveReadOnlySource(","supervisorVerifyReadOnlySource(","supervisorBeginReadOnlyEffect(storage, grant, \"project_reserve\")","reserveIsolatedProject(","supervisorConfirmReadOnlyEffect(","supervisorBeginReadOnlyEffect(storage, grant, \"container_import\")","prepareRepository(","assertCertifiedReadOnlyImport(job, receipt)","supervisorConfirmReadOnlyEffect(","requireReadOnlySourceReceipt(job)");
   assert(!prep.includes("ensureSupervisorBranch"),"read_only branch mutation");
-  const advance=block("private async advanceSupervisedTask(", "private assertStagingRemote");
-  ordered(advance,"if (job.mode === \"read_only\")","prepareSupervisedReadOnlySource(","else if (!job.baseCommit)","ensureSupervisorBranch(","harness.create(","requireReadOnlySourceReceipt(job)","supervisorModel(","handle.setAgent(","handle.setModel(","supervisorBeginExternalEffect(this.ctx.storage, grant, \"submit\")",".submit(");
-  assert(advance.split("supervisorGrantStillOwned(tx, grant)").length>=5,"missing fence in status writes");
+  const advance=block("private async advanceReadOnlyTask(", "private async advanceSupervisedTask(");
+  ordered(advance,"prepareSupervisedReadOnlySource(","supervisorBeginReadOnlyEffect(storage, grant, \"session_create\")","harness.create(","supervisorConfirmReadOnlyEffect(","supervisorBeginReadOnlyEffect(storage, grant, \"scope_bind\")","supervisorGrantStillOwned(tx, grant)","bindReadOnlyScope(","supervisorConfirmReadOnlyEffect(","requireReadOnlyTaskScope(job, job.session!)","supervisorBeginReadOnlyEffect(storage, grant, \"configure_agent\")","setAgent(","supervisorModel(","supervisorBeginReadOnlyEffect(storage, grant, \"configure_model\")","setModel(","SUPERVISOR_READ_ONLY_PROVIDER_DISPATCH_NOT_AUTHORIZED");
+  assert(!advance.includes(".submit("),"live dispatch reachable");
+  assert(!source.includes("readOnlySourceReceiptKey"),"duplicate journal");
+  assert(source.includes("reserveSupervisorAdmission(this.ctx.storage, job, undefined, start.mode"),"pins missing");
   assert(source.includes("SUPERVISOR_READ_ONLY_REVIEW_FORBIDDEN"),"review not denied");
   assert(source.includes("SUPERVISOR_READ_ONLY_DELEGATION_UNAVAILABLE"),"delegation not fenced");
   assert(source.includes("deferSupervisorStart(decision, {"),"T08 not wired");
@@ -42,40 +44,40 @@ export function runT03Checks(source) {
 
 export async function runT03ImportCases(source) {
   const assert=(ok,label)=>{if(!ok)throw Error(label);};
-  const clone=x=>x===undefined?undefined:JSON.parse(JSON.stringify(x));
   const between=(a,b)=>source.slice(source.indexOf(a),source.indexOf(b,source.indexOf(a)+1));
   const v=between("function assertCertifiedReadOnlyImport(", "/** A playable OpenCode");
   const verify=new Function("task","receipt",v.slice(v.indexOf("{")+1,v.lastIndexOf("}")));
-  const m=between("private async prepareSupervisedReadOnlySource(", "private async advanceSupervisedTask(");
-  const body=m.slice(m.indexOf("{")+1,m.lastIndexOf("}")).replace(/\.get<(?:ReadOnlySourceReceipt|SupervisorTask)>/g,".get");
-  const make=new Function("supervisorBeginExternalEffect","supervisorConfirmExternalEffect","projectContainerName","assertCertifiedReadOnlyImport","readOnlySourceReceiptKey","supervisorTaskKey","supervisorGrantStillOwned","return async function(job,start,grant){"+body+"}");
+  const m=between("private async prepareSupervisedReadOnlySource(", "private async advanceReadOnlyTask(");
+  const body=m.slice(m.indexOf("{")+1,m.lastIndexOf("}"));
+  const make=new Function("inspectSupervisorReadOnlyAdmission","supervisorVerifyReadOnlySource","supervisorBeginReadOnlyEffect","supervisorConfirmReadOnlyEffect","projectContainerName","assertCertifiedReadOnlyImport","return async function(job,start,grant){"+body+"}");
   const start={sourceCommit:"a".repeat(40),sourceTree:"b".repeat(40)};
-  const original={id:"0000000000000001",mode:"read_only",branch:"",project:"supervised-0000000000000001",repository:"owner/repo",status:"preparing",...start};
+  const original={id:"0000000000000001",fingerprint:"fp",mode:"read_only",branch:"",project:"supervised-0000000000000001",repository:"owner/repo",status:"preparing",...start};
   const good={project:original.project,repository:original.repository,commit:start.sourceCommit,tree:start.sourceTree,files:3,sha256:"c".repeat(64)};
-  const key=id=>"task:"+id, receiptKey=id=>"receipt:"+id;
   let passes=0;
-  for(const scenario of ["valid","wrong-resolver","wrong-tree","cancel-during-import","generation-during-import","lost-reply","cached","missing-proof-after-session","forged-request-pin"]){
-    let job=clone(original), receipt, owned=true, phase="reserved";
-    const events=[];
-    if(scenario==="cached"){job.baseCommit=start.sourceCommit;receipt=good;}
-    if(scenario==="missing-proof-after-session"){job.baseCommit=start.sourceCommit;job.session="sesX";}
-    const storage={get:async k=>clone(k===key(job.id)?job:receipt),put:async(k,v)=>{if(k===key(job.id))job=clone(v);else {events.push("store-proof");receipt=clone(v);}},transaction:async fn=>fn(storage)};
-    const begin=async(_s,_g,e)=>{assert(owned&&job.status==="preparing"&&phase==="reserved"&&e==="source_import","bad fence");events.push("begin");phase="effect_unknown";};
-    const confirm=async(_s,_g,e,r)=>{assert(owned&&phase==="effect_unknown"&&e==="source_import"&&r.confirmed&&receipt,"confirm before proof");events.push("confirm");phase="reserved";};
-    const host={ctx:{storage},updatePreparingSupervisorTask:async(_g,fn)=>{assert(owned&&job.status==="preparing","pin fence");job=fn(clone(job));events.push("pin");return clone(job);},
-      githubRunner:{resolveReadOnlySource:async()=>{events.push("resolve");return {repo:job.repository,commit:start.sourceCommit,tree:scenario==="wrong-resolver"?"d".repeat(40):start.sourceTree};}},
-      env:{DEV:{getByName:n=>n==="personal"?{reserveIsolatedProject:async()=>{events.push("reserve-project");}}:{prepareRepository:async()=>{events.push("import");
-        if(scenario==="cancel-during-import")job.status="cancel_requested";
+  for(const scenario of ["valid","wrong-resolver","wrong-tree","cancel-during-import","generation-during-import","lost-reply","cached","pending","forged-request-pin","wrong-registry"]){
+    let job={...original},owned=true,pending;
+    const receipts=[],events=[];
+    let sourceVerifiedAt;
+    if(scenario==="cached"){job.baseCommit=start.sourceCommit;sourceVerifiedAt=1;receipts.push({effect:"project_reserve"},{effect:"container_import",...good});}
+    if(scenario==="pending")pending="container_import";
+    const inspect=async()=>({pins:{commit:start.sourceCommit,tree:start.sourceTree},fingerprint:"fp",sourceVerifiedAt,pending,receipts:[...receipts]});
+    const pin=async(_s,_g,r)=>{assert(r.repo===job.repository&&r.commit===start.sourceCommit&&r.tree===start.sourceTree,"wrong pin");events.push("pin");sourceVerifiedAt=1;return job={...job,baseCommit:r.commit};};
+    const begin=async(_s,_g,e)=>{assert(owned&&job.status==="preparing"&&!pending,"fence");events.push("begin:"+e);pending=e;return job;};
+    const confirm=async(_s,_g,r)=>{assert(owned&&pending===r.effect&&r.project===job.project&&r.repository===job.repository,"receipt fence");
+      if(r.effect==="container_import")verify(job,r);
+      events.push("confirm:"+r.effect);receipts.push(r);pending=undefined;return job;};
+    const host={ctx:{storage:{}},githubRunner:{resolveReadOnlySource:async()=>{events.push("resolve");return {repo:job.repository,commit:start.sourceCommit,tree:scenario==="wrong-resolver"?"d".repeat(40):start.sourceTree};}},
+      requireReadOnlySourceReceipt:async()=>{verify(job,receipts.find(r=>r.effect==="container_import"));},
+      env:{DEV:{getByName:n=>n==="personal"?{reserveIsolatedProject:async()=>{events.push("reserve-project");return {project:job.project,repository:scenario==="wrong-registry"?"other/repo":job.repository};}}:{prepareRepository:async()=>{events.push("import");
+        if(scenario==="cancel-during-import"){job={...job,status:"cancel_requested"};owned=false;}
         if(scenario==="generation-during-import")owned=false;
         if(scenario==="lost-reply")throw Error("lost");
         return scenario==="wrong-tree"?{...good,tree:"d".repeat(40)}:good;}}}}};
-    const fn=make(begin,confirm,x=>x,verify,receiptKey,key,async()=>owned);
-    let failed=false;try{await fn.call(host,clone(job),scenario==="forged-request-pin"?{...start,sourceTree:"d".repeat(40)}:start,{id:job.id});}catch{failed=true;}
-    if(scenario==="valid"){assert(!failed&&events.join(",")==="resolve,pin,begin,reserve-project,import,store-proof,confirm"&&phase==="reserved","valid order");}
-    else if(scenario==="cached"){assert(!failed&&events.length===0,"cache replay");}
-    else {assert(failed&&!events.includes("confirm")&&!receipt,"negative proof/confirm "+scenario);
-      if(["wrong-tree","cancel-during-import","generation-during-import","lost-reply"].includes(scenario))assert(phase==="effect_unknown","ambiguous effect released");
-      else assert(!events.includes("begin"),"effect before validation");
+    let failed=false;try{await make(inspect,pin,begin,confirm,x=>x,verify).call(host,job,scenario==="forged-request-pin"?{...start,sourceTree:"d".repeat(40)}:start,{id:job.id});}catch{failed=true;}
+    if(scenario==="valid")assert(!failed&&events.join(",")==="resolve,pin,begin:project_reserve,reserve-project,confirm:project_reserve,begin:container_import,import,confirm:container_import","valid order");
+    else if(scenario==="cached")assert(!failed&&events.length===0,"cache replay");
+    else {assert(failed&&!events.includes("confirm:container_import"),"unexpected import proof "+scenario);
+      if(["wrong-tree","cancel-during-import","generation-during-import","lost-reply"].includes(scenario))assert(pending==="container_import","ambiguous effect released");
       if(scenario==="cancel-during-import")assert(job.status==="cancel_requested","cancel overwritten");}
     passes++;
   }

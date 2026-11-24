@@ -26,10 +26,12 @@ import {
   reconcileSupervisorCreatedSession, supervisorCommitCreatedSession,
   reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
   reconcileSupervisorTurnEffect, inspectSupervisorAdmissionCapacity,
-  reconcileSupervisorSubmittedEffect, supervisorGrantStillOwned, type StartGrant, type AdmissionDecision
+  reconcileSupervisorSubmittedEffect, supervisorGrantStillOwned, type StartGrant, type AdmissionDecision,
+  supervisorVerifyReadOnlySource, supervisorBeginReadOnlyEffect, supervisorConfirmReadOnlyEffect,
+  supervisorRecordReadOnlyFailure, inspectSupervisorReadOnlyAdmission, reconcileSupervisorReadOnlyPreparation
 } from "./supervisor-admission";
 import { deferSupervisorStart } from "./supervisor-async-start";
-import { createReadOnlyAuthority, requireReadOnlyAuthority, enforceReadOnlyRoute } from "./read-only-policy";
+import { createReadOnlyAuthority, bindReadOnlyScope, requireReadOnlyAuthority, enforceReadOnlyRoute } from "./read-only-policy";
 import { workspacePlugin } from "./workspace";
 import { createDynamicMcpModule } from "./dynamic-mcp";
 import { createDynamicMcpHost } from "./dynamic-mcp-bridge";
@@ -89,7 +91,6 @@ const SUPERVISOR_TRANSCRIPT_UNAVAILABLE_UNBOUNDED = "SUPERVISOR_TRANSCRIPT_UNAVA
 // C05/T03: receipt stored by the supervisor, not accepted from callers.
 type ReadOnlySourceReceipt = { project: string; repository: string; commit: string;
   tree?: string; files: number; sha256: string };
-const readOnlySourceReceiptKey = (id: string) => "supervisor:source-import-v1:" + id;
 function assertCertifiedReadOnlyImport(task: SupervisorTask, receipt: ReadOnlySourceReceipt | undefined): void {
   if (task.mode !== "read_only" || task.branch !== "" ||
       !/^[a-f0-9]{40}$/.test(task.baseCommit ?? "") ||
@@ -128,7 +129,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     let old = await this.ctx.storage.get<SupervisorTask>(key);
     let reused = Boolean(old);
     if (old && old.fingerprint !== fingerprint) throw new Error("requestId usado con otra tarea");
-    if (old && isUntrackedLegacySupervisorOperation(old)) {
+    if (old && old.mode !== "read_only" && isUntrackedLegacySupervisorOperation(old)) {
       let busy: boolean | undefined;
       try { busy = await trace.run("status", "busy", () => this.harness.session(old!.session!).busy()); }
       catch { busy = undefined; }
@@ -166,7 +167,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
     const admission = await trace.run("admission", "reserve", () =>
-      reserveSupervisorAdmission(this.ctx.storage, job));
+      reserveSupervisorAdmission(this.ctx.storage, job, undefined, start.mode === "read_only"
+        ? { commit: start.sourceCommit!, tree: start.sourceTree! } : undefined));
     if (admission.kind === "capacity") {
       return { id: start.requestId, accepted: false,
         status: admission.reason === "CAPACITY_EXHAUSTED" ? "capacity_rejected" : "admission_stopped",
@@ -174,6 +176,26 @@ export class OpenCodeAgent extends DurableObject<Env> {
         reason: admission.reason, retryAfterMs: admission.retryAfterMs, capacity: 10 };
     }
     if (admission.kind === "reused") {
+      // Only independent positive registry or durable scope evidence may
+      // reconcile preparation. A missing Container receipt stays unknown.
+      if (admission.task.mode === "read_only" && admission.reason === "EFFECT_UNCONFIRMED" &&
+          admission.slot && ["project_reserve", "scope_bind"].includes(admission.slot.effect ?? "")) {
+        const task = admission.task;
+        const slot = admission.slot;
+        let recovered;
+        if (slot.effect === "project_reserve") {
+          const record = await this.env.DEV.getByName("personal").isolatedProject(task.project);
+          if (record?.project === task.project && record.repository?.toLowerCase() === task.repository.toLowerCase())
+            recovered = await reconcileSupervisorReadOnlyPreparation(this.ctx.storage, task.id, slot,
+              { effect: "project_reserve", project: record.project, repository: record.repository! });
+        } else if (slot.effect === "scope_bind" && task.session) {
+          await this.requireReadOnlyTaskScope(task, task.session);
+          recovered = await reconcileSupervisorReadOnlyPreparation(this.ctx.storage, task.id, slot,
+            { effect: "scope_bind", project: task.project, repository: task.repository, sessionId: task.session });
+        }
+        if (recovered) return this.dispatchSupervisorStart({ kind: "granted", ...recovered, reused: true },
+          start, trace, () => { throw Error("SUPERVISOR_READ_ONLY_DEFER_REQUIRED"); });
+      }
       // A positive exact-ID read is the only evidence used to reconcile an
       // interrupted session_create. No enumeration, transcript or blind
       // second create is permitted here. The transaction transfers the
@@ -305,73 +327,123 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   private async requireReadOnlySourceReceipt(task: SupervisorTask): Promise<ReadOnlySourceReceipt> {
-    const receipt = await this.ctx.storage.get<ReadOnlySourceReceipt>(readOnlySourceReceiptKey(task.id));
+    const journal = await inspectSupervisorReadOnlyAdmission(this.ctx.storage, task.id);
+    const evidence = journal?.receipts.find(r => r.evidence.effect === "container_import")?.evidence;
+    const receipt = evidence && { project: evidence.project, repository: evidence.repository,
+      commit: evidence.commit ?? "", tree: evidence.tree, files: evidence.files ?? 0, sha256: evidence.sha256 ?? "" };
+    if (!journal || journal.sourceVerifiedAt === undefined || journal.fingerprint !== task.fingerprint ||
+        journal.project !== task.project || journal.repository !== task.repository ||
+        journal.pins.commit !== task.baseCommit || journal.pins.tree !== task.sourceTree)
+      throw Error("SUPERVISOR_READ_ONLY_SOURCE_UNCERTIFIED");
     assertCertifiedReadOnlyImport(task, receipt);
     return receipt!;
   }
 
-  /** Import before SDK create/configure. A lost import response remains an
-   * unknown external effect; T02 may reconcile only a matching durable receipt.
-   * A GET resolution cannot create branches or change repository state. */
+  /** T02 owns the single admission journal; each positive RPC receipt advances
+   * one cursor. Never replay a pending effect, even after a lease timeout. */
   private async prepareSupervisedReadOnlySource(job: SupervisorTask,
     start: ReturnType<typeof validateSupervisorStart>, grant: StartGrant): Promise<SupervisorTask> {
-    if (job.mode !== "read_only" || job.branch !== "" ||
-        !start.sourceCommit || !start.sourceTree || start.sourceSession)
+    if (job.mode !== "read_only" || job.branch !== "" || start.sourceSession ||
+        !start.sourceCommit || !start.sourceTree || job.sourceCommit !== start.sourceCommit ||
+        job.sourceTree !== start.sourceTree)
       throw Error("SUPERVISOR_READ_ONLY_PINS_REQUIRED");
-    if (job.sourceCommit !== start.sourceCommit || job.sourceTree !== start.sourceTree)
-      throw Error("SUPERVISOR_READ_ONLY_PIN_MISMATCH");
-    if (job.baseCommit) {
-      if (job.baseCommit !== job.sourceCommit) throw Error("SUPERVISOR_READ_ONLY_PIN_MISMATCH");
-    } else {
-      if (job.session || job.operationId) throw Error("SUPERVISOR_READ_ONLY_PIN_MISSING");
+    const storage = this.ctx.storage;
+    const journal = await inspectSupervisorReadOnlyAdmission(storage, job.id);
+    if (!journal || journal.pending || journal.pins.commit !== start.sourceCommit ||
+        journal.pins.tree !== start.sourceTree || journal.fingerprint !== job.fingerprint)
+      throw Error("SUPERVISOR_READ_ONLY_JOURNAL_UNAVAILABLE");
+    if (journal.sourceVerifiedAt === undefined) {
       const verified = await this.githubRunner.resolveReadOnlySource(job.repository, start.sourceCommit, start.sourceTree);
-      if (verified.repo.toLowerCase() !== job.repository.toLowerCase() ||
-          verified.commit !== start.sourceCommit || verified.tree !== start.sourceTree)
-        throw Error("SUPERVISOR_READ_ONLY_PIN_MISMATCH");
-      job = await this.updatePreparingSupervisorTask(grant, fresh => {
-        if (fresh.mode !== "read_only" || fresh.branch !== "" ||
-            fresh.baseCommit || fresh.sourceCommit !== verified.commit ||
-            fresh.sourceTree !== verified.tree || fresh.session || fresh.operationId)
-          throw Error("ADMISSION_FENCE_REJECTED");
-        return { ...fresh, baseCommit: verified.commit };
+      job = await supervisorVerifyReadOnlySource(storage, grant, verified);
+    }
+    if (journal.receipts.length === 0) {
+      job = await supervisorBeginReadOnlyEffect(storage, grant, "project_reserve");
+      const record = await this.env.DEV.getByName("personal").reserveIsolatedProject(job.project, job.repository);
+      job = await supervisorConfirmReadOnlyEffect(storage, grant, {
+        effect: "project_reserve", project: record.project, repository: record.repository ?? ""
       });
     }
-    const existing = await this.ctx.storage.get<ReadOnlySourceReceipt>(readOnlySourceReceiptKey(job.id));
-    if (existing) {
-      assertCertifiedReadOnlyImport(job, existing);
-      return job;
+    if (journal.receipts.length < 2) {
+      job = await supervisorBeginReadOnlyEffect(storage, grant, "container_import");
+      const dev = this.env.DEV.getByName(projectContainerName(job.project));
+      const receipt = await dev.prepareRepository(job.project, job.repository, job.baseCommit, job.sourceTree);
+      assertCertifiedReadOnlyImport(job, receipt);
+      job = await supervisorConfirmReadOnlyEffect(storage, grant, { ...receipt, effect: "container_import" });
     }
-    if (job.session || job.operationId) throw Error("SUPERVISOR_READ_ONLY_IMPORT_RECEIPT_MISSING");
-    await supervisorBeginExternalEffect(this.ctx.storage, grant, "source_import");
-    const registry = this.env.DEV.getByName("personal");
-    await registry.reserveIsolatedProject(job.project, job.repository);
-    const dev = this.env.DEV.getByName(projectContainerName(job.project));
-    const receipt = await dev.prepareRepository(job.project, job.repository, job.baseCommit, job.sourceTree);
-    assertCertifiedReadOnlyImport(job, receipt);
-    // Persist the exact certified import before clearing its effect. A crash
-    // in this window leaves effect_unknown, not a new attempt based on TTL.
-    job = await this.ctx.storage.transaction(async tx => {
-      const fresh = await tx.get<SupervisorTask>(supervisorTaskKey(grant.id));
-      if (!fresh || fresh.status !== "preparing" || fresh.pendingTurn || fresh.cancelAmbiguous ||
-          fresh.session || fresh.operationId || !await supervisorGrantStillOwned(tx, grant))
-        throw Error("ADMISSION_FENCE_REJECTED");
-      assertCertifiedReadOnlyImport(fresh, receipt);
-      await tx.put(readOnlySourceReceiptKey(fresh.id), receipt);
-      return fresh;
-    });
-    await supervisorConfirmExternalEffect(this.ctx.storage, grant, "source_import", { confirmed: true });
+    await this.requireReadOnlySourceReceipt(job);
     return job;
+  }
+
+  private async advanceReadOnlyTask(job: SupervisorTask, start: ReturnType<typeof validateSupervisorStart>,
+    reused: boolean, grant: StartGrant, trace: PhaseProbe): Promise<Record<string, unknown>> {
+    const storage = this.ctx.storage;
+    try {
+      job = await this.prepareSupervisedReadOnlySource(job, start, grant);
+      const journal = await inspectSupervisorReadOnlyAdmission(storage, job.id);
+      if (!journal || journal.pending) throw Error("SUPERVISOR_READ_ONLY_JOURNAL_UNAVAILABLE");
+      const done = journal.receipts.length;
+      if (done < 3) {
+        job = await supervisorBeginReadOnlyEffect(storage, grant, "session_create");
+        const expected = r2SessionId(job.id);
+        const sessionId = await trace.run("session_create", "create", () => this.harness.create({ id: expected }));
+        if (sessionId !== expected) throw Error("SUPERVISOR_SESSION_ID_MISMATCH");
+        job = await supervisorConfirmReadOnlyEffect(storage, grant, { effect: "session_create",
+          project: job.project, repository: job.repository, sessionId });
+      }
+      if (done < 4) {
+        job = await supervisorBeginReadOnlyEffect(storage, grant, "scope_bind");
+        await storage.transaction(async tx => {
+          const fresh = await tx.get<SupervisorTask>(supervisorTaskKey(grant.id));
+          const slot = await supervisorAdmissionSlot(tx, grant.id);
+          if (!fresh || fresh.mode !== "read_only" || fresh.status !== "preparing" ||
+              fresh.cancelAmbiguous || fresh.pendingTurn || fresh.session !== r2SessionId(grant.id) ||
+              fresh.baseCommit !== job.baseCommit || fresh.sourceTree !== job.sourceTree ||
+              slot?.phase !== "effect_unknown" || slot.effect !== "scope_bind" ||
+              !await supervisorGrantStillOwned(tx, grant) ||
+              await tx.get<string>("supervisor:session:" + fresh.session) !== fresh.id ||
+              this.ctx.id.name !== SUPERVISOR_WORKSPACE)
+            throw Error("ADMISSION_FENCE_REJECTED");
+          const key = scopeStorageKey(fresh.session);
+          const authority = createReadOnlyAuthority({ mode: "read_only", object: this.ctx.id.toString(),
+            session: fresh.session, task: fresh.id, project: fresh.project, repository: fresh.repository,
+            sourceCommit: fresh.baseCommit!, sourceTree: fresh.sourceTree! });
+          await tx.put(key, bindReadOnlyScope(await tx.get<ProjectScope>(key), authority));
+        });
+        job = await supervisorConfirmReadOnlyEffect(storage, grant, { effect: "scope_bind",
+          project: job.project, repository: job.repository, sessionId: job.session });
+      }
+      await this.requireReadOnlyTaskScope(job, job.session!);
+      if (done < 5) {
+        job = await supervisorBeginReadOnlyEffect(storage, grant, "configure_agent");
+        await trace.run("configure", "setAgent", () => this.harness.session(job.session!).setAgent("build"));
+        job = await supervisorConfirmReadOnlyEffect(storage, grant, { effect: "configure_agent",
+          project: job.project, repository: job.repository, sessionId: job.session, agent: "build" });
+      }
+      if (done < 6) {
+        const selected = await this.supervisorModel(job.model ?? "economy");
+        job = await supervisorBeginReadOnlyEffect(storage, grant, "configure_model");
+        await trace.run("configure", "setModel", () => this.harness.session(job.session!).setModel({ providerID: selected.providerID, id: selected.id }));
+        job = await supervisorConfirmReadOnlyEffect(storage, grant, { effect: "configure_model",
+          project: job.project, repository: job.repository, sessionId: job.session, model: job.model ?? "economy" });
+      }
+      // STOP_LIVE: T11 must wire the independent provider gate BEFORE the
+      // T02 "submit" intent. No dispatch merely because preparation succeeded.
+      return { ...this.supervisorTaskReceipt(await this.supervisedRecord(job.id), reused),
+        accepted: false, confirmed: false, stop: true, reason: "SUPERVISOR_READ_ONLY_PROVIDER_DISPATCH_NOT_AUTHORIZED" };
+    } catch {
+      const fresh = await supervisorRecordReadOnlyFailure(storage, grant);
+      return this.supervisorTaskReceipt(fresh ?? await this.supervisedRecord(job.id), reused);
+    }
   }
 
   private async advanceSupervisedTask(
     job: SupervisorTask, start: ReturnType<typeof validateSupervisorStart>, reused: boolean,
     grant: StartGrant, trace: PhaseProbe
   ) {
+    if (job.mode === "read_only") return this.advanceReadOnlyTask(job, start, reused, grant, trace);
     const key = supervisorTaskKey(job.id);
     try {
-      if (job.mode === "read_only") {
-        job = await this.prepareSupervisedReadOnlySource(job, start, grant);
-      } else if (!job.baseCommit) {
+      if (!job.baseCommit) {
         // The deterministic branch reservation safely recovers after a lost GitHub response.
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "github_branch");
         const branchResult = await trace.run("github_branch", "ensure", () =>
@@ -407,31 +479,19 @@ export class OpenCodeAgent extends DurableObject<Env> {
         // under the original grant. A reconciler may already have fenced it.
         job = await trace.run("session_create", "commit", () =>
           supervisorCommitCreatedSession(this.ctx.storage, grant, sessionId));
-        if (job.mode !== "read_only")
-          await trace.run("session_create", "bind", () =>
-            this.bindSessionScope(sessionId, { project: job.project, repository: job.repository }));
+        await trace.run("session_create", "bind", () =>
+          this.bindSessionScope(sessionId, { project: job.project, repository: job.repository }));
       }
       // A lost reply may interrupt a prior bind. Rechecking the same-scope
       // mapping is safe; it must never widen a session's project permissions.
-      if (job.mode === "read_only") {
-        // T02/T11 must atomically bind the T04 authority and reverse index
-        // with native create/reconcile. Missing authority is NOT upgraded here.
-        await this.requireReadOnlyTaskScope(job, job.session!);
-      } else {
-        if (job.sessionIdPolicy === "deterministic-v1") {
-          await this.bindSessionScope(job.session!, {
-            project: job.project, repository: job.repository
-          });
-        }
-        await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
+      if (job.sessionIdPolicy === "deterministic-v1") {
+        await this.bindSessionScope(job.session!, {
+          project: job.project, repository: job.repository
+        });
       }
+      await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
       const handle = this.harness.session(job.session!);
       if (!job.operationId) {
-        // No provider catalogue/model configuration before certified import.
-        if (job.mode === "read_only") {
-          await this.requireReadOnlySourceReceipt(job);
-          await this.supervisorModel(job.model ?? "economy");
-        }
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "configure");
         await trace.run("configure", "setAgent", () => handle.setAgent("build"));
         const model = resolveModelSelection(job.model ?? "economy");
@@ -485,7 +545,6 @@ export class OpenCodeAgent extends DurableObject<Env> {
       return this.supervisorTaskReceipt(job, reused);
     }
     try {
-      if (job.mode === "read_only") await this.requireReadOnlySourceReceipt(job);
       await supervisorBeginExternalEffect(this.ctx.storage, grant, "submit");
       const submitSession = job.session;
       const submitCommit = job.baseCommit;
@@ -679,7 +738,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const prompt = v.prompt.trim();
     const operationId = supervisorTurnOperationId(id, turnId);
     const initial = await this.supervisedRecord(id);
-    if (initial.mode === "read_only") await this.requireReadOnlyTaskScope(initial, initial.session!);
+    if (initial.mode === "read_only") {
+      await this.requireReadOnlyTaskScope(initial, initial.session!);
+      return { taskId: id, accepted: false, confirmed: false, stop: true,
+        reason: "SUPERVISOR_READ_ONLY_PROVIDER_DISPATCH_NOT_AUTHORIZED" };
+    }
     // The one T03 admission ledger and T04 turn journal are updated inside
     // the same transaction, including readmission of a completed task.
     const reservation = await trace.run("admission", "reserve", () =>
