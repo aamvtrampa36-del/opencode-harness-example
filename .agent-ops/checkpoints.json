@@ -10,7 +10,7 @@
     "recovery": "Inspect only current checkpoint and changed evidence. Check actual Issue/PR state, HEAD/base and dependencies. Resume only if useful, authorized and compatible; blocked/stale/resolved/cancelled tasks are not retried by default. After two attempts with no material progress mark blocked with reason; reopen only on new evidence. No automatic merge/deploy or expansion of permissions. States: available, active, recoverable, blocked, obsolete, cancelled, completed. A terminal state is not a candidate. For a blocked task, require a changed dependency or materially new evidence. Do not reopen a completed/obsolete/cancelled task; create a new task only if a distinct current objective warrants it.",
     "checkpoint": "Persist after claim, first useful evidence and each material milestone before further risky work. Keep objective, acceptance, issue/PR, branch, base/head SHA, evidence, completed, pending, next action, blocker, session/operation ID and progress counters. A completed checkpoint requires actual evidence meeting acceptance. Store references, not copied logs. Release on completion/pause. An expired lease permits revalidation and new generation, not blind continuation. Keep only the latest task per lane in this file; before replacement preserve evidence in the relevant Issue/PR or Git history. Never change policy/schema during ordinary checkpoint updates."
   },
-  "revision": 7,
+  "revision": 8,
   "reservation": null,
   "lanes": {
     "integration-selftest": {
@@ -109,8 +109,8 @@
     "queue": ".agent-ops/integration-queue.json",
     "workflow": ".github/workflows/agent-integration.yml",
     "refresh_trigger": ".agent-ops/integration-request.json",
-    "authority": "Generated snapshot; prior snapshots recoverable in Git history. Do not edit queue directly. Check exact current main and PR head before reuse. No product merges or automatic closure while server-enforced gate is unverified.",
-    "mode": "PREPARE_ONLY",
+    "authority": "Queue remains read-only for product changes; sole conditional actuator is Agent exact main integration. It validates an immutable combined tree, then updates main with exact-base Git lease and proven fast-forward ancestry. Not a server-wide protection against external writers. No direct main writes by agents.",
+    "mode": "ATOMIC_CONDITIONAL",
     "evidence": {
       "run": 45435493643,
       "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
@@ -143,7 +143,7 @@
     "activation_gate": {
       "schema": "agent-integration-activation/v1",
       "assessed_date": "2026-11-24",
-      "status": "BLOCKED_SERVER_GATE",
+      "status": "ATOMIC_CONDITIONAL_IDLE",
       "owner_authorized": true,
       "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
       "protected": false,
@@ -163,8 +163,33 @@
         "scope": "main, path_includes=*; deploy command configured.",
         "policy": "Do not infer deployment authorization from merge authorization."
       },
-      "resume_condition": "A material change in plan or legitimate administrative capability and verified effective required checks/review/no bypass, plus independently authorized deployment behavior and an eligible current candidate. Do not retry unchanged permission or plan failures. Cloudflare coordination cannot restrict external GitHub writers.",
-      "safety": "No main writes, no automated close, no promotion of drafts, no force push or deploy. Existing sandbox receipt reusable; no rerun solely to reconfirm this gate."
+      "resume_condition": "Eligible non-draft exact candidate with verified acceptance handoff, no restrictions or unresolved review, satisfied dependencies, full combined-tree CI and separate deployment clearance. No retry unchanged blocked candidate.",
+      "safety": "No main writes, no automated close, no promotion of drafts, no force push or deploy. Existing sandbox receipt reusable; no rerun solely to reconfirm this gate.",
+      "github_pro": "DISCARDED",
+      "external_writer_risk": "Accepted cooperative boundary; exact-base CAS rejects changes before the push, cannot forbid other actors or branch ABA."
+    },
+    "exact_actuator": {
+      "schema": "agent-main-integration/v1",
+      "script": ".agent-ops/integrate_exact.py",
+      "workflow": ".github/workflows/agent-main-integration.yml",
+      "request": ".agent-ops/main-integration-request.json",
+      "receipt": ".agent-ops/main-integration-receipt.json",
+      "trigger": "CAS update request on ops branch; workflow push event; same per-repo concurrency group as queue",
+      "mode": "IDLE_NO_ELIGIBLE_CANDIDATE",
+      "source_commit": "15c72099314d21c87994e8382bd3e2687eb188ed",
+      "script_blob": "c5e12357c65dd1ccbb1d691e00b59601f116fdeb",
+      "acceptance_evidence": {
+        "run": 45460038404,
+        "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45460038404",
+        "selftest": "PASS",
+        "bare_remote_stale_write_rejected": true,
+        "policy_guards": 8,
+        "product_ci": "SKIPPED_IDLE",
+        "main_apply": "SKIPPED_IDLE",
+        "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623"
+      },
+      "deployment_policy": "Every main change may deploy via existing trigger; requires separate explicit release clearance; never infer from integration authorization.",
+      "handoff": "Existing lanes remain within original permissions. For eligible reviewed PR, use exact base/head/combined tree and owner-authenticated acceptance comment INTEGRATION_ACCEPTED base=... head=... tree=...; do not create marker without review. Exact deployment clearance, dependencies, and SHA256 operation identity per validate_req. No direct writes to main; existing explicit restrictions stand. Never infer release permission. Preserve all checkpoints and CAS request; one in-flight request."
     }
   }
 }
