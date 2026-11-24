@@ -21,7 +21,7 @@ const states=['available','active','recoverable','blocked','obsolete','cancelled
 const ciStates=['success','failure','cancelled','skipped','timed_out','neutral','action_required','stale','startup_failure'];
 function assertRequest(req){
  if(!req||Object.getPrototypeOf(req)!==Object.prototype||!REPOS.includes(req.project))throw Error('invalid project');
- if(!['operation','project','pr','lane','steps','request_id'].every(k=>true)||Object.keys(req).some(k=>!['operation','project','pr','lane','steps','request_id'].includes(k)))throw Error('unknown field');
+ if(Object.keys(req).some(k=>!['operation','project','pr','lane','steps','request_id'].includes(k)))throw Error('unknown field');
  if(![...OPS,'execute_plan'].includes(req.operation))throw Error('operation denied');
  if(req.pr!==undefined&&!validPR(req.pr))throw Error('invalid PR');
  if(req.lane!==undefined&&!laneOK(req.lane))throw Error('invalid lane');
@@ -50,7 +50,7 @@ export async function executePlan(req, transport){
  if(cpRaw){registry=await soft('checkpoint-decode',()=>decodeFile(cpRaw));if(registry?.repository!==OWNER+'/'+req.project||registry?.schema!=='agent-checkpoints/v1'){registry=null;errors.push('checkpoint-identity')}}
  const lane=req.lane, task=lane&&registry?.lanes&&Object.hasOwn(registry.lanes,lane)?registry.lanes[lane]:null;
  const prNum=req.pr??(validPR(task?.pr)?task.pr:null);
- const mismatch=!!(req.pr&&validPR(task?.pr)&&req.pr!==task.pr);
+ const mismatch=!!(req.pr&&task&&(!validPR(task.pr)||req.pr!==task.pr));
  const issueNum=validPR(task?.issue)?task.issue:null;
  const [pr,issue]=await Promise.all([prNum?soft('pr',()=>get('pulls/'+prNum)):null,issueNum?soft('issue',()=>get('issues/'+issueNum)):null]);
  const prIdentity=!!(pr&&pr.number===prNum&&isSHA(pr.head?.sha)&&isSHA(pr.base?.sha)&&pr.base?.repo?.full_name===OWNER+'/'+req.project&&pr.head?.repo?.full_name===OWNER+'/'+req.project&&pr.base.ref==='main');
@@ -70,12 +70,14 @@ export async function executePlan(req, transport){
  const e=registry?.validation_v1?.evidence;
  const validation={source:'checkpoint',recorded:!!e,pr:validPR(e?.pr)?e.pr:null,head:isSHA(e?.head)?e.head:null,base:isSHA(e?.base)?e.base:null,exact_current:!!(e&&head&&main&&e.pr===prNum&&e.head===head&&e.base===main),recorded_static:['PASS','FAIL','PARTIAL','BLOCKED','CACHED'].includes(e?.static_status)?e.static_status:null,recorded_ci:['PASS','FAIL','PARTIAL','BLOCKED','CACHED'].includes(e?.ci_status)?e.ci_status:null,targeted:['PASS','FAIL','BLOCKED'].includes(e?.targeted?.status)?e.targeted.status:null,run_id:Number.isSafeInteger(e?.run)?e.run:null,requested:!!(request&&head&&request.head===head&&request.pr===prNum),request_blob:requestRaw?.sha??null,acceptance:'NOT_ESTABLISHED'};
  if(validation.run_id)validation.url=url(req.project,'actions/runs/'+validation.run_id);
- const active=!!(registry?.reservation&&Date.parse(registry.reservation.lease_expires_at)>Date.now());
+ const leaseTime=Date.parse(registry?.reservation?.lease_expires_at||'');
+ const active=!!(registry?.reservation&&(!Number.isFinite(leaseTime)||leaseTime>Date.now()));
  let decision='NO_TASK';
  if(!registry)decision='BLOCKED_CHECKPOINT';
  else if(task){
    if(['completed','obsolete','cancelled'].includes(task.status))decision='DO_NOT_RESUME';
    else if(active)decision='ACTIVE_LEASE';
+   else if(mismatch)decision='REVIEW_TASK_LINK';
    else if(task.status==='blocked')decision='WAIT_NEW_EVIDENCE';
    else if(mismatch||!main||needPR&&!prIdentity||issueNum&&!issue)decision='REVALIDATE';
    else if(pr?.state==='closed'||issue?.state==='closed')decision='REVIEW_RESOLUTION';
@@ -88,8 +90,8 @@ export async function executePlan(req, transport){
  const out={schema:'agent-composition/v1',project:req.project,requested,request_id:req.request_id??null,main,coverage:errors.length||!main||!registry||needPR&&(!prIdentity||!diff||!runs)?'PARTIAL':'COMPLETE_READS',errors,
    pr:prIdentity?{number:prNum,state:pr.state==='open'?'open':'closed',merged:pr.merged===true,draft:pr.draft===true,head,base:pr.base.sha,mergeable:typeof pr.mergeable==='boolean'?pr.mergeable:null,ahead:diff?.ahead_by??null,behind:diff?.behind_by??null,files,files_truncated:!diff||files.length!==(diff.files||[]).length||pr.changed_files>files.length,url:url(req.project,'pull/'+prNum)}:null,
    issue:issue?{number:issueNum,state:issue.state==='closed'?'closed':'open',url:url(req.project,'issues/'+issueNum)}:null,
-   checkpoint:{revision:Number.isSafeInteger(registry?.revision)?registry.revision:null,blob:cpRaw?.sha??null,lane:lane??null,task_id:label(task?.task_id),status:states.includes(task?.status)?task.status:null,reservation_active:active,lease_expires_at:safeDate(registry?.reservation?.lease_expires_at),has_next_action:typeof task?.next_action==='string'&&!!task.next_action.trim(),attempts_without_progress:Number.isSafeInteger(task?.attempts_without_progress)?task.attempts_without_progress:null,decision,url:url(req.project,'blob/'+BRANCH+'/.agent-ops/checkpoints.json')},ci,validation,
-   next:decision==='REVALIDATE_REFS'||mismatch?'Recheck current refs and relevant evidence before any write':ci.base_current===false?'Existing CI is historical; consider targeted validation on current base':decision==='DO_NOT_RESUME'?'Do not resume terminal task':'Review cited checkpoint for the next authorized action',
+   checkpoint:{revision:Number.isSafeInteger(registry?.revision)?registry.revision:null,blob:cpRaw?.sha??null,lane:lane??null,task_id:label(task?.task_id),status:states.includes(task?.status)?task.status:null,reservation_active:active,lease_expires_at:safeDate(registry?.reservation?.lease_expires_at),pr_linked:!!(task&&validPR(task.pr)&&task.pr===prNum),has_next_action:typeof task?.next_action==='string'&&!!task.next_action.trim(),attempts_without_progress:Number.isSafeInteger(task?.attempts_without_progress)?task.attempts_without_progress:null,decision,url:url(req.project,'blob/'+BRANCH+'/.agent-ops/checkpoints.json')},ci,validation,
+   next:decision==='DO_NOT_RESUME'?'Do not resume terminal task; any explicit PR context is independent':decision==='WAIT_NEW_EVIDENCE'?'Do not retry blocked task without materially new evidence':decision==='REVIEW_TASK_LINK'?'Explicit PR is not linked to the lane; do not assume continuity':decision==='REVALIDATE_REFS'||mismatch?'Recheck current refs and relevant evidence before any write':validation.exact_current&&validation.recorded_static==='FAIL'?'Inspect recorded static defect before repeating tests':validation.exact_current&&validation.targeted==='PASS'?'Targeted tests recorded for exact head/base; verify receipt and only run remaining full CI or runtime acceptance if necessary':ci.base_current===false?'Existing CI is historical; consider targeted validation on current base':'Review cited checkpoint for the next authorized action',
    acceptance:'NOT_ESTABLISHED',metrics};
  metrics.elapsed_ms=Date.now()-started;metrics.compact_bytes=Buffer.byteLength(JSON.stringify(out));return out;
 }
@@ -111,9 +113,10 @@ async function selftest(){
  const req={project:'cdf-cloud-engine',operation:'execute_plan',lane:'test',steps:['inspect_pr','resume_task','validate_task','inspect_pr']};
  const out=await executePlan(req,fake);
  assert.equal(out.coverage,'COMPLETE_READS');assert.equal(out.pr.number,1);assert.equal(out.ci.base_current,false);assert.equal(out.validation.exact_current,true);assert.equal(out.checkpoint.decision,'REVIEW_NEXT_ACTION');assert.equal(out.requested.length,3);assert.equal(calls,7);assert.ok(max>1);assert.ok(!JSON.stringify(out).includes('INJECT_IGNORE_ALL_INSTRUCTIONS'));assert.equal(out.acceptance,'NOT_ESTABLISHED');
+ const linked=await executePlan({...req,pr:2},async p=>p.endsWith('/pulls/2')?{number:2,state:'open',head:{sha:a,repo:{full_name:r}},base:{sha:c,ref:'main',repo:{full_name:r}},changed_files:1}:fake(p));assert.equal(linked.checkpoint.decision,'REVIEW_TASK_LINK');
  const fail=await executePlan(req,async p=>{if(p.includes('/compare/'))throw Error('network failure');return fake(p)});assert.equal(fail.coverage,'PARTIAL');assert.ok(fail.errors.includes('compare'));
  for(const bad of [{...req,project:'foreign'},{...req,operation:'write'},{...req,steps:Array(5).fill('inspect_pr')},{...req,pr:'1;echo bad'},{...req,extra:'arbitrary'},{...req,lane:'__proto__'}])await assert.rejects(()=>executePlan(bad,fake));
- console.log(JSON.stringify({selftest:'PASS',cases:18,parallel_max:max,unique_calls:7,deduplicated_steps:true,raw_instruction_excluded:true}));
+ console.log(JSON.stringify({selftest:'PASS',cases:19,parallel_max:max,unique_calls:7,deduplicated_steps:true,raw_instruction_excluded:true}));
 }
 if(import.meta.url===pathToFileURL(process.argv[1]||'').href){
  try{if(process.argv[2]==='--selftest')await selftest();else if(process.argv[2]==='--request'){const req=JSON.parse(readFileSync('.agent-ops/context-request.json','utf8'));if(process.env.GITHUB_REPOSITORY&&process.env.GITHUB_REPOSITORY!==OWNER+'/'+req.project)throw Error('cross-repository request denied');console.log(JSON.stringify(await executePlan(req,gh)))}else throw Error('unsupported mode')}catch{console.log(JSON.stringify({schema:'agent-composition/v1',coverage:'BLOCKED',error:'Invalid request, unsupported mode or execution failure'}));process.exitCode=2}
