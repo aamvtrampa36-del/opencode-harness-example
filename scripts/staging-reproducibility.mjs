@@ -27,17 +27,20 @@ export function compareInputs(a,b){
   if(!a||!b||a.schema!=="opencode-repro-build/v1"||b.schema!==a.schema)throw Error("Invalid build receipts");
   if(a.replica!=="a"||b.replica!=="b")throw Error("Independent replicas required");
   if(!/^[1-9][0-9]*$/.test(a.runId)||a.runId!==b.runId)throw Error("CI run identity mismatch");
-  if(JSON.stringify(a.inputs)!==JSON.stringify(b.inputs))throw Error("Build inputs differ");
+  if(JSON.stringify(a.inputs)!==JSON.stringify(b.inputs))throw Error("Declared build inputs differ");
+  // Hosted runner image revisions are observed environment metadata, not pinned inputs.
+  // They are reported for both replicas; byte equality remains mandatory.
+  if(typeof a.runnerImageVersion!=="string"||typeof b.runnerImageVersion!=="string"||!a.runnerImageVersion||!b.runnerImageVersion||a.runnerImageVersion==="unknown"||b.runnerImageVersion==="unknown")throw Error("Runner image revision evidence missing");
   if(!/^[0-9a-f]{40}$/.test(a.inputs.commit)||!/^[0-9a-f]{40}$/.test(a.inputs.tree))throw Error("Invalid source identity");
   return true;
 }
 function record(root){
   const commit=git("rev-parse","HEAD"),tree=git("rev-parse","HEAD^{tree}");
   if(commit!==process.env.EXPECTED_SHA||git("status","--porcelain","--untracked-files=no"))throw Error("Unexpected checkout");
-  const inputs={commit,tree,lockfile:hash("bun.lock"),bun:command("bun","--version"),node:process.version,wrangler:JSON.parse(readFileSync("node_modules/wrangler/package.json","utf8")).version,vite:JSON.parse(readFileSync("node_modules/vite/package.json","utf8")).version,image:process.env.ImageOS??"unknown",imageVersion:process.env.ImageVersion??"unknown",arch:process.arch,platform:process.platform,sourceDateEpoch:process.env.SOURCE_DATE_EPOCH,timezone:process.env.TZ,locale:process.env.LC_ALL};
-  const receipt={schema:"opencode-repro-build/v1",replica:process.env.REPLICA,runId:process.env.GITHUB_RUN_ID,inputs,groups:manifest(root),archiveSha256:hash(join(root,"payload.tar.gz"))};
+  const inputs={commit,tree,lockfile:hash("bun.lock"),bun:command("bun","--version"),node:process.version,wrangler:JSON.parse(readFileSync("node_modules/wrangler/package.json","utf8")).version,vite:JSON.parse(readFileSync("node_modules/vite/package.json","utf8")).version,image:process.env.ImageOS??"unknown",arch:process.arch,platform:process.platform,sourceDateEpoch:process.env.SOURCE_DATE_EPOCH,timezone:process.env.TZ,locale:process.env.LC_ALL};
+  const receipt={schema:"opencode-repro-build/v1",replica:process.env.REPLICA,runId:process.env.GITHUB_RUN_ID,runnerImageVersion:process.env.ImageVersion??"unknown",inputs,groups:manifest(root),archiveSha256:hash(join(root,"payload.tar.gz"))};
   writeFileSync(join(root,"receipt.json"),JSON.stringify(receipt,null,2)+"\n");
-  console.log(JSON.stringify({replica:receipt.replica,inputs,archiveSha256:receipt.archiveSha256,groups:Object.fromEntries(groups.map(k=>[k,{files:receipt.groups[k].files,sha256:receipt.groups[k].sha256}]))}));
+  console.log(JSON.stringify({replica:receipt.replica,inputs,runnerImageVersion:receipt.runnerImageVersion,archiveSha256:receipt.archiveSha256,groups:Object.fromEntries(groups.map(k=>[k,{files:receipt.groups[k].files,sha256:receipt.groups[k].sha256}]))}));
 }
 function compare(aDir,bDir){
   const a=JSON.parse(readFileSync(join(aDir,"receipt.json"),"utf8")),b=JSON.parse(readFileSync(join(bDir,"receipt.json"),"utf8"));
@@ -62,7 +65,7 @@ function compare(aDir,bDir){
       }
     }
   }
-  const result={schema:"opencode-repro-comparison/v1",commit:a.inputs.commit,tree:a.inputs.tree,runId:a.runId,replicas:[a.replica,b.replica],passed:differences.length===0&&archiveEqual,archiveEqual,archiveSha256:[a.archiveSha256,b.archiveSha256],differenceCount:differences.length,differences:differences.slice(0,40),groups:Object.fromEntries(groups.map(k=>[k,{a:a.groups[k].sha256,b:b.groups[k].sha256,files:a.groups[k].files}]))};
+  const result={schema:"opencode-repro-comparison/v1",commit:a.inputs.commit,tree:a.inputs.tree,runId:a.runId,replicas:[a.replica,b.replica],runnerImageVersions:[a.runnerImageVersion,b.runnerImageVersion],inputs:a.inputs,passed:differences.length===0&&archiveEqual,archiveEqual,archiveSha256:[a.archiveSha256,b.archiveSha256],differenceCount:differences.length,differences:differences.slice(0,40),groups:Object.fromEntries(groups.map(k=>[k,{a:a.groups[k].sha256,b:b.groups[k].sha256,files:a.groups[k].files}]))};
   const principal=a.groups.principal.manifest.filter(([p])=>p!=="README.md");
   if(principal.some(([p])=>!p.endsWith(".js")&&!p.endsWith(".mjs")))throw Error("Unexpected principal module type");
   const mcp=a.groups.mcp.manifest.find(([p])=>p==="worker.js");
