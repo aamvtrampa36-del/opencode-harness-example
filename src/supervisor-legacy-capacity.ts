@@ -1,4 +1,5 @@
 import type { SupervisorTask } from "./supervisor-control";
+import { historicalCertificate, historicalPages, reconciliationDigest, HISTORICAL_AUX_KEYS } from "./supervisor-reconciliation";
 
 /**
  * R3-T03: bounded census under the same Durable Object storage transaction as
@@ -29,10 +30,7 @@ export type AdmissionCapacityEvidence = {
 };
 
 const LIMIT = 101; // If the result reaches the bound it is not complete.
-const AUX_STATE_KEYS = [
-  "agent-check-v1", "agent-check-openrouter-bun-v1",
-  "g8-live-agent-v1", "g9-native-e2e-v2"
-] as const;
+const AUX_STATE_KEYS = HISTORICAL_AUX_KEYS;
 
 /** One old task can only be exempted without an extra native read if its
  * cancellation was committed BEFORE any session creation attempt. Historical
@@ -50,8 +48,11 @@ export async function auditLegacyCapacity(
   tx: Pick<DurableObjectStorage,"get"|"list">,
   slots: Record<string, unknown>
 ): Promise<AdmissionCapacityEvidence> {
-  const indexed = await tx.list<SupervisorTask>({prefix:"supervisor:task:",limit:LIMIT});
-  const inventoryComplete = indexed.size < LIMIT;
+  const cert=await historicalCertificate(tx);
+  // Preserve the original bounded STOP for uncertified histories. After
+  // quiescence use paginated exact-row validation, not a 101-row ceiling.
+  const indexed = cert ? undefined : await tx.list<SupervisorTask>({prefix:"supervisor:task:",limit:LIMIT});
+  const inventoryComplete = !indexed || indexed.size < LIMIT;
   // Status reads, not only mutations, must reject an orphaned slot rather
   // than advertise it as a safely accounted native execution.
   for (const id of Object.keys(slots)) {
@@ -59,11 +60,17 @@ export async function auditLegacyCapacity(
     if (!owner || owner.id !== id) throw Error("ADMISSION_ORPHAN_SLOT");
   }
   let possibleLegacyExecutions=0, untrackedManagedTasks=0;
-  for (const [key, task] of indexed) {
+  let indexedTaskRows=0;
+  for await (const [key, task] of indexed ?? historicalPages<SupervisorTask>(tx,"supervisor:task:",1024)) {
+    indexedTaskRows++;
     const id = key.slice("supervisor:task:".length);
     if (!/^[a-f0-9]{16}$/.test(id) || !task || task.id !== id)
       throw Error("ADMISSION_TASK_INVENTORY_INVALID");
     if (Object.hasOwn(slots,id)) continue; // already counted as a slot
+    if(cert&&Object.hasOwn(cert.taskDigests,id)){
+      if(await reconciliationDigest(task)===cert.taskDigests[id])continue;
+      untrackedManagedTasks++;continue; // modified historical evidence is not exempt
+    }
     if (task.sessionIdPolicy !== "deterministic-v1") {
       if (legacyPotentiallyActive(task)) possibleLegacyExecutions++;
     } else if (!terminal(task.status) || task.pendingTurn || task.cancelAmbiguous) {
@@ -72,7 +79,8 @@ export async function auditLegacyCapacity(
   }
   let auxiliaryStateKeys=0;
   for (const key of AUX_STATE_KEYS) {
-    if (await tx.get(key) !== undefined) auxiliaryStateKeys++;
+    const value=await tx.get(key);
+    if(value!==undefined&&(!cert||cert.auxDigests[key]!==await reconciliationDigest(value)))auxiliaryStateKeys++;
   }
   const stopReason:LegacyCapacityStop|null =
     !inventoryComplete ? "LEGACY_INVENTORY_INCOMPLETE" :
@@ -82,7 +90,7 @@ export async function auditLegacyCapacity(
   return {
     capacity:10, activeSlots:Object.keys(slots).length,
     possibleLegacyExecutions,untrackedManagedTasks,
-    indexedTaskRows:indexed.size,inventoryComplete,auxiliaryStateKeys,stopReason,
+    indexedTaskRows,inventoryComplete,auxiliaryStateKeys,stopReason,
     activeNativeOperations:null,nativeOperationsMeasured:false,
     scope:"supervisor_do_index_only"
   };

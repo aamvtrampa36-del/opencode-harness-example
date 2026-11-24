@@ -5,6 +5,8 @@ import { reserveSupervisorAdmission, supervisorBeginExternalEffect,
 import type { SupervisorTask } from "./supervisor-control";
 import { PILOT_CLAIM, parsePilotApproval, evidenceFromClaim, type PilotApproval, type PilotClaim } from "./pilot-authorization";
 import { PILOT_PRICING_REVISION } from "./supervisor-inference-budget";
+import { reconcileHistoricalSupervisor } from "./supervisor-admission";
+import { reconciliationDigest,type NativeQuiescence } from "./supervisor-reconciliation";
 
 /** Test double with serialized, rollback-capable durable transactions. */
 class DurableFake {
@@ -29,9 +31,9 @@ class DurableFake {
   async get<T>(key: string): Promise<T | undefined> { return this.rows.get(key) as T | undefined; }
   async put<T>(key: string, value: T): Promise<void> { this.rows.set(key, structuredClone(value)); }
   async delete(key: string) { return this.rows.delete(key); }
-  async list<T>(opts: {prefix?:string;limit?:number} = {}):Promise<Map<string,T>> {
+  async list<T>(opts: {prefix?:string;limit?:number;startAfter?:string} = {}):Promise<Map<string,T>> {
     const entries = [...this.rows.entries()]
-      .filter(([key])=>key.startsWith(opts.prefix ?? ""))
+      .filter(([key])=>key.startsWith(opts.prefix ?? "")&&(!opts.startAfter||key>opts.startAfter))
       .sort(([a],[b])=>a.localeCompare(b))
       .slice(0,opts.limit ?? Infinity)
       .map(([key,value])=>[key,structuredClone(value)] as [string,T]);
@@ -193,7 +195,7 @@ test("pilot authorization is single-use, exact-release, fingerprint and process 
   const s=new DurableFake(), now=1000, instance="12345678-1234-1234-1234-123456789abc", objectId="a".repeat(64);
   const candidate={...task(50),createdAt:now,model:"cloudflare" as const,pilotInstance:instance};
   const receipt="b".repeat(64), release="c".repeat(40);
-  const approval:PilotApproval={schema:"pilot-release-v2",environment:"staging",requestId:candidate.id,releaseSha:release,sourceCommit:release,sourceTree:"d".repeat(40),containerImageDigest:"sha256:"+receipt,fingerprint:candidate.fingerprint,notBefore:now-1,expiresAt:now+1800000,ciRun:"1234",approvalRef:"synthetic-test-only",residualRisk:"accepted-bounded-trial",plannedOtherMicroUsd:500000,
+  const approval:PilotApproval={schema:"pilot-release-v2",environment:"staging",requestId:candidate.id,releaseSha:release,sourceCommit:release,sourceTree:"d".repeat(40),containerImageDigest:"sha256:"+receipt,reconciliationDigest:receipt,fingerprint:candidate.fingerprint,notBefore:now-1,expiresAt:now+1800000,ciRun:"1234",approvalRef:"synthetic-test-only",residualRisk:"accepted-bounded-trial",plannedOtherMicroUsd:500000,
     evidence:{sdkOffline:receipt,routeControls:receipt,closeControls:receipt,billingHeadroom:receipt,freeZeroPrice:receipt,glmBillingBound:receipt},
     pricingRevision:PILOT_PRICING_REVISION,maxWireBytes:10000,
     billingReview:{basis:"previous-cycle-proxy",cycleStart:now-100,observedThrough:now-200,observedDurationGbSeconds:50000,sharedAndLagMarginGbSeconds:30000,pilotAllowanceGbSeconds:2000}};
@@ -207,9 +209,14 @@ test("pilot authorization is single-use, exact-release, fingerprint and process 
   const claim:PilotClaim={approval,instance,objectId,startedAt:now};
   await expect(reserveSupervisorAdmission(s.asDO(),candidate,now)).rejects.toThrow("PILOT_AUTHORIZATION_REQUIRED");
   await expect(reserveSupervisorAdmission(s.asDO(),{...candidate,fingerprint:"e".repeat(64)},now,undefined,claim)).rejects.toThrow("PILOT_AUTHORIZATION_INVALID");
+  const native:NativeQuiescence={schema:"native-quiescence-v1",ids:[],digest:await reconciliationDigest([]),observedAt:now};
+  const maintenance={schema:"r4-reconciliation-v1" as const,environment:"staging" as const,releaseSha:release,requestId:candidate.id,
+    approvalRef:"synthetic-maintenance",externalDrainReceipt:receipt,drainedAt:now-1,notBefore:now-1,expiresAt:now+1800000};
+  const reconciled=await reconcileHistoricalSupervisor(s.asDO(),maintenance,objectId,async()=>native,()=>now);
+  approval.reconciliationDigest=reconciled.digest;
   const other=new DurableFake();await at(other,1,now);
-  await expect(reserveSupervisorAdmission(other.asDO(),candidate,now,undefined,claim)).rejects.toThrow("PILOT_EXCLUSIVE_SLOT_REQUIRED");
-  const result=await Promise.allSettled([reserveSupervisorAdmission(s.asDO(),candidate,now,undefined,claim),reserveSupervisorAdmission(s.asDO(),candidate,now,undefined,claim)]);
+  await expect(reserveSupervisorAdmission(other.asDO(),candidate,now,undefined,claim,native)).rejects.toThrow("HISTORICAL_PILOT_CERTIFICATE_STALE");
+  const result=await Promise.allSettled([reserveSupervisorAdmission(s.asDO(),candidate,now,undefined,claim,native),reserveSupervisorAdmission(s.asDO(),candidate,now,undefined,claim,native)]);
   expect(result.filter(r=>r.status==="fulfilled")).toHaveLength(1);
   expect(await s.get(PILOT_CLAIM)).toEqual(claim);
   expect(evidenceFromClaim(claim,approval,instance,objectId,candidate,now+100)).toBeDefined();

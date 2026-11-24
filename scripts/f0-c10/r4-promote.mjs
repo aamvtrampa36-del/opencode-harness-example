@@ -9,6 +9,7 @@ import {createHash} from "node:crypto";
 import {readFileSync} from "node:fs";
 import {pathToFileURL} from "node:url";
 import {parsePilotApproval} from "../../src/pilot-authorization.ts";
+import {parseReconciliationManifest} from "../../src/supervisor-reconciliation.ts";
 const hash=b=>createHash("sha256").update(b).digest("hex");
 const hex=(v,n)=>typeof v==="string"&&v.length===n&&/^[a-f0-9]+$/.test(v);
 const uuid=v=>typeof v==="string"&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v);
@@ -17,7 +18,7 @@ const same=(x,y)=>assert.deepEqual(sort(x),sort(y));
 const names=["opencode-g1-staging","opencode-staging-control-mcp"];
 const expectedTag=sha=>"r4-"+sha.slice(0,16);
 const message=sha=>"R4 explicitly approved upload-only "+sha;
-const pilotNames=["OPENCODE_PILOT_HYBRID_REQUEST_ID","OPENCODE_PILOT_AUTHORIZATION"];
+const pilotNames=["OPENCODE_PILOT_HYBRID_REQUEST_ID","OPENCODE_PILOT_AUTHORIZATION","OPENCODE_R4_RECONCILIATION"];
 function bindingMetadata(v,exclude=[]){
  const a=v.resources?.bindings;assert(Array.isArray(a));
  const out=a.filter(b=>!exclude.includes(b.name)).map(b=>{
@@ -39,7 +40,15 @@ export function promotionPlan(raw,pin,o,now=Date.now()){
  assert(Number.isSafeInteger(o.observedAt)&&o.observedAt<=now&&now-o.observedAt<=60000);
  assert(hex(a.exclusivityReceipt,64)&&hex(a.economicsReceipt,64),"independent evidence pins required");
  assert.equal(o.activeContainers,0);assert.equal(o.startingContainers,0);assert.equal(o.activeBuilds,0);
- const p=a.pilot;assert(p?.approvalRef===a.approvalRef&&p.ciRun===a.ciRun&&parsePilotApproval(JSON.stringify(p),a.source,p.requestId,now),"invalid v2 manifest");
+ const maintenance=a.maintenance,p=a.pilot;
+ if(maintenance!==undefined){
+  assert(!("pilot" in a)&&parseReconciliationManifest(JSON.stringify(maintenance),a.source,maintenance?.requestId,now)&&
+    maintenance.approvalRef===a.approvalRef,"invalid maintenance authorization");
+  assert.equal(a.exclusivityReceipt,maintenance.externalDrainReceipt);
+ }else{
+  assert(p?.approvalRef===a.approvalRef&&p.ciRun===a.ciRun&&parsePilotApproval(JSON.stringify(p),a.source,p.requestId,now),"invalid v2 manifest");
+  assert.equal(a.reconciliationDigest,p.reconciliationDigest,"historical reconciliation receipt required");
+ }
  assert(Array.isArray(a.targets)&&a.targets.length===2&&Array.isArray(o.targets)&&o.targets.length===2);
  const requests=[];
  for(const name of names){
@@ -51,14 +60,28 @@ export function promotionPlan(raw,pin,o,now=Date.now()){
   assert.equal(r.newVersion.annotations?.["workers/tag"],expectedTag(a.source));
   assert.equal(r.newVersion.annotations?.["workers/message"],message(a.source));
   const excluded=name===names[0]?pilotNames:[];
-  same(bindingMetadata(r.oldVersion),bindingMetadata(r.newVersion,excluded));
+  same(bindingMetadata(r.oldVersion,excluded),bindingMetadata(r.newVersion,excluded));
   same(r.oldVersion.resources.script_runtime,r.newVersion.resources.script_runtime);
   if(name===names[0]){
    const bindings=r.newVersion.resources.bindings;
-   const lane=bindings.filter(b=>b.name===pilotNames[0]),manifest=bindings.filter(b=>b.name===pilotNames[1]);
-   assert.equal(lane.length,1);assert.equal(manifest.length,1);
-   assert.equal(lane[0].type,"plain_text");assert.equal(manifest[0].type,"plain_text");
-   assert.equal(lane[0].text,p.requestId);same(JSON.parse(manifest[0].text),p);
+   const lane=bindings.filter(b=>b.name===pilotNames[0]),manifest=bindings.filter(b=>b.name===pilotNames[1]),
+    maintenanceBinding=bindings.filter(b=>b.name===pilotNames[2]);
+   assert.equal(lane.length,1);assert.equal(lane[0].type,"plain_text");
+   if(maintenance!==undefined){
+    assert.equal(manifest.length,0);assert.equal(maintenanceBinding.length,1);
+    assert.equal(maintenanceBinding[0].type,"plain_text");assert.equal(lane[0].text,maintenance.requestId);
+    same(JSON.parse(maintenanceBinding[0].text),maintenance);
+   }else{
+    assert.equal(maintenanceBinding.length,0);assert.equal(manifest.length,1);assert.equal(manifest[0].type,"plain_text");
+    assert.equal(lane[0].text,p.requestId);same(JSON.parse(manifest[0].text),p);
+    // A valid pilot grant must be preceded by the same-release maintenance
+    // version and pinned completed reconciliation, not a historical build.
+    const previous=r.oldVersion.resources.bindings;
+    const oldMaintenance=previous.filter(b=>b.name===pilotNames[2]),oldPilot=previous.filter(b=>b.name===pilotNames[1]);
+    assert.equal(oldMaintenance.length,1);assert.equal(oldPilot.length,0);
+    const old=JSON.parse(oldMaintenance[0].text);
+    assert.equal(old.releaseSha,a.source);assert.equal(old.requestId,p.requestId);
+   }
   }
   const path="/accounts/"+a.accountId+"/workers/scripts/"+name+"/deployments";
   requests.push({worker:name,precondition:{deployment:t.rollbackDeployment,version:t.rollbackVersion},
@@ -68,7 +91,7 @@ export function promotionPlan(raw,pin,o,now=Date.now()){
     condition:"only after own promotion confirmed, physical close/no effects and exact latest deployment readback"}});
  }
  return {schema:"r4-promotion-plan-v1",source:a.source,ciRun:a.ciRun,manifestSha256:pin,expiresAt:a.expiresAt,requests,
-  decision:"READY_FOR_EXPLICIT_ADMIN_APPLY",applied:false,providerDispatchAuthorized:false,completePass:false,
+  decision:"READY_FOR_EXPLICIT_ADMIN_APPLY",mode:maintenance?"maintenance-only":"pilot",applied:false,providerDispatchAuthorized:false,completePass:false,
   instructions:"Revalidate both before first POST and each target immediately before its POST. Read back version and deployment after each. STOP on ambiguity, do not start pilot until both exact 100% deployments and fresh independent exclusivity are confirmed. Rollback is not data rollback."};
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){

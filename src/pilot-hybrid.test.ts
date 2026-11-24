@@ -16,7 +16,7 @@ async function fixture(){
    project:"supervised-"+id,pilotInstance:instance,createdAt,operationId:"rc-start-"+id};
  const claim:PilotClaim={instance,objectId:"b".repeat(64),startedAt:createdAt,approval:{
    schema:"pilot-release-v2",environment:"staging",requestId:id,releaseSha:"d".repeat(40),sourceCommit:task.baseCommit!,
-   sourceTree:"e".repeat(40),containerImageDigest:"sha256:"+"f".repeat(64),fingerprint:task.fingerprint,
+   sourceTree:"e".repeat(40),containerImageDigest:"sha256:"+"f".repeat(64),reconciliationDigest:"e".repeat(64),fingerprint:task.fingerprint,
    notBefore:createdAt-100,expiresAt:createdAt+1800000,ciRun:"123",approvalRef:"test-only",
    residualRisk:"accepted-bounded-trial",plannedOtherMicroUsd:500000,evidence:{sdkOffline:"a".repeat(64),
    routeControls:"a".repeat(64),closeControls:"a".repeat(64),billingHeadroom:"a".repeat(64),

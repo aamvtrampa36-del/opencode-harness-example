@@ -37,6 +37,7 @@ export interface StagingSupervisor {
   remoteSupervisorMcpTools(server: string): Promise<unknown>;
   remoteSupervisorMcpCall(input: { server: string; name: string; arguments?: Record<string, unknown> }): Promise<unknown>;
   remoteSupervisorDiagnostics(): Promise<unknown>;
+  remoteSupervisorReconcile?():Promise<unknown>;
   remoteSupervisorAgentCheck(model: "cloudflare" | "economy" | "review", kind: "linux" | "repair" | "bun"): Promise<unknown>;
   remoteSupervisorAgentCheckStatus(scope?: "openrouter"): Promise<unknown>;
   cancelSupervisedTask(id: string): Promise<unknown>;
@@ -96,6 +97,15 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
       return failed(error);
     }
   });
+
+  server.registerTool("staging_reconcile",{
+    description:"Reconcilia inventario histórico de Staging exclusivamente en mantenimiento autorizado; no ejecuta inferencia, no cancela sesiones ni borra datos.",
+    inputSchema:{}
+  },async()=>callTask(async()=>{
+    const supervisor=bindings.supervisor();
+    if(!supervisor.remoteSupervisorReconcile)throw Error("HISTORICAL_RECONCILIATION_UNAVAILABLE");
+    return supervisor.remoteSupervisorReconcile();
+  }));
 
   server.registerTool("staging_models", {
     description: "Descubre modelos que la instalación OpenCode de Staging puede seleccionar ahora. Cloudflare economy es el predeterminado; OpenRouter solo se muestra si está configurado. No devuelve claves.",

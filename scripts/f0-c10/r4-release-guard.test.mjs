@@ -32,3 +32,13 @@ test("principal upload is rejected when the backend v2 contract is incomplete",(
    approvalRef:"test-only",residualRisk:"accepted-bounded-trial",fingerprint:"a".repeat(64)}};
  assert.throws(()=>run(v,r),/invalid backend pilot authorization/);
 });
+
+test("maintenance envelope is separately authorized and cannot contain a pilot grant",()=>{
+ const r={...receipt,role:"principal",worker:"opencode-g1-staging"};
+ const maintenance={schema:"r4-reconciliation-v1",environment:"staging",releaseSha:source,requestId:"a".repeat(16),
+  approvalRef:"test-only",externalDrainReceipt:"e".repeat(64),drainedAt:now-100,notBefore:now-100,expiresAt:now+10000};
+ const m={...approval,role:r.role,worker:r.worker,inventory:r,maintenance};
+ assert.equal(run(m,r).maintenance.schema,"r4-reconciliation-v1");
+ assert.throws(()=>run({...m,pilot:{}},r));
+ assert.throws(()=>run({...m,maintenance:{...maintenance,drainedAt:now-900001}},r));
+});

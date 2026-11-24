@@ -4,6 +4,7 @@ import { auditLegacyCapacity, type AdmissionCapacityEvidence,
   type LegacyCapacityStop } from "./supervisor-legacy-capacity";
 import { r2TurnAdmission, r2SessionId, r2TurnJournalKey, r2TerminalNativeReceipt, type R2TurnJournal } from "./supervisor-r2";
 import { scopeStorageKey, type ProjectScope } from "./project-scope";
+import { captureHistoricalSnapshot, historicalCertificate, retiredHistoricalTask, writeHistoricalCertificate, publicHistoricalCertificate, type ReconciliationManifest, type NativeQuiescence } from "./supervisor-reconciliation";
 
 /**
  * One durable admission authority in the existing supervisor DO. This is NOT
@@ -57,7 +58,7 @@ function newGrant(id: string, generation: number, now: number): AdmissionSlot {
 /** Never auto-reclaim ambiguous external effects merely because a TTL elapsed. */
 export async function reserveSupervisorAdmission(
   storage: DurableObjectStorage, candidate: SupervisorTask, now = Date.now(),
-  readOnlyPins?: ReadOnlySourcePins, pilot?: PilotClaim
+  readOnlyPins?: ReadOnlySourcePins, pilot?: PilotClaim, nativeQuiescence?:NativeQuiescence
 ): Promise<AdmissionDecision> {
   if (!Number.isSafeInteger(now) || now < 0) throw new Error("ADMISSION_CLOCK_INVALID");
   const key = supervisorTaskKey(candidate.id);
@@ -65,6 +66,7 @@ export async function reserveSupervisorAdmission(
   if (readOnly !== (readOnlyPins !== undefined)) throw Error("READ_ONLY_ADMISSION_PINS_REQUIRED");
   if (readOnlyPins) { validClock(now); validateReadOnlyCandidate(candidate, readOnlyPins); }
   return storage.transaction(async tx => {
+    if(await retiredHistoricalTask(tx,candidate.id))throw Error("HISTORICAL_TASK_QUARANTINED");
     const old = await tx.get<SupervisorTask>(key);
     const previousPilot=await tx.get<PilotClaim>(PILOT_CLAIM);
     if(Boolean(candidate.pilotInstance)!==Boolean(pilot))throw Error("PILOT_AUTHORIZATION_REQUIRED");
@@ -121,6 +123,20 @@ export async function reserveSupervisorAdmission(
       await tx.put(LEDGER_KEY, ledger);
       return { kind: "granted", task: old,
         grant: { id: candidate.id, token: next.token, generation: next.generation }, reused: true };
+    }
+    if(pilot){
+      // Server-side fresh native scan AND exact archived inventory in this
+      // transaction. No user input can substitute a historical certificate.
+      const cert=await historicalCertificate(tx);
+      if(cert||nativeQuiescence){
+        if(!cert||!nativeQuiescence||cert.digest!==pilot.approval.reconciliationDigest||
+           cert.supervisorObject!==pilot.objectId||cert.manifest.releaseSha!==pilot.approval.releaseSha||
+           cert.manifest.requestId!==candidate.id||cert.nativeDigest!==nativeQuiescence.digest||
+           now-nativeQuiescence.observedAt>60_000||nativeQuiescence.observedAt>now||
+           now-cert.observedAt>60*60_000||await tx.get("supervisor:inference:budget:v1")!==undefined||
+           (await captureHistoricalSnapshot(tx)).digest!==cert.snapshotDigest)
+          throw Error("HISTORICAL_PILOT_CERTIFICATE_STALE");
+      }else throw Error("HISTORICAL_PILOT_CERTIFICATE_REQUIRED");
     }
     const census = await auditLegacyCapacity(tx, ledger.slots);
     if (census.stopReason) {
@@ -370,6 +386,7 @@ export async function reserveSupervisorContinuation(
   if (!/^[a-f0-9]{64}$/.test(hash) || !Number.isSafeInteger(now) || now < 0)
     throw Error("SUPERVISOR_TURN_INPUT_INVALID");
   return storage.transaction(async tx => {
+    if(await retiredHistoricalTask(tx,id))throw Error("HISTORICAL_TASK_QUARANTINED");
     const taskKey = supervisorTaskKey(id);
     const task = await tx.get<SupervisorTask>(taskKey);
     if (!task?.session) throw Error("Tarea no disponible");
@@ -801,4 +818,35 @@ export async function supervisorRecordReadOnlyFailure(storage:DurableObjectStora
 /** Internal read for restart routing; no token, no provider authorization. */
 export async function inspectSupervisorReadOnlyAdmission(storage:Pick<DurableObjectStorage,"get">,id:string):Promise<ReadOnlyAdmissionJournal|undefined> {
   return readOnlyJournal(storage,id);
+}
+
+/** Maintenance-only caller: the Worker lane fences new producers and an
+ * independent administrator attests prior-version drain. Two transactional
+ * snapshots bracket the actual native reads. No RPC runs in a transaction.
+ * Even a not_found/missing operation retains its original status forever:
+ * this retires execution authority, not historical outcome uncertainty.
+ */
+export async function reconcileHistoricalSupervisor(storage:DurableObjectStorage,manifest:ReconciliationManifest,
+ objectId:string,observe:()=>Promise<NativeQuiescence>,clock=Date.now){
+ const load=async(tx:DurableObjectTransaction)=>{
+  if(await tx.get(PILOT_CLAIM)!==undefined)throw Error("HISTORICAL_PILOT_ALREADY_CONSUMED");
+  // Never reset or rotate a potentially charged financial journal here.
+  if(await tx.get("supervisor:inference:budget:v1")!==undefined)throw Error("HISTORICAL_BUDGET_RECONCILIATION_REQUIRED");
+  const ledger=decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
+  const snapshot=await captureHistoricalSnapshot(tx);
+  return {ledger,snapshot};
+ };
+ const before=await storage.transaction(load);
+ const native=await observe();
+ return storage.transaction(async tx=>{
+  const fresh=await load(tx);
+  if(fresh.snapshot.digest!==before.snapshot.digest||JSON.stringify(fresh.ledger)!==JSON.stringify(before.ledger))
+    throw Error("HISTORICAL_INVENTORY_CHANGED");
+  const cert=await writeHistoricalCertificate(tx,manifest,objectId,fresh.snapshot,native,fresh.ledger.slots,clock());
+  await tx.put(LEDGER_KEY,{version:1,slots:{}});
+  const capacity=await auditLegacyCapacity(tx,{});
+  if(capacity.stopReason||capacity.activeSlots!==0||!capacity.inventoryComplete)
+    throw Error("HISTORICAL_RECONCILIATION_INCOMPLETE");
+  return {...publicHistoricalCertificate(cert),capacity};
+ });
 }

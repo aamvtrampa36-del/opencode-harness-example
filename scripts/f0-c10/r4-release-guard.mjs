@@ -10,6 +10,7 @@ import path from "node:path";
 import {execFileSync} from "node:child_process";
 import {pathToFileURL} from "node:url";
 import {parsePilotApproval} from "../../src/pilot-authorization.ts";
+import {parseReconciliationManifest} from "../../src/supervisor-reconciliation.ts";
 
 const workers={principal:"opencode-g1-staging",mcp:"opencode-staging-control-mcp"};
 const hash=b=>createHash("sha256").update(b).digest("hex");
@@ -51,7 +52,7 @@ function configGuard(c,role){
   assert.equal(c.migrations.at(-1).tag,"v4");assert.equal(c.ai.binding,"AI");
   assert.equal(c.workflows[0].binding,"SUPERVISOR_WORKFLOW");
   assert.equal(c.vars.OPENCODE_SUPERVISOR_ENABLED,"true");
-  assert(!("OPENCODE_PILOT_HYBRID_REQUEST_ID" in c.vars)&&!("OPENCODE_PILOT_AUTHORIZATION" in c.vars));
+  assert(!("OPENCODE_PILOT_HYBRID_REQUEST_ID" in c.vars)&&!("OPENCODE_PILOT_AUTHORIZATION" in c.vars)&&!("OPENCODE_R4_RECONCILIATION" in c.vars));
  }else{
   assert.equal(c.main,"src/staging-control-mcp/worker.ts");
   exact(c.services,[{binding:"STAGING_HEALTH",service:workers.principal}]);
@@ -89,6 +90,13 @@ export function verifyApproval(raw,pinned,receipt,observed,now=Date.now()){
  assert.equal(observed.id,a.rollbackDeployment);exact(observed.versions,[{version_id:a.rollbackVersion,percentage:100}]);
  assert.equal(a.promoteAuthorized,false);
  if(receipt.role==="principal"){
+  if(a.maintenance!==undefined){
+   assert(!("pilot" in a),"maintenance cannot authorize inference");
+   const m=a.maintenance;
+   assert(parseReconciliationManifest(JSON.stringify(m),a.source,m?.requestId,now)&&m.approvalRef===a.approvalRef,
+     "invalid maintenance authorization");
+   return a;
+  }
   const p=a.pilot;
   assert(p?.schema==="pilot-release-v2"&&p.environment==="staging"&&p.releaseSha===a.source&&p.ciRun===a.ciRun);
   assert(sha(p.requestId,16)&&sha(p.sourceCommit,40)&&sha(p.sourceTree,40)&&/^sha256:[a-f0-9]{64}$/.test(p.containerImageDigest));
@@ -97,7 +105,7 @@ export function verifyApproval(raw,pinned,receipt,observed,now=Date.now()){
   assert(parsePilotApproval(JSON.stringify(p),a.source,p.requestId,now),"invalid backend pilot authorization");
   assert(p.approvalRef===a.approvalRef&&p.residualRisk==="accepted-bounded-trial"&&sha(p.fingerprint));
   assert(Buffer.byteLength(JSON.stringify(p))<=8192);
- }else assert(!("pilot" in a));
+ }else assert(!("pilot" in a)&&!("maintenance" in a));
  return a;
 }
 async function getCurrentDeployment(worker){
@@ -127,7 +135,9 @@ async function main(){
   cfgPath=path.join(repo,"dist/opencode_g1_staging/wrangler.json");
   configGuard(JSON.parse(readFileSync(cfgPath,"utf8")),role);
   // CLI-only vars keep the verified directory and configuration bytes intact.
-  vars.push("--var","OPENCODE_PILOT_HYBRID_REQUEST_ID:"+a.pilot.requestId,
+  if(a.maintenance)vars.push("--var","OPENCODE_PILOT_HYBRID_REQUEST_ID:"+a.maintenance.requestId,
+    "--var","OPENCODE_R4_RECONCILIATION:"+JSON.stringify(a.maintenance));
+  else vars.push("--var","OPENCODE_PILOT_HYBRID_REQUEST_ID:"+a.pilot.requestId,
     "--var","OPENCODE_PILOT_AUTHORIZATION:"+JSON.stringify(a.pilot));
  }else{
   const cfg=JSON.parse(readFileSync(path.join(repo,"wrangler.mcp-staging.jsonc"),"utf8"));

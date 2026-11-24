@@ -13,6 +13,7 @@ type EvidenceName=typeof RECEIPTS[number];
 export type PilotApproval={
   schema:"pilot-release-v2";environment:"staging";requestId:string;releaseSha:string;
   sourceCommit:string;sourceTree:string;containerImageDigest:string;
+  reconciliationDigest:string;
   fingerprint:string;notBefore:number;expiresAt:number;ciRun:string;approvalRef:string;
   residualRisk:"accepted-bounded-trial";plannedOtherMicroUsd:number;
   evidence:Record<EvidenceName,string>;pricingRevision:typeof PILOT_PRICING_REVISION;maxWireBytes:number;
@@ -33,7 +34,7 @@ export function parsePilotApproval(raw:unknown,releaseSha:string,lane:string,now
     const p=JSON.parse(raw) as PilotApproval;
     if(!p||p.schema!=="pilot-release-v2"||p.environment!=="staging"||p.requestId!==lane||
       p.releaseSha!==releaseSha||typeof p.sourceCommit!=="string"||!SHA.test(p.sourceCommit)||typeof p.sourceTree!=="string"||!SHA.test(p.sourceTree)||
-      typeof p.containerImageDigest!=="string"||!/^sha256:[a-f0-9]{64}$/.test(p.containerImageDigest)||!hash(p.fingerprint)||!int(p.notBefore,0,now)||!int(p.expiresAt,now+PILOT_WORK_MS+PILOT_CLOSE_MS,now+60*60_000)||
+      !hash(p.reconciliationDigest)||typeof p.containerImageDigest!=="string"||!/^sha256:[a-f0-9]{64}$/.test(p.containerImageDigest)||!hash(p.fingerprint)||!int(p.notBefore,0,now)||!int(p.expiresAt,now+PILOT_WORK_MS+PILOT_CLOSE_MS,now+60*60_000)||
       typeof p.ciRun!=="string"||!/^\d{1,20}$/.test(p.ciRun)||
       typeof p.approvalRef!=="string"||p.approvalRef.length<8||p.approvalRef.length>160||
       p.residualRisk!=="accepted-bounded-trial"||!int(p.plannedOtherMicroUsd,0,850_000)||

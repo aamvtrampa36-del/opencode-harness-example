@@ -25,6 +25,7 @@ import { collectSupervisorDirectory, supervisorTaskCount } from "./supervisor-di
 import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
 // Progress is read from the bounded supervisor ledger, never raw SDK log().
 import { requireMeteredDiagnosticAdmission } from "./supervisor-legacy-capacity";
+import { parseReconciliationManifest, historicalCertificate, publicHistoricalCertificate, retiredHistoricalTask, observeNativeQuiescence } from "./supervisor-reconciliation";
 import {
   reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot,
@@ -34,7 +35,7 @@ import {
   reconcileSupervisorTurnEffect, inspectSupervisorAdmissionCapacity,
   reconcileSupervisorSubmittedEffect, supervisorGrantStillOwned, type StartGrant, type AdmissionDecision,
   supervisorVerifyReadOnlySource, supervisorBeginReadOnlyEffect, supervisorConfirmReadOnlyEffect,
-  supervisorRecordReadOnlyFailure, inspectSupervisorReadOnlyAdmission, reconcileSupervisorReadOnlyPreparation
+  supervisorRecordReadOnlyFailure, inspectSupervisorReadOnlyAdmission, reconcileSupervisorReadOnlyPreparation, reconcileHistoricalSupervisor
 } from "./supervisor-admission";
 import { deferSupervisorStart } from "./supervisor-async-start";
 import { createReadOnlyAuthority, bindReadOnlyScope, requireReadOnlyAuthority, enforceReadOnlyRoute } from "./read-only-policy";
@@ -140,6 +141,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (start.mode === "read_only" && !this.readOnlyProviderDispatchAuthorized())
       return { id: start.requestId, accepted: false, confirmed: false, stop: true,
         reason: "SUPERVISOR_READ_ONLY_PROVIDER_DISPATCH_NOT_AUTHORIZED" };
+    if(await retiredHistoricalTask(this.ctx.storage,start.requestId))throw Error("HISTORICAL_TASK_QUARANTINED");
     const key = supervisorTaskKey(start.requestId);
     const fingerprint = await supervisorFingerprint(start);
     if(pilotApproval && fingerprint!==pilotApproval.fingerprint)throw Error("PILOT_PROMPT_MISMATCH");
@@ -187,9 +189,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
     };
     const pilotClaim = pilotApproval ? {approval:pilotApproval,instance:this.pilotInstance,
       objectId:this.ctx.id.toString(),startedAt:job.createdAt} : undefined;
+    let nativeQuiescence:Awaited<ReturnType<OpenCodeAgent["observeHistoricalNative"]>>|undefined;
+    if(pilotClaim){
+      const cert=await historicalCertificate(this.ctx.storage);
+      if(!cert||cert.digest!==pilotClaim.approval.reconciliationDigest)throw Error("HISTORICAL_PILOT_CERTIFICATE_REQUIRED");
+      nativeQuiescence=await this.observeHistoricalNative(Date.now()+60_000);
+      // Keep the original 15+5 minute budget, starting after the read-only
+      // census. No task/claim/provider effect occurred during that census.
+      job.createdAt=Date.now();pilotClaim.startedAt=job.createdAt;
+    }
     const admission = await trace.run("admission", "reserve", () =>
       reserveSupervisorAdmission(this.ctx.storage, job, undefined, start.mode === "read_only"
-        ? { commit: start.sourceCommit!, tree: start.sourceTree! } : undefined,pilotClaim));
+        ? { commit: start.sourceCommit!, tree: start.sourceTree! } : undefined,pilotClaim,nativeQuiescence));
     if (admission.kind === "capacity") {
       return { id: start.requestId, accepted: false,
         status: admission.reason === "CAPACITY_EXHAUSTED" ? "capacity_rejected" : "admission_stopped",
@@ -675,6 +686,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return {
       environment: "staging", worker: "opencode-g1-staging", ready: true,
       admissionCapacity,
+      historicalReconciliation:await historicalCertificate(this.ctx.storage).then(c=>c?publicHistoricalCertificate(c):null),
       schema: "opencode.staging-control.v2",
       supervisedSessions: count.supervisedSessions,
       supervisedCountComplete: count.countComplete,
@@ -683,6 +695,32 @@ export class OpenCodeAgent extends DurableObject<Env> {
       capabilities: ["status", "models", "repositories", "sessions", "start", "inspect", "continue",
         "select_model", "progress", "cancel", "review", "mcp_discovery", "mcp_call", "incidents", "agent_check"]
     };
+  }
+
+  private async observeHistoricalNative(deadline:number){
+    return this.harness.use(opencode=>observeNativeQuiescence({
+      active:async()=>Object.keys(await opencode.sessions.active()),
+      page:async cursor=>{
+        const p=await opencode.sessions.list(cursor===undefined?{limit:32}:{cursor,limit:32});
+        return {ids:p.data.map(item=>item.id),next:p.cursor.next};
+      },
+      exists:async id=>(await opencode.sessions.get({sessionID:id})).id===id,
+      busy:id=>this.harness.session(id).busy()
+    },deadline));
+  }
+
+  /** Explicit administrative maintenance RPC, not a status read. No model
+   * authorization or Container starts. Missing/expired manifest is STOP. */
+  async remoteSupervisorReconcile():Promise<unknown>{
+    this.assertStagingRemote();
+    const lane=this.pilotLaneId(),env=this.env as Env & {OPENCODE_R4_RECONCILIATION?:string;OPENCODE_PILOT_AUTHORIZATION?:string};
+    if(!lane||this.ctx.id.name!==SUPERVISOR_WORKSPACE||env.OPENCODE_PILOT_AUTHORIZATION)
+      throw Error("HISTORICAL_MAINTENANCE_LANE_REQUIRED");
+    const manifest=parseReconciliationManifest(env.OPENCODE_R4_RECONCILIATION,
+      typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"",lane);
+    if(!manifest)throw Error("HISTORICAL_MAINTENANCE_AUTHORIZATION_REQUIRED");
+    return reconcileHistoricalSupervisor(this.ctx.storage,manifest,this.ctx.id.toString(),
+      ()=>this.observeHistoricalNative(Math.min(manifest.expiresAt,Date.now()+120_000)));
   }
 
   async remoteSupervisorModels(): Promise<unknown> {
@@ -909,6 +947,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   async remoteSupervisorAgentCheckStatus(scope?: "openrouter"): Promise<unknown> {
     this.assertStagingRemote();
+    if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     return scope === "openrouter" ? this.openRouterAgentCheckStatus() : this.agentCheckStatus();
   }
 
@@ -1059,6 +1098,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
     this.assertStagingRemote();
     const trace = this.phaseProbe();
     const job = await this.supervisedRecord(id);
+    if(await retiredHistoricalTask(this.ctx.storage,id))return {
+      ...await this.remoteSupervisorTaskStatusSnapshot(id) as Record<string,unknown>,
+      historicalQuarantine:true,historicalOutcomeUnchanged:true
+    };
     const admission = await supervisorAdmissionSlot(this.ctx.storage, id);
     const base = { id: job.id, repository: job.repository, project: job.project,
       admissionState: admission?.phase ?? "legacy_or_released",
@@ -1204,6 +1247,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async cancelSupervisedTask(id: string): Promise<unknown> {
     this.assertStagingRemote();
     let job = await this.supervisedRecord(id);
+    if(await retiredHistoricalTask(this.ctx.storage,id))return {id,status:job.status,historicalQuarantine:true,confirmed:false};
     if(this.pilotLaneId()&&id!==this.pilotLaneId())throw Error("PILOT_SESSION_FORBIDDEN");
     if(job.pilotInstance&&!job.operationId){
       // Fence submit before attempting closure, including during import.
@@ -1566,6 +1610,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   async enforceSessionScope(sessionID: string, action: ScopedToolAction): Promise<void> {
     if(this.pilotLaneId())await this.pilotContext(sessionID);
+    const retiredOwner=await this.ctx.storage.get<string>("supervisor:session:"+sessionID);
+    if(retiredOwner&&await retiredHistoricalTask(this.ctx.storage,retiredOwner))throw Error("HISTORICAL_TASK_QUARANTINED");
     const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
     if (this.ctx.id?.name === SUPERVISOR_WORKSPACE && !scope) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
     assertScopedTool(scope, action);
@@ -2502,6 +2548,11 @@ export default {
               "models", "repositories", "sessions", "inspect", "select_model", "mcp_discovery", "mcp_call",
               "incidents", "agent_check"],
             promotion: "external-only", access: "Cloudflare Access + bearer" });
+        }
+        if(url.pathname===SUPERVISOR_API_PREFIX+"/reconcile"&&request.method==="POST"){
+          if(url.search)return supervisorResponse({error:"HISTORICAL_QUERY_FORBIDDEN"},400);
+          try{return supervisorResponse(await host.remoteSupervisorReconcile());}
+          catch(error){return supervisorResponse({error:error instanceof Error?error.message:"HISTORICAL_RECONCILIATION_FAILED"},422);}
         }
         if (url.pathname === SUPERVISOR_API_PREFIX + "/tasks" && request.method === "POST") {
           if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json"))
