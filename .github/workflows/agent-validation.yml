@@ -18,6 +18,10 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      targeted: ${{ steps.receipt.outputs.targeted }}
+      main: ${{ steps.receipt.outputs.main }}
+      head: ${{ steps.receipt.outputs.head }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -27,6 +31,7 @@ jobs:
           python3 .agent-ops/validate_task.py --selftest
           node .agent-ops/ci_receipt.mjs --selftest
       - name: Validate requested candidate and collect CI evidence
+        id: receipt
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -54,6 +59,13 @@ jobs:
           output=json.dumps(evidence,ensure_ascii=True)
           Path('validation-result.json').write_text(output+'\n')
           print(output)
+          identity=evidence['ci'].get('identity',{})
+          main=identity.get('current_main','')
+          # Targeted tests are opt-in, on exact owner PR and current base,
+          # only when the existing CI receipt cannot be reused.
+          if req.get('mode')=='targeted' and evidence['static'].get('static_status')=='PASS' and identity.get('head')==req['head'] and re.fullmatch('[a-f0-9]{40}',main) and evidence['ci'].get('status')!='CACHED':
+              with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+                  out.write('targeted=true\nmain='+main+'\nhead='+req['head']+'\n')
           # Never claim acceptance or deployment based on this receipt.
           if static.returncode or evidence['static']['static_status'] in ('PARTIAL','BLOCKED') or evidence['ci']['status'] in ('FAIL','BLOCKED','PARTIAL'):
               sys.exit(1)
@@ -64,5 +76,106 @@ jobs:
         with:
           name: agent-validation-receipt
           path: validation-result.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  targeted:
+    needs: validate
+    if: ${{ always() && needs.validate.outputs.targeted == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.validate.outputs.main }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare isolated combined tree
+        id: tree
+        env:
+          CANDIDATE: ${{ needs.validate.outputs.head }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "$CANDIDATE^{commit}"
+          git -c core.hooksPath=/dev/null -c user.name=AgentValidation -c user.email=validation@example.invalid merge --no-commit --no-ff "$CANDIDATE"
+          echo "tree=$(git write-tree)" >> "$GITHUB_OUTPUT"
+          echo "Combined tree $(git write-tree), current base $(git rev-parse HEAD), candidate $CANDIDATE"
+      - uses: actions/setup-python@v5
+        if: ${{ github.event.repository.name != 'opencode-harness-example' }}
+        with:
+          python-version: ${{ github.event.repository.name == 'cdf-cloud-engine' && '3.13' || '3.12' }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ github.event.repository.name == 'CDF-WorkBench-' && '22' || '24' }}
+      - uses: oven-sh/setup-bun@v2
+        if: ${{ github.event.repository.name == 'opencode-harness-example' }}
+        with:
+          bun-version: 1.4.4
+      - name: Execute isolated targeted tests
+        id: tests
+        shell: bash
+        env:
+          PROJECT: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          case "$PROJECT" in
+            cdf-cloud-engine)
+              # Use changed migrated-engine regression tests; fall back to established safe suite.
+              mapfile -t selected < <(git diff --cached --name-only --diff-filter=AM HEAD -- tests/ | grep -E '^tests/test_cloudflare_[A-Za-z0-9_]+\.py$' || true)
+              if [ "${#selected[@]}" -gt 0 ]; then
+                mkdir -p evidence
+                for t in "${selected[@]}"; do
+                  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD/runtime/engine-1.6.1-source/src:$PWD/tests" python -m unittest discover -s tests -p "$(basename "$t")" -v
+                done
+              else
+                bash tools/run-codex-cloud-tests.sh
+              fi
+              ;;
+            CDF-WorkBench-)
+              if git diff --cached --name-only HEAD | grep -q '^cloudflare/cdf-workbench-mcp/'; then
+                npm ci --prefix cloudflare/cdf-workbench-mcp --no-audit --no-fund
+                npm test --prefix cloudflare/cdf-workbench-mcp
+              fi
+              if git diff --cached --name-only HEAD | grep -Eq '^(plugins/|scripts/|\.github/)'; then
+                python -m pip install PyYAML==6.0.2 cryptography==45.0.7
+                python scripts/prepare_source_regression_copy.py plugins/cdf-workbench /tmp/cdf-workbench-source-tests
+                python -m unittest discover -v -s /tmp/cdf-workbench-source-tests/skills/cdf-workbench/tests -p 'test_*.py'
+                while IFS= read -r -d '' f; do python "$f"; done < <(find /tmp/cdf-workbench-source-tests/skills -type f -name 'test_*.py' -print0)
+                while IFS= read -r -d '' f; do node "$f"; done < <(find /tmp/cdf-workbench-source-tests/skills -type f \( -name '*.test.mjs' -o -name 'test_*.mjs' \) -print0)
+                python scripts/check_release_policy.py
+                python scripts/verify_package.py
+              fi
+              ;;
+            opencode-harness-example)
+              bun install --frozen-lockfile
+              bun test
+              bun run typecheck
+              ;;
+            *) exit 2 ;;
+          esac
+      - name: Record targeted evidence
+        if: always()
+        env:
+          TARGET_TREE: ${{ steps.tree.outputs.tree }}
+          TEST_OUTCOME: ${{ steps.tests.outcome }}
+          CANDIDATE: ${{ needs.validate.outputs.head }}
+          BASE: ${{ needs.validate.outputs.main }}
+        run: |
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          receipt={"schema":"agent-targeted-receipt/v1","base":os.environ["BASE"],"head":os.environ["CANDIDATE"],"tree":os.environ["TARGET_TREE"],"status":"PASS" if os.environ["TEST_OUTCOME"]=="success" and os.environ["TARGET_TREE"] else "FAIL" if os.environ["TEST_OUTCOME"]=="failure" else "BLOCKED","coverage":"targeted synthetic tests only; full CI and deployment independent"}
+          Path("targeted-result.json").write_text(json.dumps(receipt)+"\n")
+          print(json.dumps(receipt))
+          PY
+      - name: Persist targeted evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: agent-targeted-receipt
+          path: targeted-result.json
           if-no-files-found: ignore
           retention-days: 14
