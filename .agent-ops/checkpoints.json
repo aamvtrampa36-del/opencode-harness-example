@@ -10,7 +10,32 @@
     "recovery": "Inspect only current checkpoint and changed evidence. Check actual Issue/PR state, HEAD/base and dependencies. Resume only if useful, authorized and compatible; blocked/stale/resolved/cancelled tasks are not retried by default. After two attempts with no material progress mark blocked with reason; reopen only on new evidence. No automatic merge/deploy or expansion of permissions. States: available, active, recoverable, blocked, obsolete, cancelled, completed. A terminal state is not a candidate. For a blocked task, require a changed dependency or materially new evidence. Do not reopen a completed/obsolete/cancelled task; create a new task only if a distinct current objective warrants it.",
     "checkpoint": "Persist after claim, first useful evidence and each material milestone before further risky work. Keep objective, acceptance, issue/PR, branch, base/head SHA, evidence, completed, pending, next action, blocker, session/operation ID and progress counters. A completed checkpoint requires actual evidence meeting acceptance. Store references, not copied logs. Release on completion/pause. An expired lease permits revalidation and new generation, not blind continuation. Keep only the latest task per lane in this file; before replacement preserve evidence in the relevant Issue/PR or Git history. Never change policy/schema during ordinary checkpoint updates."
   },
-  "revision": 1,
+  "revision": 2,
   "reservation": null,
-  "lanes": {}
+  "lanes": {
+    "integration-selftest": {
+      "task_id": "c0df20261124a001",
+      "status": "completed",
+      "objective": "Verify deployed OpenCode can read and classify persisted GitHub checkpoint",
+      "acceptance": [
+        "real GitHub tool read",
+        "terminal checkpoint not resumed",
+        "no code changes"
+      ],
+      "completed": [
+        "OpenCode task finished with 5 successful tool calls and zero failures",
+        "read completed checkpoint and verified three historical commits",
+        "review confirmed zero changes"
+      ],
+      "pending": [],
+      "next_action": null,
+      "evidence": [
+        "https://github.com/aamvtrampa36-del/cdf-cloud-engine/commit/b0f96c99ecae9b6ac179724fceef931dec38afcf",
+        "OpenCode supervisor task c0df20261124a001, session ses_df40484daff9p6zBVdRtnwgWQO, review aheadBy=0 and files=[]"
+      ],
+      "session_id": "ses_df40484daff9p6zBVdRtnwgWQO",
+      "operation_id": "rc-start-c0df20261124a001",
+      "note": "Read-only synthetic integration test; supervisor passed=false (not a code-change acceptance), review and tool transcript independently verify read behavior."
+    }
+  }
 }
