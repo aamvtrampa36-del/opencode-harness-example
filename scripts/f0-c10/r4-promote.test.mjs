@@ -14,7 +14,7 @@ const targets=["opencode-g1-staging","opencode-staging-control-mcp"].map((worker
 const a={schema:"r4-explicit-promotion-v1",environment:"staging",operation:"promote-two-existing-workers",promoteAuthorized:true,accountId,
  source,ciHead:source,ciConclusion:"success",ciRun:"42",approvalRef:"test-only",notBefore:now-1000,expiresAt:now+1200000,
  exclusivityReceipt:receipt,economicsReceipt:receipt,reconciliationDigest:receipt,pilot,targets};
-const maintenance={schema:"r4-reconciliation-v1",environment:"staging",releaseSha:source,requestId:pilot.requestId,approvalRef:"test-only",externalDrainReceipt:receipt,drainedAt:now-100,notBefore:now-100,expiresAt:now+1800000};
+const maintenance={schema:"r4-freeze-v1",environment:"staging",releaseSha:source,requestId:pilot.requestId,approvalRef:"test-only",notBefore:now-100,expiresAt:now+1800000};
 const o={accountId,observedAt:now,activeContainers:0,startingContainers:0,activeBuilds:0,
  historicalReconciliation:{schema:"r4-historical-quarantine-v1",digest:receipt,releaseSha:source,requestId:pilot.requestId,
  observedAt:now-100,scope:"fixed-supervisor-do-only",historyPreserved:true,providerDispatchAuthorized:false,completePass:false},
@@ -48,12 +48,12 @@ test("wrong version tag, namespace drift and wrong pilot binding block promotion
 });
 
 test("maintenance-only may promote frozen code with no pilot grant; mixing grants is forbidden",()=>{
- const m={...a,maintenance};delete m.pilot;delete m.reconciliationDigest;
+ const m={...a,maintenance,preFreezeObservationReceipt:receipt};delete m.pilot;delete m.reconciliationDigest;delete m.exclusivityReceipt;
  const z=structuredClone(o);
  z.targets[0].oldVersion.resources.bindings=z.targets[0].oldVersion.resources.bindings.filter(x=>x.name==="EXISTING");
  z.targets[0].newVersion.resources.bindings=z.targets[0].newVersion.resources.bindings.filter(x=>x.name!=="OPENCODE_PILOT_AUTHORIZATION");
  z.targets[0].newVersion.resources.bindings.push({name:"OPENCODE_R4_RECONCILIATION",type:"plain_text",text:JSON.stringify(maintenance)});
- assert.equal(run(m,z).mode,"maintenance-only");assert.throws(()=>run({...m,pilot},z));
+ assert.equal(run(m,z).mode,"freeze-only");assert.throws(()=>run({...m,exclusivityReceipt:receipt},z));assert.throws(()=>run({...m,pilot},z));
  const bad=structuredClone(z);bad.targets[0].newVersion.resources.bindings.push({name:"OPENCODE_PILOT_AUTHORIZATION",type:"plain_text",text:JSON.stringify(pilot)});
  assert.throws(()=>run(m,bad));
  assert.throws(()=>run({...a,reconciliationDigest:"0".repeat(64)},o));
@@ -64,4 +64,13 @@ test("pilot promotion needs independent server readback, not a matching manifest
   x=>x.admissionCapacity.activeSlots=1,x=>x.historicalReconciliation.observedAt=now-3600001]){
   const z=structuredClone(o);mutate(z);assert.throws(()=>run(a,z));
  }
+});
+
+test("pilot reuses already certified MCP without redundant upload or promotion",()=>{
+ const m=structuredClone(a),z=structuredClone(o);
+ m.targets[1].version=m.targets[1].rollbackVersion;
+ z.targets[1].oldVersion={...z.targets[1].newVersion,id:m.targets[1].version};
+ z.targets[1].newVersion=structuredClone(z.targets[1].oldVersion);
+ const plan=run(m,z);assert.equal(plan.requests.length,1);assert.equal(plan.requests[0].worker,"opencode-g1-staging");
+ z.targets[1].newVersion.annotations["workers/tag"]="wrong";assert.throws(()=>run(m,z));
 });

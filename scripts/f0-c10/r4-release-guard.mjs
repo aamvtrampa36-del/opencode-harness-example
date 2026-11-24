@@ -10,7 +10,7 @@ import path from "node:path";
 import {execFileSync} from "node:child_process";
 import {pathToFileURL} from "node:url";
 import {parsePilotApproval} from "../../src/pilot-authorization.ts";
-import {parseReconciliationManifest} from "../../src/supervisor-reconciliation.ts";
+import {parseFreezeManifest} from "../../src/supervisor-reconciliation.ts";
 
 const workers={principal:"opencode-g1-staging",mcp:"opencode-staging-control-mcp"};
 const hash=b=>createHash("sha256").update(b).digest("hex");
@@ -93,7 +93,7 @@ export function verifyApproval(raw,pinned,receipt,observed,now=Date.now()){
   if(a.maintenance!==undefined){
    assert(!("pilot" in a),"maintenance cannot authorize inference");
    const m=a.maintenance;
-   assert(parseReconciliationManifest(JSON.stringify(m),a.source,m?.requestId,now)&&m.approvalRef===a.approvalRef,
+   assert(parseFreezeManifest(JSON.stringify(m),a.source,m?.requestId,now)&&m.approvalRef===a.approvalRef,
      "invalid maintenance authorization");
    return a;
   }

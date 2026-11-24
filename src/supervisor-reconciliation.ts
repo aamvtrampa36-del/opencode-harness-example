@@ -26,6 +26,40 @@ export async function reconciliationDigest(x:unknown):Promise<string>{
  const bytes=new TextEncoder().encode(JSON.stringify(canonical(x)));
  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",bytes)),b=>b.toString(16).padStart(2,"0")).join("");
 }
+/** A deployment-admin freeze grants NO reconciliation or inference authority.
+ * Its expiry never automatically reopens admission; the lane remains locked
+ * until a separately authorized version change. */
+export type FreezeManifest={schema:"r4-freeze-v1";environment:"staging";releaseSha:string;
+ requestId:string;approvalRef:string;notBefore:number;expiresAt:number};
+export function parseFreezeManifest(raw:unknown,release:string,lane:string,now=Date.now()):FreezeManifest|undefined{
+ if(typeof raw!=="string"||raw.length>4096||!SHA.test(release)||!ID.test(lane))return;
+ try{
+  const m=JSON.parse(raw) as FreezeManifest;
+  if(m?.schema!=="r4-freeze-v1"||m.environment!=="staging"||m.releaseSha!==release||m.requestId!==lane||
+    Object.keys(m).sort().join(",")!=="approvalRef,environment,expiresAt,notBefore,releaseSha,requestId,schema"||
+    typeof m.approvalRef!=="string"||m.approvalRef.length<8||m.approvalRef.length>160||
+    ![m.notBefore,m.expiresAt].every(Number.isSafeInteger)||m.notBefore<0||m.notBefore>now||
+    m.expiresAt<=now||m.expiresAt>now+60*60_000)return;
+  return m;
+ }catch{return undefined;}
+}
+export type DrainCommand={action:"r4_reconcile";releaseSha:string;requestId:string;approvalRef:string;
+ freezeObservedAt:number;drainedAt:number;externalDrainReceipt:string};
+export function reconciliationFromFrozenWorkflow(freeze:FreezeManifest,raw:unknown,now=Date.now()):ReconciliationManifest{
+ require(parseFreezeManifest(JSON.stringify(freeze),freeze.releaseSha,freeze.requestId,now),"HISTORICAL_FREEZE_REQUIRED");
+ const c=raw as DrainCommand;
+ require(c&&typeof c==="object"&&Object.keys(c).sort().join(",")===
+  "action,approvalRef,drainedAt,externalDrainReceipt,freezeObservedAt,releaseSha,requestId"&&
+  c.action==="r4_reconcile"&&c.releaseSha===freeze.releaseSha&&c.requestId===freeze.requestId&&c.approvalRef===freeze.approvalRef&&
+  Number.isSafeInteger(c.freezeObservedAt)&&Number.isSafeInteger(c.drainedAt)&&c.freezeObservedAt>=freeze.notBefore&&
+  c.drainedAt>=c.freezeObservedAt&&c.drainedAt<=now&&now-c.drainedAt<=15*60_000&&
+  typeof c.externalDrainReceipt==="string"&&HASH.test(c.externalDrainReceipt),"HISTORICAL_POST_FREEZE_DRAIN_REQUIRED");
+ const m:ReconciliationManifest={schema:"r4-reconciliation-v1",environment:"staging",releaseSha:freeze.releaseSha,
+  requestId:freeze.requestId,approvalRef:freeze.approvalRef,notBefore:freeze.notBefore,expiresAt:freeze.expiresAt,
+  drainedAt:c.drainedAt,externalDrainReceipt:c.externalDrainReceipt};
+ require(parseReconciliationManifest(JSON.stringify(m),m.releaseSha,m.requestId,now),"HISTORICAL_POST_FREEZE_DRAIN_REQUIRED");
+ return m;
+}
 export type ReconciliationManifest={schema:"r4-reconciliation-v1";environment:"staging";releaseSha:string;
  requestId:string;approvalRef:string;externalDrainReceipt:string;drainedAt:number;notBefore:number;expiresAt:number};
 export function parseReconciliationManifest(raw:unknown,release:string,lane:string,now=Date.now()):ReconciliationManifest|undefined{

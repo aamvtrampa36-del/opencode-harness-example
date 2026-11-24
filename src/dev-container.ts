@@ -227,7 +227,7 @@ export class DevContainer extends DurableObject<Env> {
   private async ensureRunning() {
     const pilot=await this.checkPilotWork();
     const lane=(this.env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
-    if(lane&&(!pilot||this.ctx.id.name!=="project-v1:supervised-"+lane))throw Error("PILOT_EXCLUSIVE_CONTAINER");
+    if(lane&&(!(this.env as Env & {OPENCODE_PILOT_AUTHORIZATION?:string}).OPENCODE_PILOT_AUTHORIZATION||!pilot||this.ctx.id.name!=="project-v1:supervised-"+lane))throw Error("PILOT_EXCLUSIVE_CONTAINER");
     this.starting ??= this.startOrRecover().finally(() => { this.starting = undefined; });
     return await this.starting;
   }

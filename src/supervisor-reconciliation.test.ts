@@ -97,3 +97,21 @@ test("manifest is exact-release, exact-lane, recent and deployment-admin time bo
  expect(parseReconciliationManifest(JSON.stringify({...manifest,drainedAt:now-900001}),release,lane,now)).toBeUndefined();
  expect(parseReconciliationManifest(JSON.stringify({...manifest,expiresAt:now}),release,lane,now)).toBeUndefined();
 });
+
+test("freeze requires no drain, but workflow reconciliation requires fresh post-freeze drain",async()=>{
+ const {parseFreezeManifest,reconciliationFromFrozenWorkflow}=await import("./supervisor-reconciliation");
+ const freeze={schema:"r4-freeze-v1" as const,environment:"staging" as const,releaseSha:release,requestId:lane,
+  approvalRef:"offline-only-test",notBefore:now-100,expiresAt:now+100000};
+ expect(parseFreezeManifest(JSON.stringify(freeze),release,lane,now)).toEqual(freeze);
+ expect(parseFreezeManifest(JSON.stringify({...freeze,externalDrainReceipt:"a".repeat(64)}),release,lane,now)).toBeUndefined();
+ const command={action:"r4_reconcile",releaseSha:release,requestId:lane,approvalRef:freeze.approvalRef,
+  freezeObservedAt:now-80,drainedAt:now-10,externalDrainReceipt:"a".repeat(64)};
+ const m=reconciliationFromFrozenWorkflow(freeze,command,now);
+ expect(m.drainedAt).toBe(now-10);
+ for(const patch of [{drainedAt:now-90},{freezeObservedAt:now-101},{drainedAt:now+1},
+  {requestId:id(2)},{releaseSha:"0".repeat(40)},{externalDrainReceipt:"bad"},{pilot:true}])
+  expect(()=>reconciliationFromFrozenWorkflow(freeze,{...command,...patch},now)).toThrow();
+ const db=new DB();await db.put("supervisor:task:"+id(1),task(1));
+ expect(await historicalCertificate(db.asDO())).toBeUndefined();
+ expect((await reconcileHistoricalSupervisor(db.asDO(),m,object,()=>native(),()=>now)).historyPreserved).toBe(true);
+});

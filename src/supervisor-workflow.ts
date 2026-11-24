@@ -1,5 +1,6 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { SUPERVISOR_WORKSPACE, supervisorTaskKey } from "./supervisor-control";
+import { parseFreezeManifest, reconciliationFromFrozenWorkflow, type DrainCommand } from "./supervisor-reconciliation";
 import { workflowStartInput } from "./staging-control-mcp/start-contract";
 import { boundedMcpJsonText } from "./staging-control-mcp/bounded-response";
 import { drillProjectNames } from "./container-recovery";
@@ -17,7 +18,9 @@ import {
 } from "./session-sql-backup";
 import type { SessionBackupDrillAgent } from "./session-sql-backup-do";
 
+declare const __OPENCODE_RELEASE_SHA__: string;
 type SupervisorWorkflowCommand =
+  | DrainCommand
   | ({ action: "start"; requestId: string; repository: string; prompt: string } &
       import("./staging-control-mcp/start-contract").ReadOnlyStartFields)
   | { action: "status" | "cancel" | "review" | "pilot_close"; id: string }
@@ -47,6 +50,22 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
       throw new Error("INVALID_SUPERVISOR_COMMAND");
     }
     const args = command as Record<string, unknown>;
+    const env=this.env as Env & {OPENCODE_SUPERVISOR_ENABLED?:string;OPENCODE_PILOT_HYBRID_REQUEST_ID?:string;
+      OPENCODE_R4_RECONCILIATION?:string;OPENCODE_PILOT_AUTHORIZATION?:string};
+    if(args.action==="r4_reconcile"){
+      if(env.OPENCODE_SUPERVISOR_ENABLED!=="true"||env.OPENCODE_PILOT_AUTHORIZATION)throw Error("HISTORICAL_FREEZE_REQUIRED");
+      const freeze=parseFreezeManifest(env.OPENCODE_R4_RECONCILIATION,
+        typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"",env.OPENCODE_PILOT_HYBRID_REQUEST_ID??"");
+      if(!freeze)throw Error("HISTORICAL_FREEZE_REQUIRED");
+      reconciliationFromFrozenWorkflow(freeze,args);
+      return step.do("r4-reconcile-frozen-supervisor",{retries:{limit:0,delay:"1 second"}},async()=>
+        this.env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE).workflowHistoricalReconcile(args));
+    }
+    // No backup/recovery drill, destructive cleanup or alternate workflow
+    // producer can run during either freeze or pilot.
+    if(env.OPENCODE_PILOT_HYBRID_REQUEST_ID&&
+       !["status","start","cancel","review","pilot_close"].includes(String(args.action)))
+      throw Error("PILOT_ALTERNATE_WORKFLOW_FORBIDDEN");
     if (args.action === "joint_prepare" || args.action === "joint_verify_cleanup" ||
         args.action === "joint_cleanup") {
       // Staging-only private Cloudflare Workflow actions for the JOINT

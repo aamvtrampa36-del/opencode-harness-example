@@ -9,7 +9,7 @@ import {createHash} from "node:crypto";
 import {readFileSync} from "node:fs";
 import {pathToFileURL} from "node:url";
 import {parsePilotApproval} from "../../src/pilot-authorization.ts";
-import {parseReconciliationManifest} from "../../src/supervisor-reconciliation.ts";
+import {parseFreezeManifest} from "../../src/supervisor-reconciliation.ts";
 const hash=b=>createHash("sha256").update(b).digest("hex");
 const hex=(v,n)=>typeof v==="string"&&v.length===n&&/^[a-f0-9]+$/.test(v);
 const uuid=v=>typeof v==="string"&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v);
@@ -38,14 +38,15 @@ export function promotionPlan(raw,pin,o,now=Date.now()){
  assert(typeof a.approvalRef==="string"&&a.approvalRef.length>=8&&a.approvalRef.length<=160);
  assert(Number.isSafeInteger(a.notBefore)&&a.notBefore<=now&&Number.isSafeInteger(a.expiresAt)&&a.expiresAt>now&&a.expiresAt-now<=3600000);
  assert(Number.isSafeInteger(o.observedAt)&&o.observedAt<=now&&now-o.observedAt<=60000);
- assert(hex(a.exclusivityReceipt,64)&&hex(a.economicsReceipt,64),"independent evidence pins required");
+ assert(hex(a.economicsReceipt,64),"independent economic evidence required");
  assert.equal(o.activeContainers,0);assert.equal(o.startingContainers,0);assert.equal(o.activeBuilds,0);
  const maintenance=a.maintenance,p=a.pilot;
  if(maintenance!==undefined){
-  assert(!("pilot" in a)&&parseReconciliationManifest(JSON.stringify(maintenance),a.source,maintenance?.requestId,now)&&
+  assert(!("pilot" in a)&&parseFreezeManifest(JSON.stringify(maintenance),a.source,maintenance?.requestId,now)&&
     maintenance.approvalRef===a.approvalRef,"invalid maintenance authorization");
-  assert.equal(a.exclusivityReceipt,maintenance.externalDrainReceipt);
+  assert(hex(a.preFreezeObservationReceipt,64)&&!("exclusivityReceipt" in a)&&!("reconciliationDigest" in a),"freeze is not a drain certificate");
  }else{
+  assert(hex(a.exclusivityReceipt,64),"post-freeze exclusivity evidence required");
   assert(p?.approvalRef===a.approvalRef&&p.ciRun===a.ciRun&&parsePilotApproval(JSON.stringify(p),a.source,p.requestId,now),"invalid v2 manifest");
   assert.equal(a.reconciliationDigest,p.reconciliationDigest,"historical reconciliation receipt required");
   const c=o.historicalReconciliation,capacity=o.admissionCapacity;
@@ -61,7 +62,9 @@ export function promotionPlan(raw,pin,o,now=Date.now()){
  const requests=[];
  for(const name of names){
   const t=a.targets.find(t=>t.worker===name),r=o.targets.find(t=>t.worker===name);
-  assert(t&&r&&uuid(t.version)&&uuid(t.rollbackVersion)&&uuid(t.rollbackDeployment)&&t.version!==t.rollbackVersion&&hex(t.uploadReceipt,64));
+  assert(t&&r&&uuid(t.version)&&uuid(t.rollbackVersion)&&uuid(t.rollbackDeployment)&&hex(t.uploadReceipt,64));
+  const reuse=name===names[1]&&maintenance===undefined&&t.version===t.rollbackVersion;
+  assert(reuse||t.version!==t.rollbackVersion,"only already-certified MCP may be reused in pilot promotion");
   assert.equal(r.triggerStopGuard,true);assert.equal(r.deployment.id,t.rollbackDeployment);
   same(r.deployment.versions,[{version_id:t.rollbackVersion,percentage:100}]);
   assert.equal(r.oldVersion.id,t.rollbackVersion);assert.equal(r.newVersion.id,t.version);
@@ -91,9 +94,11 @@ export function promotionPlan(raw,pin,o,now=Date.now()){
     assert.equal(oldMaintenance.length,1);assert.equal(oldPilot.length,0);assert.equal(oldLane.length,1);
     assert.equal(oldLane[0].type,"plain_text");assert.equal(oldLane[0].text,p.requestId);assert.equal(oldMaintenance[0].type,"plain_text");
     const old=JSON.parse(oldMaintenance[0].text);
-    assert.equal(old.releaseSha,a.source);assert.equal(old.requestId,p.requestId);
+    assert.equal(old.schema,"r4-freeze-v1");assert.equal(old.releaseSha,a.source);assert.equal(old.requestId,p.requestId);
+    assert.equal(old.approvalRef,a.approvalRef);
    }
   }
+  if(reuse){same(r.oldVersion,r.newVersion);continue;}
   const path="/accounts/"+a.accountId+"/workers/scripts/"+name+"/deployments";
   requests.push({worker:name,precondition:{deployment:t.rollbackDeployment,version:t.rollbackVersion},
    method:"POST",path,body:{strategy:"percentage",versions:[{version_id:t.version,percentage:100}],
@@ -102,8 +107,8 @@ export function promotionPlan(raw,pin,o,now=Date.now()){
     condition:"only after own promotion confirmed, physical close/no effects and exact latest deployment readback"}});
  }
  return {schema:"r4-promotion-plan-v1",source:a.source,ciRun:a.ciRun,manifestSha256:pin,expiresAt:a.expiresAt,requests,
-  decision:"READY_FOR_EXPLICIT_ADMIN_APPLY",mode:maintenance?"maintenance-only":"pilot",applied:false,providerDispatchAuthorized:false,completePass:false,
-  instructions:"Revalidate both before first POST and each target immediately before its POST. Read back version and deployment after each. STOP on ambiguity, do not start pilot until both exact 100% deployments and fresh independent exclusivity are confirmed. Rollback is not data rollback."};
+  decision:"READY_FOR_EXPLICIT_ADMIN_APPLY",mode:maintenance?"freeze-only":"pilot",applied:false,providerDispatchAuthorized:false,completePass:false,
+  instructions:maintenance?"Freeze only: no drain or reconciliation is certified. Read back both versions at 100%, then independently verify drain, then invoke account Workflow r4_reconcile.":"Revalidate both before first POST and each target immediately before its POST. Read back both versions at 100%, including reused MCP. STOP on ambiguity. Rollback is not data rollback."};
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
  try{const [manifest,pin,observations]=process.argv.slice(2);

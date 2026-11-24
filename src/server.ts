@@ -25,7 +25,7 @@ import { collectSupervisorDirectory, supervisorTaskCount } from "./supervisor-di
 import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
 // Progress is read from the bounded supervisor ledger, never raw SDK log().
 import { requireMeteredDiagnosticAdmission } from "./supervisor-legacy-capacity";
-import { parseReconciliationManifest, historicalCertificate, publicHistoricalCertificate, retiredHistoricalTask, observeNativeQuiescence } from "./supervisor-reconciliation";
+import { parseFreezeManifest, reconciliationFromFrozenWorkflow, historicalCertificate, publicHistoricalCertificate, retiredHistoricalTask, observeNativeQuiescence } from "./supervisor-reconciliation";
 import {
   reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot,
@@ -686,6 +686,9 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return {
       environment: "staging", worker: "opencode-g1-staging", ready: true,
       admissionCapacity,
+      r4Freeze:this.r4FreezeManifest()?{schema:"r4-freeze-v1",releaseSha:this.r4FreezeManifest()!.releaseSha,
+        requestId:this.r4FreezeManifest()!.requestId,approvalRef:this.r4FreezeManifest()!.approvalRef,
+        providerDispatchAuthorized:false,reconciliationRoute:"account-workflow-only"}:null,
       historicalReconciliation:await historicalCertificate(this.ctx.storage).then(c=>c?publicHistoricalCertificate(c):null),
       schema: "opencode.staging-control.v2",
       supervisedSessions: count.supervisedSessions,
@@ -712,13 +715,30 @@ export class OpenCodeAgent extends DurableObject<Env> {
   /** Explicit administrative maintenance RPC, not a status read. No model
    * authorization or Container starts. Missing/expired manifest is STOP. */
   async remoteSupervisorReconcile():Promise<unknown>{
-    this.assertStagingRemote();
+    // Old connector/HTTP surface deliberately cannot accept an attestation.
+    throw Error("HISTORICAL_RECONCILIATION_ACCOUNT_WORKFLOW_ONLY");
+  }
+  private r4FreezeManifest(){
     const lane=this.pilotLaneId(),env=this.env as Env & {OPENCODE_R4_RECONCILIATION?:string;OPENCODE_PILOT_AUTHORIZATION?:string};
-    if(!lane||this.ctx.id.name!==SUPERVISOR_WORKSPACE||env.OPENCODE_PILOT_AUTHORIZATION)
-      throw Error("HISTORICAL_MAINTENANCE_LANE_REQUIRED");
-    const manifest=parseReconciliationManifest(env.OPENCODE_R4_RECONCILIATION,
+    if(!lane||this.ctx.id.name!==SUPERVISOR_WORKSPACE||env.OPENCODE_PILOT_AUTHORIZATION)return undefined;
+    return parseFreezeManifest(env.OPENCODE_R4_RECONCILIATION,
       typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"",lane);
-    if(!manifest)throw Error("HISTORICAL_MAINTENANCE_AUTHORIZATION_REQUIRED");
+  }
+  /** Called only by the account-authenticated existing Workflow entrypoint.
+   * External drain evidence is not accepted from MCP, model or HTTP input. */
+  async workflowHistoricalReconcile(raw:unknown):Promise<unknown>{
+    this.assertStagingRemote();
+    const freeze=this.r4FreezeManifest();
+    if(!freeze)throw Error("HISTORICAL_FREEZE_REQUIRED");
+    const manifest=reconciliationFromFrozenWorkflow(freeze,raw);
+    const previous=await historicalCertificate(this.ctx.storage);
+    if(previous?.manifest.releaseSha===manifest.releaseSha&&previous.manifest.requestId===manifest.requestId&&
+       previous.manifest.approvalRef===manifest.approvalRef&&previous.manifest.externalDrainReceipt===manifest.externalDrainReceipt){
+      // Lost response readback only. Do not overwrite an immutable receipt.
+      return {...publicHistoricalCertificate(previous),capacity:await inspectSupervisorAdmissionCapacity(this.ctx.storage),reused:true};
+    }
+    if(previous?.manifest.releaseSha===manifest.releaseSha&&previous.manifest.requestId===manifest.requestId)
+      throw Error("HISTORICAL_RECONCILIATION_ALREADY_RECORDED");
     return reconcileHistoricalSupervisor(this.ctx.storage,manifest,this.ctx.id.toString(),
       ()=>this.observeHistoricalNative(Math.min(manifest.expiresAt,Date.now()+120_000)));
   }
