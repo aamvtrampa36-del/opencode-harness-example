@@ -1,4 +1,4 @@
-import { supervisorTaskKey, type SupervisorTask } from "./supervisor-control";
+import { supervisorStartOperationId, supervisorTaskKey, type SupervisorTask } from "./supervisor-control";
 import { auditLegacyCapacity, type AdmissionCapacityEvidence,
   type LegacyCapacityStop } from "./supervisor-legacy-capacity";
 import { r2TurnAdmission, r2SessionId, r2TurnJournalKey, r2TerminalNativeReceipt, type R2TurnJournal } from "./supervisor-r2";
@@ -14,7 +14,7 @@ import { scopeStorageKey, type ProjectScope } from "./project-scope";
 const LEDGER_KEY = "supervisor:admission:v1";
 const DEFAULT_CAPACITY = 10;
 const LEASE_MS = 60_000;
-type StartEffect = "github_branch" | "session_create" | "configure" | "submit" | "turn_submit";
+type StartEffect = "github_branch" | "session_create" | "configure" | "submit" | "turn_submit" | ReadOnlyStartEffect;
 type SlotPhase = "reserved" | "effect_unknown" | "running";
 export type AdmissionSlot = {
   token: string; generation: number; expiresAt: number;
@@ -55,14 +55,23 @@ function newGrant(id: string, generation: number, now: number): AdmissionSlot {
 
 /** Never auto-reclaim ambiguous external effects merely because a TTL elapsed. */
 export async function reserveSupervisorAdmission(
-  storage: DurableObjectStorage, candidate: SupervisorTask, now = Date.now()
+  storage: DurableObjectStorage, candidate: SupervisorTask, now = Date.now(),
+  readOnlyPins?: ReadOnlySourcePins
 ): Promise<AdmissionDecision> {
   if (!Number.isSafeInteger(now) || now < 0) throw new Error("ADMISSION_CLOCK_INVALID");
   const key = supervisorTaskKey(candidate.id);
+  const readOnly = isReadOnlyTask(candidate);
+  if (readOnly !== (readOnlyPins !== undefined)) throw Error("READ_ONLY_ADMISSION_PINS_REQUIRED");
+  if (readOnlyPins) { validClock(now); validateReadOnlyCandidate(candidate, readOnlyPins); }
   return storage.transaction(async tx => {
     const old = await tx.get<SupervisorTask>(key);
+    const journal = await readOnlyJournal(tx, candidate.id);
+    if (old && isReadOnlyTask(old) !== readOnly || journal && !old ||
+        old && readOnly && (!journal || !samePins(journal.pins, readOnlyPins!)) ||
+        journal && !readOnly) throw Error("READ_ONLY_ADMISSION_IDENTITY_CONFLICT");
     if (old && old.fingerprint !== candidate.fingerprint)
       throw new Error("requestId usado con otra tarea");
+    if (old && readOnly) await requireReadOnlyJournal(tx,old);
     const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
     let changed = false;
     // At most 10 lookups, regardless of total historical task count.
@@ -87,6 +96,10 @@ export async function reserveSupervisorAdmission(
         return { kind: "reused", task: old,
           reason: slot.phase === "effect_unknown" ? "EFFECT_UNCONFIRMED" :
             slot.phase === "running" ? "ALREADY_RUNNING" : "LEASE_HELD", slot };
+      }
+      if (readOnly && (old.status !== "preparing" || !activeReadOnlyStart(old))) {
+        if (changed) await tx.put(LEDGER_KEY,ledger);
+        return {kind:"reused" as const,task:old,reason:"READ_ONLY_START_NOT_ACTIVE",slot};
       }
       // A pre-effect lease can be reclaimed only when old unmetered work
       // cannot silently consume more capacity. Check in the SAME transaction.
@@ -115,6 +128,11 @@ export async function reserveSupervisorAdmission(
     const slot = newGrant(candidate.id, 1, now);
     ledger.slots[candidate.id] = slot;
     await tx.put(key, candidate);
+    if (readOnlyPins) await tx.put(readOnlyJournalKey(candidate.id), {
+      version: 1, pins: {commit:readOnlyPins.commit,tree:readOnlyPins.tree},
+      repository:candidate.repository, project:candidate.project, fingerprint:candidate.fingerprint,
+      receipts:[]
+    } satisfies ReadOnlyAdmissionJournal);
     await tx.put(LEDGER_KEY, ledger);
     return { kind: "granted", task: candidate,
       grant: { id: candidate.id, token: slot.token, generation: 1 }, reused: false };
@@ -128,6 +146,8 @@ export async function supervisorBeginExternalEffect(
     const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
     const slot = ledger.slots[grant.id];
     const task = await tx.get<SupervisorTask>(supervisorTaskKey(grant.id));
+    if (task && isReadOnlyTask(task) || await readOnlyJournal(tx, grant.id))
+      throw Error("READ_ONLY_TRANSACTION_REQUIRED");
     if (!task || task.status !== "preparing" && task.status !== "running" ||
         !slot || slot.token !== grant.token || slot.generation !== grant.generation ||
         slot.phase !== "reserved" || slot.expiresAt <= now)
@@ -146,6 +166,9 @@ export async function supervisorConfirmExternalEffect(
   await storage.transaction(async tx => {
     const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
     const slot = ledger.slots[grant.id];
+    const task = await tx.get<SupervisorTask>(supervisorTaskKey(grant.id));
+    if (task && isReadOnlyTask(task) || await readOnlyJournal(tx, grant.id))
+      throw Error("READ_ONLY_TRANSACTION_REQUIRED");
     if (!slot || slot.token !== grant.token || slot.generation !== grant.generation ||
         slot.phase !== "effect_unknown" || slot.effect !== effect)
       throw new Error("ADMISSION_FENCE_REJECTED");
@@ -196,6 +219,14 @@ export async function reconcileSupervisorSubmittedEffect(
     const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
     const slot = ledger.slots[id];
     if (!slot || slot.phase !== "effect_unknown" || slot.effect !== "submit") return false;
+    if (isReadOnlyTask(task)) {
+      const j = await requireReadOnlyJournal(tx, task);
+      if (!task.session || !matchesPending(j, slot, "submit")) return false;
+      finishReadOnlyReceipt(j, slot, {effect:"submit", project:task.project,
+        repository:task.repository, sessionId:task.session, operationId,
+        nativeStatus:receipt.status}, task, Date.now());
+      await tx.put(readOnlyJournalKey(id), j);
+    } else if (await readOnlyJournal(tx,id)) return false;
     slot.phase = "running";
     slot.effect = undefined;
     await tx.put(LEDGER_KEY, ledger);
@@ -231,6 +262,7 @@ export async function reconcileSupervisorCreatedSession(
     const slot = ledger.slots[id];
     if (!task || !slot || task.sessionIdPolicy !== "deterministic-v1" ||
         task.forkedFrom || task.session || task.sessionCreationAttempted !== true ||
+        isReadOnlyTask(task) && (task.cancelAmbiguous || task.pendingTurn) ||
         task.status !== "preparing" && task.status !== "unknown" ||
         slot.token !== expected.token || slot.generation !== expected.generation ||
         slot.phase !== "effect_unknown" || slot.effect !== "session_create")
@@ -243,6 +275,14 @@ export async function reconcileSupervisorCreatedSession(
       throw Error("SESSION_RECONCILE_SCOPE_CONFLICT");
     // Even if the original request returns after this point, its old token
     // cannot commit another task record. One session ID, one durable owner.
+    if (isReadOnlyTask(task)) {
+      const j = await requireReadOnlyJournal(tx, task);
+      if (!matchesPending(j, slot, "session_create"))
+        return {kind:"stale" as const,reason:"READ_ONLY_SESSION_INTENT_MISSING"};
+      finishReadOnlyReceipt(j,slot,{effect:"session_create",project:task.project,
+        repository:task.repository,sessionId},task,now);
+      await tx.put(readOnlyJournalKey(id),j);
+    } else if (await readOnlyJournal(tx,id)) throw Error("READ_ONLY_ADMISSION_IDENTITY_CONFLICT");
     const next = newGrant(id, slot.generation + 1, now);
     ledger.slots[id] = next;
     const updated: SupervisorTask = { ...task, session: sessionId,
@@ -279,6 +319,8 @@ export async function supervisorCommitCreatedSession(
     const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
     const slot = ledger.slots[grant.id];
     const task = await tx.get<SupervisorTask>(supervisorTaskKey(grant.id));
+    if (task && isReadOnlyTask(task) || await readOnlyJournal(tx,grant.id))
+      throw Error("READ_ONLY_TRANSACTION_REQUIRED");
     if (!task || task.sessionIdPolicy !== "deterministic-v1" ||
         !task.sessionCreationAttempted || task.session || task.forkedFrom ||
         !slot || slot.token !== grant.token || slot.generation !== grant.generation ||
@@ -328,6 +370,11 @@ export async function reserveSupervisorContinuation(
     // Once a native call could have escaped, *any* duplicate HTTP request
     // returns a receipt for reconciliation, never replays the side effect.
     if (previous) return {kind:"existing" as const, task, journal:previous};
+    if (isReadOnlyTask(task)) {
+      const j = await requireReadOnlyJournal(tx,task);
+      if (j.pending || j.receipts.length !== READ_ONLY_STEPS.length)
+        throw Error("READ_ONLY_INITIAL_EFFECT_NOT_SETTLED");
+    } else if (await readOnlyJournal(tx,id)) throw Error("READ_ONLY_ADMISSION_IDENTITY_CONFLICT");
     // Preserve legacy journals without allowing another native submit.
     if (task.sessionIdPolicy !== "deterministic-v1")
       throw Error("SUPERVISOR_LEGACY_QUARANTINED");
@@ -448,4 +495,301 @@ export async function inspectSupervisorAdmissionCapacity(
     const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
     return auditLegacyCapacity(tx, ledger.slots);
   });
+}
+
+
+/**
+ * C05/T02: bounded write-ahead journal for the initial read_only start.
+ * One existing global slot, no additional capacity and NO provider authorization.
+ * All receipts are internal trusted observations, never request-body assertions.
+ */
+export type ReadOnlySourcePins = { commit: string; tree: string };
+const READ_ONLY_STEPS = ["project_reserve", "container_import", "session_create",
+  "scope_bind", "configure_agent", "configure_model", "submit"] as const;
+export type ReadOnlyStartEffect = typeof READ_ONLY_STEPS[number];
+export type ReadOnlyEffectReceipt = {
+  effect: ReadOnlyStartEffect; project: string; repository: string;
+  commit?: string; tree?: string; files?: number; sha256?: string;
+  sessionId?: string; agent?: string; model?: string; operationId?: string;
+  accepted?: true; nativeStatus?: "done" | "unanswered";
+};
+type ReadOnlyStoredReceipt = { generation:number; confirmedAt:number; evidence:ReadOnlyEffectReceipt };
+export type ReadOnlyAdmissionJournal = {
+  version:1; pins:ReadOnlySourcePins; repository:string; project:string; fingerprint:string;
+  sourceVerifiedAt?:number;
+  pending?:{effect:ReadOnlyStartEffect; generation:number; startedAt:number};
+  receipts:ReadOnlyStoredReceipt[];
+};
+const sha40 = (v: unknown): v is string => typeof v === "string" && /^[a-f0-9]{40}$/.test(v);
+function isReadOnlyTask(task: SupervisorTask): boolean {
+  return (task as SupervisorTask & {mode?:string}).mode === "read_only";
+}
+function samePins(a:ReadOnlySourcePins, b:ReadOnlySourcePins):boolean {
+  return a.commit === b.commit && a.tree === b.tree;
+}
+function readOnlyJournalKey(id:string):string {
+  supervisorTaskKey(id);
+  return "supervisor:read-only-start:v1:" + id;
+}
+function validateReadOnlyCandidate(task:SupervisorTask,pins:ReadOnlySourcePins):void {
+  if (!pins || !sha40(pins.commit) || !sha40(pins.tree) || task.branch !== "" ||
+      task.forkedFrom || task.session || task.operationId || task.baseCommit ||
+      task.sessionCreationAttempted !== false || task.sessionIdPolicy !== "deterministic-v1" ||
+      task.status !== "preparing" || task.pendingTurn || task.cancelAmbiguous)
+    throw Error("READ_ONLY_ADMISSION_CANDIDATE_INVALID");
+  const tree = (task as SupervisorTask & {sourceTree?:string}).sourceTree;
+  if (tree !== undefined && tree !== pins.tree) throw Error("READ_ONLY_SOURCE_PIN_MISMATCH");
+}
+async function readOnlyJournal(tx:Pick<DurableObjectTransaction,"get">,id:string):Promise<ReadOnlyAdmissionJournal|undefined> {
+  const j = await tx.get<ReadOnlyAdmissionJournal>(readOnlyJournalKey(id));
+  if (j === undefined) return undefined;
+  if (!j || j.version !== 1 || !j.pins || !sha40(j.pins.commit) || !sha40(j.pins.tree) ||
+      typeof j.repository !== "string" || typeof j.project !== "string" ||
+      typeof j.fingerprint !== "string" || !Array.isArray(j.receipts) ||
+      j.receipts.length > READ_ONLY_STEPS.length ||
+      j.sourceVerifiedAt !== undefined && (!Number.isSafeInteger(j.sourceVerifiedAt) || j.sourceVerifiedAt < 0) ||
+      (j.receipts.length > 0 || j.pending) && j.sourceVerifiedAt === undefined ||
+      j.receipts.some((r,i)=>!r || !r.evidence || r.evidence.effect !== READ_ONLY_STEPS[i] ||
+        !Number.isSafeInteger(r.generation) || r.generation < 1 || !Number.isSafeInteger(r.confirmedAt)) ||
+      j.pending && (j.pending.effect !== READ_ONLY_STEPS[j.receipts.length] ||
+        !Number.isSafeInteger(j.pending.generation) || j.pending.generation < 1 ||
+        !Number.isSafeInteger(j.pending.startedAt)))
+    throw Error("READ_ONLY_ADMISSION_JOURNAL_INVALID");
+  return j;
+}
+async function requireReadOnlyJournal(tx:Pick<DurableObjectTransaction,"get">,task:SupervisorTask):Promise<ReadOnlyAdmissionJournal> {
+  const j = await readOnlyJournal(tx,task.id);
+  if (!j || !isReadOnlyTask(task) || task.branch !== "" || task.forkedFrom ||
+      task.repository !== j.repository || task.project !== j.project || task.fingerprint !== j.fingerprint ||
+      j.sourceVerifiedAt !== undefined && (task.baseCommit !== j.pins.commit ||
+        (task as SupervisorTask & {sourceTree?:string}).sourceTree !== j.pins.tree))
+    throw Error("READ_ONLY_ADMISSION_IDENTITY_CONFLICT");
+  for (const r of j.receipts) normalizeReadOnlyReceipt(r.evidence,j,task);
+  return j;
+}
+function matchesPending(j:ReadOnlyAdmissionJournal,slot:AdmissionSlot,effect:ReadOnlyStartEffect):boolean {
+  return slot.phase === "effect_unknown" && slot.effect === effect &&
+    j.pending?.effect === effect && j.pending.generation === slot.generation &&
+    READ_ONLY_STEPS[j.receipts.length] === effect;
+}
+function activeReadOnlyStart(task:SupervisorTask):boolean {
+  return (task.status === "preparing" || task.status === "running" || task.status === "unknown") &&
+    !task.cancelAmbiguous && !task.pendingTurn;
+}
+function exactGrant(slot:AdmissionSlot|undefined,grant:StartGrant):slot is AdmissionSlot {
+  return Boolean(slot && slot.token === grant.token && slot.generation === grant.generation);
+}
+function validClock(now:number):void {
+  if (!Number.isSafeInteger(now) || now < 0 || now > Number.MAX_SAFE_INTEGER - LEASE_MS)
+    throw Error("ADMISSION_CLOCK_INVALID");
+}
+function normalizeReadOnlyReceipt(r:ReadOnlyEffectReceipt,j:ReadOnlyAdmissionJournal,task:SupervisorTask):ReadOnlyEffectReceipt {
+  if (!r || r.project !== j.project || typeof r.repository !== "string" ||
+      r.repository.toLowerCase() !== j.repository.toLowerCase())
+    throw Error("READ_ONLY_RECEIPT_SCOPE_MISMATCH");
+  const base = {effect:r.effect,project:j.project,repository:j.repository};
+  if (r.effect === "project_reserve") return base;
+  if (r.effect === "container_import") {
+    if (r.commit !== j.pins.commit || r.tree !== j.pins.tree || typeof r.files !== "number" ||
+        !Number.isSafeInteger(r.files) || r.files < 1 || typeof r.sha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(r.sha256)) throw Error("READ_ONLY_IMPORT_RECEIPT_INVALID");
+    return {...base,commit:r.commit,tree:r.tree,files:r.files,sha256:r.sha256};
+  }
+  if (r.sessionId !== r2SessionId(task.id)) throw Error("READ_ONLY_RECEIPT_SESSION_MISMATCH");
+  const session = {...base,sessionId:r.sessionId};
+  if (r.effect === "session_create" || r.effect === "scope_bind") return session;
+  if (r.effect === "configure_agent" && r.agent === "build") return {...session,agent:r.agent};
+  if (r.effect === "configure_model" && r.model === (task.model ?? "economy"))
+    return {...session,model:r.model};
+  if (r.effect === "submit" && r.operationId === supervisorStartOperationId(task.id)) {
+    if (r.accepted === true) return {...session,operationId:r.operationId,accepted:true};
+    if (r.nativeStatus === "done" || r.nativeStatus === "unanswered")
+      return {...session,operationId:r.operationId,nativeStatus:r.nativeStatus};
+  }
+  throw Error("READ_ONLY_EFFECT_RECEIPT_INVALID");
+}
+function finishReadOnlyReceipt(j:ReadOnlyAdmissionJournal,slot:AdmissionSlot,r:ReadOnlyEffectReceipt,task:SupervisorTask,now:number):void {
+  if (!matchesPending(j,slot,r.effect)) throw Error("ADMISSION_FENCE_REJECTED");
+  const evidence = normalizeReadOnlyReceipt(r,j,task);
+  j.receipts.push({generation:slot.generation,confirmedAt:now,evidence});
+  delete j.pending;
+  slot.phase = r.effect === "submit" ? "running" : "reserved";
+  slot.effect = undefined;
+  slot.expiresAt = now + LEASE_MS;
+}
+
+/** GET has no Container/session effect. Expected pins were journalled at
+ * reservation; a retry may repeat GET but only the current unexpired grant
+ * can persist its exact authoritative result. No model setup before import. */
+export async function supervisorVerifyReadOnlySource(storage:DurableObjectStorage,grant:StartGrant,source:{repo:string;commit:string;tree:string},now=Date.now()):Promise<SupervisorTask> {
+  validClock(now);
+  return storage.transaction(async tx=>{
+    const task = await tx.get<SupervisorTask>(supervisorTaskKey(grant.id));
+    const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
+    const slot = ledger.slots[grant.id];
+    if (!task || !exactGrant(slot,grant) || slot.phase !== "reserved" || slot.expiresAt <= now ||
+        task.status !== "preparing" || !activeReadOnlyStart(task)) throw Error("ADMISSION_FENCE_REJECTED");
+    const j = await requireReadOnlyJournal(tx,task);
+    if (typeof source?.repo !== "string" || source.repo.toLowerCase() !== j.repository.toLowerCase() ||
+        !samePins(j.pins,source)) throw Error("READ_ONLY_SOURCE_PIN_MISMATCH");
+    if (j.pending || j.receipts.length > 0) throw Error("READ_ONLY_SOURCE_ALREADY_ADVANCED");
+    if (j.sourceVerifiedAt !== undefined) return task;
+    j.sourceVerifiedAt = now;
+    const updated = {...task,baseCommit:j.pins.commit,sourceTree:j.pins.tree,
+      revision:(task.revision ?? 0)+1,updatedAt:now};
+    slot.expiresAt = now + LEASE_MS;
+    await tx.put(supervisorTaskKey(grant.id),updated);
+    await tx.put(readOnlyJournalKey(grant.id),j);
+    await tx.put(LEDGER_KEY,ledger);
+    return updated;
+  });
+}
+
+/** Exactly one fresh intent may dispatch exactly one named RPC. A caller
+ * must not replay it after a lost response, including after a restart.
+ * This is admission only: submit STILL needs the independent budget and
+ * provider gate. STOP_LIVE is not lifted by a journal or a StartGrant. */
+export async function supervisorBeginReadOnlyEffect(storage:DurableObjectStorage,grant:StartGrant,effect:ReadOnlyStartEffect,now=Date.now()):Promise<SupervisorTask> {
+  validClock(now);
+  return storage.transaction(async tx=>{
+    const task = await tx.get<SupervisorTask>(supervisorTaskKey(grant.id));
+    const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
+    const slot = ledger.slots[grant.id];
+    if (!task || !exactGrant(slot,grant) || slot.phase !== "reserved" || slot.expiresAt <= now ||
+        task.status !== "preparing" || !activeReadOnlyStart(task)) throw Error("ADMISSION_FENCE_REJECTED");
+    const j = await requireReadOnlyJournal(tx,task);
+    if (j.sourceVerifiedAt === undefined || j.pending || !READ_ONLY_STEPS.includes(effect) ||
+        READ_ONLY_STEPS[j.receipts.length] !== effect)
+      throw Error("READ_ONLY_EFFECT_ORDER");
+    if (effect === "session_create" && (task.session || task.sessionCreationAttempted !== false) ||
+        j.receipts.length >= 3 && task.session !== r2SessionId(task.id) ||
+        task.operationId) throw Error("READ_ONLY_EFFECT_TASK_STATE");
+    slot.phase = "effect_unknown";
+    slot.effect = effect;
+    j.pending = {effect,generation:slot.generation,startedAt:now};
+    const updated:SupervisorTask = {...task,revision:(task.revision ?? 0)+1,updatedAt:now};
+    if (effect === "session_create") updated.sessionCreationAttempted = true;
+    if (effect === "submit") {
+      updated.operationId = supervisorStartOperationId(task.id);
+      updated.status = "running";
+    }
+    await tx.put(supervisorTaskKey(grant.id),updated);
+    await tx.put(readOnlyJournalKey(grant.id),j);
+    await tx.put(LEDGER_KEY,ledger);
+    return updated;
+  });
+}
+
+/** Persist the positive receipt and cursor in the SAME transaction as slot
+ * release. A late receipt may settle uncertainty after cancellation, but
+ * never clears cancel_requested/cancelled or authorizes another effect. */
+export async function supervisorConfirmReadOnlyEffect(storage:DurableObjectStorage,grant:StartGrant,receipt:ReadOnlyEffectReceipt,now=Date.now()):Promise<SupervisorTask> {
+  validClock(now);
+  return storage.transaction(async tx=>{
+    const task = await tx.get<SupervisorTask>(supervisorTaskKey(grant.id));
+    const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
+    const slot = ledger.slots[grant.id];
+    if (!task || !exactGrant(slot,grant)) throw Error("ADMISSION_FENCE_REJECTED");
+    const j = await requireReadOnlyJournal(tx,task);
+    if (!matchesPending(j,slot,receipt.effect)) throw Error("ADMISSION_FENCE_REJECTED");
+    // Native terminal observations have their own exact-ID recovery path.
+    if (receipt.nativeStatus !== undefined) throw Error("READ_ONLY_NATIVE_RECONCILE_REQUIRED");
+    const evidence = normalizeReadOnlyReceipt(receipt,j,task);
+    const updated:SupervisorTask = {...task,revision:(task.revision ?? 0)+1,updatedAt:now};
+    if (receipt.effect === "session_create" || receipt.effect === "scope_bind") {
+      const sessionId = r2SessionId(task.id);
+      const reverse = await tx.get<string>("supervisor:session:" + sessionId);
+      const scope = await tx.get<ProjectScope>(scopeStorageKey(sessionId));
+      if (reverse && reverse !== task.id || scope && (scope.project !== task.project ||
+          scope.repository?.toLowerCase() !== task.repository.toLowerCase()) ||
+          receipt.effect === "scope_bind" && (!scope || reverse !== task.id))
+        throw Error("SESSION_CREATE_SCOPE_CONFLICT");
+      if (receipt.effect === "session_create") {
+        if (!task.sessionCreationAttempted || task.session) throw Error("READ_ONLY_EFFECT_TASK_STATE");
+        updated.session = sessionId;
+        await tx.put("supervisor:session:" + sessionId,task.id);
+      }
+    }
+    if (receipt.effect === "submit" && task.operationId !== evidence.operationId)
+      throw Error("READ_ONLY_EFFECT_TASK_STATE");
+    if (activeReadOnlyStart(task)) {
+      updated.status = receipt.effect === "submit" ? "running" : "preparing";
+      updated.error = undefined;
+    } else if (receipt.effect === "submit") {
+      // Acceptance racing cancellation does NOT prove the native operation
+      // stopped. Retain capacity until cancellation is independently settled.
+      updated.cancelAmbiguous = true;
+    }
+    finishReadOnlyReceipt(j,slot,evidence,task,now);
+    await tx.put(supervisorTaskKey(grant.id),updated);
+    await tx.put(readOnlyJournalKey(grant.id),j);
+    await tx.put(LEDGER_KEY,ledger);
+    return updated;
+  });
+}
+
+/** Recover only from an independent positive exact observation: registry
+ * GET, immutable Container receipt GET, or durable local scope binding.
+ * Never repeat a mutation or interpret missing evidence/TTL as absence. */
+export async function reconcileSupervisorReadOnlyPreparation(storage:DurableObjectStorage,id:string,expected:AdmissionSlot,receipt:ReadOnlyEffectReceipt,now=Date.now()):Promise<{task:SupervisorTask;grant:StartGrant}|undefined> {
+  validClock(now);
+  return storage.transaction(async tx=>{
+    const task = await tx.get<SupervisorTask>(supervisorTaskKey(id));
+    const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
+    const slot = ledger.slots[id];
+    if (!task || !slot || slot.token !== expected.token || slot.generation !== expected.generation ||
+        !activeReadOnlyStart(task) || task.status === "running" ||
+        !["project_reserve","container_import","scope_bind"].includes(receipt.effect))
+      return undefined;
+    const j = await requireReadOnlyJournal(tx,task);
+    if (!matchesPending(j,slot,receipt.effect)) return undefined;
+    if (receipt.effect === "scope_bind") {
+      const sid = r2SessionId(id);
+      const scope = await tx.get<ProjectScope>(scopeStorageKey(sid));
+      const reverse = await tx.get<string>("supervisor:session:" + sid);
+      if (task.session !== sid || !scope || scope.project !== task.project ||
+          scope.repository?.toLowerCase() !== task.repository.toLowerCase() || reverse !== id)
+        return undefined;
+    }
+    finishReadOnlyReceipt(j,slot,receipt,task,now);
+    const next = newGrant(id,slot.generation+1,now);
+    ledger.slots[id] = next;
+    const updated:SupervisorTask = {...task,status:"preparing",error:undefined,
+      revision:(task.revision ?? 0)+1,updatedAt:now};
+    await tx.put(supervisorTaskKey(id),updated);
+    await tx.put(readOnlyJournalKey(id),j);
+    await tx.put(LEDGER_KEY,ledger);
+    return {task:updated,grant:{id,token:next.token,generation:next.generation}};
+  });
+}
+
+/** Import-specific alias for T03: identical semantics, narrower recovery. */
+export async function reconcileSupervisorReadOnlyImport(storage:DurableObjectStorage,id:string,expected:AdmissionSlot,receipt:ReadOnlyEffectReceipt,now=Date.now()):Promise<{task:SupervisorTask;grant:StartGrant}|undefined> {
+  if (receipt.effect !== "container_import") throw Error("READ_ONLY_IMPORT_RECEIPT_INVALID");
+  return reconcileSupervisorReadOnlyPreparation(storage,id,expected,receipt,now);
+}
+
+/** Failure reporting is fenced, never a substitute for a receipt. */
+export async function supervisorRecordReadOnlyFailure(storage:DurableObjectStorage,grant:StartGrant,now=Date.now()):Promise<SupervisorTask|undefined> {
+  validClock(now);
+  return storage.transaction(async tx=>{
+    const task = await tx.get<SupervisorTask>(supervisorTaskKey(grant.id));
+    const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
+    const slot = ledger.slots[grant.id];
+    if (!task || !exactGrant(slot,grant) || !activeReadOnlyStart(task) ||
+        slot.phase === "running" || slot.phase === "reserved" && slot.expiresAt <= now) return task;
+    const j = await requireReadOnlyJournal(tx,task);
+    if (slot.phase === "effect_unknown" && (!j.pending || !matchesPending(j,slot,j.pending.effect)))
+      throw Error("READ_ONLY_ADMISSION_JOURNAL_INVALID");
+    const updated:SupervisorTask = {...task,status:slot.phase === "effect_unknown" ? "unknown" : "failed",
+      error:slot.phase === "effect_unknown" ? "READ_ONLY_EFFECT_UNCONFIRMED" : "READ_ONLY_PREFLIGHT_FAILED",
+      revision:(task.revision ?? 0)+1,updatedAt:now};
+    await tx.put(supervisorTaskKey(grant.id),updated);
+    return updated;
+  });
+}
+
+/** Internal read for restart routing; no token, no provider authorization. */
+export async function inspectSupervisorReadOnlyAdmission(storage:Pick<DurableObjectStorage,"get">,id:string):Promise<ReadOnlyAdmissionJournal|undefined> {
+  return readOnlyJournal(storage,id);
 }
