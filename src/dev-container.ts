@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { makePreparationReceipt, preparationReceiptValid, pilotRuntimeMatches, pilotBootDisposition, pilotPinnedImage, validPreparationInput, type PilotPreparationInput, type PilotPreparationReceipt } from "./pilot-preparation";
-import { MAX_SHELL_OUTPUT, validateCommand, validateProject } from "./dev-guard";
+import { MAX_SHELL_OUTPUT, validateCommand, validateProject, assertLinuxExecutionScope, linuxProjectCwdSource } from "./dev-guard";
 import { captureBoundedOutput } from "./bounded-process-output";
 import { PREVIEW_SOURCE, PREVIEW_PORT } from "./preview-server";
 import { INSPECT_SOURCE, validateInspectionPath } from "./linux-inspect";
@@ -40,12 +40,12 @@ import { BUN_RUNTIME_VERSION, commandRequiresBun } from "./dev-runtime";
  */
 /** R2-T06: project-scoped one-shot subprocess supervisor, never a sandbox. */
 const LINUX_RUNNER_SOURCE = String.raw`// Runs inside the dedicated project Container; Node 24 is provided by its base image.
-// Never enumerate or signal processes outside this command's private process group.
+// Only signal processes in this command's private process group.
 const { spawn } = require("node:child_process");
 const { constants } = require("node:os");
 const command = process.argv[1];
-const child = spawn("timeout", ["--signal=TERM", "--kill-after=5s", "180s", "bash", "-lc", command], {
-  detached: true, stdio: ["ignore", "pipe", "pipe"]
+const child = spawn("timeout", ["--signal=TERM", "--kill-after=5s", "180s", "bash", "-c", command], {
+  detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, BASH_ENV: "", ENV: "" }
 });
 let requestedSignal = null;
 let settled = false;
@@ -55,6 +55,30 @@ function signalGroup(signal) {
   if (!Number.isSafeInteger(child.pid) || child.pid < 2) return;
   try { process.kill(-child.pid, signal); }
   catch (error) { if (error.code !== "ESRCH") { cleanupFailed = true; process.stderr.write("[linux runner: group signal failed]\n"); } }
+}
+// A signal request is not evidence that live members have gone. Inspect only
+// process metadata, never signal any PID outside the command's process group.
+// Zombies are not running. A different session (setsid) is NOT covered.
+function groupObservedInactive() {
+  if (!Number.isSafeInteger(child.pid) || child.pid < 2) return false;
+  try { process.kill(-child.pid, 0); }
+  catch (error) { return error.code === "ESRCH"; }
+  try {
+    const fs = require("node:fs");
+    const entries = fs.readdirSync("/proc");
+    if (entries.length > 32768) return false;
+    for (const entry of entries) {
+      if (!/^[0-9]+$/.test(entry)) continue;
+      let stat;
+      try { stat = fs.readFileSync("/proc/" + entry + "/stat", "utf8"); }
+      catch (error) { if (error.code === "ENOENT" || error.code === "ESRCH") continue; return false; }
+      const end = stat.lastIndexOf(") ");
+      if (end < 0) return false;
+      const fields = stat.slice(end + 2).split(" ");
+      if (Number(fields[2]) === child.pid && fields[0] !== "Z" && fields[0] !== "X") return false;
+    }
+    return true;
+  } catch { return false; }
 }
 // An RPC consumer may close stdout/stderr before the command finishes.
 // Unhandled EPIPE crashes the supervisor and can leave its descendants alive.
@@ -102,6 +126,13 @@ child.once("exit", (code, signal) => { void (async () => {
   signalGroup("SIGTERM");
   await new Promise(resolve => setTimeout(resolve, 250));
   signalGroup("SIGKILL");
+  const observeUntil = Date.now() + 1000;
+  while (!groupObservedInactive() && Date.now() < observeUntil)
+    await new Promise(resolve => setTimeout(resolve, 25));
+  if (!groupObservedInactive()) {
+    cleanupFailed = true;
+    process.stderr.write("[linux runner: process group closure unverified]\n");
+  }
   let pipeTimer;
   const drained = await Promise.race([
     completed.then(() => true),
@@ -155,6 +186,8 @@ export type LinuxResult = {
   stderr: string;
   truncated: boolean;
   persistence: "checkpoint-scheduled";
+  /** No exit code or group signal certifies closure of the entire VM/process tree. */
+  physicalClosure?: "unverified";
 };
 
 export class DevContainer extends DurableObject<Env> {
@@ -633,7 +666,7 @@ export class DevContainer extends DurableObject<Env> {
   }
 
   async run(project: string, command: string): Promise<LinuxResult> {
-    const id = validateProject(project);
+    const id = assertLinuxExecutionScope(this.ctx.id.name, project);
     const cmd = validateCommand(command);
     // Serialize shell commands so snapshotting cannot race two build steps.
     const previous = this.commandQueue;
@@ -663,12 +696,9 @@ export class DevContainer extends DurableObject<Env> {
       // A Node supervisor owns only this command's private process group.
       // It closes inherited pipes after bounded cleanup; detached descendants
       // remain outside this guarantee (see R2-T06 negative fixtures).
-      const wrapper = [
-        "mkdir -p /workspace/projects/" + project,
-        "cd /workspace/projects/" + project,
-        "exec node -e \"$2\" \"$1\""
-      ].join(" && ");
-      const process = await container.exec(["bash", "-lc", wrapper, "opencode", command, LINUX_RUNNER_SOURCE],pilot?{signal:await this.pilotSignal(180_000)}:undefined);
+      const process = await container.exec(["node", "-e",
+        linuxProjectCwdSource() + "\n" + LINUX_RUNNER_SOURCE, command, project],
+        pilot?{signal:await this.pilotSignal(180_000)}:undefined);
       // Drain both pipes while the process runs. output() accumulates unbounded
       // stdout/stderr *before* a later slice, which can exhaust the DO isolate.
       const [stdout, stderr, exitCode] = await Promise.all([
@@ -683,6 +713,7 @@ export class DevContainer extends DurableObject<Env> {
         stdout: stdout.text,
         stderr: stderr.text,
         truncated: stdout.truncated || stderr.truncated,
+        physicalClosure: "unverified",
         persistence: "checkpoint-scheduled"
       };
     } finally {
