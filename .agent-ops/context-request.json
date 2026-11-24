@@ -1,0 +1,13 @@
+{
+  "project": "opencode-harness-example",
+  "pr": 105,
+  "lane": "integration-selftest",
+  "operation": "execute_plan",
+  "steps": [
+    "get_task_context",
+    "inspect_pr",
+    "resume_task",
+    "validate_task"
+  ],
+  "request_id": "composition-acceptance-20261124-105"
+}
