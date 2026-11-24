@@ -95,11 +95,17 @@ def scan():
             if not a.get("contained") and ancestor(a["head"],b["head"]): b["dependencies"].append(a["pr"])
             elif not b.get("contained") and ancestor(b["head"],a["head"]): a["dependencies"].append(b["pr"])
         except RuntimeError: pass
-    # No user-approved exact candidate has been submitted; no main integration authority.
+    integration=cp.get("integration_v1",{})
+    conditional=integration.get("mode")=="ATOMIC_CONDITIONAL"
+    handoff=integration.get("handoff_v2") or {}
     for row in rows:
         row["status"],row["next"]=classify(row,main,prior)
         row["priority"]=1 if row["pr"] in focus else 0
         row["authorization"]="NONE_FOR_MAIN"
+        if conditional and not row.get("restricted") and not row.get("draft") and not row.get("conflict") and not row.get("dependencies") and row.get("verified_refs") and row.get("combined_tree") and all(handoff.get(k)==v for k,v in (("pr",row["pr"]),("head",row["head"]),("base",main),("tree",row["combined_tree"]))) and handoff.get("functional_acceptance")=="PASS":
+            row["authorization"]="HANDOFF_RECORDED_NOT_APPROVAL"
+            row["status"]="NEEDS_VALIDATION"
+            row["next"]="Exact handoff recorded; conditional actuator must verify authorization and full combined-tree CI"
         exact=bool(prior and prior.get("pr")==row["pr"] and prior.get("head")==row["head"] and prior.get("base")==main)
         row["validation_reference"]=prior.get("url") if exact else None
         target=prior.get("targeted") or {} if exact else {}
@@ -118,7 +124,7 @@ def scan():
     # Compare main after scan; if it moved the receipt is not a current queue snapshot.
     after=gh(root+"/git/ref/heads/main")["object"]["sha"]
     if after!=main: raise RuntimeError("base changed; no publication")
-    summary={"schema":"agent-integration-queue/v1","repository":repo,"main":main,"source_commit":os.environ["GITHUB_SHA"],"run_id":int(os.environ["GITHUB_RUN_ID"]),"policy":{"main_writes":"DISABLED_UNVERIFIED_SERVER_GATE","merge_queue":"not configured","no_automatic_close":True,"no_force_push":True},"coverage":{"list_truncated":truncated,"focused_merge_trees":focus,"ancestry_pairs_examined":min(20,len(pairs)),"ancestry_pairs_total":len(pairs),"overlap_pairs":len(overlaps),"overlaps_truncated":len(overlaps)>40},"counts":dict(Counter(x["status"] for x in rows)),"entries":rows,"overlaps":overlaps[:40],"elapsed_ms":round((time.monotonic()-start)*1000)}
+    summary={"schema":"agent-integration-queue/v1","repository":repo,"main":main,"source_commit":os.environ["GITHUB_SHA"],"run_id":int(os.environ["GITHUB_RUN_ID"]),"policy":{"main_writes":"CONDITIONAL_ACTUATOR_ONLY" if conditional else "DISABLED_UNVERIFIED_SERVER_GATE","merge_queue":"not configured","no_automatic_close":True,"no_force_push":True},"coverage":{"list_truncated":truncated,"focused_merge_trees":focus,"ancestry_pairs_examined":min(20,len(pairs)),"ancestry_pairs_total":len(pairs),"overlap_pairs":len(overlaps),"overlaps_truncated":len(overlaps)>40},"counts":dict(Counter(x["status"] for x in rows)),"entries":rows,"overlaps":overlaps[:40],"elapsed_ms":round((time.monotonic()-start)*1000)}
     pathlib.Path("integration-queue-result.json").write_text(json.dumps(summary,ensure_ascii=True,indent=2)+"\n")
     print(json.dumps({k:v for k,v in summary.items() if k not in ("entries","overlaps")}))
     print(json.dumps({"focus":[{k:x.get(k) for k in ("pr","status","next","behind","ahead","combined_tree","conflict","file_count","dependencies","validation_reference")} for x in rows if x["pr"] in focus]}))
