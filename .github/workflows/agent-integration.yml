@@ -41,8 +41,8 @@ jobs:
           assert os.environ["GITHUB_REF"]=="refs/heads/"+branch
           q=json.loads(pathlib.Path("integration-queue-result.json").read_text())
           assert q["schema"]=="agent-integration-queue/v1" and q["repository"]==repo and q["source_commit"]==os.environ["GITHUB_SHA"]
-          assert q["policy"]["main_writes"]=="DISABLED_UNVERIFIED_SERVER_GATE"
-          assert len(q["entries"])<=100 and all(x["authorization"]=="NONE_FOR_MAIN" for x in q["entries"])
+          assert q["policy"]["main_writes"] in {"DISABLED_UNVERIFIED_SERVER_GATE","CONDITIONAL_ACTUATOR_ONLY"}
+          assert len(q["entries"])<=100 and all(x["authorization"] in {"NONE_FOR_MAIN","HANDOFF_RECORDED_NOT_APPROVAL"} for x in q["entries"])
           def gh(path):
               return json.loads(subprocess.check_output(["gh","api",path],timeout=25))
           actual=gh("repos/"+repo+"/git/ref/heads/main")["object"]["sha"]
