@@ -44,6 +44,7 @@ describe("OpenCode staging MCP server", () => {
     const operations: string[] = [];
     const supervisor: StagingSupervisor = {
       async remoteSupervisorStatus() { return { ready: true, defaultModel: "economy" }; },
+      async remoteSupervisorReconcile() { operations.push("reconcile"); return {schema:"r4-historical-quarantine-v1",historyPreserved:true,providerDispatchAuthorized:false,completePass:false}; },
       async remoteSupervisorProgress(id, after = 0) { operations.push(`progress:${id}:${after}`); return { events: [], nextAfter: after, status: "unknown", pageAvailable: false, error: "SUPERVISOR_PROGRESS_UNAVAILABLE_UNBOUNDED_SDK", passed: true, verified: true }; },
       async remoteSupervisorContinue(input) { operations.push("continue"); return { status: "submitted", ...(input as object) }; },
       async remoteSupervisorSelectModel(id, model) { operations.push(`select:${id}:${model}`); return { id, model }; },
@@ -124,7 +125,7 @@ describe("OpenCode staging MCP server", () => {
         "staging_agent_check", "staging_agent_check_status", "staging_cancel_task",
         "staging_capture_task_artifact", "staging_diagnostics", "staging_mcp_call", "staging_mcp_servers", "staging_mcp_tools",
         "staging_models", "staging_openrouter_check", "staging_openrouter_check_status",
-        "staging_repositories", "staging_review_task", "staging_session_inspect", "staging_sessions",
+        "staging_reconcile", "staging_repositories", "staging_review_task", "staging_session_inspect", "staging_sessions",
         "staging_start_task", "staging_status", "staging_task_artifacts", "staging_task_continue", "staging_task_progress", "staging_task_select_model",
         "staging_task_status", "staging_task_transcript"
       ]);
@@ -136,6 +137,10 @@ describe("OpenCode staging MCP server", () => {
       expect(JSON.parse(textContent(status))).toMatchObject({ targetWorker: STAGING_WORKER, status: "ok",
         supervisor: { ready: true, defaultModel: "economy" } });
       expect(healthReads).toBe(1);
+      expect(JSON.parse(textContent(await client.callTool({name:"staging_reconcile",arguments:{}}))))
+        .toMatchObject({schema:"r4-historical-quarantine-v1",historyPreserved:true,providerDispatchAuthorized:false});
+      expect(operations).toContain("reconcile");
+      expect(customSupervisorCalls).toBe(0);expect(startCount).toBe(0);
 
       expect(JSON.parse(textContent(await client.callTool({ name: "staging_models", arguments: {} })))
         .models[0].selection).toBe("economy");

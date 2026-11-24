@@ -20,3 +20,5 @@ Use R4 independent exact-HEAD CI replicas and existing guarded Workers Builds up
 - STOP if actual old invocation drain, worker upload/promotion authority, native scan, inventory, budget, image digest, or live exclusivity cannot be established. Rollback is Worker version rollback only, never a restoration of DO or Container data.
 
 CI and new exact candidate must be checked on its own SHA. No live reconciliation, deployment or inference is claimed by this commit. Historical tasks are quarantined only when real maintenance execution returns a verified receipt. NO_COMPLETE_PASS.
+
+Offline implementation checkpoint 65ce2492da472fe62005330f000d6aad6569b874: replica CI 45417208661 success; integrated CI 45417208651 reported 909 passed / 1 failed because the fixed MCP tool inventory expectation did not yet include staging_reconcile. Update the explicit allowlist fixture and exercise the new fixed-supervisor RPC in addition to the native/transaction regressions. Revalidate final exact HEAD; no production or Staging mutations performed.
