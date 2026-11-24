@@ -15,7 +15,10 @@ const a={schema:"r4-explicit-promotion-v1",environment:"staging",operation:"prom
  source,ciHead:source,ciConclusion:"success",ciRun:"42",approvalRef:"test-only",notBefore:now-1000,expiresAt:now+1200000,
  exclusivityReceipt:receipt,economicsReceipt:receipt,reconciliationDigest:receipt,pilot,targets};
 const maintenance={schema:"r4-reconciliation-v1",environment:"staging",releaseSha:source,requestId:pilot.requestId,approvalRef:"test-only",externalDrainReceipt:receipt,drainedAt:now-100,notBefore:now-100,expiresAt:now+1800000};
-const o={accountId,observedAt:now,activeContainers:0,startingContainers:0,activeBuilds:0,targets:targets.map((t,i)=>{
+const o={accountId,observedAt:now,activeContainers:0,startingContainers:0,activeBuilds:0,
+ historicalReconciliation:{schema:"r4-historical-quarantine-v1",digest:receipt,releaseSha:source,requestId:pilot.requestId,
+ observedAt:now-100,scope:"fixed-supervisor-do-only",historyPreserved:true,providerDispatchAuthorized:false,completePass:false},
+ admissionCapacity:{stopReason:null,activeSlots:0,inventoryComplete:true},targets:targets.map((t,i)=>{
  const bindings=[{name:"EXISTING",type:"durable_object_namespace",namespace_id:"old"}];
  return {worker:t.worker,triggerStopGuard:true,deployment:{id:t.rollbackDeployment,versions:[{version_id:t.rollbackVersion,percentage:100}]},
  oldVersion:{id:t.rollbackVersion,resources:{bindings:[...structuredClone(bindings),...(i===0?[
@@ -54,4 +57,11 @@ test("maintenance-only may promote frozen code with no pilot grant; mixing grant
  const bad=structuredClone(z);bad.targets[0].newVersion.resources.bindings.push({name:"OPENCODE_PILOT_AUTHORIZATION",type:"plain_text",text:JSON.stringify(pilot)});
  assert.throws(()=>run(m,bad));
  assert.throws(()=>run({...a,reconciliationDigest:"0".repeat(64)},o));
+});
+
+test("pilot promotion needs independent server readback, not a matching manifest field alone",()=>{
+ for(const mutate of [x=>delete x.historicalReconciliation,x=>x.historicalReconciliation.digest="0".repeat(64),
+  x=>x.admissionCapacity.activeSlots=1,x=>x.historicalReconciliation.observedAt=now-3600001]){
+  const z=structuredClone(o);mutate(z);assert.throws(()=>run(a,z));
+ }
 });

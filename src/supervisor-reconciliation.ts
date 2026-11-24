@@ -122,6 +122,12 @@ export async function observeNativeQuiescence(read:{
  const ordered=[...ids].sort();
  return {schema:"native-quiescence-v1",ids:ordered,digest:await reconciliationDigest(ordered),observedAt:clock()};
 }
+export async function validNativeQuiescence(n:NativeQuiescence,now:number,minAt=0):Promise<boolean>{
+ return !!n&&n.schema==="native-quiescence-v1"&&Number.isSafeInteger(n.observedAt)&&n.observedAt>=minAt&&
+  n.observedAt<=now&&now-n.observedAt<=60_000&&Array.isArray(n.ids)&&n.ids.length<=MAX_NATIVE&&
+  n.ids.every(id=>SESSION.test(id))&&new Set(n.ids).size===n.ids.length&&
+  await reconciliationDigest([...n.ids].sort())===n.digest;
+}
 export type HistoricalCertificate={schema:"r4-historical-quarantine-v1";manifest:ReconciliationManifest;
  supervisorObject:string;observedAt:number;nativeDigest:string;nativeSessions:number;missingReferencedSessions:number;
  snapshotDigest:string;taskDigests:Record<string,string>;auxDigests:Record<string,string>;retiredIds:string[];
@@ -144,10 +150,7 @@ export async function writeHistoricalCertificate(tx:DurableObjectTransaction,man
  snap:HistoricalSnapshot,native:NativeQuiescence,slots:Record<string,unknown>,now=Date.now()):Promise<HistoricalCertificate>{
  require(parseReconciliationManifest(JSON.stringify(manifest),manifest.releaseSha,manifest.requestId,now)&&hex(objectId,64),
    "HISTORICAL_MAINTENANCE_AUTHORIZATION_REQUIRED");
- require(native.schema==="native-quiescence-v1"&&native.observedAt>=manifest.drainedAt&&native.observedAt<=now&&
-   now-native.observedAt<=60_000&&Array.isArray(native.ids)&&native.ids.length<=MAX_NATIVE&&native.ids.every(id=>SESSION.test(id))&&
-   new Set(native.ids).size===native.ids.length&&await reconciliationDigest([...native.ids].sort())===native.digest,
-   "HISTORICAL_NATIVE_PROOF_INVALID");
+ require(await validNativeQuiescence(native,now,manifest.drainedAt),"HISTORICAL_NATIVE_PROOF_INVALID");
  const prior=await historicalCertificate(tx);
  const retiredIds=[...new Set([...snap.ids,...Object.keys(slots),...(prior?.retiredIds??[])])].sort();
  require(retiredIds.length<=MAX_TASKS&&retiredIds.every(id=>ID.test(id))&&!retiredIds.includes(manifest.requestId),

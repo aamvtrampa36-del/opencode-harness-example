@@ -12,4 +12,4 @@ const load=p=>{
 const x=load(a),y=load(b);assert.deepEqual(x,y);
 console.log(JSON.stringify({schema:"r4-promotion-preflight-v2",source,independentReplicas:2,inventory:x,
  decision:"STOP",deploymentAuthorized:false,providerDispatchAuthorized:false,completePass:false,
- pending:["fresh-live-exclusivity-and-economics","explicit-admin-upload-manifest","live-version-and-binding-readback","explicit-promotion-and-rollback","actual-container-preparation"]}));
+ pending:["external-maintenance-window-and-budget","maintenance-only-upload-and-promotion","native-historical-quarantine-certificate","fresh-server-capacity-readback","explicit-pilot-grant-and-promotion","actual-container-preparation"]}));

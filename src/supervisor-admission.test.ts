@@ -215,7 +215,7 @@ test("pilot authorization is single-use, exact-release, fingerprint and process 
   const reconciled=await reconcileHistoricalSupervisor(s.asDO(),maintenance,objectId,async()=>native,()=>now);
   approval.reconciliationDigest=reconciled.digest;
   const other=new DurableFake();await at(other,1,now);
-  await expect(reserveSupervisorAdmission(other.asDO(),candidate,now,undefined,claim,native)).rejects.toThrow("HISTORICAL_PILOT_CERTIFICATE_STALE");
+  await expect(reserveSupervisorAdmission(other.asDO(),candidate,now,undefined,claim,native)).rejects.toThrow("PILOT_EXCLUSIVE_SLOT_REQUIRED");
   const result=await Promise.allSettled([reserveSupervisorAdmission(s.asDO(),candidate,now,undefined,claim,native),reserveSupervisorAdmission(s.asDO(),candidate,now,undefined,claim,native)]);
   expect(result.filter(r=>r.status==="fulfilled")).toHaveLength(1);
   expect(await s.get(PILOT_CLAIM)).toEqual(claim);

@@ -48,6 +48,14 @@ export function promotionPlan(raw,pin,o,now=Date.now()){
  }else{
   assert(p?.approvalRef===a.approvalRef&&p.ciRun===a.ciRun&&parsePilotApproval(JSON.stringify(p),a.source,p.requestId,now),"invalid v2 manifest");
   assert.equal(a.reconciliationDigest,p.reconciliationDigest,"historical reconciliation receipt required");
+  const c=o.historicalReconciliation,capacity=o.admissionCapacity;
+  assert(c?.schema==="r4-historical-quarantine-v1"&&c.digest===p.reconciliationDigest&&
+    c.releaseSha===a.source&&c.requestId===p.requestId&&c.scope==="fixed-supervisor-do-only"&&
+    c.historyPreserved===true&&c.providerDispatchAuthorized===false&&c.completePass===false&&
+    Number.isSafeInteger(c.observedAt)&&c.observedAt<=now&&now-c.observedAt<=3600000,
+    "fresh server reconciliation readback required");
+  assert(capacity?.stopReason===null&&capacity.activeSlots===0&&capacity.inventoryComplete===true,
+    "historical admission capacity not cleared");
  }
  assert(Array.isArray(a.targets)&&a.targets.length===2&&Array.isArray(o.targets)&&o.targets.length===2);
  const requests=[];
@@ -69,6 +77,7 @@ export function promotionPlan(raw,pin,o,now=Date.now()){
    assert.equal(lane.length,1);assert.equal(lane[0].type,"plain_text");
    if(maintenance!==undefined){
     assert.equal(manifest.length,0);assert.equal(maintenanceBinding.length,1);
+    assert.equal(r.oldVersion.resources.bindings.filter(b=>pilotNames.includes(b.name)).length,0,"old pilot/maintenance lane must be resolved");
     assert.equal(maintenanceBinding[0].type,"plain_text");assert.equal(lane[0].text,maintenance.requestId);
     same(JSON.parse(maintenanceBinding[0].text),maintenance);
    }else{
@@ -78,7 +87,9 @@ export function promotionPlan(raw,pin,o,now=Date.now()){
     // version and pinned completed reconciliation, not a historical build.
     const previous=r.oldVersion.resources.bindings;
     const oldMaintenance=previous.filter(b=>b.name===pilotNames[2]),oldPilot=previous.filter(b=>b.name===pilotNames[1]);
-    assert.equal(oldMaintenance.length,1);assert.equal(oldPilot.length,0);
+    const oldLane=previous.filter(b=>b.name===pilotNames[0]);
+    assert.equal(oldMaintenance.length,1);assert.equal(oldPilot.length,0);assert.equal(oldLane.length,1);
+    assert.equal(oldLane[0].type,"plain_text");assert.equal(oldLane[0].text,p.requestId);assert.equal(oldMaintenance[0].type,"plain_text");
     const old=JSON.parse(oldMaintenance[0].text);
     assert.equal(old.releaseSha,a.source);assert.equal(old.requestId,p.requestId);
    }

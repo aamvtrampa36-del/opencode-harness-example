@@ -4,7 +4,7 @@ import { auditLegacyCapacity, type AdmissionCapacityEvidence,
   type LegacyCapacityStop } from "./supervisor-legacy-capacity";
 import { r2TurnAdmission, r2SessionId, r2TurnJournalKey, r2TerminalNativeReceipt, type R2TurnJournal } from "./supervisor-r2";
 import { scopeStorageKey, type ProjectScope } from "./project-scope";
-import { captureHistoricalSnapshot, historicalCertificate, retiredHistoricalTask, writeHistoricalCertificate, publicHistoricalCertificate, type ReconciliationManifest, type NativeQuiescence } from "./supervisor-reconciliation";
+import { captureHistoricalSnapshot, historicalCertificate, retiredHistoricalTask, writeHistoricalCertificate, publicHistoricalCertificate, validNativeQuiescence, parseReconciliationManifest, type ReconciliationManifest, type NativeQuiescence } from "./supervisor-reconciliation";
 
 /**
  * One durable admission authority in the existing supervisor DO. This is NOT
@@ -82,6 +82,7 @@ export async function reserveSupervisorAdmission(
       throw new Error("requestId usado con otra tarea");
     if (old && readOnly) await requireReadOnlyJournal(tx,old);
     const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
+    if(pilot&&Object.keys(ledger.slots).length!==0)throw Error("PILOT_EXCLUSIVE_SLOT_REQUIRED");
     let changed = false;
     // At most 10 lookups, regardless of total historical task count.
     for (const [id, slot] of Object.entries(ledger.slots)) {
@@ -132,7 +133,7 @@ export async function reserveSupervisorAdmission(
         if(!cert||!nativeQuiescence||cert.digest!==pilot.approval.reconciliationDigest||
            cert.supervisorObject!==pilot.objectId||cert.manifest.releaseSha!==pilot.approval.releaseSha||
            cert.manifest.requestId!==candidate.id||cert.nativeDigest!==nativeQuiescence.digest||
-           now-nativeQuiescence.observedAt>60_000||nativeQuiescence.observedAt>now||
+           !await validNativeQuiescence(nativeQuiescence,now,cert.observedAt)||
            now-cert.observedAt>60*60_000||await tx.get("supervisor:inference:budget:v1")!==undefined||
            (await captureHistoricalSnapshot(tx)).digest!==cert.snapshotDigest)
           throw Error("HISTORICAL_PILOT_CERTIFICATE_STALE");
@@ -828,6 +829,8 @@ export async function inspectSupervisorReadOnlyAdmission(storage:Pick<DurableObj
  */
 export async function reconcileHistoricalSupervisor(storage:DurableObjectStorage,manifest:ReconciliationManifest,
  objectId:string,observe:()=>Promise<NativeQuiescence>,clock=Date.now){
+ if(!parseReconciliationManifest(JSON.stringify(manifest),manifest.releaseSha,manifest.requestId,clock()))
+  throw Error("HISTORICAL_MAINTENANCE_AUTHORIZATION_REQUIRED");
  const load=async(tx:DurableObjectTransaction)=>{
   if(await tx.get(PILOT_CLAIM)!==undefined)throw Error("HISTORICAL_PILOT_ALREADY_CONSUMED");
   // Never reset or rotate a potentially charged financial journal here.
