@@ -1,0 +1,68 @@
+name: Agent validation on demand
+on:
+  push:
+    branches: [ops/task-checkpoints-v1]
+    paths:
+      - '.agent-ops/validation-request.json'
+      - '.agent-ops/validate_task.py'
+      - '.agent-ops/ci_receipt.mjs'
+      - '.github/workflows/agent-validation.yml'
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+concurrency:
+  group: agent-validation-request
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - name: Test validator
+        run: |
+          python3 .agent-ops/validate_task.py --selftest
+          node .agent-ops/ci_receipt.mjs --selftest
+      - name: Validate requested candidate and collect CI evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f .agent-ops/validation-request.json ]; then
+            echo "No candidate requested; selftests only."
+            exit 0
+          fi
+          python3 - <<'PY'
+          import json, os, re, subprocess, sys
+          from pathlib import Path
+          req=json.loads(Path('.agent-ops/validation-request.json').read_text())
+          repo=os.environ['GITHUB_REPOSITORY'].split('/')[-1]
+          assert req['project']==repo
+          assert all(re.fullmatch('[a-f0-9]{40}',req[x]) for x in ('base','head'))
+          assert type(req['pr']) is int and req['pr']>0
+          subprocess.run(['git','fetch','--no-tags','origin',req['base'],req['head']],check=True,stdout=subprocess.DEVNULL)
+          static=subprocess.run([sys.executable,'.agent-ops/validate_task.py','--project',repo,'--base',req['base'],'--head',req['head']],capture_output=True,text=True)
+          ci=subprocess.run(['node','.agent-ops/ci_receipt.mjs','--gh',repo,str(req['pr'])],capture_output=True,text=True)
+          evidence={'request':req,'static':json.loads(static.stdout),'ci':json.loads(ci.stdout)}
+          if evidence['ci'].get('identity',{}).get('head')!=req['head']:
+              evidence['ci']['status']='BLOCKED'
+              evidence['ci']['reason']='PR head changed after request'
+          output=json.dumps(evidence,ensure_ascii=True)
+          Path('validation-result.json').write_text(output+'\n')
+          print(output)
+          # Never claim acceptance or deployment based on this receipt.
+          if static.returncode or evidence['static']['static_status'] in ('PARTIAL','BLOCKED') or evidence['ci']['status'] in ('FAIL','BLOCKED','PARTIAL'):
+              sys.exit(1)
+          PY
+      - name: Persist compact evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: agent-validation-receipt
+          path: validation-result.json
+          if-no-files-found: ignore
+          retention-days: 14
