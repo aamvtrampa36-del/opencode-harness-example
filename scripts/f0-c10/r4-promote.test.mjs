@@ -17,7 +17,7 @@ const a={schema:"r4-explicit-promotion-v1",environment:"staging",operation:"prom
 const o={accountId,observedAt:now,activeContainers:0,startingContainers:0,activeBuilds:0,targets:targets.map((t,i)=>{
  const bindings=[{name:"EXISTING",type:"durable_object_namespace",namespace_id:"old"}];
  return {worker:t.worker,triggerStopGuard:true,deployment:{id:t.rollbackDeployment,versions:[{version_id:t.rollbackVersion,percentage:100}]},
- oldVersion:{id:t.rollbackVersion,resources:{bindings,script_runtime:{compatibility_date:"2026-06-11"}}},
+ oldVersion:{id:t.rollbackVersion,resources:{bindings:structuredClone(bindings),script_runtime:{compatibility_date:"2026-06-11"}}},
  newVersion:{id:t.version,annotations:{"workers/tag":"r4-"+source.slice(0,16),"workers/message":"R4 explicitly approved upload-only "+source},
  resources:{script_runtime:{compatibility_date:"2026-06-11"},bindings:[...bindings,...(i===0?[
  {name:"OPENCODE_PILOT_HYBRID_REQUEST_ID",type:"plain_text",text:pilot.requestId},
