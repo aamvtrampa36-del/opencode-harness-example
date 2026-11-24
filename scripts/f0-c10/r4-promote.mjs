@@ -29,6 +29,49 @@ function bindingMetadata(v,exclude=[]){
  assert.equal(new Set(out.map(b=>b.name)).size,out.length);
  return out;
 }
+/** Exact metadata equality remains the default. Only the two documented
+ * Cloudflare representation differences may be normalized, and only against
+ * a fresh, independently pinned readback of the SAME existing Staging app.
+ * Never infer equivalence from a matching container name alone.
+ */
+function verifiedRuntimeParity(a,o,t,r,now){
+ const old=r.oldVersion.resources.script_runtime,fresh=r.newVersion.resources.script_runtime;
+ if(JSON.stringify(sort(old))===JSON.stringify(sort(fresh)))return;
+ assert.equal(r.worker,names[0],"runtime drift outside principal");
+ const evidence=a.runtimeParity,seen=o.runtimeParity;
+ assert(evidence&&seen&&evidence.schema==="r4-existing-container-parity-v1","runtime parity evidence required");
+ assert(hex(evidence.receipt,64)&&hash(JSON.stringify(sort(seen)))===evidence.receipt,"runtime parity receipt mismatch");
+ assert.equal(evidence.source,a.source);assert.equal(evidence.oldVersion,t.rollbackVersion);assert.equal(evidence.newVersion,t.version);
+ assert.equal(seen.schema,evidence.schema);assert.equal(seen.accountId,a.accountId);assert.equal(seen.worker,names[0]);
+ assert.equal(seen.oldVersion,t.rollbackVersion);assert.equal(seen.newVersion,t.version);
+ assert(Number.isSafeInteger(seen.observedAt)&&seen.observedAt<=now&&now-seen.observedAt<=60000);
+ const dev=v=>v.resources.bindings.filter(x=>x.name==="DEV");
+ const binding=dev(r.oldVersion);assert.equal(binding.length,1);same(binding,dev(r.newVersion));
+ assert.equal(binding[0].type,"durable_object_namespace");assert.equal(binding[0].class_name,"DevContainer");
+ assert(hex(binding[0].namespace_id,32));
+ const app=seen.application;
+ assert.equal(app.id,binding[0].namespace_id);assert.equal(app.name,"opencode-g1-staging-devcontainer");
+ assert.equal(app.scheduling_policy,"durable_object");assert.equal(app.health.instances.active,0);assert.equal(app.health.instances.starting,0);
+ assert(typeof app.created_at==="string"&&typeof app.updated_at==="string"&&
+   Number.isFinite(Date.parse(app.created_at))&&Number.isFinite(Date.parse(app.updated_at))&&
+   Date.parse(app.created_at)<=Date.parse(app.updated_at)&&Date.parse(app.updated_at)<seen.uploadStartedAt);
+ assert(Number.isSafeInteger(seen.uploadStartedAt)&&seen.uploadStartedAt<=seen.observedAt);
+ assert.equal(seen.applicationVersions,0);
+ assert.equal(seen.uploadOperation,"versions-upload-only");
+ // Cloudflare Workers API metadata.cache_options.enabled and
+ // cross_version_cache both default to false. Never normalize true,
+ // null, unknown keys, or entrypoint overrides. Such changes must STOP.
+ const c={enabled:false,cross_version_cache:false};
+ const decl=[{class_name:"DevContainer",name:app.name}];
+ const normalize=v=>{
+  const x=structuredClone(v);
+  if(Object.hasOwn(x,"cache_options"))same(x.cache_options,c);
+  if(Object.hasOwn(x,"containers"))same(x.containers,decl);
+  delete x.cache_options;delete x.containers;
+  return x;
+ };
+ same(normalize(old),normalize(fresh));
+}
 export function promotionPlan(raw,pin,o,now=Date.now()){
  assert(hex(pin,64)&&hash(raw)===pin,"STOP_UNCERTIFIED_STAGING_RELEASE: manifest hash");
  const a=JSON.parse(raw);
@@ -72,7 +115,7 @@ export function promotionPlan(raw,pin,o,now=Date.now()){
   assert.equal(r.newVersion.annotations?.["workers/message"],message(a.source));
   const excluded=name===names[0]?pilotNames:[];
   same(bindingMetadata(r.oldVersion,excluded),bindingMetadata(r.newVersion,excluded));
-  same(r.oldVersion.resources.script_runtime,r.newVersion.resources.script_runtime);
+  verifiedRuntimeParity(a,o,t,r,now);
   if(name===names[0]){
    const bindings=r.newVersion.resources.bindings;
    const lane=bindings.filter(b=>b.name===pilotNames[0]),manifest=bindings.filter(b=>b.name===pilotNames[1]),

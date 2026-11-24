@@ -74,3 +74,30 @@ test("pilot reuses already certified MCP without redundant upload or promotion",
  const plan=run(m,z);assert.equal(plan.requests.length,1);assert.equal(plan.requests[0].worker,"opencode-g1-staging");
  z.targets[1].newVersion.annotations["workers/tag"]="wrong";assert.throws(()=>run(m,z));
 });
+
+test("only independently pinned existing-app metadata differences normalize; no generic ignore",()=>{
+ const m=structuredClone(a),z=structuredClone(o);
+ const dev={name:"DEV",type:"durable_object_namespace",class_name:"DevContainer",namespace_id:"a".repeat(32)};
+ for(const v of [z.targets[0].oldVersion,z.targets[0].newVersion])v.resources.bindings.push(structuredClone(dev));
+ z.targets[0].oldVersion.resources.script_runtime.cache_options={enabled:false,cross_version_cache:false};
+ z.targets[0].newVersion.resources.script_runtime.containers=[{class_name:"DevContainer",name:"opencode-g1-staging-devcontainer"}];
+ const seen={schema:"r4-existing-container-parity-v1",accountId,worker:"opencode-g1-staging",observedAt:now,
+  oldVersion:targets[0].rollbackVersion,newVersion:targets[0].version,uploadStartedAt:now-1000,
+  uploadOperation:"versions-upload-only",applicationVersions:0,
+  application:{id:dev.namespace_id,name:"opencode-g1-staging-devcontainer",created_at:new Date(now-10000).toISOString(),
+   updated_at:new Date(now-5000).toISOString(),scheduling_policy:"durable_object",health:{instances:{active:0,starting:0}}}};
+ const sort=v=>Array.isArray(v)?v.map(sort):v&&typeof v==="object"?Object.fromEntries(Object.keys(v).sort().map(k=>[k,sort(v[k])])):v;
+ const pin=x=>createHash("sha256").update(JSON.stringify(sort(x))).digest("hex");
+ z.runtimeParity=seen;m.runtimeParity={schema:seen.schema,receipt:pin(seen),source,oldVersion:seen.oldVersion,newVersion:seen.newVersion};
+ assert.equal(run(m,z).requests.length,2);
+ assert.throws(()=>run(a,z));
+ for(const mutate of [x=>x.runtimeParity.application.id="b".repeat(32),x=>x.runtimeParity.application.health.instances.active=1,
+  x=>x.runtimeParity.application.updated_at=new Date(now).toISOString(),x=>x.runtimeParity.applicationVersions=1,
+  x=>x.runtimeParity.observedAt=now-60001,x=>x.runtimeParity.uploadOperation="deploy",
+  x=>x.targets[0].oldVersion.resources.script_runtime.cache_options.enabled=true,
+  x=>x.targets[0].newVersion.resources.script_runtime.containers[0].name="other",
+  x=>x.targets[0].newVersion.resources.script_runtime.compatibility_date="2027-01-01"]){
+  const y=structuredClone(z);mutate(y);const n=structuredClone(m);n.runtimeParity.receipt=pin(y.runtimeParity);assert.throws(()=>run(n,y));
+ }
+ const y=structuredClone(z);y.runtimeParity.observedAt--;assert.throws(()=>run(m,y));
+});
