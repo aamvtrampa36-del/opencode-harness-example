@@ -51,7 +51,7 @@ const id=(n:number)=>n.toString(16).padStart(16,"0");
 const candidate=(n=1):SupervisorTask=>({
   id:id(n),repository:REPO,project:"supervised-"+id(n),branch:"",
   fingerprint:"c".repeat(64),status:"preparing",createdAt:1000,
-  sessionIdPolicy:"deterministic-v1",sessionCreationAttempted:false,mode:"read_only"
+  sessionIdPolicy:"deterministic-v1",sessionCreationAttempted:false,mode:"read_only",sourceCommit:PINS.commit,sourceTree:PINS.tree
 } as SupervisorTask);
 const stages:ReadOnlyStartEffect[]=["project_reserve","container_import","session_create",
   "scope_bind","configure_agent","configure_model","submit"];

@@ -537,8 +537,7 @@ function validateReadOnlyCandidate(task:SupervisorTask,pins:ReadOnlySourcePins):
       task.sessionCreationAttempted !== false || task.sessionIdPolicy !== "deterministic-v1" ||
       task.status !== "preparing" || task.pendingTurn || task.cancelAmbiguous)
     throw Error("READ_ONLY_ADMISSION_CANDIDATE_INVALID");
-  const tree = (task as SupervisorTask & {sourceTree?:string}).sourceTree;
-  if (tree !== undefined && tree !== pins.tree) throw Error("READ_ONLY_SOURCE_PIN_MISMATCH");
+  if (task.sourceCommit !== pins.commit || task.sourceTree !== pins.tree) throw Error("READ_ONLY_SOURCE_PIN_MISMATCH");
 }
 async function readOnlyJournal(tx:Pick<DurableObjectTransaction,"get">,id:string):Promise<ReadOnlyAdmissionJournal|undefined> {
   const j = await tx.get<ReadOnlyAdmissionJournal>(readOnlyJournalKey(id));
@@ -561,6 +560,7 @@ async function requireReadOnlyJournal(tx:Pick<DurableObjectTransaction,"get">,ta
   const j = await readOnlyJournal(tx,task.id);
   if (!j || !isReadOnlyTask(task) || task.branch !== "" || task.forkedFrom ||
       task.repository !== j.repository || task.project !== j.project || task.fingerprint !== j.fingerprint ||
+      task.sourceCommit !== j.pins.commit || task.sourceTree !== j.pins.tree ||
       j.sourceVerifiedAt !== undefined && (task.baseCommit !== j.pins.commit ||
         (task as SupervisorTask & {sourceTree?:string}).sourceTree !== j.pins.tree))
     throw Error("READ_ONLY_ADMISSION_IDENTITY_CONFLICT");

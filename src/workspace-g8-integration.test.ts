@@ -101,14 +101,15 @@ describe("G8 Review tool registration through the actual OpenCode plugin", () =>
       {} as Workspace,
       {},
       undefined,
-      { execute: async (action) => {
+      { execute: async (action, session) => {
+        expect(session).toBe("ses_test");
         invoked.push(action);
         return { repo: action.repo, branch: action.action === "review" ? action.branch : undefined,
           base: "main", files: [{path:"docs/opencode-g8/isolated-review-20261110.md",status:"added"}] };
       }},
       async (session, action: ScopedToolAction) => {
         expect(session).toBe("ses_test");
-        expect(action).toEqual({kind:"github",repo});
+        expect(action).toEqual({kind:"github",repo,operation:"review",branch:"opencode/g8-cdf-isolation-20261110"});
         guards++;
       },
       async (session) => {

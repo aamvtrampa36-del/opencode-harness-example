@@ -114,11 +114,12 @@ async function loadServerClass(fakeFetch: typeof fetch) {
   if (!validator) throw Error("T07_MISSING_RECEIPT_VALIDATOR");
   const code = validator.getText(ast) + "\nclass OpenCodeAgent {\n" + members.map(m => m.getText(ast)).join("\n") + "\n}";
   const compiled = ts.transpileModule(code, {
-    compilerOptions: {target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None},
-    reportDiagnostics: true
+    compilerOptions: {target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler, moduleDetection: ts.ModuleDetectionKind.Legacy},
+    fileName: "projected-server.ts", reportDiagnostics: true
   });
   if (compiled.diagnostics?.some(d => d.category === ts.DiagnosticCategory.Error))
-    throw Error("T07_SERVER_PROJECTION_TRANSPILE_ERROR");
+    throw Error("T07_SERVER_PROJECTION_TRANSPILE_ERROR: " + compiled.diagnostics.filter(d => d.category === ts.DiagnosticCategory.Error).map(d => `${d.code}: ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`).join("; "));
   return new Function(...Object.keys(bindings), compiled.outputText + "\nreturn OpenCodeAgent;")(...Object.values(bindings));
 }
 

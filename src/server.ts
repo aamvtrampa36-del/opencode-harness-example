@@ -718,11 +718,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async remoteSupervisorSelectModel(id: string, model: string): Promise<unknown> {
     this.assertStagingRemote();
     const task = await this.supervisedRecord(id);
-    if (task.mode === "read_only") {
-      if (task.status !== "finished" && task.status !== "unanswered")
-        throw Error("SUPERVISOR_READ_ONLY_MODEL_CHANGE_NOT_READY");
-      await this.requireReadOnlyTaskScope(task, task.session!);
-    }
+    if (task.mode === "read_only") throw Error("SUPERVISOR_READ_ONLY_MODEL_CHANGE_FORBIDDEN");
     const selected = await this.supervisorModel(model);
     if (!task.session || ["cancelled", "cancel_requested", "failed"].includes(task.status)) {
       throw new Error("Sesión no disponible");
@@ -1266,6 +1262,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   private async runConnector(connectorID: string, event: ConnectorEvent): Promise<ConnectorOutput> {
     if (connectorID !== "token-economizer") throw new Error("Conector no admitido.");
+    // Native lifecycle hooks must not call a remote connector for read_only.
+    try { await this.denyReadOnlySessionEffect(event.sessionID); } catch { return {}; }
     if (!(await this.personalConfig.connectorSettings()).tokenEconomizerEnabled) return {};
     try {
       const project = event.project || "global";
@@ -1343,6 +1341,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   private async generateSessionImage(sessionID: string, prompt: string) {
+    await this.denyReadOnlySessionEffect(sessionID);
     const [model, key] = await Promise.all([
       this.sessionImageModel(sessionID),
       Promise.resolve((this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY)
@@ -1480,8 +1479,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return task;
   }
 
+  private async denyReadOnlySessionEffect(sessionID: string): Promise<void> {
+    const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
+    if (this.ctx.id?.name === SUPERVISOR_WORKSPACE && !scope) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
+    if (await this.readOnlyTaskForScope(scope, sessionID)) throw Error("SUPERVISOR_READ_ONLY_EFFECT_FORBIDDEN");
+  }
+
   async enforceSessionScope(sessionID: string, action: ScopedToolAction): Promise<void> {
     const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
+    if (this.ctx.id?.name === SUPERVISOR_WORKSPACE && !scope) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
     assertScopedTool(scope, action);
     const readOnly = await this.readOnlyTaskForScope(scope, sessionID);
     if (readOnly) {
@@ -2220,7 +2226,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
           ),
           remoteMcpPlugin(
             () => this.personalConfig.getRemoteMcps(),
-            (reload) => { this.mcpLifecycle.reload = reload; }
+            (reload) => { this.mcpLifecycle.reload = reload; },
+            async sessionID => { try { await this.denyReadOnlySessionEffect(sessionID); return true; } catch { return false; } }
           ),
           workspacePlugin(this.workspace, {}, this.linuxRunner, this.githubRunner,
             (sessionID, action) => this.enforceSessionScope(sessionID, action),
@@ -2232,7 +2239,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
                 .some(item => item.id === sessionID && Boolean(item.parent)),
               start: (sessionID, task, kind) => this.startSubagent(sessionID, task, kind),
               result: (parentSession, childSession) => this.subagentResult(parentSession, childSession) },
-            { propose: value => this.personalConfig.proposeSpecialization(value) })
+            { propose: value => this.personalConfig.proposeSpecialization(value) },
+            sessionID => this.denyReadOnlySessionEffect(sessionID))
         ]
       }),
     // Low effort: with more, the model sometimes writes its whole answer
@@ -2262,6 +2270,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const key = "session-model-runs-v1:" + sessionID;
       const previous = (await this.ctx.storage.get<import("./protocol").ModelRun[]>(key)) ?? [];
       await this.ctx.storage.put(key, [...previous, run].slice(-50));
+    },
+    async (sessionID, type) => {
+      // Supervisor native socket mutations bypass the durable task journal.
+      // Passive resync remains available; task actions use the supervisor API.
+      if (type !== "resync" && this.ctx.id.name === SUPERVISOR_WORKSPACE)
+        throw Error("SUPERVISOR_DIRECT_SOCKET_EFFECT_FORBIDDEN");
+      if (type !== "resync") await this.denyReadOnlySessionEffect(sessionID);
     }
   );
   readonly webSockets = new WebSockets(this.sockets.options());

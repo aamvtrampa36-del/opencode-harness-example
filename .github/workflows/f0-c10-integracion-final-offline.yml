@@ -28,7 +28,8 @@ jobs:
         with:
           bun-version: "1.4.4"
           no-cache: true
-      - run: bun install --frozen-lockfile
+      - id: install
+        run: bun install --frozen-lockfile
       - name: Certified archive regressions
         run: bun test src/github-import-source.test.ts
       - name: Node preflight
@@ -60,7 +61,8 @@ jobs:
         run: node --experimental-strip-types --test scripts/f0-c10/c05-t03-server.test.mjs scripts/f0-c10/c05-t04-read-only.test.mjs scripts/f0-c10/c05-t09-safety.test.mjs
       - run: bun test
       - run: bun scripts/test-preview.mjs
-      - run: bun run typecheck
+      - if: ${{ !cancelled() && steps.install.conclusion == 'success' }}
+        run: bun run typecheck
       - run: bun run build
       - run: bun scripts/check-invariants.mjs
       - run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
