@@ -2,10 +2,10 @@
   "schema": "agent-integration-queue/v1",
   "repository": "aamvtrampa36-del/opencode-harness-example",
   "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
-  "source_commit": "d5a3c4218e46ee188ec78923a8a5d7e2570c1833",
-  "run_id": 45435493643,
+  "source_commit": "850ba51c0dbed33737ba2a3aa176f79ac5e46b95",
+  "run_id": 45476427515,
   "policy": {
-    "main_writes": "DISABLED_UNVERIFIED_SERVER_GATE",
+    "main_writes": "CONDITIONAL_ACTUATOR_ONLY",
     "merge_queue": "not configured",
     "no_automatic_close": true,
     "no_force_push": true
@@ -732,5 +732,5 @@
       ]
     }
   ],
-  "elapsed_ms": 1901
+  "elapsed_ms": 1796
 }
