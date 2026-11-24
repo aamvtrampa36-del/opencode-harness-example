@@ -1,7 +1,5 @@
 name: Saneamiento offline
 on:
-  push:
-    branches: [maintenance/saneamiento-01-20261124]
   pull_request:
     branches: [staging/reconciled-20261124]
 permissions:
