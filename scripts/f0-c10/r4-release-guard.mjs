@@ -9,6 +9,7 @@ import {readFileSync,readdirSync,lstatSync,writeFileSync,realpathSync} from "nod
 import path from "node:path";
 import {execFileSync} from "node:child_process";
 import {pathToFileURL} from "node:url";
+import {parsePilotApproval} from "../../src/pilot-authorization.ts";
 
 const workers={principal:"opencode-g1-staging",mcp:"opencode-staging-control-mcp"};
 const hash=b=>createHash("sha256").update(b).digest("hex");
@@ -82,6 +83,7 @@ export function verifyApproval(raw,pinned,receipt,observed,now=Date.now()){
  assert(typeof a.approvalRef==="string"&&a.approvalRef.length>=8&&a.approvalRef.length<=160);
  assert(Number.isSafeInteger(a.notBefore)&&Number.isSafeInteger(a.expiresAt)&&a.notBefore<=now&&a.expiresAt>now&&a.expiresAt-now<=3600000);
  assert.equal(a.worker,workers[receipt.role]);assert.equal(a.role,receipt.role);
+ assert(sha(a.accountId,32)&&a.accountId===observed.accountId,"account mismatch");
  exact(a.inventory,receipt);
  assert(uuid(a.rollbackDeployment)&&uuid(a.rollbackVersion));
  assert.equal(observed.id,a.rollbackDeployment);exact(observed.versions,[{version_id:a.rollbackVersion,percentage:100}]);
@@ -91,7 +93,8 @@ export function verifyApproval(raw,pinned,receipt,observed,now=Date.now()){
   assert(p?.schema==="pilot-release-v2"&&p.environment==="staging"&&p.releaseSha===a.source&&p.ciRun===a.ciRun);
   assert(sha(p.requestId,16)&&sha(p.sourceCommit,40)&&sha(p.sourceTree,40)&&/^sha256:[a-f0-9]{64}$/.test(p.containerImageDigest));
   assert(Number.isSafeInteger(p.notBefore)&&p.notBefore<=now&&Number.isSafeInteger(p.expiresAt)&&p.expiresAt>=now+1200000&&p.expiresAt<=now+3600000);
-  // Full manifest semantics are additionally checked by the deployed backend.
+  // Use the actual backend parser, not a second weaker economic schema.
+  assert(parsePilotApproval(JSON.stringify(p),a.source,p.requestId,now),"invalid backend pilot authorization");
   assert(p.approvalRef===a.approvalRef&&p.residualRisk==="accepted-bounded-trial"&&sha(p.fingerprint));
   assert(Buffer.byteLength(JSON.stringify(p))<=8192);
  }else assert(!("pilot" in a));
@@ -103,7 +106,7 @@ async function getCurrentDeployment(worker){
  const res=await fetch("https://api.cloudflare.com/client/v4/accounts/"+account+"/workers/scripts/"+worker+"/deployments",
    {headers:{Authorization:"Bearer "+token},redirect:"error",signal:AbortSignal.timeout(15000)});
  assert(res.ok,"rollback readback failed");const json=await res.json();assert.equal(json.success,true);
- const d=json.result.deployments[0];assert(d&&Array.isArray(d.versions));return {id:d.id,versions:d.versions.map(v=>({version_id:v.version_id,percentage:v.percentage}))};
+ const d=json.result.deployments[0];assert(d&&Array.isArray(d.versions));return {accountId:account,id:d.id,versions:d.versions.map(v=>({version_id:v.version_id,percentage:v.percentage}))};
 }
 function wrangler(args){execFileSync("node_modules/.bin/wrangler",args,{stdio:"inherit",timeout:120000,env:{...process.env,WRANGLER_SEND_METRICS:"false"}});}
 async function main(){
@@ -119,13 +122,13 @@ async function main(){
  const a=verifyApproval(raw,pin,receipt,await getCurrentDeployment(receipt.worker));
  // No automatic deployment, no container rollout, no triggers or new resources.
  // Derived config differs only in the pinned prebuilt entry or the two authorized plain-text variables.
- let cfgPath;
+ let cfgPath;const vars=[];
  if(role==="principal"){
-  const base=path.join(repo,"dist/opencode_g1_staging/wrangler.json"),cfg=JSON.parse(readFileSync(base,"utf8"));
-  configGuard(cfg,role);
-  cfg.vars={...cfg.vars,OPENCODE_PILOT_HYBRID_REQUEST_ID:a.pilot.requestId,OPENCODE_PILOT_AUTHORIZATION:JSON.stringify(a.pilot)};
-  cfgPath=path.join(path.dirname(base),"r4-authorized-upload.json");
-  writeFileSync(cfgPath,JSON.stringify(cfg),{flag:"wx",mode:0o600});
+  cfgPath=path.join(repo,"dist/opencode_g1_staging/wrangler.json");
+  configGuard(JSON.parse(readFileSync(cfgPath,"utf8")),role);
+  // CLI-only vars keep the verified directory and configuration bytes intact.
+  vars.push("--var","OPENCODE_PILOT_HYBRID_REQUEST_ID:"+a.pilot.requestId,
+    "--var","OPENCODE_PILOT_AUTHORIZATION:"+JSON.stringify(a.pilot));
  }else{
   const cfg=JSON.parse(readFileSync(path.join(repo,"wrangler.mcp-staging.jsonc"),"utf8"));
   configGuard(cfg,role);cfg.main="mcp/worker.js";cfg.no_bundle=true;
@@ -133,8 +136,8 @@ async function main(){
  }
  // Recheck source and deployment immediately before effect. No retries.
  assert.equal(execFileSync("git",["rev-parse","HEAD"],{encoding:"utf8"}).trim(),source);
- verifyApproval(raw,pin,receipt,await getCurrentDeployment(receipt.worker));
- wrangler(["versions","upload","--config",cfgPath,"--no-bundle","--tag","r4-"+source.slice(0,16),
+ verifyApproval(raw,pin,collect(role,source,repo,tmp),await getCurrentDeployment(receipt.worker));
+ wrangler(["versions","upload","--config",cfgPath,"--no-bundle",...vars,"--tag","r4-"+source.slice(0,16),
    "--message","R4 explicitly approved upload-only "+source]);
  console.log("R4_UPLOAD_COMMAND_EXIT_0 "+receipt.worker+" "+source+"; promotion remains external");
 }

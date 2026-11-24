@@ -70,3 +70,11 @@ export async function durablePreparationValid(task:SupervisorTask,claim:PilotCla
   try{return await preparationReceiptValid(task.pilotPreparation,await preparationInput(claim,task,grant),now);}
   catch{return false;}
 }
+
+/** Durable start intent is one-use. A lost response or a new DO process is not
+ * permission to recreate or recover a certified pilot VM. */
+export function pilotBootDisposition(prior:{owner:string;label:string}|undefined,owner:string,running:boolean):
+  "new"|"existing"|"stop"{
+  if(!prior)return running?"stop":"new";
+  return prior.owner===owner&&uuid(prior.label)&&running?"existing":"stop";
+}

@@ -1,5 +1,5 @@
 import {test,expect} from "bun:test";
-import {makePreparationReceipt,preparationReceiptValid,pilotImageDigest,pilotRuntimeMatches,type PilotPreparationInput} from "./pilot-preparation";
+import {makePreparationReceipt,preparationReceiptValid,pilotImageDigest,pilotRuntimeMatches,pilotBootDisposition,type PilotPreparationInput} from "./pilot-preparation";
 const label="12345678-1234-1234-1234-123456789abc",id="0123456789abcdef",now=1000;
 const input:PilotPreparationInput={requestId:id,project:"supervised-"+id,session:"ses_r2_"+id,
  repository:"aamvtrampa36-del/opencode-harness-example",releaseSha:"a".repeat(40),sourceCommit:"b".repeat(40),
@@ -22,4 +22,13 @@ test("receipt rejects expiry, tamper, wrong owner, wrong source or generation",a
  for(const patch of [{supervisorOwner:crypto.randomUUID()},{sourceCommit:"0".repeat(40)},{sourceTree:"0".repeat(40)},
  {generation:2},{approvalDigest:"0".repeat(64)},{imageDigest:"sha256:"+"0".repeat(64)}])
    expect(await preparationReceiptValid(r,{...input,...patch},now+20)).toBe(false);
+});
+
+test("durable boot intent forbids replacement after lost start, lost VM or DO reset",()=>{
+ const prior={owner:label,label};
+ expect(pilotBootDisposition(undefined,label,false)).toBe("new");
+ expect(pilotBootDisposition(undefined,label,true)).toBe("stop");
+ expect(pilotBootDisposition(prior,label,true)).toBe("existing");
+ expect(pilotBootDisposition(prior,label,false)).toBe("stop");
+ expect(pilotBootDisposition(prior,crypto.randomUUID(),true)).toBe("stop");
 });

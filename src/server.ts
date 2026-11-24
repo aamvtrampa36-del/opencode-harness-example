@@ -603,9 +603,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if (job.status !== "running" || !job.session || !job.operationId || !job.baseCommit) {
       return this.supervisorTaskReceipt(job, reused);
     }
+    let pilotSubmitEntered=false;
     try {
       if(this.pilotLaneId())await this.pilotContext(job.session);
       await supervisorBeginExternalEffect(this.ctx.storage, grant, "submit");
+      pilotSubmitEntered=Boolean(job.pilotInstance);
       const submitSession = job.session;
       const submitCommit = job.baseCommit;
       const submitOperation = job.operationId;
@@ -633,6 +635,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
     } catch (error) {
       // The durable operation may have been accepted before the RPC failed.
       // Keep the same operationId so a retry can retrieve the original receipt.
+      if(job.pilotInstance&&!pilotSubmitEntered){
+        // This failure precedes the actual SDK call: fence all new work and
+        // close the already prepared Container instead of waiting for expiry.
+        await this.env.DEV.getByName(projectContainerName(job.project)).closePilotProject(job.project).catch(()=>undefined);
+      }
       const detail = error instanceof Error ? error.message.slice(0, 230) : "No se pudo confirmar el envío";
       const committed = await this.ctx.storage.transaction(async tx => {
         const fresh = await tx.get<SupervisorTask>(key);

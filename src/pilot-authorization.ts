@@ -1,5 +1,5 @@
 import type { SupervisorTask } from "./supervisor-control";
-import { PILOT_WORK_MS, PILOT_CLOSE_MS, PILOT_MAX_WIRE_BYTES, PILOT_PRICING_REVISION, pilotBillingReviewValid, type PilotBillingReview, type PilotDispatchEvidence } from "./supervisor-inference-budget";
+import { PILOT_WORK_MS, PILOT_CLOSE_MS, PILOT_MAX_WIRE_BYTES, PILOT_PRICING_REVISION, pilotBillingReviewValid, type PilotBillingReview, type PilotDispatchEvidence } from "./supervisor-inference-budget.ts";
 
 export const PILOT_REPO="aamvtrampa36-del/opencode-harness-example";
 export const PILOT_BASE="f0-c10/integracion-final-20261123";

@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { makePreparationReceipt, preparationReceiptValid, pilotRuntimeMatches, validPreparationInput, type PilotPreparationInput, type PilotPreparationReceipt } from "./pilot-preparation";
+import { makePreparationReceipt, preparationReceiptValid, pilotRuntimeMatches, pilotBootDisposition, validPreparationInput, type PilotPreparationInput, type PilotPreparationReceipt } from "./pilot-preparation";
 import { MAX_SHELL_OUTPUT, validateCommand, validateProject } from "./dev-guard";
 import { captureBoundedOutput } from "./bounded-process-output";
 import { PREVIEW_SOURCE, PREVIEW_PORT } from "./preview-server";
@@ -237,8 +237,8 @@ export class DevContainer extends DurableObject<Env> {
     if (!container) throw new Error("Linux Container binding is not deployed");
     const pilot=await this.checkPilotWork();
     const prior=pilot?await this.ctx.storage.get<{owner:string;label:string}>("pilot-boot-v1"):undefined;
-    if(pilot&&prior&&(prior.owner!==this.pilotContainerOwner||!container.running))throw Error("PILOT_CONTAINER_LOST_NO_RESTART");
-    if(pilot&&container.running&&!prior)throw Error("PILOT_CONTAINER_UNTRACKED");
+    if(pilot&&pilotBootDisposition(prior,this.pilotContainerOwner,container.running)==="stop")
+      throw Error("PILOT_CONTAINER_LOST_NO_RESTART");
     if (!container.running) {
       const snapshotId = await this.ctx.storage.get<string>("snapshotId");
       const savedAt = await this.ctx.storage.get<number>("savedAt");
