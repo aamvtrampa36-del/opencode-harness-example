@@ -1,0 +1,638 @@
+{
+  "schema": "agent-integration-queue/v1",
+  "repository": "aamvtrampa36-del/opencode-harness-example",
+  "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
+  "source_commit": "de9a5734c267a8089cab87cbb82fb0edc07ad7e5",
+  "run_id": 45435141800,
+  "policy": {
+    "main_writes": "DISABLED_UNVERIFIED_SERVER_GATE",
+    "merge_queue": "not configured",
+    "no_automatic_close": true,
+    "no_force_push": true
+  },
+  "coverage": {
+    "list_truncated": false,
+    "focused_merge_trees": [
+      105
+    ],
+    "ancestry_pairs_examined": 1,
+    "ancestry_pairs_total": 1,
+    "overlap_pairs": 15,
+    "overlaps_truncated": false
+  },
+  "counts": {
+    "BLOCKED": 7,
+    "EXPERIMENTAL": 7
+  },
+  "entries": [
+    {
+      "pr": 105,
+      "head": "a320b1eb8346e9e9b1390699306aef24056dda52",
+      "base": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/pull/105",
+      "restricted": false,
+      "experimental": false,
+      "verified_refs": true,
+      "dependencies": [],
+      "merge_base": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
+      "contained": false,
+      "behind": 0,
+      "ahead": 5,
+      "combined_tree": "81c2164b438401e106e7bd8e620b994ee7723fa1",
+      "conflict": false,
+      "tree_equal": false,
+      "status": "BLOCKED",
+      "next": "draft; no promotion by integrator",
+      "priority": 1,
+      "authorization": "NONE_FOR_MAIN",
+      "validation_reference": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45429311156",
+      "file_count": 4,
+      "paths": [
+        "docs/INFORME_REPARACION_SALIDA_LINUX_STAGING_2026-11-22.md",
+        "src/bounded-process-output.test.ts",
+        "src/bounded-process-output.ts",
+        "src/dev-container.ts"
+      ],
+      "paths_truncated": false,
+      "candidate_id": "7089d49733b789ffbdc97dfb34a4b9424fea914d4114b53c748d4f17dc8a250a"
+    },
+    {
+      "pr": 30,
+      "head": "b7fdfa2efac87ff5c17d877b01fc1fa314f9880b",
+      "base": "67b44a92177d176d177dc4607f580808102d36ff",
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/pull/30",
+      "restricted": false,
+      "experimental": false,
+      "verified_refs": true,
+      "dependencies": [],
+      "merge_base": "67b44a92177d176d177dc4607f580808102d36ff",
+      "contained": false,
+      "behind": 453,
+      "ahead": 3,
+      "status": "BLOCKED",
+      "next": "draft; no promotion by integrator",
+      "priority": 0,
+      "authorization": "NONE_FOR_MAIN",
+      "validation_reference": null,
+      "file_count": 2,
+      "paths": [
+        "tests/g9-proof/add.mjs",
+        "tests/g9-proof/add.test.mjs"
+      ],
+      "paths_truncated": false,
+      "candidate_id": "1ff1cd6f14dc2ca9a8bc9f857a52feb717f0b09e81b7576c2964cb0fd6636ad4"
+    },
+    {
+      "pr": 41,
+      "head": "557e86ceb3c8fd2b3125c27fc572801649069ef2",
+      "base": "67b44a92177d176d177dc4607f580808102d36ff",
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/pull/41",
+      "restricted": true,
+      "experimental": false,
+      "verified_refs": true,
+      "dependencies": [],
+      "merge_base": "67b44a92177d176d177dc4607f580808102d36ff",
+      "contained": false,
+      "behind": 453,
+      "ahead": 13,
+      "status": "BLOCKED",
+      "next": "explicit restriction; preserve work",
+      "priority": 0,
+      "authorization": "NONE_FOR_MAIN",
+      "validation_reference": null,
+      "file_count": 9,
+      "paths": [
+        "docs/SELFTEST.md",
+        "evidence/selftest-receipt-build-fail.json",
+        "evidence/selftest-receipt-fail-closed.json",
+        "evidence/selftest-receipt-resumed.json",
+        "evidence/selftest-receipt.json",
+        "package.json",
+        "scripts/selftest.mjs",
+        "src/selftest-core.test.ts",
+        "src/selftest-core.ts"
+      ],
+      "paths_truncated": false,
+      "candidate_id": "0d4db3c5940b3c0e3005be9ffba63101ad1731342f3dbe90720167ec70dec486"
+    },
+    {
+      "pr": 42,
+      "head": "4d96c2f8de7b14b987711bcf6b8b3d242002b392",
+      "base": "67b44a92177d176d177dc4607f580808102d36ff",
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/pull/42",
+      "restricted": false,
+      "experimental": true,
+      "verified_refs": true,
+      "dependencies": [],
+      "merge_base": "67b44a92177d176d177dc4607f580808102d36ff",
+      "contained": false,
+      "behind": 453,
+      "ahead": 13,
+      "status": "EXPERIMENTAL",
+      "next": "draft; no promotion by integrator",
+      "priority": 0,
+      "authorization": "NONE_FOR_MAIN",
+      "validation_reference": null,
+      "file_count": 6,
+      "paths": [
+        "docs/backup-restore-verification.md",
+        "scripts/verify-backup-restore.mjs",
+        "src/container-verify.test.ts",
+        "src/container-verify.ts",
+        "src/dev-container.ts",
+        "src/server.ts"
+      ],
+      "paths_truncated": false,
+      "candidate_id": "b605f22996bdb0e62038a94a518a5815565558a73fc390d4a25ad7ae6f3b78b6"
+    },
+    {
+      "pr": 53,
+      "head": "add720e7c7eb5d864fde68953861febb37dfa177",
+      "base": "67b44a92177d176d177dc4607f580808102d36ff",
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/pull/53",
+      "restricted": true,
+      "experimental": true,
+      "verified_refs": true,
+      "dependencies": [],
+      "merge_base": "7edac1089b75983d41c76c8fb8d8a26df70ea0c1",
+      "contained": false,
+      "behind": 85,
+      "ahead": 29,
+      "status": "EXPERIMENTAL",
+      "next": "explicit restriction; preserve work",
+      "priority": 0,
+      "authorization": "NONE_FOR_MAIN",
+      "validation_reference": null,
+      "file_count": 11,
+      "paths": [
+        "docs/SESIONES_SQL_BACKUP_B2_STAGING_2026-11-13.md",
+        "src/entrypoint.ts",
+        "src/joint-rollback-do.ts",
+        "src/joint-rollback.test.ts",
+        "src/joint-rollback.ts",
+        "src/session-sql-backup-bindings.d.ts",
+        "src/session-sql-backup-do.ts",
+        "src/session-sql-backup.test.ts",
+        "src/session-sql-backup.ts",
+        "src/supervisor-workflow.ts",
+        "wrangler.g1.jsonc"
+      ],
+      "paths_truncated": false,
+      "candidate_id": "916d03de56102cd6d78cfa7dd06be5c5631bb5bfbefba2cc370fcd3a2104c396"
+    },
+    {
+      "pr": 55,
+      "head": "d92ceaddea008111186c8db97ddb439349610f37",
+      "base": "e2736d1221247b5186879cda3beb9230b4b977f5",
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/pull/55",
+      "restricted": true,
+      "experimental": true,
+      "verified_refs": true,
+      "dependencies": [],
+      "merge_base": "e2736d1221247b5186879cda3beb9230b4b977f5",
+      "contained": false,
+      "behind": 49,
+      "ahead": 6,
+      "status": "EXPERIMENTAL",
+      "next": "explicit restriction; preserve work",
+      "priority": 0,
+      "authorization": "NONE_FOR_MAIN",
+      "validation_reference": null,
+      "file_count": 4,
+      "paths": [
+        "experiments/harness-wait-20261115/LICENSE-Cloudflare.txt",
+        "experiments/harness-wait-20261115/README.md",
+        "experiments/harness-wait-20261115/harness-patched.ts.txt",
+        "src/harness-wait-experiment.test.ts"
+      ],
+      "paths_truncated": false,
+      "candidate_id": "352d553461398e0dfae42216fb3c999fa3020b3735c590398295e2359c2541ab"
+    },
+    {
+      "pr": 56,
+      "head": "bdfccb32db75c9e106e507befda78e2934dd4c35",
+      "base": "e2736d1221247b5186879cda3beb9230b4b977f5",
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/pull/56",
+      "restricted": true,
+      "experimental": true,
+      "verified_refs": true,
+      "dependencies": [],
+      "merge_base": "e2736d1221247b5186879cda3beb9230b4b977f5",
+      "contained": false,
+      "behind": 49,
+      "ahead": 11,
+      "status": "EXPERIMENTAL",
+      "next": "explicit restriction; preserve work",
+      "priority": 0,
+      "authorization": "NONE_FOR_MAIN",
+      "validation_reference": null,
+      "file_count": 9,
+      "paths": [
+        "experiments/snapshot-delta-20261115/README.md",
+        "experiments/snapshot-delta-20261115/protocol.json",
+        "experiments/snapshot-delta-20261115/runs.jsonl",
+        "experiments/snapshot-delta-20261115/summary.json",
+        "src/protocol.ts",
+        "src/snapshot-delta-experiment.test.ts",
+        "src/snapshot-delta.ts",
+        "src/sockets.ts",
+        "src/use-opencode-session.ts"
+      ],
+      "paths_truncated": false,
+      "candidate_id": "354adf6207359927bd0427334d6e3ffae68e153f65c4d1c1c4fddbb902d08149"
+    },
+    {
+      "pr": 57,
+      "head": "2e63273ee4ace757f79ec53f3e023078906a8f44",
+      "base": "e2736d1221247b5186879cda3beb9230b4b977f5",
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/pull/57",
+      "restricted": true,
+      "experimental": true,
+      "verified_refs": true,
+      "dependencies": [],
+      "merge_base": "e2736d1221247b5186879cda3beb9230b4b977f5",
+      "contained": false,
+      "behind": 49,
+      "ahead": 11,
+      "status": "EXPERIMENTAL",
+      "next": "explicit restriction; preserve work",
+      "priority": 0,
+      "authorization": "NONE_FOR_MAIN",
+      "validation_reference": null,
+      "file_count": 9,
+      "paths": [
+        "experiments/history-tail-20261115/README.md",
+        "experiments/history-tail-20261115/baseline-runs.jsonl",
+        "experiments/history-tail-20261115/paired-runs.jsonl",
+        "experiments/history-tail-20261115/protocol.json",
+        "experiments/history-tail-20261115/summary.json",
+        "src/experimental-history-tail.test.ts",
+        "src/experimental-history-tail.ts",
+        "src/history-tail-experiment.test.ts",
+        "src/sockets.ts"
+      ],
+      "paths_truncated": false,
+      "candidate_id": "4da2eb2eed3c7a780566bd008f6372542b34f96039e16d5da6a8e16c2595a0af"
+    },
+    {
+      "pr": 59,
+      "head": "709fa8893f9946a0c13a24ceb1ccfa17be595ec6",
+      "base": "e2736d1221247b5186879cda3beb9230b4b977f5",
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/pull/59",
+      "restricted": true,
+      "experimental": true,
+      "verified_refs": true,
+      "dependencies": [],
+      "merge_base": "e2736d1221247b5186879cda3beb9230b4b977f5",
+      "contained": false,
+      "behind": 49,
+      "ahead": 13,
+      "status": "EXPERIMENTAL",
+      "next": "explicit restriction; preserve work",
+      "priority": 0,
+      "authorization": "NONE_FOR_MAIN",
+      "validation_reference": null,
+      "file_count": 9,
+      "paths": [
+        "experiments/pinned-read-20261115/README.md",
+        "experiments/pinned-read-20261115/baseline-runs.jsonl",
+        "experiments/pinned-read-20261115/paired-runs.jsonl",
+        "experiments/pinned-read-20261115/protocol.json",
+        "experiments/pinned-read-20261115/summary.json",
+        "src/experimental-pinned-read-cache.ts",
+        "src/github.ts",
+        "src/pinned-read-experiment.test.ts",
+        "src/server.ts"
+      ],
+      "paths_truncated": false,
+      "candidate_id": "1cf65bc5c8ee50a51e76657d26ce9c367c0f287cdfa37f0b5409ca314c753f04"
+    },
+    {
+      "pr": 60,
+      "head": "dd0fe1b931a5a8b4b275a305fc060a4ae83876be",
+      "base": "e2736d1221247b5186879cda3beb9230b4b977f5",
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/pull/60",
+      "restricted": true,
+      "experimental": true,
+      "verified_refs": true,
+      "dependencies": [],
+      "merge_base": "e2736d1221247b5186879cda3beb9230b4b977f5",
+      "contained": false,
+      "behind": 49,
+      "ahead": 10,
+      "status": "EXPERIMENTAL",
+      "next": "explicit restriction; preserve work",
+      "priority": 0,
+      "authorization": "NONE_FOR_MAIN",
+      "validation_reference": null,
+      "file_count": 8,
+      "paths": [
+        "experiments/context-plan-tools-20261115/README.md",
+        "experiments/context-plan-tools-20261115/baseline-runs.jsonl",
+        "experiments/context-plan-tools-20261115/paired-runs.jsonl",
+        "experiments/context-plan-tools-20261115/protocol.json",
+        "experiments/context-plan-tools-20261115/summary.json",
+        "src/context-catalog-experiment.test.ts",
+        "src/context-plan-capabilities.test.ts",
+        "src/workspace.ts"
+      ],
+      "paths_truncated": false,
+      "candidate_id": "1806840a02934f42b647c705a250fbab999c79de0224ebd82718fe63a84f5f2c"
+    },
+    {
+      "pr": 63,
+      "head": "a3a87710f1bd0ad616e895ff54be420815530659",
+      "base": "030606f376f63c912d010ff22e2b5534b67a5600",
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/pull/63",
+      "restricted": false,
+      "experimental": false,
+      "verified_refs": true,
+      "dependencies": [],
+      "merge_base": "030606f376f63c912d010ff22e2b5534b67a5600",
+      "contained": false,
+      "behind": 48,
+      "ahead": 3,
+      "status": "BLOCKED",
+      "next": "draft; no promotion by integrator",
+      "priority": 0,
+      "authorization": "NONE_FOR_MAIN",
+      "validation_reference": null,
+      "file_count": 2,
+      "paths": [
+        "tests/g9-proof/add.mjs",
+        "tests/g9-proof/add.test.mjs"
+      ],
+      "paths_truncated": false,
+      "candidate_id": "450f49a92c17a58f39bc04b973193c46bfde747c3098c25f2e0314428d116e31"
+    },
+    {
+      "pr": 68,
+      "head": "89d1db0717e0813c26468dd5b44ae363a4b4ce25",
+      "base": "4cde469e7ece306186b8d5da56c5acc77de3e9fd",
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/pull/68",
+      "restricted": true,
+      "experimental": false,
+      "verified_refs": true,
+      "dependencies": [],
+      "merge_base": "4cde469e7ece306186b8d5da56c5acc77de3e9fd",
+      "contained": false,
+      "behind": 4,
+      "ahead": 15,
+      "status": "BLOCKED",
+      "next": "explicit restriction; preserve work",
+      "priority": 0,
+      "authorization": "NONE_FOR_MAIN",
+      "validation_reference": null,
+      "file_count": 8,
+      "paths": [
+        "docs/STAGING_REMOTE_CONTROL_MCP_20261118.md",
+        "src/github.test.ts",
+        "src/github.ts",
+        "src/server.ts",
+        "src/staging-control-mcp.js",
+        "src/staging-control-mcp.test.js",
+        "src/supervisor-control.ts",
+        "wrangler.staging-control.jsonc"
+      ],
+      "paths_truncated": false,
+      "candidate_id": "8566d53f5ad2b5c68a8d014f4eacf22322af5d60cd15fa67441f38f15af23dc4"
+    },
+    {
+      "pr": 76,
+      "head": "169a40ecb531bf5c8062b9a334f385df39818c00",
+      "base": "4cde469e7ece306186b8d5da56c5acc77de3e9fd",
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/pull/76",
+      "restricted": false,
+      "experimental": false,
+      "verified_refs": true,
+      "dependencies": [],
+      "merge_base": "4cde469e7ece306186b8d5da56c5acc77de3e9fd",
+      "contained": false,
+      "behind": 4,
+      "ahead": 11,
+      "status": "BLOCKED",
+      "next": "draft; no promotion by integrator",
+      "priority": 0,
+      "authorization": "NONE_FOR_MAIN",
+      "validation_reference": null,
+      "file_count": 10,
+      "paths": [
+        ".github/workflows/ci.yml",
+        "docs/CDF_DYNAMIC_INTEGRATION_RECEIPT_20261118.md",
+        "docs/DYNAMIC_EXECUTION_20261118.md",
+        "src/dynamic-mcp-bridge.ts",
+        "src/dynamic-mcp.test.ts",
+        "src/dynamic-tool-registry.test.ts",
+        "src/dynamic-tool-registry.ts",
+        "src/server.ts",
+        "src/workspace-g8-integration.test.ts",
+        "src/workspace.ts"
+      ],
+      "paths_truncated": false,
+      "candidate_id": "d0690afdf827f03967597a99a6b59aec6c0ea6218976cbe118e965376f849de0"
+    },
+    {
+      "pr": 78,
+      "head": "c50b4c3bdc095d73254d05eb47d9045a9481647f",
+      "base": "4cde469e7ece306186b8d5da56c5acc77de3e9fd",
+      "state": "open",
+      "draft": true,
+      "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/pull/78",
+      "restricted": false,
+      "experimental": false,
+      "verified_refs": true,
+      "dependencies": [],
+      "merge_base": "4cde469e7ece306186b8d5da56c5acc77de3e9fd",
+      "contained": false,
+      "behind": 4,
+      "ahead": 41,
+      "status": "BLOCKED",
+      "next": "draft; no promotion by integrator",
+      "priority": 0,
+      "authorization": "NONE_FOR_MAIN",
+      "validation_reference": null,
+      "file_count": 17,
+      "paths": [
+        ".github/workflows/ci.yml",
+        "docs/CDF_DYNAMIC_INTEGRATION_RECEIPT_20261118.md",
+        "docs/DYNAMIC_EXECUTION_20261118.md",
+        "docs/STAGING_REMOTE_CONTROL_MCP_20261118.md",
+        "src/dynamic-mcp-bridge.ts",
+        "src/dynamic-mcp.test.ts",
+        "src/dynamic-tool-registry.test.ts",
+        "src/dynamic-tool-registry.ts",
+        "src/github.test.ts",
+        "src/github.ts",
+        "src/server.ts",
+        "src/staging-control-mcp.js",
+        "src/staging-control-mcp.test.js",
+        "src/supervisor-control.ts",
+        "src/workspace-g8-integration.test.ts",
+        "src/workspace.ts",
+        "wrangler.staging-control.jsonc"
+      ],
+      "paths_truncated": false,
+      "candidate_id": "80f37f90d89b2365cf718590630fef17ae3da752bbe5192dc604c86817d3c85a"
+    }
+  ],
+  "overlaps": [
+    {
+      "a": 105,
+      "b": 42,
+      "count": 1,
+      "paths": [
+        "src/dev-container.ts"
+      ]
+    },
+    {
+      "a": 78,
+      "b": 76,
+      "count": 10,
+      "paths": [
+        ".github/workflows/ci.yml",
+        "docs/CDF_DYNAMIC_INTEGRATION_RECEIPT_20261118.md",
+        "docs/DYNAMIC_EXECUTION_20261118.md",
+        "src/dynamic-mcp-bridge.ts",
+        "src/dynamic-mcp.test.ts"
+      ]
+    },
+    {
+      "a": 78,
+      "b": 68,
+      "count": 8,
+      "paths": [
+        "docs/STAGING_REMOTE_CONTROL_MCP_20261118.md",
+        "src/github.test.ts",
+        "src/github.ts",
+        "src/server.ts",
+        "src/staging-control-mcp.js"
+      ]
+    },
+    {
+      "a": 78,
+      "b": 60,
+      "count": 1,
+      "paths": [
+        "src/workspace.ts"
+      ]
+    },
+    {
+      "a": 78,
+      "b": 59,
+      "count": 2,
+      "paths": [
+        "src/github.ts",
+        "src/server.ts"
+      ]
+    },
+    {
+      "a": 78,
+      "b": 42,
+      "count": 1,
+      "paths": [
+        "src/server.ts"
+      ]
+    },
+    {
+      "a": 76,
+      "b": 68,
+      "count": 1,
+      "paths": [
+        "src/server.ts"
+      ]
+    },
+    {
+      "a": 76,
+      "b": 60,
+      "count": 1,
+      "paths": [
+        "src/workspace.ts"
+      ]
+    },
+    {
+      "a": 76,
+      "b": 59,
+      "count": 1,
+      "paths": [
+        "src/server.ts"
+      ]
+    },
+    {
+      "a": 76,
+      "b": 42,
+      "count": 1,
+      "paths": [
+        "src/server.ts"
+      ]
+    },
+    {
+      "a": 68,
+      "b": 59,
+      "count": 2,
+      "paths": [
+        "src/github.ts",
+        "src/server.ts"
+      ]
+    },
+    {
+      "a": 68,
+      "b": 42,
+      "count": 1,
+      "paths": [
+        "src/server.ts"
+      ]
+    },
+    {
+      "a": 63,
+      "b": 30,
+      "count": 2,
+      "paths": [
+        "tests/g9-proof/add.mjs",
+        "tests/g9-proof/add.test.mjs"
+      ]
+    },
+    {
+      "a": 59,
+      "b": 42,
+      "count": 1,
+      "paths": [
+        "src/server.ts"
+      ]
+    },
+    {
+      "a": 57,
+      "b": 56,
+      "count": 1,
+      "paths": [
+        "src/sockets.ts"
+      ]
+    }
+  ],
+  "elapsed_ms": 3636
+}
