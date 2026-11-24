@@ -2,7 +2,6 @@ name: R4 new candidate reproducibility (OFFLINE ONLY)
 on:
   push:
     branches: [f0-c10/r4-preparation-42574cb3]
-    paths: ['src/**','scripts/f0-c10/r4-release-*','scripts/f0-c10/r4-promotion-preflight.mjs','.github/workflows/r4-release-replicas.yml']
 permissions:
   contents: read
 concurrency:
