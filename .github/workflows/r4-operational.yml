@@ -1,0 +1,50 @@
+name: R4 operational preflight (READ SNAPSHOT, NO DEPLOY)
+on:
+  push:
+    branches: [f0-c10/r4-preparation-42574cb3]
+    paths: [".github/workflows/r4-operational.yml"]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    if: github.event.repository.private == false && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: "8f03a6ee80ad2084834e087d2fd6c4ab1b3a3ac7"
+          persist-credentials: false
+      - name: Retrieve verified package pair
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/r4"
+          cd "$RUNNER_TEMP/r4"
+          curl --fail --silent --show-error --location --max-time 60 --max-filesize 104857600 -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/aamvtrampa36-del/opencode-harness-example/actions/artifacts/14891381103/zip" -o a.zip
+          curl --fail --silent --show-error --location --max-time 60 --max-filesize 104857600 -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/aamvtrampa36-del/opencode-harness-example/actions/artifacts/14891465366/zip" -o b.zip
+      - name: Exact stage selection and fail-closed observed preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 8f03a6ee80ad2084834e087d2fd6c4ab1b3a3ac7
+          mkdir "$RUNNER_TEMP/report"
+          set +e
+          python3 scripts/f0-c10/r4-operational.py --a "$RUNNER_TEMP/r4/a.zip" --b "$RUNNER_TEMP/r4/b.zip" --sha-a 69e7c466de1a0a4b3065b0f53042986250fe0b8c5e3f3f26feeb51f20c6d7ca5 --sha-b cba4bb8d081fb20157659e6f1a6cb3166fd8cd69378581a72e00eebf83359ee2 --observations docs/f0-c10/R4_OBSERVATIONS_20261124.json --stage-dir "$RUNNER_TEMP/stage-only" --self-test > "$RUNNER_TEMP/report/operational.json"
+          rc=$?
+          set -e
+          cat "$RUNNER_TEMP/report/operational.json"
+          test "$rc" -eq 2
+          test ! -e "$RUNNER_TEMP/stage-only/dist/opencode_harness_example"
+          test -f "$RUNNER_TEMP/stage-only/dist/opencode_g1_staging/wrangler.json"
+          test -f "$RUNNER_TEMP/stage-only/mcp/worker.js"
+          python3 -c 'import json,sys;x=json.load(open(sys.argv[1]));assert x["gates"]["candidateCI"]=="PASS" and x["gates"]["bindingMetadataParity"]=="PASS" and x["gates"]["stageOnlySelection"]=="PASS" and x["decision"]=="STOP" and not x["deploymentAuthorized"] and not x["providerDispatchAuthorized"]' "$RUNNER_TEMP/report/operational.json"
+          cp scripts/f0-c10/r4-operational.py scripts/f0-c10/r4-preflight.py docs/f0-c10/R4_OBSERVATIONS_20261124.json "$RUNNER_TEMP/report/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r4-operational-report
+          path: ${{ runner.temp }}/report/
+          retention-days: 1
+          if-no-files-found: error
