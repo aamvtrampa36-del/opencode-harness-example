@@ -683,11 +683,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
     });
     const count = supervisorTaskCount(index, 100);
     const admissionCapacity = await inspectSupervisorAdmissionCapacity(this.ctx.storage);
+    const freeze=this.r4FreezeManifest();
     return {
       environment: "staging", worker: "opencode-g1-staging", ready: true,
       admissionCapacity,
-      r4Freeze:this.r4FreezeManifest()?{schema:"r4-freeze-v1",releaseSha:this.r4FreezeManifest()!.releaseSha,
-        requestId:this.r4FreezeManifest()!.requestId,approvalRef:this.r4FreezeManifest()!.approvalRef,
+      r4Freeze:freeze?{schema:"r4-freeze-v1",releaseSha:freeze.releaseSha,
+        requestId:freeze.requestId,approvalRef:freeze.approvalRef,
         providerDispatchAuthorized:false,reconciliationRoute:"account-workflow-only"}:null,
       historicalReconciliation:await historicalCertificate(this.ctx.storage).then(c=>c?publicHistoricalCertificate(c):null),
       schema: "opencode.staging-control.v2",
@@ -731,14 +732,6 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const freeze=this.r4FreezeManifest();
     if(!freeze)throw Error("HISTORICAL_FREEZE_REQUIRED");
     const manifest=reconciliationFromFrozenWorkflow(freeze,raw);
-    const previous=await historicalCertificate(this.ctx.storage);
-    if(previous?.manifest.releaseSha===manifest.releaseSha&&previous.manifest.requestId===manifest.requestId&&
-       previous.manifest.approvalRef===manifest.approvalRef&&previous.manifest.externalDrainReceipt===manifest.externalDrainReceipt){
-      // Lost response readback only. Do not overwrite an immutable receipt.
-      return {...publicHistoricalCertificate(previous),capacity:await inspectSupervisorAdmissionCapacity(this.ctx.storage),reused:true};
-    }
-    if(previous?.manifest.releaseSha===manifest.releaseSha&&previous.manifest.requestId===manifest.requestId)
-      throw Error("HISTORICAL_RECONCILIATION_ALREADY_RECORDED");
     return reconcileHistoricalSupervisor(this.ctx.storage,manifest,this.ctx.id.toString(),
       ()=>this.observeHistoricalNative(Math.min(manifest.expiresAt,Date.now()+120_000)));
   }

@@ -835,15 +835,28 @@ export async function reconcileHistoricalSupervisor(storage:DurableObjectStorage
   if(await tx.get(PILOT_CLAIM)!==undefined)throw Error("HISTORICAL_PILOT_ALREADY_CONSUMED");
   // Never reset or rotate a potentially charged financial journal here.
   if(await tx.get("supervisor:inference:budget:v1")!==undefined)throw Error("HISTORICAL_BUDGET_RECONCILIATION_REQUIRED");
+  const prior=await historicalCertificate(tx);
   const ledger=decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
   const snapshot=await captureHistoricalSnapshot(tx);
-  return {ledger,snapshot};
+  return {ledger,snapshot,prior};
+ };
+ const existing=async(tx:DurableObjectTransaction,prior:Awaited<ReturnType<typeof historicalCertificate>>)=>{
+  if(prior?.manifest.releaseSha!==manifest.releaseSha||prior.manifest.requestId!==manifest.requestId)return;
+  if(JSON.stringify(prior.manifest)!==JSON.stringify(manifest)||prior.supervisorObject!==objectId)
+    throw Error("HISTORICAL_RECONCILIATION_ALREADY_RECORDED");
+  const capacity=await auditLegacyCapacity(tx,(decodeLedger(await tx.get<Ledger>(LEDGER_KEY))).slots);
+  if(capacity.stopReason||capacity.activeSlots!==0||!capacity.inventoryComplete)
+    throw Error("HISTORICAL_RECONCILIATION_INCOMPLETE");
+  return {...publicHistoricalCertificate(prior),capacity,reused:true};
  };
  const before=await storage.transaction(load);
+ const already=await storage.transaction(tx=>existing(tx,before.prior));
+ if(already)return already;
  const native=await observe();
  return storage.transaction(async tx=>{
   const fresh=await load(tx);
-  if(fresh.snapshot.digest!==before.snapshot.digest||JSON.stringify(fresh.ledger)!==JSON.stringify(before.ledger))
+  const replay=await existing(tx,fresh.prior);if(replay)return replay;
+  if(fresh.prior?.digest!==before.prior?.digest||fresh.snapshot.digest!==before.snapshot.digest||JSON.stringify(fresh.ledger)!==JSON.stringify(before.ledger))
     throw Error("HISTORICAL_INVENTORY_CHANGED");
   const cert=await writeHistoricalCertificate(tx,manifest,objectId,fresh.snapshot,native,fresh.ledger.slots,clock());
   await tx.put(LEDGER_KEY,{version:1,slots:{}});

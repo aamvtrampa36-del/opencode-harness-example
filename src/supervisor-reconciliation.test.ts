@@ -115,3 +115,16 @@ test("freeze requires no drain, but workflow reconciliation requires fresh post-
  expect(await historicalCertificate(db.asDO())).toBeUndefined();
  expect((await reconcileHistoricalSupervisor(db.asDO(),m,object,()=>native(),()=>now)).historyPreserved).toBe(true);
 });
+
+test("concurrent maintenance calls and lost responses preserve the first immutable certificate",async()=>{
+ const db=new DB();await db.put("supervisor:task:"+id(1),task(1));
+ let calls=0;
+ const observe=async()=>{calls++;return native();};
+ const [one,two]=await Promise.all([reconcile(db,observe),reconcile(db,observe)]);
+ expect(one.digest).toBe(two.digest);
+ expect((await historicalCertificate(db.asDO()))?.digest).toBe(one.digest);
+ const three=await reconcile(db,()=>{throw Error("must not rerun native census")});
+ expect(three.digest).toBe(one.digest);
+ await expect(reconcileHistoricalSupervisor(db.asDO(),{...manifest,externalDrainReceipt:"0".repeat(64)},object,()=>native(),()=>now)).rejects.toThrow("HISTORICAL_RECONCILIATION_ALREADY_RECORDED");
+ expect(calls).toBeLessThanOrEqual(2);
+});

@@ -60,7 +60,7 @@ jobs:
       - name: Specialist Node contracts and STOP safety
         run: node --experimental-strip-types --test scripts/f0-c10/c05-t03-server.test.mjs scripts/f0-c10/c05-t04-read-only.test.mjs scripts/f0-c10/c05-t09-safety.test.mjs scripts/f0-c10/inference-durable.test.mjs
       - name: R4 release approval negative controls
-        run: node --test scripts/f0-c10/r4-release-guard.test.mjs scripts/f0-c10/r4-promote.test.mjs
+        run: node --test scripts/f0-c10/r4-release-guard.test.mjs scripts/f0-c10/r4-promote.test.mjs scripts/f0-c10/r4-reconcile-plan.test.mjs
       - run: bun test
       - run: bun scripts/test-preview.mjs
       - if: ${{ !cancelled() && steps.install.conclusion == 'success' }}

@@ -99,7 +99,7 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
   });
 
   server.registerTool("staging_reconcile",{
-    description:"Reconcilia inventario histórico de Staging exclusivamente en mantenimiento autorizado; no ejecuta inferencia, no cancela sesiones ni borra datos.",
+    description:"Ruta anterior de reconciliación. R4 exige el Workflow privado de la cuenta Cloudflare; esta ruta no acepta evidencia de drenaje.",
     inputSchema:{}
   },async()=>callTask(async()=>{
     const supervisor=bindings.supervisor();
