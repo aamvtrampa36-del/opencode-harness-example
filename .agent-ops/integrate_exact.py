@@ -255,6 +255,11 @@ def confirm_lease(repo,r,generation):
     import datetime
     cp,_=live_checkpoint(repo);a=cp.get("reservation") or {}
     require(a.get("owner")==lease_owner(r) and a.get("generation")==generation and datetime.datetime.fromisoformat(a["lease_expires_at"].replace("Z","+00:00"))>datetime.datetime.now(datetime.timezone.utc),"integration lease lost")
+def release_lease(repo,r,generation):
+    cp,blob=live_checkpoint(repo);a=cp.get("reservation") or {}
+    if a.get("owner")==lease_owner(r) and a.get("generation")==generation:
+        cp["revision"]+=1;cp["reservation"]=None
+        put_ops(repo,".agent-ops/checkpoints.json",cp,blob)
 def apply():
     repo=scope();r,enabled=read_req(repo);require(enabled,"disabled")
     require(all(r[k]==os.environ.get("EXPECTED_"+k.upper()) for k in ("base","head","tree","request_id")),"request identity mismatch")
@@ -266,13 +271,20 @@ def apply():
     t=check_live(repo,r);c=commit_for(r,t)
     generation=claim(repo,r)
     require(ancestor(r["head"],c),"candidate missing head")
-    cmd(["gh","auth","setup-git"],timeout=20)
-    check_live(repo,r)
-    confirm_lease(repo,r,generation)
+    try:
+        cmd(["gh","auth","setup-git"],timeout=20)
+        check_live(repo,r)
+        confirm_lease(repo,r,generation)
+    except Exception:
+        release_lease(repo,r,generation)
+        raise
     try: p=cas_push(None,"origin","refs/heads/main",r["base"],c);exit_code=p.returncode
     except subprocess.TimeoutExpired: exit_code=None
     actual,pr=refs(repo,r)
-    require(actual==c,"push rejected, uncertain or external writer moved main; reconcile before retry")
+    if actual!=c:
+        # No blind retry. Release only when remote proves the original base remains.
+        if actual==r["base"]: release_lease(repo,r,generation)
+        raise RuntimeError("push rejected, uncertain or external writer moved main; reconcile before retry")
     z=gh("repos/"+repo+"/git/commits/"+c)
     require([x["sha"] for x in z["parents"]]==[r["base"],r["head"]] and z["tree"]["sha"]==t,"remote result mismatch")
     persist_result(repo,r,c,pr,False,exit_code)
