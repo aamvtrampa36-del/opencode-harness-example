@@ -10,7 +10,7 @@
     "recovery": "Inspect only current checkpoint and changed evidence. Check actual Issue/PR state, HEAD/base and dependencies. Resume only if useful, authorized and compatible; blocked/stale/resolved/cancelled tasks are not retried by default. After two attempts with no material progress mark blocked with reason; reopen only on new evidence. No automatic merge/deploy or expansion of permissions. States: available, active, recoverable, blocked, obsolete, cancelled, completed. A terminal state is not a candidate. For a blocked task, require a changed dependency or materially new evidence. Do not reopen a completed/obsolete/cancelled task; create a new task only if a distinct current objective warrants it.",
     "checkpoint": "Persist after claim, first useful evidence and each material milestone before further risky work. Keep objective, acceptance, issue/PR, branch, base/head SHA, evidence, completed, pending, next action, blocker, session/operation ID and progress counters. A completed checkpoint requires actual evidence meeting acceptance. Store references, not copied logs. Release on completion/pause. An expired lease permits revalidation and new generation, not blind continuation. Keep only the latest task per lane in this file; before replacement preserve evidence in the relevant Issue/PR or Git history. Never change policy/schema during ordinary checkpoint updates."
   },
-  "revision": 6,
+  "revision": 7,
   "reservation": null,
   "lanes": {
     "integration-selftest": {
@@ -139,6 +139,32 @@
       "url": "https://github.com/aamvtrampa36-del/opencode-harness-example/actions/runs/45435788067",
       "publication": "UNCHANGED",
       "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623"
+    },
+    "activation_gate": {
+      "schema": "agent-integration-activation/v1",
+      "assessed_date": "2026-11-24",
+      "status": "BLOCKED_SERVER_GATE",
+      "owner_authorized": true,
+      "main": "5527fce60775f02a94d5d2382b77e4eb4a9fd623",
+      "protected": false,
+      "protection_api": "403_RESOURCE_NOT_ACCESSIBLE_BY_INTEGRATION",
+      "rulesets": "PUBLIC_RULESETS_EMPTY",
+      "merge_queue": "not configured",
+      "backlog": {
+        "open": 14,
+        "drafts": 14,
+        "eligible": 0,
+        "non_draft_conflict": null,
+        "behind": null
+      },
+      "deployment": {
+        "worker": "opencode-harness-example",
+        "trigger_id": "5636d843-4cac-4c02-891b-7484528b4e1f",
+        "scope": "main, path_includes=*; deploy command configured.",
+        "policy": "Do not infer deployment authorization from merge authorization."
+      },
+      "resume_condition": "A material change in plan or legitimate administrative capability and verified effective required checks/review/no bypass, plus independently authorized deployment behavior and an eligible current candidate. Do not retry unchanged permission or plan failures. Cloudflare coordination cannot restrict external GitHub writers.",
+      "safety": "No main writes, no automated close, no promotion of drafts, no force push or deploy. Existing sandbox receipt reusable; no rerun solely to reconfirm this gate."
     }
   }
 }
