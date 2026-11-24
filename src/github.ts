@@ -159,7 +159,8 @@ export class GitHubBridge {
     this.allowed = new Set(allowedRepos.map(normalizeOwnedRepository));
   }
 
-  private async api(method: string, route: string, data?: unknown, allow404 = false): Promise<any> {
+  private async api(method: string, route: string, data?: unknown, allow404 = false,
+    rejectRedirect = false): Promise<any> {
     const response = await this.http("https://api.github.com" + route, {
       method,
       headers: {
@@ -169,8 +170,12 @@ export class GitHubBridge {
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "OpenCode-Cloud"
       },
-      ...(data === undefined ? {} : { body: JSON.stringify(data) })
+      ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+      ...(rejectRedirect ? { redirect: "manual" as const } : {})
     });
+    if (rejectRedirect && response.status >= 300 && response.status < 400) {
+      throw new Error("GitHub source identity redirect refused");
+    }
     if (response.status === 404 && allow404) return null;
     const body = await response.json() as any;
     if (!response.ok) {
@@ -257,7 +262,7 @@ export class GitHubBridge {
       throw new Error("Árbol de origen inválido");
     }
     const base = "/repos/" + repo;
-    const info = await this.api("GET", base);
+    const info = await this.api("GET", base, undefined, false, true);
     if (info?.full_name?.toLowerCase() !== repo.toLowerCase()) {
       throw new Error("GitHub devolvió datos de repositorio inválidos");
     }
@@ -272,14 +277,14 @@ export class GitHubBridge {
       if (typeof source !== "string" || !source) {
         throw new Error("No se pudo identificar la base de solo lectura");
       }
-      const ref = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(source));
+      const ref = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(source), undefined, false, true);
       const sha = ref?.object?.sha;
       if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) {
         throw new Error("Source branch commit is unverifiable");
       }
       commit = sha.toLowerCase();
     }
-    const record = await this.api("GET", base + "/commits/" + commit, undefined, true);
+    const record = await this.api("GET", base + "/commits/" + commit, undefined, true, true);
     if (!record) throw new Error("El commit de origen no existe en el repositorio autorizado");
     const sha = record?.sha;
     const tree = record?.commit?.tree?.sha;

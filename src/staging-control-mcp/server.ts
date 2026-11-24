@@ -1,4 +1,5 @@
 import { boundedMcpJsonText, redactMcpString } from "./bounded-response";
+import { readOnlyStartFields } from "./start-contract";
 import { createSupervisorMemoryProbe } from "../supervisor-phase-telemetry";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
@@ -240,25 +241,31 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
   });
 
   server.registerTool("staging_start_task", {
-    description: "Inicia una tarea real de OpenCode en Staging. Por defecto usa Cloudflare económico y una sesión aislada. Puede seleccionar un repositorio/modelo autorizados o hacer fork de una sesión solo si se proporcionan el UUID exacto de un workspace personalizado y el session ID exactos. La respuesta omite workspace para el supervisor fijo y conserva el UUID en un fork explícito. Un fork hereda la conversación; el Container parte limpio del commit de GitHub fijado. requestId hace idempotentes los reintentos. No fusiona ni despliega.",
+    description: "Inicia una tarea real de OpenCode en Staging. Por defecto usa Cloudflare económico y una sesión aislada. Puede seleccionar un repositorio/modelo autorizados o hacer fork de una sesión solo si se proporcionan el UUID exacto de un workspace personalizado y el session ID exactos. La respuesta omite workspace para el supervisor fijo y conserva el UUID en un fork explícito. Un fork hereda la conversación; el Container parte limpio del commit de GitHub fijado. requestId hace idempotentes los reintentos. read_only requiere sourceCommit y sourceTree exactos, sin workspace/fork. La aceptación puede devolver preparing: consulta staging_task_status; no significa ejecución ni resultado verificado. No fusiona ni despliega.",
     inputSchema: {
       requestId: z.string().regex(/^[a-f0-9]{16}$/).describe("ID único idempotente, exactamente 16 caracteres hexadecimales en minúscula"),
       prompt: z.string().min(12).max(5000).describe("Objetivo de ingeniería, entre 12 y 5000 caracteres"),
       repository: z.string().min(3).max(120).optional().describe("Repositorio del propietario ya autorizado en OpenCode Settings"),
       model: z.string().min(1).max(160).optional().describe("Selección del catálogo OpenCode; por defecto economy"),
       workspace: workspaceSchema.describe("UUID exacto de un workspace personalizado que contiene la sesión de origen; omítelo para el supervisor fijo"),
-      sourceSession: sessionIdSchema.optional().describe("Session ID exacto para crear un fork; requiere workspace")
+      sourceSession: sessionIdSchema.optional().describe("Session ID exacto para crear un fork; requiere workspace; el backend rechaza forks nuevos sin idempotencia"),
+      mode: z.literal("read_only").optional().describe("Solo lectura; exige commit y árbol fijados"),
+      sourceCommit: z.string().regex(/^[a-f0-9]{40}$/).optional().describe("Commit exacto, 40 hex minúsculas"),
+      sourceTree: z.string().regex(/^[a-f0-9]{40}$/).optional().describe("Árbol Git exacto, 40 hex minúsculas")
     }
-  }, async ({ requestId, prompt, repository, model, workspace, sourceSession }) => {
+  }, async ({ requestId, prompt, repository, model, workspace, sourceSession, mode, sourceCommit, sourceTree }) => {
     try {
+      const pins = readOnlyStartFields({ mode, sourceCommit, sourceTree, workspace, sourceSession });
       if (sourceSession && !workspace) throw new Error("Un fork requiere el UUID exacto del workspace");
       if (workspace && !sourceSession) throw new Error("El workspace solo se admite para hacer un fork explícito");
       const supervisor = bindings.supervisor(workspace);
       const task = asRecord(await supervisor.startSupervisedTask({
         requestId, repository: repository ?? STAGING_REPOSITORY, prompt,
-        ...(model ? { model } : {}), ...(sourceSession ? { sourceSession } : {})
+        ...(model ? { model } : {}), ...(sourceSession ? { sourceSession } : {}), ...pins
       }));
-      const current = task.reused === true && typeof task.id === "string"
+      // The read_only backend returns a durable admission receipt before import.
+      // Never refresh a reused read_only start via the blocking legacy status RPC.
+      const current = pins.mode !== "read_only" && task.reused === true && typeof task.id === "string"
         ? asRecord(await supervisor.supervisedTaskStatus(task.id))
         : undefined;
       const payload: Record<string, unknown> = current

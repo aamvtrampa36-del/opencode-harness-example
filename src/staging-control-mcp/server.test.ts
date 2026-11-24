@@ -429,6 +429,97 @@ describe("OpenCode staging MCP server", () => {
       await server.close();
     }
   });
+  test("read_only forwards exact pins and returns admission/reuse without waiting for import or legacy status", async () => {
+    const id = "0123456789abcdef";
+    const commit = "a".repeat(40), tree = "b".repeat(40);
+    const input = { requestId: id, prompt: "Inspect the pinned source tree", mode: "read_only",
+      sourceCommit: commit, sourceTree: tree, model: "economy" };
+    const expected = { ...input, repository: STAGING_REPOSITORY };
+    const calls: unknown[] = [];
+    let statusReads = 0, snapshotReads = 0, cancellations = 0;
+    let importFinished = false;
+    let completeImport!: () => void;
+    const importGate = new Promise<void>(resolve => { completeImport = resolve; });
+    void importGate.then(() => { importFinished = true; });
+    const supervisor = {
+      async startSupervisedTask(raw: unknown) {
+        calls.push(raw);
+        const value = raw as typeof expected;
+        if (value.sourceTree !== tree) throw new Error("SUPERVISOR_SOURCE_TREE_MISMATCH");
+        if (value.sourceCommit !== commit) throw new Error("SUPERVISOR_REQUEST_ID_CONFLICT");
+        return { id, accepted: true, reused: calls.length > 1,
+          status: importFinished ? "finished" : "preparing", passed: true, verified: true };
+      },
+      async supervisedTaskStatus() {
+        statusReads++;
+        throw new Error("LEGACY_STATUS_MUST_NOT_RUN");
+      },
+      async remoteSupervisorTaskStatusSnapshot() {
+        snapshotReads++;
+        return { id, status: importFinished ? "finished" : "preparing", passed: true, verified: true };
+      },
+      async cancelSupervisedTask() {
+        cancellations++;
+        return { id, status: "cancel_requested", confirmed: false };
+      }
+    } as StagingSupervisor;
+    const server = createStagingControlServer({
+      async readHealth() { return Response.json({ status: "ok" }); },
+      supervisor: workspace => { expect(workspace).toBeUndefined(); return supervisor; }
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "read-only-start-test", version: "1.0.0" });
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const start = async (args: Record<string, unknown>) => client.callTool({
+        name: "staging_start_task", arguments: args
+      });
+      for (const args of [
+        { ...input, sourceCommit: undefined }, { ...input, sourceTree: undefined },
+        { ...input, mode: undefined }, { ...input, mode: "build" },
+        { ...input, sourceTree: "invalid" }, { ...input, sourceCommit: "A".repeat(40) },
+        { ...input, workspace: "7bd8f26f-b2b8-4e4d-9abc-0678294c33ab", sourceSession: "sesAbc123" }
+      ]) {
+        expect((await start(args)).isError).toBe(true);
+      }
+      expect(calls).toHaveLength(0);
+      const first = JSON.parse(textContent(await start(input)));
+      expect(first).toMatchObject({ id, accepted: true, reused: false, status: "preparing",
+        passed: false, verified: false, reviewRequired: true });
+      expect(first).not.toHaveProperty("workspace");
+      const second = JSON.parse(textContent(await start(input)));
+      expect(second).toMatchObject({ id, accepted: true, reused: true, status: "preparing",
+        passed: false, verified: false });
+      expect(calls).toEqual([expected, expected]);
+      expect(importFinished).toBe(false);
+      expect(statusReads).toBe(0);
+      expect(snapshotReads).toBe(0);
+      for (const [args, code] of [
+        [{ ...input, sourceTree: "c".repeat(40) }, "SUPERVISOR_SOURCE_TREE_MISMATCH"],
+        [{ ...input, sourceCommit: "d".repeat(40) }, "SUPERVISOR_REQUEST_ID_CONFLICT"]
+      ] as const) {
+        const rejected = await start(args);
+        expect(rejected.isError).toBe(true);
+        expect(JSON.parse(textContent(rejected))).toMatchObject({ code, passed: false, verified: false });
+      }
+      expect(calls).toHaveLength(4);
+      const cancellation = await client.callTool({ name: "staging_cancel_task", arguments: { id } });
+      expect(JSON.parse(textContent(cancellation))).toMatchObject({ id, status: "cancel_requested", confirmed: false });
+      expect(cancellations).toBe(1);
+      completeImport();
+      await importGate;
+      const status = await client.callTool({ name: "staging_task_status", arguments: { id } });
+      expect(JSON.parse(textContent(status))).toMatchObject({ id, status: "finished", passed: false, verified: false });
+      expect(snapshotReads).toBe(1);
+      expect(statusReads).toBe(0);
+    } finally {
+      completeImport();
+      await client.close();
+      await server.close();
+    }
+  });
+
 });
 
 function textContent(value: { content: Array<{ type: string; text?: string }> }): string {

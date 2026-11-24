@@ -56,6 +56,8 @@ jobs:
             test "$status" -eq 2
             node -e 'const x=require("/tmp/f0-stop.json");if(x.decision!=="STOP"||x.totalCapMicroUsd!==2000000||x.liveDispatchAuthorized!==false||x.providerHardCutoffVerified!==false)process.exit(1)'
           done
+      - name: Specialist Node contracts and STOP safety
+        run: node --experimental-strip-types --test scripts/f0-c10/c05-t03-server.test.mjs scripts/f0-c10/c05-t04-read-only.test.mjs scripts/f0-c10/c05-t09-safety.test.mjs
       - run: bun test
       - run: bun scripts/test-preview.mjs
       - run: bun run typecheck
