@@ -38,7 +38,7 @@ jobs:
           echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
       - run: bun install --frozen-lockfile
       - run: bun test
-      - run: node --test scripts/staging-release-receipt-check.mjs scripts/staging-reproducibility-check.mjs scripts/staging-package-finalize-check.mjs
+      - run: node --test scripts/staging-release-receipt-check.mjs scripts/staging-reproducibility-check.mjs scripts/staging-package-finalize-check.mjs scripts/staging-release-guard-check.mjs
       - run: bun scripts/test-preview.mjs
       - run: bun run typecheck
       - run: bun run build
@@ -64,7 +64,8 @@ jobs:
           # without re-bundling source or making any API write.
           bunx --no-install wrangler deploy --dry-run --no-bundle --config "$ROOT/configuration/principal-effective.json" --outdir "$RUNNER_TEMP/recheck-main"
           bunx --no-install wrangler deploy --dry-run --no-bundle --config "$ROOT/configuration/mcp-effective.json" --outdir "$RUNNER_TEMP/recheck-mcp"
-          node -e 'const fs=require("node:fs"),p=require("node:path"),assert=require("node:assert/strict"); for(const [source,out] of [["principal","recheck-main"],["mcp","recheck-mcp"]]){const root=p.join(process.env.RUNNER_TEMP,"repro",source);for(const file of fs.readdirSync(root,{recursive:true})){if(!/\\.m?js$/.test(file))continue;assert.ok(fs.readFileSync(p.join(root,file)).equals(fs.readFileSync(p.join(process.env.RUNNER_TEMP,out,file))),"No-bundle changed module "+file);}}'
+          node scripts/staging-release-guard.mjs handoff "$ROOT/principal" "$RUNNER_TEMP/recheck-main" principal
+          node scripts/staging-release-guard.mjs handoff "$ROOT/mcp" "$RUNNER_TEMP/recheck-mcp" mcp
           (cd "$ROOT" && tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner --mode='u+rwX,go+rX,go-w' -cf - principal mcp assets configuration | gzip -n > payload.tar.gz)
           node scripts/staging-reproducibility.mjs record "$ROOT"
       - uses: actions/upload-artifact@v4
@@ -104,7 +105,7 @@ jobs:
           retention-days: 7
   live-readback:
     # Explicit maintenance lane only; read-only checks, no provider dispatch.
-    if: github.ref == 'refs/heads/staging/reconciled-20261124'
+    if: github.ref == 'refs/heads/staging/reconciled-20261124' && contains(github.event.head_commit.message, '[staging-readback]')
     needs: compare
     runs-on: ubuntu-24.04
     timeout-minutes: 10

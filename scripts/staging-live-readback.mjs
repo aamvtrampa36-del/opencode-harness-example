@@ -17,11 +17,11 @@ const expected=manifest.filter(([p])=>p!==".assetsignore");
 assert.equal(expected.length,manifest.length-1);
 const actual=[];let cursor=0;const failures=[];
 async function check(){
-  while(cursor<expected.length){
+  while(cursor<expected.length&&failures.length<8){
     const [p,sha]=expected[cursor++];
     try{
       assert.ok(!p.split("/").some(x=>x===".."||x==="."||!x));
-      const url=new URL("/"+p.split("/").map(encodeURIComponent).join("/"),origin);
+      const url=new URL(p==="index.html"?"/":"/"+p.split("/").map(encodeURIComponent).join("/"),origin);
       assert.equal(url.origin,origin);
       const r=await fetch(url,{headers:{...headers,"Accept-Encoding":"identity","Cache-Control":"no-cache"},redirect:"manual",signal:AbortSignal.timeout(20000)});
       if(r.status!==200)throw Error("HTTP "+r.status);

@@ -25,7 +25,8 @@ export function diffManifests(a,b){
 }
 export function compareInputs(a,b){
   if(!a||!b||a.schema!=="opencode-repro-build/v1"||b.schema!==a.schema)throw Error("Invalid build receipts");
-  if(a.replica===b.replica)throw Error("Independent replicas required");
+  if(a.replica!=="a"||b.replica!=="b")throw Error("Independent replicas required");
+  if(!/^[1-9][0-9]*$/.test(a.runId)||a.runId!==b.runId)throw Error("CI run identity mismatch");
   if(JSON.stringify(a.inputs)!==JSON.stringify(b.inputs))throw Error("Build inputs differ");
   if(!/^[0-9a-f]{40}$/.test(a.inputs.commit)||!/^[0-9a-f]{40}$/.test(a.inputs.tree))throw Error("Invalid source identity");
   return true;
