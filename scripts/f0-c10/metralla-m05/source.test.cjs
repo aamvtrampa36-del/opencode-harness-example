@@ -12,7 +12,8 @@ try {
   // Isolate from the repository tsconfig and package type; no install or network.
   for(const name of ['metralla-m05-source.ts','pilot-http.ts'])
     fs.copyFileSync(path.join(root,'src',name),path.join(build,name));
-  const tsc=process.env.TSC_BIN || 'tsc';
+  const bundledTsc=path.join(root,'node_modules','.bin','tsc');
+  const tsc=process.env.TSC_BIN || (fs.existsSync(bundledTsc)?bundledTsc:'tsc');
   execFileSync(tsc.includes(path.sep)?path.resolve(root,tsc):tsc,[
     '--target','ES2022','--module','commonjs','--lib','ES2022,DOM','--strict',
     '--outDir',path.join(build,'out'),'metralla-m05-source.ts','pilot-http.ts'
