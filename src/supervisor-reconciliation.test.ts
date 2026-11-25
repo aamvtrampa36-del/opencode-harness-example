@@ -200,3 +200,66 @@ test("P02 concurrent identical archival is idempotent and does not disturb histo
  expect(both[0].digest).toBe(both[1].digest);expect(both.filter(x=>x.reused).length).toBe(1);
  expect(await f.db.get("supervisor:turn:"+pid+":"+id(4))).toEqual({phase:"settled"});
 });
+
+import {normalBudgetTransitionSnapshot,transitionConsumedBudget,pilotBudgetPolicy,PILOT_FREE,PILOT_GLM,type BudgetPolicy,type PaidPreflight,type BudgetTransition} from "./supervisor-inference-budget";
+const globalKey="supervisor:inference:budget:v1",newId=id(800);
+function nextPolicy():BudgetPolicy{
+ return {experimentId:newId,totalMicroUsd:10000,taskMicroUsd:10000,maxAttempts:1,
+ selections:{cloudflare:{providerID:"cloudflare",modelID:PILOT_GLM,price:{inputMicroUsdPerMillion:100000,outputMicroUsdPerMillion:100000,revision:"fixture"}}},
+ normal:{validUntil:now+10000,maxCalls:2,maxCallsPerTask:2,maxInflight:1,rounds:{one:{taskIds:[newId],maxMicroUsd:10000,maxCalls:2,maxInflight:1}},
+ routes:{cloudflare:{providerID:"cloudflare",modelID:PILOT_GLM,tools:true,registered:true,evidenceId:h,validUntil:now+10000,maxInputTokens:1000,maxOutputTokens:100,maxWireBytes:10000,maxResponseBytes:10000,timeoutMs:1000,requestsPerMinute:2}}}};
+}
+const budgetProof:PaidPreflight={now,exclusiveLeaseVerified:true,actualSdkInterceptorVerified:true,noUncontrolledRoutesVerified:true,disposabilityVerified:true,
+ services:Object.fromEntries(["workers_ai","openrouter","workers","durable_objects","containers","github_actions"].map(k=>[k,{active:true,routeBound:true,hardStopProven:true,exclusiveAccount:true,measuredAt:now-1,validUntil:now+10000,remainingMicroUsd:10000,worstInFlightMicroUsd:1000}]))};
+async function migrationFixture(mode:"none"|"settled"|"unknown"|"paymentBlocked"="settled"){
+ const f=await consumedFixture();
+ const db=f.db;
+ // Independent fixture setup: only the exact consumed slot exists.
+ const ledger=await db.get<{version:number;slots:Record<string,unknown>}>(lk);
+ await db.put(lk,{version:1,slots:{[pid]:ledger!.slots[pid]}});
+ const policy=pilotBudgetPolicy(pid,uuid,10);
+ if(mode!=="none"){
+  const call="fixture",key="supervisor:inference:call:"+pid+":"+call;
+  await db.put(key,{requestId:pid,callId:call,attempts:1,state:mode==="unknown"?"unknown":"settled",exposure:20,charge:12,providerID:"openrouter",receiptId:"fixture_receipt"});
+  await db.put("supervisor:inference:receipt:openrouter:fixture_receipt",key);
+  const counter={confirmed:mode==="unknown"?0:12,reserved:0,unknown:mode==="unknown"?20:0};
+  await db.put("supervisor:inference:task:"+pid,counter);
+  // Match canonical snapshot ordering used by actual budget journal.
+  const {selections,...rest}=policy;
+  const snapshot=JSON.stringify({experimentId:rest.experimentId,totalMicroUsd:rest.totalMicroUsd,taskMicroUsd:rest.taskMicroUsd,maxAttempts:rest.maxAttempts,
+    selections:Object.fromEntries(Object.keys(selections).sort().map(k=>[k,selections[k]])),hybrid:policy.hybrid});
+  await db.put(globalKey,{version:1,policy:snapshot,paymentBlocked:mode==="paymentBlocked",...counter,hybrid:{calls:1,paidCalls:0,selection:PILOT_FREE,...(mode==="unknown"?{pending:call}:{})}});
+ }
+ const identity=await inspectConsumedPilot(db.asDO()),e:ConsumedEvidence={...f.present,identity};
+ const c:ConsumedClosure={snapshotDigest:identity.snapshotDigest,evidenceDigest:await reconciliationDigest(e),observedAt:now,drainReceipt:h,closureReceipt:h,budgetReceipt:h,noOutstandingEffects:true,writerFenced:true};
+ const auth:ConsumedAuthorization={action:"archive-consumed-pilot-and-release-reservation",environment:"staging",snapshotDigest:identity.snapshotDigest,evidenceDigest:c.evidenceDigest,closureDigest:await reconciliationDigest(c),approvalRef:"offline-fixture",notBefore:now-1,expiresAt:now+1000};
+ await archiveConsumedPilot(db.asDO(),e,c,auth,trust,()=>now);
+ const next=nextPolicy(),s=await normalBudgetTransitionSnapshot(db.asDO(),next);
+ const a:BudgetTransition={schema:"metralla-budget-transition-v1",releaseSha:release,approvalRef:"offline-fixture",previousDigest:s.previousDigest,nextPolicyDigest:s.nextPolicyDigest,archiveDigest:s.archiveDigest!,notBefore:now-1,expiresAt:now+1000};
+ return {db,next,a};
+}
+for(const mode of ["none","settled"] as const)test("M08 budget transition "+mode+" preserves historical rows, idempotent CAS",async()=>{
+ const {db,next,a}=await migrationFixture(mode),before=new Map(structuredClone([...db.rows]));
+ const results=await Promise.all([transitionConsumedBudget(db.asDO(),next,budgetProof,a,async()=>true,()=>now),transitionConsumedBudget(db.asDO(),next,budgetProof,a,async()=>true,()=>now)]);
+ expect(results[0].digest).toBe(results[1].digest);expect(results.filter(x=>x.reused).length).toBe(1);
+ for(const [key,value] of before)if(key!==globalKey)expect(await db.get(key)).toEqual(value);
+ const saved=await db.get<any>("supervisor:inference:transition:v1:"+newId);
+ expect(saved.previous).toEqual(before.get(globalKey)??null);expect(saved.digest).toBe(results[0].digest);
+ expect((await db.get<any>(globalKey)).normal.active).toBe(0);
+});
+test("M08 budget transition refuses unknown charge, blocked payment, stale digest, live slot and reused ID without mutation",async()=>{
+ for(const mode of ["unknown","paymentBlocked"] as const){
+  const {db,next,a}=await migrationFixture(mode),before=structuredClone([...db.rows]);
+  await expect(transitionConsumedBudget(db.asDO(),next,budgetProof,a,async()=>true,()=>now)).rejects.toThrow("BUDGET_TRANSITION_OLD_UNSETTLED");
+  expect([...db.rows]).toEqual(before);
+ }
+ for(const bad of ["digest","signature","active","reused"]){
+  const {db,next,a}=await migrationFixture();
+  if(bad==="digest")a.previousDigest="0".repeat(64);
+  if(bad==="active")await db.put(lk,{version:1,slots:{[newId]:{phase:"running"}}});
+  if(bad==="reused")await db.put("supervisor:task:"+newId,task(800));
+  const before=structuredClone([...db.rows]);
+  await expect(transitionConsumedBudget(db.asDO(),next,budgetProof,a,async()=>bad!=="signature",()=>now)).rejects.toThrow();
+  expect([...db.rows]).toEqual(before);
+ }
+});

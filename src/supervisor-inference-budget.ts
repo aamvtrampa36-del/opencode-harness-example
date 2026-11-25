@@ -9,7 +9,7 @@ import type { StartGrant } from "./supervisor-admission";
 import type { SupervisorTask } from "./supervisor-control";
 import type { PilotClaim } from "./pilot-authorization";
 import { durablePreparationValid } from "./pilot-preparation.ts";
-import { CONSUMED_PILOT_ID, consumedArchiveExempts, reconciliationDigest } from "./supervisor-reconciliation";
+import { CONSUMED_PILOT_ID, consumedArchiveExempts, reconciliationDigest } from "./supervisor-reconciliation.ts";
 
 export type Price = { inputMicroUsdPerMillion: number; outputMicroUsdPerMillion: number; revision: string };
 export type ModelAllowance = { providerID: string; modelID: string; price: Price };
