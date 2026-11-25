@@ -9,7 +9,7 @@ import {
   reconcileSupervisorTurnEffect, beginSupervisorCancellation, settleSupervisorCancelledTurn
 } from "./supervisor-admission";
 import {
-  r2SessionId, r2TurnAdmission, r2CancelledByReceipt,
+  r2SessionId, r2TurnJournalKey, r2TurnAdmission, r2CancelledByReceipt,
   r2StatusWriteAllowed, r2PendingTurnReconcileAllowed, r3IsNativeSessionNotFound
 } from "./supervisor-r2";
 import { canConfirmSupervisorPreSessionCancellation, type SupervisorTask } from "./supervisor-control";
