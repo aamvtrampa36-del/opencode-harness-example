@@ -1,6 +1,6 @@
 import { normalizeOwnedRepository, OPENCODE_STAGING_BASE } from "./github";
 import { isModelSelection, type ModelSelectionID } from "./model-presets";
-import type { R2PendingTurn } from "./supervisor-r2";
+import { r2TerminalNativeReceipt, type R2PendingTurn } from "./supervisor-r2";
 
 /**
  * The remote MCP authenticates at Cloudflare Access. Every Durable Object
@@ -102,6 +102,7 @@ export function classifySupervisorOperation(
   const task = typeof stored === "string" ? undefined : stored;
   const status = task?.status ?? stored as SupervisorTask["status"];
   const receipt = task && !task.operationId ? undefined : operation;
+  if(receipt&&!r2TerminalNativeReceipt(receipt))return "unknown";
   if (receipt?.status === "done") return "finished";
   if (receipt?.status === "unanswered") {
     if (receipt.reason === "interrupted" && status === "cancel_requested") return "cancelled";

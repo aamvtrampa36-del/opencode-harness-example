@@ -34,6 +34,7 @@ import {
   reconcileSupervisorCreatedSession, supervisorCommitCreatedSession,
   reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
   reconcileSupervisorTurnEffect, inspectSupervisorAdmissionCapacity,
+  beginSupervisorCancellation, settleSupervisorCancelledTurn, matchingSupervisorTurnJournal,
   reconcileSupervisorSubmittedEffect, supervisorGrantStillOwned, type StartGrant, type AdmissionDecision,
   supervisorVerifyReadOnlySource, supervisorBeginReadOnlyEffect, supervisorConfirmReadOnlyEffect,
   supervisorRecordReadOnlyFailure, inspectSupervisorReadOnlyAdmission, reconcileSupervisorReadOnlyPreparation, reconcileHistoricalSupervisor
@@ -62,7 +63,7 @@ import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCh
 import { inlinePreviewAssets } from "./preview-inline";
 import { BUN_RUNTIME_VERSION } from "./dev-runtime";
 import { classifyAgentFailure, observeLinux, type IncidentObservation } from "./incident-diagnostics";
-import { renderConversationMarkdown, validateExportIdentity, sessionExportResponse } from "./session-export";
+import { renderConversationMarkdown, validateExportIdentity, sessionExportResponse, taskArtifactExportResponse } from "./session-export";
 import { archiveDownloadResponse, archiveError } from "./download-response";
 import { githubRepositoryDownload } from "./github-download";
 import { checkIsolation } from "./isolation-check";
@@ -80,11 +81,10 @@ import {
 } from "./supervisor-control";
 
 import {
-  validateCaptureRequest, captureInspectedArtifact, artifactKey, artifactIndexKey,
-  artifactView, artifactIsOwnedBy, verifiedArtifactDownload, artifactErrorResponse,
-  assertArtifactId, TASK_ARTIFACT_MAX_PER_TASK, TASK_ARTIFACT_SCHEMA,
-  type StoredTaskArtifact
+  validateCaptureRequest, captureInspectedArtifact, persistTaskArtifact, readTaskArtifactPage,
+  artifactView, TASK_ARTIFACT_MAX_PER_TASK, TASK_ARTIFACT_SCHEMA
 } from "./task-output-artifacts";
+import { parseArtifactQuery, scopedArtifactDownload } from "./metralla-m06-artifact-http";
 
 import { createSupervisorMemoryProbe, type PhaseProbe } from "./supervisor-phase-telemetry";
 
@@ -1009,73 +1009,33 @@ export class OpenCodeAgent extends DurableObject<Env> {
       requestId: task.id, ownerProject: task.project, ownerSession: task.session,
       repository: task.repository, request, inspected
     }));
-    const idKey = artifactKey(id, prepared.artifactId);
-    const indexKey = artifactIndexKey(id);
-    const saved = await this.ctx.storage.transaction(async tx => {
-      const existing = await tx.get<StoredTaskArtifact>(idKey);
-      if (existing && existing.expiresAt > Date.now()) {
-        if (existing.sha256 !== prepared.sha256 ||
-            !artifactIsOwnedBy(existing, task)) throw new Error("ARTIFACT_CONFLICT");
-        return existing;
-      }
-      if (existing) await tx.delete(idKey);
-      const index = (await tx.get<string[]>(indexKey)) ?? [];
-      if (!Array.isArray(index) || index.length > TASK_ARTIFACT_MAX_PER_TASK)
-        throw new Error("ARTIFACT_INDEX_INVALID");
-      const live: string[] = [];
-      const now = Date.now();
-      for (const priorId of index) {
-        const key = artifactKey(id, priorId);
-        const value = await tx.get<StoredTaskArtifact>(key);
-        if (value && artifactIsOwnedBy(value, task, now)) live.push(priorId);
-        else await tx.delete(key); // Opportunistic retention cleanup.
-      }
-      if (live.length >= TASK_ARTIFACT_MAX_PER_TASK) throw new Error("ARTIFACT_TASK_LIMIT");
-      await tx.put(idKey, prepared);
-      await tx.put(indexKey, [...live, prepared.artifactId]);
-      return prepared;
-    });
+    const saved = await this.ctx.storage.transaction(tx => persistTaskArtifact(tx, task, prepared));
     return artifactView(saved);
   }
 
   /** A bounded manifest: no transcript, raw paths, stored bytes or credentials. */
-  async supervisedTaskArtifacts(id: string): Promise<unknown> {
+  async supervisedTaskArtifacts(id: string, after?: string, limit = TASK_ARTIFACT_MAX_PER_TASK): Promise<unknown> {
     const task = await this.scopedArtifactTask(id);
-    // Artifact manifest GET must not reconcile an operation or inspect SDK logs.
     const status = await this.remoteSupervisorTaskStatusSnapshot(id) as { status?: string; operationId?: string };
-    const index = (await this.ctx.storage.get<string[]>(artifactIndexKey(id))) ?? [];
-    if (!Array.isArray(index) || index.length > TASK_ARTIFACT_MAX_PER_TASK) {
-      throw new Error("ARTIFACT_INDEX_INVALID");
-    }
-    const records = await Promise.all(index.map(key =>
-      this.ctx.storage.get<StoredTaskArtifact>(artifactKey(id, key))));
-    const now = Date.now();
+    const page = await readTaskArtifactPage(this.ctx.storage, task, after, limit);
     return {
       schema: TASK_ARTIFACT_SCHEMA, requestId: id, status: status.status ?? "unknown",
-      artifacts: records.filter(x => artifactIsOwnedBy(x, task, now)).map(x => artifactView(x!)),
-      summary: { text: "", available: false, truncated: false },
-      errors: [],
+      artifacts: page.artifacts, nextAfter: page.nextAfter, scanned: page.scanned,
+      summary: { text: "", available: false, truncated: false }, errors: [],
       evidence: { sessionId: task.session, operationId: status.operationId ?? null,
         projectId: task.project, byteReadback: "captured", collectorVerification: "pending" },
       passed: false, verified: false, reviewRequired: true
     };
   }
 
-  /** Bytes survive a DO restart (SQLite storage), but expired records fail closed. */
-  async supervisedTaskArtifactDownload(id: string, artifactId: string): Promise<Response> {
-    const trace = this.phaseProbe();
+  async supervisedTaskArtifactExport(id: string, format: "text" | "json", after?: string, limit = 2): Promise<Response> {
     const task = await this.scopedArtifactTask(id);
-    assertArtifactId(artifactId);
-    const record = await trace.run("cleanup", "artifactStoredRead", () =>
-      this.ctx.storage.get<StoredTaskArtifact>(artifactKey(id, artifactId)));
-    if (!record) return artifactErrorResponse("ARTIFACT_NOT_FOUND", 404);
-    if (Date.now() >= record.expiresAt) {
-      await this.ctx.storage.delete(artifactKey(id, artifactId));
-      return artifactErrorResponse("ARTIFACT_EXPIRED", 410);
-    }
-    if (record.artifactId !== artifactId || record.requestId !== id ||
-        !artifactIsOwnedBy(record, task)) return artifactErrorResponse("ARTIFACT_NOT_FOUND", 404);
-    return await trace.run("cleanup", "artifactVerify", () => verifiedArtifactDownload(record));
+    return taskArtifactExportResponse(this.ctx.storage, task, format, after, limit);
+  }
+
+  async supervisedTaskArtifactDownload(id: string, artifactId: string, expiresAt: number, range: string | null): Promise<Response> {
+    const task = await this.scopedArtifactTask(id);
+    return scopedArtifactDownload(this.ctx.storage, task, artifactId, expiresAt, range);
   }
 
   async closePilotTask(id:string){
@@ -1149,10 +1109,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     } finally {
       clearTimeout(waitTimer);
     }
-    if (job.operationId && operation &&
-        (operation.status === "done" ||
-          operation.status === "unanswered" && operation.reason !== "not_found")) {
-      await reconcileSupervisorSubmittedEffect(this.ctx.storage, id, job.operationId, operation);
+    if(job.operationId&&operation&&r2TerminalNativeReceipt(operation)){
+      await reconcileSupervisorSubmittedEffect(this.ctx.storage,id,job.operationId,operation,job.session);
     }
     // Never materialize a complete tool transcript in the supervisor's
     // memory-constrained Durable Object on every status poll. The durable
@@ -1189,33 +1147,38 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const reconciled = await this.ctx.storage.transaction(async tx => {
       const fresh = await tx.get<SupervisorTask>(supervisorTaskKey(id));
       if (!fresh) throw new Error("Tarea del supervisor inexistente");
-      if (!job.operationId || fresh.operationId !== job.operationId ||
-          fresh.status === "cancelled") return fresh;
-      // Persist an authentic SDK terminal receipt with the turn journal.
-      // not_found and timeouts are explicitly NOT settled outcomes.
-      const turnPrefix = "rc-turn-" + id + "-";
-      if (fresh.operationId?.startsWith(turnPrefix) && r2TerminalNativeReceipt(operation)) {
-        const turnId = fresh.operationId.slice(turnPrefix.length);
-        if (/^[a-f0-9]{16}$/.test(turnId)) {
-          const turnKey = r2TurnJournalKey(id, turnId);
-          const journal = await tx.get<R2TurnJournal>(turnKey);
-          if (journal?.operationId === fresh.operationId && journal.phase !== "settled") {
-            // Native terminal evidence also reconciles a prior lost
-            // continuation-submit receipt in T03's global capacity ledger.
-            await reconcileSupervisorTurnEffect(tx, id, job.operationId, operation!);
-            await tx.put(turnKey, { ...journal, phase: "settled" as const,
-              receiptStatus: operation!.status, receiptReason: operation!.reason?.slice(0, 120),
-              settledAt: Date.now() });
+      if (!job.operationId || !job.session || fresh.operationId !== job.operationId ||
+          fresh.session!==job.session || fresh.status === "cancelled") return fresh;
+      if(fresh.status==="cancel_requested"&&fresh.cancelAmbiguous){
+        const settled=await settleSupervisorCancelledTurn(tx,id,job.session,job.operationId,operation,busy);
+        return settled??fresh;
+      }
+      let turnReceiptBound=false;
+      if(fresh.pendingTurn&&operation&&r2TerminalNativeReceipt(operation)){
+        const match=await matchingSupervisorTurnJournal(tx,id,fresh,job.operationId);
+        if(match){
+          if(match.journal.phase==="settled"){
+            const slot=await supervisorAdmissionSlot(tx,id);
+            turnReceiptBound=slot?.phase==="running"&&!slot.effect&&match.journal.receiptStatus===operation.status&&
+              match.journal.receiptReason===operation.reason?.slice(0,120);
+          }else{
+            await reconcileSupervisorTurnEffect(tx,id,job.operationId,operation);
+            const slot=await supervisorAdmissionSlot(tx,id);
+            if(slot?.phase==="running"&&!slot.effect){
+              await tx.put(match.key,{...match.journal,phase:"settled" as const,receiptStatus:operation.status,
+                receiptReason:operation.reason?.slice(0,120),settledAt:Date.now()});
+              turnReceiptBound=true;
+            }
           }
         }
       }
-      const settlePending = r2PendingTurnReconcileAllowed(fresh, job.operationId, operation);
+      const settlePending = turnReceiptBound&&r2PendingTurnReconcileAllowed(fresh, job.operationId, operation);
       if (fresh.pendingTurn && !settlePending) return fresh;
       if (!settlePending && !r2StatusWriteAllowed(fresh, job.operationId)) return fresh;
       const state = settlePending ? { ...fresh, pendingTurn: undefined } : fresh;
       let status = classifySupervisorOperation(state, busy, operation);
       if (status === "cancelled" &&
-          (!r2CancelledByReceipt(state, job.operationId, operation) || state.cancelAmbiguous)) {
+          (busy!==false || !r2CancelledByReceipt(state, job.operationId, operation) || state.cancelAmbiguous)) {
         status = "unknown"; // no false terminal for an ambiguous concurrent steer
       }
       if (state.cancelAmbiguous && status === "finished") status = "unknown";
@@ -1281,6 +1244,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
         return {id,status:"cancel_requested",confirmed:false,container,reason:"PILOT_PREPARATION_CLOSED_OR_PENDING"};
       }
       job=await this.supervisedRecord(id);
+    }
+    if(job.sessionIdPolicy==="deterministic-v1"&&job.mode!=="read_only"&&!job.pilotInstance){
+      const intent=await beginSupervisorCancellation(this.ctx.storage,id);
+      if(intent.kind==="confirmed")return {id,status:"cancelled",confirmed:true,reason:"logical pre-start fence"};
+      if(intent.kind==="terminal")return {id,status:intent.task.status};
+      if(intent.kind!=="abort")return {id,status:intent.task.status,confirmed:false,reason:"ABORT_RECEIPT_RECONCILIATION_PENDING"};
+      let abortAccepted=false,abortError:string|undefined;
+      try{abortAccepted=await this.harness.session(intent.task.session!).abort(intent.task.operationId!);}
+      catch(error){abortError=error instanceof Error?error.message.slice(0,200):"Abort failed";}
+      const current=await this.supervisedTaskStatus(id) as {status?:string;operationReason?:string};
+      return {id,status:current.status??"cancel_requested",confirmed:current.status==="cancelled",
+        abortAccepted,abortError,operationReason:current.operationReason};
     }
     if (["cancelled", "failed", "finished", "unanswered"].includes(job.status))
       return { id, status: job.status };
@@ -2585,19 +2560,24 @@ export default {
         // Clients must send the bearer in a header, never in the URL.
         const artifact = url.pathname.match(/^\/api\/supervisor\/v1\/tasks\/([a-f0-9]{16})\/artifacts(?:\/([a-f0-9]{32}))?$/);
         if (artifact) {
-          if (url.search) return supervisorResponse({ error: "ARTIFACT_QUERY_NOT_ALLOWED" }, 400);
           try {
-            if (!artifact[2] && request.method === "GET")
-              return supervisorResponse(await host.supervisedTaskArtifacts(artifact[1]));
+            if (!artifact[2] && request.method === "GET") {
+              const q = parseArtifactQuery(url.search, false);
+              if (q.format) return await host.supervisedTaskArtifactExport(artifact[1], q.format, q.after, q.limit);
+              return supervisorResponse(await host.supervisedTaskArtifacts(artifact[1], q.after, q.limit));
+            }
             if (!artifact[2] && request.method === "POST") {
+              if (url.search) return supervisorResponse({ error: "ARTIFACT_QUERY_NOT_ALLOWED" }, 400);
               if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json"))
                 return supervisorResponse({ error: "JSON obligatorio" }, 415);
               const input = await request.text();
               if (input.length > 1_000) return supervisorResponse({ error: "Solicitud demasiado grande" }, 413);
               return supervisorResponse(await host.supervisedArtifactCapture(artifact[1], JSON.parse(input)));
             }
-            if (artifact[2] && request.method === "GET")
-              return await host.supervisedTaskArtifactDownload(artifact[1], artifact[2]);
+            if (artifact[2] && request.method === "GET") {
+              const q = parseArtifactQuery(url.search, true);
+              return await host.supervisedTaskArtifactDownload(artifact[1], artifact[2], q.expiresAt!, request.headers.get("Range"));
+            }
             return supervisorResponse({ error: "Método no permitido" }, 405);
           } catch (error) {
             const reason = error instanceof Error ? error.message : "ARTIFACT_UNAVAILABLE";
