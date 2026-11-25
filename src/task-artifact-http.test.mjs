@@ -12,6 +12,8 @@ import {
  verifiedArtifactDownload, TASK_ARTIFACT_PREFIX, TASK_ARTIFACT_TTL_MS
 } from './task-output-artifacts.ts';
 
+import {scopedArtifactDownload,parseArtifactQuery} from './metralla-m06-artifact-http.ts';
+
 const NOW=1000;
 const TOKEN='supervisor-fixture-token-not-a-real-credential';
 const id=n=>n.toString(16).padStart(16,'0');
@@ -25,10 +27,9 @@ async function startFixture() {
    if(req.headers.authorization!==`Bearer ${TOKEN}`){res.writeHead(401,{'Cache-Control':'no-store'}).end();return;}
    const url=new URL(req.url||'/', 'http://127.0.0.1');
    const m=new RegExp(`^${TASK_ARTIFACT_PREFIX}/([a-f0-9]{16})/artifacts/([a-f0-9]{32})$`).exec(url.pathname);
-   if(!m || req.method!=='GET' || url.search){res.writeHead(404).end();return;}
-   const entry=records.get(artifactKey(m[1],m[2]));
-   if(!entry || !artifactIsOwnedBy(entry,scope(m[1]),NOW+1)){res.writeHead(404).end();return;}
-   const result=await verifiedArtifactDownload(entry,NOW+1);
+   if(!m || req.method!=='GET'){res.writeHead(404).end();return;}
+   let query; try { query=parseArtifactQuery(url.search,true); } catch {res.writeHead(400).end();return;}
+   const result=await scopedArtifactDownload({get:async key=>records.get(key)},scope(m[1]),m[2],query.expiresAt,req.headers.range??null,NOW+1);
    res.writeHead(result.status,Object.fromEntries(result.headers));
    res.end(Buffer.from(await result.arrayBuffer()));
  });

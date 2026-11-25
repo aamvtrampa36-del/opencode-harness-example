@@ -155,3 +155,35 @@ export function sessionExportResponse(session: string, data: PersistedConversati
     }
   });
 }
+
+/** Export a verified bounded artifact page, not a hydrated transcript.
+ * Individual artifact downloads remain the authoritative byte receipt. */
+export async function taskArtifactExportResponse(
+  storage: import("./task-output-artifacts.ts").ArtifactReadStorage,
+  scope: import("./task-output-artifacts.ts").ArtifactTaskScope,
+  format: "text" | "json", after?: string, limit = 2, now = Date.now()
+): Promise<Response> {
+  const { readTaskArtifactPage, artifactErrorResponse } = await import("./task-output-artifacts.ts");
+  const { scopedArtifactDownload } = await import("./metralla-m06-artifact-http.ts");
+  if (format !== "text" && format !== "json") return artifactErrorResponse("ARTIFACT_EXPORT_FORMAT_INVALID", 400);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 2) return artifactErrorResponse("ARTIFACT_EXPORT_LIMIT", 400);
+  const page = await readTaskArtifactPage(storage, scope, after, limit, now);
+  const items: Array<{artifactId: string; name: string; sourceSha256: string; mime: string; sourceByteSize: number; text: string}> = [];
+  for (const a of page.artifacts) {
+    const response = await scopedArtifactDownload(storage, scope, a.artifactId, a.delivery.expiresAt, null, now);
+    if (response.status !== 200) return artifactErrorResponse("ARTIFACT_EXPORT_UNAVAILABLE", 409);
+    const text = new TextDecoder("utf-8", {fatal:true}).decode(await response.arrayBuffer());
+    items.push({artifactId:a.artifactId,name:a.name,sourceSha256:a.sha256,mime:a.mime,sourceByteSize:a.byteSize,text:redactText(text)});
+  }
+  const body = format === "json" ? JSON.stringify({schema:"opencode.task-artifact-export.v1",requestId:scope.id,nextAfter:page.nextAfter,items})
+    : items.map(a => a.name + "\nSHA-256 (original): " + a.sourceSha256 + "\n" + a.text).join("\n\n");
+  const bytes = new TextEncoder().encode(body);
+  if (bytes.length > 512 * 1024) return artifactErrorResponse("ARTIFACT_EXPORT_LIMIT", 413);
+  return new Response(bytes, {headers:{
+    "Content-Type":format === "json" ? "application/json; charset=utf-8" : "text/plain; charset=utf-8",
+    "Content-Disposition":'attachment; filename="task-artifacts.' + (format === "json" ? "json" : "txt") + '"',
+    "Content-Length":String(bytes.length), "Cache-Control":"no-store, private", "X-Content-Type-Options":"nosniff",
+    "Referrer-Policy":"no-referrer", "Content-Security-Policy":"default-src 'none'; sandbox",
+    ...(page.nextAfter ? {"X-Artifact-Next-After":page.nextAfter} : {})
+  }});
+}

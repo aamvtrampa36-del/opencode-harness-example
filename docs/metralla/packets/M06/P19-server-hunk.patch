@@ -1,0 +1,79 @@
+diff --git a/src/server.ts b/src/server.ts
+--- a/src/server.ts
++++ b/src/server.ts
+@@ -80,7 +80,7 @@
+ } from "./supervisor-control";
+ 
+ import {
+-  validateCaptureRequest, captureInspectedArtifact, artifactKey, artifactIndexKey,
++  validateCaptureRequest, captureInspectedArtifact, artifactKey, persistTaskArtifact, readTaskArtifactPage,
+   artifactView, artifactIsOwnedBy, verifiedArtifactDownload, artifactErrorResponse,
+   assertArtifactId, TASK_ARTIFACT_MAX_PER_TASK, TASK_ARTIFACT_SCHEMA,
+   type StoredTaskArtifact
+@@ -1009,33 +1009,8 @@
+       requestId: task.id, ownerProject: task.project, ownerSession: task.session,
+       repository: task.repository, request, inspected
+     }));
+-    const idKey = artifactKey(id, prepared.artifactId);
+-    const indexKey = artifactIndexKey(id);
+-    const saved = await this.ctx.storage.transaction(async tx => {
+-      const existing = await tx.get<StoredTaskArtifact>(idKey);
+-      if (existing && existing.expiresAt > Date.now()) {
+-        if (existing.sha256 !== prepared.sha256 ||
+-            !artifactIsOwnedBy(existing, task)) throw new Error("ARTIFACT_CONFLICT");
+-        return existing;
+-      }
+-      if (existing) await tx.delete(idKey);
+-      const index = (await tx.get<string[]>(indexKey)) ?? [];
+-      if (!Array.isArray(index) || index.length > TASK_ARTIFACT_MAX_PER_TASK)
+-        throw new Error("ARTIFACT_INDEX_INVALID");
+-      const live: string[] = [];
+-      const now = Date.now();
+-      for (const priorId of index) {
+-        const key = artifactKey(id, priorId);
+-        const value = await tx.get<StoredTaskArtifact>(key);
+-        if (value && artifactIsOwnedBy(value, task, now)) live.push(priorId);
+-        else await tx.delete(key); // Opportunistic retention cleanup.
+-      }
+-      if (live.length >= TASK_ARTIFACT_MAX_PER_TASK) throw new Error("ARTIFACT_TASK_LIMIT");
+-      await tx.put(idKey, prepared);
+-      await tx.put(indexKey, [...live, prepared.artifactId]);
+-      return prepared;
+-    });
+-    return artifactView(saved);
++    const saved = await this.ctx.storage.transaction(tx => persistTaskArtifact(tx, task, prepared));
++    return artifactView(saved);
+   }
+ 
+   /** A bounded manifest: no transcript, raw paths, stored bytes or credentials. */
+@@ -1043,16 +1018,11 @@
+     const task = await this.scopedArtifactTask(id);
+     // Artifact manifest GET must not reconcile an operation or inspect SDK logs.
+     const status = await this.remoteSupervisorTaskStatusSnapshot(id) as { status?: string; operationId?: string };
+-    const index = (await this.ctx.storage.get<string[]>(artifactIndexKey(id))) ?? [];
+-    if (!Array.isArray(index) || index.length > TASK_ARTIFACT_MAX_PER_TASK) {
+-      throw new Error("ARTIFACT_INDEX_INVALID");
+-    }
+-    const records = await Promise.all(index.map(key =>
+-      this.ctx.storage.get<StoredTaskArtifact>(artifactKey(id, key))));
+-    const now = Date.now();
+-    return {
+-      schema: TASK_ARTIFACT_SCHEMA, requestId: id, status: status.status ?? "unknown",
+-      artifacts: records.filter(x => artifactIsOwnedBy(x, task, now)).map(x => artifactView(x!)),
++    // Preserve v1 full manifest until P20 wires the public page cursor.
++    const page = await readTaskArtifactPage(this.ctx.storage, task, undefined, TASK_ARTIFACT_MAX_PER_TASK);
++    return {
++      schema: TASK_ARTIFACT_SCHEMA, requestId: id, status: status.status ?? "unknown",
++      artifacts: page.artifacts,
+       summary: { text: "", available: false, truncated: false },
+       errors: [],
+       evidence: { sessionId: task.session, operationId: status.operationId ?? null,
+@@ -1070,7 +1040,7 @@
+       this.ctx.storage.get<StoredTaskArtifact>(artifactKey(id, artifactId)));
+     if (!record) return artifactErrorResponse("ARTIFACT_NOT_FOUND", 404);
+     if (Date.now() >= record.expiresAt) {
+-      await this.ctx.storage.delete(artifactKey(id, artifactId));
++      // GET is read-only: retention cleanup is transactional with the index.
+       return artifactErrorResponse("ARTIFACT_EXPIRED", 410);
+     }
+     if (record.artifactId !== artifactId || record.requestId !== id ||
