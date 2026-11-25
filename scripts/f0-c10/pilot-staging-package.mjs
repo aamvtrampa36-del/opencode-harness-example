@@ -20,7 +20,7 @@ const slot=process.env.M08_PACKAGE_INVENTORY_SLOT;
 if(slot!==undefined&&!["a","b"].includes(slot))throw Error("M08_PACKAGE_SLOT_INVALID");
 const out=slot?join(tmpdir(),"metralla-m08-repro"):mkdtempSync(join(tmpdir(),"pilot-staging-"));
 if(slot){rmSync(out,{recursive:true,force:true});mkdirSync(out,{recursive:true});}
-const run=(config,name)=>{const dir=join(out,name);execFileSync("node_modules/.bin/wrangler",["deploy","--dry-run","--config",config,"--outdir",dir],{stdio:"inherit",env:{...process.env,WRANGLER_SEND_METRICS:"false"}});return tree(dir,name);};
+const run=(config,name)=>{const dir=join(out,name);execFileSync("node_modules/.bin/wrangler",["deploy","--dry-run","--config",config,"--outdir",dir],{stdio:"inherit",env:{...process.env,WRANGLER_SEND_METRICS:"false"}});const raw=tree(dir,name);const rows=inventory[name];const readme=rows.filter(([path])=>path==="README.md");if(readme.length!==1)throw Error("M08_WRANGLER_README_MISSING");const deployable=rows.filter(([path])=>path!=="README.md");if(!deployable.length)throw Error("M08_EMPTY_PAYLOAD");return {...raw,generatedReadmeSha256:readme[0][1],deployable:{files:deployable.length,sha256:digest(JSON.stringify(deployable))}};};
 const before={source:process.env.GITHUB_SHA,principalConfig:digest(readFileSync(principal[0].p)),mcpConfig:digest(readFileSync("wrangler.mcp-staging.jsonc")),assets:tree("dist/client","assets"),build:tree("dist","build"),bindings:names,migration:"v4"};
 console.log("PILOT_STAGING_PACKAGE "+JSON.stringify({...before,principal:run(principal[0].p,"principal"),mcp:run("wrangler.mcp-staging.jsonc","mcp"),deployed:false}));
 
