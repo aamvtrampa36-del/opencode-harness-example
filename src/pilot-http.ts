@@ -36,15 +36,14 @@ export async function readBoundedJson(response:Response,maxBytes:number,signal:A
   if(declared!==null&&(!/^\d+$/.test(declared)||Number(declared)>maxBytes)){
     void response.body.cancel().catch(()=>{});throw Error("HTTP_RESPONSE_LIMIT");
   }
-  const reader=response.body.getReader(),chunks:Uint8Array[]=[];let size=0;
+  const reader=response.body.getReader(),bytes=new Uint8Array(maxBytes);let size=0;
   try{
     for(;;){if(signal.aborted)throw Error("HTTP_DEADLINE");const x=await abortable(reader.read(),signal);
       if(x.done)break;
       if(x.value.byteLength>maxBytes-size)throw Error("HTTP_RESPONSE_LIMIT");
-      if(x.value.byteLength){size+=x.value.byteLength;chunks.push(x.value);}
+      if(x.value.byteLength){bytes.set(x.value,size);size+=x.value.byteLength;}
     }
-    const bytes=new Uint8Array(size);let off=0;for(const c of chunks){bytes.set(c,off);off+=c.byteLength;}
-    return JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes));
+    return JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes.subarray(0,size)));
   }catch{void reader.cancel().catch(()=>{});throw Error(signal.aborted?"HTTP_DEADLINE":"HTTP_RESPONSE_INVALID_OR_LIMIT");}
   finally{reader.releaseLock();}
 }

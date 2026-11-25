@@ -41,7 +41,7 @@ export type BudgetPolicy = {
 };
 export type InferenceIntent = {
   requestId: string; operationId: string; callId: string; attemptId: string;
-  selection: string; inputTokenCeiling: number; outputTokenCeiling: number; wireBytes?: number;
+  selection: string; inputTokenCeiling: number; outputTokenCeiling: number; wireBytes?: number; payloadSha256?:string;
 };
 type Counter = { confirmed: number; reserved: number; unknown: number };
 type Global = Counter & { version: 1; policy: string; paymentBlocked: boolean; hybrid?: HybridState; normal?: NormalState };
@@ -175,7 +175,8 @@ async function readGlobal(tx: DurableObjectTransaction, snapshot: string, policy
 }
 function intentFingerprint(intent:InferenceIntent){return JSON.stringify({requestId:intent.requestId,operationId:intent.operationId,
   callId:intent.callId,selection:intent.selection,inputTokenCeiling:intent.inputTokenCeiling,
-  outputTokenCeiling:intent.outputTokenCeiling,...(intent.wireBytes===undefined?{}:{wireBytes:intent.wireBytes})});}
+  outputTokenCeiling:intent.outputTokenCeiling,...(intent.wireBytes===undefined?{}:{wireBytes:intent.wireBytes}),
+  ...(intent.payloadSha256===undefined?{}:{payloadSha256:intent.payloadSha256})});}
 function moveNormal(global:Global,intent:InferenceIntent,from:"reserved"|"unknown",to:"unknown"|"confirmed"|"released",exposure:number,charge=0){
   if(global.normal){const p=(JSON.parse(global.policy) as BudgetPolicy).normal;requireValue(p,"NORMAL_LEDGER_POLICY_MISMATCH");normalRoundMove(p,global.normal,intent,from,to,exposure,charge);}
 }

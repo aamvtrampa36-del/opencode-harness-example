@@ -21,7 +21,7 @@ export function normalHttpSender(http:typeof fetch,pin:{endpoint:string;provider
   return async(route,body,signal)=>{check(route.providerID===pin.providerID&&route.modelID===pin.modelID,"NORMAL_ENDPOINT_SCOPE");
     return pilotFetchNoRedirect(http,url.href,{method:"POST",headers,body,signal});};
 }
-export async function dispatchNormalInference(c:Context,input:Omit<InferenceIntent,"wireBytes">,
+export async function dispatchNormalInference(c:Context,input:Omit<InferenceIntent,"wireBytes"|"payloadSha256">,
   messages:unknown[],tools:unknown[]=[],outer?:AbortSignal){
   check(c.policy.normal&&!c.policy.hybrid,"NORMAL_POLICY_REQUIRED");
   const p=c.policy.normal,route=Object.hasOwn(p.routes,input.selection)?p.routes[input.selection]:undefined;
@@ -34,7 +34,9 @@ export async function dispatchNormalInference(c:Context,input:Omit<InferenceInte
   const wireBytes=new TextEncoder().encode(body).length;
   const bound=c.boundInputTokens(body,route);
   check(uint(bound,input.inputTokenCeiling)&&bound>0&&wireBytes<=route.maxWireBytes,"NORMAL_WIRE_OR_TOKEN_LIMIT");
-  const intent:InferenceIntent={...input,wireBytes};
+  const digest=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(body)));
+  const payloadSha256=Array.from(digest,b=>b.toString(16).padStart(2,"0")).join("");
+  const intent:InferenceIntent={...input,wireBytes,payloadSha256};
   const remaining=Math.min(route.timeoutMs,p.validUntil-Date.now(),route.validUntil-Date.now());
   check(remaining>0&&!outer?.aborted,"NORMAL_DEADLINE_BEFORE_DISPATCH");
   const signal=AbortSignal.any([AbortSignal.timeout(remaining),...(outer?[outer]:[])]);

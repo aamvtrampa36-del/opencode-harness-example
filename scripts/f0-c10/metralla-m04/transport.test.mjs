@@ -23,7 +23,8 @@ async function setup(send,override={}){const now=Date.now(),storage=new Store();
 }
 test('complete response settles exactly once, duplicate never sends',async()=>{let calls=0;const c=await setup(async()=>{calls++;return done();});
   const result=await dispatchNormalInference(c,v,msg);assert.equal(result.kind,'settled');assert.equal(result.chargedMicroUsd,60);
-  assert.equal((await dispatchNormalInference(c,v,msg)).kind,'duplicate');assert.equal(calls,1);
+  assert.equal((await dispatchNormalInference(c,v,msg)).kind,'duplicate');
+  await assert.rejects(dispatchNormalInference(c,v,[{role:'user',content:'changed'}]),/FINGERPRINT_CONFLICT/);assert.equal(calls,1);
 });
 for(const code of [429,403,402])test('generic '+code+' remains unknown and never falls back',async()=>{let calls=0;const c=await setup(async()=>{calls++;return Response.json({error:{code}},{status:code});});
   await assert.rejects(dispatchNormalInference(c,v,msg),/OUTCOME_UNKNOWN/);assert.equal((await normalInferenceStatus(c.storage)).unknown,200);assert.equal(calls,1);
@@ -59,4 +60,28 @@ test('catalogue/preset is not registered or live capability',()=>{const e={provi
   assert.equal(resolveAuthorizedMeteredSelection('economy',e).providerID,'cloudflare');
   for(const invalid of [{...e,registered:false},{...e,validUntil:0},{...e,modelID:'other'}])assert.throws(()=>resolveAuthorizedMeteredSelection('economy',invalid),/CAPABILITY_UNVERIFIED/);
   assert.throws(()=>resolveAuthorizedMeteredSelection('review',e),/CAPABILITY_UNVERIFIED/);
+});
+
+import {estimateCampaign} from './estimate.mjs';
+import {estimateFixture} from './estimate-fixture.mjs';
+for(const n of [1,2,4,10])test('P15: estimated-cap transport scale '+n,async()=>{
+  const now=Date.now(),estimate=estimateCampaign(estimateFixture(now),now),round=estimate.rounds.find(r=>r.tasks===n);
+  assert.equal(estimate.decision,'OFFLINE_ESTIMATE_WITHIN_CAPS');
+  let sent=0,active=0,peak=0;let release;const barrier=new Promise(r=>release=r);
+  const c=await setup(async(_route,body)=>{sent++;active++;peak=Math.max(peak,active);
+    const current=await normalInferenceStatus(c.storage);assert.ok(current.reserved>=200);
+    const message=JSON.parse(body).messages[0].content;
+    if(sent===n)release();await barrier;active--;return Response.json({id:'receipt-'+message,model:'fixture/model',choices:[{finish_reason:'stop'}],usage:{prompt_tokens:500,completion_tokens:100,total_tokens:600}});
+  });
+  c.policy.totalMicroUsd=estimate.totalCapMicroUsd;c.policy.taskMicroUsd=round.taskCostMicroUsd;
+  c.policy.normal.maxInflight=n;c.policy.normal.maxCalls=n;c.policy.normal.maxCallsPerTask=1;
+  const ids=Array.from({length:n},(_,i)=>(i+1).toString(16).padStart(16,'0'));
+  c.policy.normal.rounds.r1={taskIds:ids,maxMicroUsd:round.roundCostMicroUsd,maxCalls:n,maxInflight:n};
+  const slots={};for(const taskId of ids){slots[taskId]={id:taskId,token:'offline',generation:1,phase:'running'};
+    await c.storage.put('supervisor:task:'+taskId,{model:'economy',status:'running',operationId:'rc-start-'+taskId,sessionIdPolicy:'deterministic-v1'});}
+  await c.storage.put('supervisor:admission:v1',{version:1,slots});
+  const result=await Promise.all(ids.map(taskId=>dispatchNormalInference({...c,grant:{...grant,id:taskId}},
+    {...v,requestId:taskId,operationId:'rc-start-'+taskId},[{role:'user',content:taskId}])));
+  assert.ok(result.every(r=>r.kind==='settled'));assert.equal(sent,n);assert.equal(peak,n);
+  const totals=await normalInferenceStatus(c.storage);assert.equal(totals.confirmed,n*60);assert.equal(totals.active,0);assert.equal(totals.canCloseAccounting,true);
 });

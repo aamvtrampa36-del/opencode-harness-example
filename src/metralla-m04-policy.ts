@@ -9,7 +9,7 @@ type Money = { confirmed: number; reserved: number; unknown: number };
 type RoundState = Money & { calls:number; active:number };
 export type NormalState = { calls:number; active:number; rounds:Record<string,RoundState>;
   tasks:Record<string,{calls:number;active:number}>; dispatches:Record<string,number[]> };
-type Intent = {requestId:string;selection:string;inputTokenCeiling:number;outputTokenCeiling:number;wireBytes?:number};
+type Intent = {requestId:string;selection:string;inputTokenCeiling:number;outputTokenCeiling:number;wireBytes?:number;payloadSha256?:string};
 type Allowance = {providerID:string;modelID:string};
 const id = /^[a-f0-9]{16}$/;
 const key = /^[a-z0-9][a-z0-9_-]{0,31}$/;
@@ -51,7 +51,7 @@ function roundFor(p:NormalPolicy,i:Intent){
 function routeFor(p:NormalPolicy,i:Intent,now:number){
   const r=Object.prototype.hasOwnProperty.call(p.routes,i.selection)?p.routes[i.selection]:undefined;
   check(r&&now<p.validUntil&&now<r.validUntil,"NORMAL_ROUTE_OR_DEADLINE_STOP");
-  check(integer(i.wireBytes,1,r.maxWireBytes)&&integer(i.inputTokenCeiling,1,r.maxInputTokens)&&
+  check(typeof i.payloadSha256==="string"&&/^[a-f0-9]{64}$/.test(i.payloadSha256)&&integer(i.wireBytes,1,r.maxWireBytes)&&integer(i.inputTokenCeiling,1,r.maxInputTokens)&&
     integer(i.outputTokenCeiling,1,r.maxOutputTokens),"NORMAL_WIRE_OR_TOKEN_LIMIT");return r;
 }
 export function normalReserve(p:NormalPolicy,s:NormalState,i:Intent,exposure:number,now:number){

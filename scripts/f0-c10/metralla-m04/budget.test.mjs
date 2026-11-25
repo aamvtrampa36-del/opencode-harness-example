@@ -10,7 +10,7 @@ class Storage {
 }
 const id=n=>n.toString(16).padStart(16,'0');
 const grant=n=>({id:id(n),token:'token-'+n,generation:1});
-const intent=(n,extra={})=>({requestId:id(n),operationId:'rc-start-'+id(n),callId:'call_1',attemptId:'a1',selection:'economy',inputTokenCeiling:1000,outputTokenCeiling:1000,wireBytes:200,...extra});
+const intent=(n,extra={})=>({requestId:id(n),operationId:'rc-start-'+id(n),callId:'call_1',attemptId:'a1',selection:'economy',inputTokenCeiling:1000,outputTokenCeiling:1000,wireBytes:200,payloadSha256:'b'.repeat(64),...extra});
 const setup=async(n,overrides={},roundOverrides={})=>{
   const s=new Storage(),slots={};for(let i=1;i<=n;i++){slots[id(i)]={...grant(i),phase:'running',expiresAt:Date.now()+600000};await s.put('supervisor:task:'+id(i),{model:'economy',status:'running',sessionIdPolicy:'deterministic-v1',operationId:'rc-start-'+id(i)});}
   await s.put('supervisor:admission:v1',{version:1,slots});
@@ -32,6 +32,7 @@ for(const n of [1,2,4,10])test('atomic scale '+n,async()=>{const {s,p}=await set
 test('round cap under ten races, no duplicate reservation, no stale dispatch',async()=>{const {s,p}=await setup(10,{}, {maxMicroUsd:800});const res=await Promise.allSettled(Array.from({length:10},(_,i)=>reserve(s,p,i+1)));
   assert.equal(res.filter(x=>x.status==='fulfilled').length,4);assert.equal((await normalInferenceStatus(s)).active,4);
   const i=res.findIndex(x=>x.status==='fulfilled')+1;assert.equal((await reserve(s,p,i)).kind,'existing');
+  await assert.rejects(reserve(s,p,i,intent(i,{payloadSha256:'c'.repeat(64)})),/FINGERPRINT_CONFLICT/);
   await assert.rejects(send(s,p,i,intent(i,{wireBytes:201})),/RESERVATION_MISSING/);
   await assert.rejects(beginInferenceDispatch(s,{...grant(i),generation:2},intent(i),p,proof()),/FENCE/);
 });
