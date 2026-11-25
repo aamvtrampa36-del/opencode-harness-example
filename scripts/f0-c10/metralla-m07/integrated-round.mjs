@@ -80,7 +80,7 @@ function validateSupplement(trace,p,supplement,trust){
  const published=p.tasks.at(-1);
  exactIdentity(github,published);validateGitHubIntent(github.observation?.intent,published,p);
  check(github.observation.schema==='metralla.m08.github-readback.v1'&&github.observation.verified===true&&github.observation.intentSha256===digest(github.observation.intent)&&
-  github.observation.evidenceClass==='unsigned-authenticated-http-observation'&&within(github.observedAtMs,p),'M07_GITHUB_READBACK');
+  (github.observation.evidenceClass==='unsigned-authenticated-http-observation'||p.mode==='fixture'&&github.observation.evidenceClass==='untrusted-transport-observation')&&within(github.observedAtMs,p),'M07_GITHUB_READBACK');
  for(const t of p.tasks){
   const events=trace.events.filter(e=>e.requestId===t.requestId),done=events.find(e=>e.type==='completed'),read=events.find(e=>e.type==='artifact_readback');
   const a=phys.get(t.requestId),b=logical.get(t.requestId);
@@ -146,7 +146,12 @@ export async function collectObserverPages({approval,limits,trustedKeys,readPage
  for(const origin of OBSERVER_ORIGINS){
   let after=0,head='0'.repeat(64),done=false;
   for(let pages=0;pages<=157&&!done;pages++){
-   const page=await readPage({origin,planDigest:digest(p),after,head,limit:32,signal:AbortSignal.timeout(5000)});
+   const signal=AbortSignal.timeout(5000);
+   let onAbort;
+   const deadline=new Promise((_,reject)=>{onAbort=()=>reject(Error('M07_JOURNAL_PAGE_TIMEOUT'));signal.addEventListener('abort',onAbort,{once:true});});
+   let page;
+   try{page=await Promise.race([readPage({origin,planDigest:digest(p),after,head,limit:32,signal}),deadline]);}
+   finally{signal.removeEventListener('abort',onAbort);}
    check(page?.origin===origin&&page.planDigest===digest(p)&&page.after===after&&Array.isArray(page.records)&&page.records.length<=32&&typeof page.complete==='boolean','M07_JOURNAL_PAGE_SCOPE');
    check(Buffer.byteLength(canonicalJson(page))<=262144,'M07_JOURNAL_PAGE_SIZE');
    for(const item of page.records){
@@ -161,4 +166,25 @@ export async function collectObserverPages({approval,limits,trustedKeys,readPage
   check(done,'M07_JOURNAL_INCOMPLETE');
  }
  return {observedJournal:{schema:OBSERVED_JOURNAL_SCHEMA,records},journalSeals:seals,livePass:false};
+}
+
+/** Campaign validation cannot bypass the integrated per-round gate. */
+export function verifyIntegratedCampaign(entries,{limits,trustedKeys}={}){
+ if(!Array.isArray(entries)||entries.length!==3||entries.length!==limits?.minRounds)return {pass:false,livePass:false,code:'M07_CAMPAIGN_ROUNDS'};
+ const reports=entries.map(x=>verifyIntegratedRound(x.trace,{limits,trustedKeys,approval:x.approval,supplement:x.supplement,journalSeals:x.journalSeals}));
+ if(!reports.every(r=>r.contractPass))return {pass:false,livePass:false,contractPass:false,code:'M07_CAMPAIGN_ROUND_RED',reports};
+ const plans=entries.map(x=>x.approval.plan),modes=new Set(plans.map(p=>p.mode));
+ const releaseFields=['sourceSha','gitBaseSha','workerVersion','mcpVersion','workerDeploymentId','mcpDeploymentId','limitsSha256'];
+ const all=plans.flatMap(p=>p.tasks);
+ if(modes.size!==1||plans.some(p=>p.tasks.length!==10||!same(project(p.context,releaseFields),project(plans[0].context,releaseFields)))||
+  !unique(plans.map(p=>p.context.experimentId))||['requestId','sessionId','operationId','projectId','executorId'].some(k=>!unique(all.map(t=>t[k]))))
+  return {pass:false,livePass:false,contractPass:false,code:'M07_CAMPAIGN_SCOPE',reports};
+ // Rounds are distinct and serial, never retroactively overlap authorized windows.
+ for(let i=1;i<plans.length;i++){
+  const prev=entries[i-1],end=Math.max(...prev.trace.events.map(e=>e.atMs),...prev.supplement.logical.rows.map(x=>x.observedAtMs),...Object.values(prev.journalSeals).map(x=>x.seal.observedAtMs));
+  if(plans[i].notBefore<end)return {pass:false,livePass:false,contractPass:false,code:'M07_CAMPAIGN_NOT_DRAINED',reports};
+ }
+ const observedCostUsd=entries.reduce((v,x)=>v+x.trace.budget.totalUsd,0);
+ if(!Number.isFinite(observedCostUsd)||observedCostUsd>limits.maxCampaignCostUsd)return {pass:false,livePass:false,contractPass:false,code:'M07_CAMPAIGN_COST',reports,observedCostUsd};
+ return {pass:plans[0].mode==='live',livePass:plans[0].mode==='live',contractPass:true,reports,observedCostUsd};
 }

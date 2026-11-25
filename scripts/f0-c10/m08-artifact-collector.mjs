@@ -78,6 +78,7 @@ export async function collectM06Artifact({origin,supervisorBearer,accessClientId
   const manifest=await boundedJson(await read(prefix+'?limit=8'));
   const view=selectExpectedArtifact(manifest,expected);
   const artifact=await checkCollectedBytes(view,expected,read);
+  artifact.retrievedAtMs=Date.now(); // byte retrieval completed, not request start
   return {evidenceClass:'unsigned-http-observation',livePass:false,requestId:expected.requestId,
     sessionId:expected.sessionId,operationId:expected.operationId,projectId:expected.projectId,
     artifact,retrievalReceipt:{method:'GET',status:200,authenticated:true,retrievalId:randomUUID(),

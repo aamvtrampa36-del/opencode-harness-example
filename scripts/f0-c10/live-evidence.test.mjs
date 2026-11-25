@@ -453,20 +453,43 @@ test('R3 RED: independently signed approval for a different SHA or deployment is
 /** M07 integrated positive fixture: real crypto + T10 + exact M06 layout +
  * signed GitHub and physical/logical closure, no real task or network. */
 import {assessLiveCandidate} from './metralla-m07/evaluator.mjs';
-import {artifactExpectation,roundApprovalBytes,supplementalBytes,journalSealBytes,collectObserverPages,collectRoundReadbacks} from './metralla-m07/integrated-round.mjs';
+import {artifactExpectation,roundApprovalBytes,supplementalBytes,journalSealBytes,collectObserverPages,collectRoundReadbacks,verifyIntegratedCampaign} from './metralla-m07/integrated-round.mjs';
 import {canonicalOutput} from './tasks.mjs';
+import {verifyGitHubReadback} from './m08-github-collector.mjs';
+import {selectExpectedArtifact,checkCollectedBytes} from './m08-artifact-collector.mjs';
+import {captureInspectedArtifact,persistTaskArtifact,readTaskArtifactPage} from '../../src/task-output-artifacts.ts';
+import {scopedArtifactDownload} from '../../src/metralla-m06-artifact-http.ts';
+import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 const extraPairs=Object.fromEntries(['github','physical','logical'].map(k=>[k,generateKeyPairSync('ed25519')]));
 const extraTrust=Object.fromEntries(Object.entries(extraPairs).map(([k,v])=>[k,v.publicKey.export({format:'pem',type:'spki'})]));
 const keyFp=pem=>createHash('sha256').update(createPublicKey(pem).export({format:'der',type:'spki'})).digest('hex');
-async function integratedFixture(size=10){
- const trace=await attestedFixture({size,round:500+size});
+async function integratedFixture(size=10,round=500+size,shift=0){
+ const trace=await attestedFixture({size,round});
  const t=structuredClone(trace),m=t.metadata;m.artifactLayout='m06-dist-v1';
+ for(const e of t.events){e.atMs+=shift;if(e.artifact?.retrievedAtMs)e.artifact.retrievedAtMs+=shift;}for(const s of t.telemetry)s.atMs+=shift;
  for(const task of t.tasks){
   task.sessionId='ses_r2_'+task.requestId;task.operationId='rc-start-'+task.requestId;task.projectId='supervised-'+task.requestId;
   for(const e of t.events.filter(e=>e.requestId===task.requestId)){
    e.sessionId=task.sessionId;e.operationId=task.operationId;e.projectId=task.projectId;
    if(e.artifact){e.artifact.projectId=task.projectId;e.artifact.path='dist/'+task.kind+'.json';}
   }
+ }
+ // Real M06 storage/manifest/authenticated-download contract behind an offline port.
+ for(const task of t.tasks){
+  const expected=artifactExpectation(task),scope={id:task.requestId,project:task.projectId,session:task.sessionId,repository:'fixture/repo'};
+  const read=t.events.find(e=>e.requestId===task.requestId&&e.type==='artifact_readback'),now=read.atMs;
+  const bytes=Buffer.from(canonicalOutput(task.kind)),rows=new Map(),store={get:async k=>structuredClone(rows.get(k)),put:async(k,v)=>rows.set(k,structuredClone(v)),delete:async k=>rows.delete(k)};
+  const record=await captureInspectedArtifact({requestId:scope.id,ownerProject:scope.project,ownerSession:scope.session,repository:scope.repository,
+   request:{path:expected.path,name:expected.name,mime:expected.mime},inspected:{path:expected.path,base64:bytes.toString('base64'),byteSize:bytes.length,sha256:expected.sha256},now});
+  await persistTaskArtifact(store,scope,record,now);
+  const page=await readTaskArtifactPage(store,scope,undefined,8,now);
+  const manifest={schema:'opencode.task-output.v1',requestId:scope.id,...page,errors:[],evidence:{sessionId:scope.session,operationId:expected.operationId,projectId:scope.project}};
+  const view=selectExpectedArtifact(manifest,expected);
+  const actual=await checkCollectedBytes(view,expected,async path=>scopedArtifactDownload(store,scope,record.artifactId,Number(new URL(path,'https://fixture.invalid').searchParams.get('expires')),null,now),now);
+  read.artifact=actual;
+  read.retrievalReceipt.sha256=actual.sha256;read.retrievalReceipt.byteLength=actual.byteLength;
  }
  buildJournal(t);approveCollectorScope(t);reseal(t);
  const keys={...trust,supplemental:extraTrust};
@@ -479,7 +502,11 @@ async function integratedFixture(size=10){
  const approval={plan,signature:sign(null,roundApprovalBytes(plan),operatorKeyPair.privateKey).toString('base64')};
  const pub=tasks.at(-1),g=pub.github,content=canonicalOutput(pub.kind);
  const intent={repo:g.repo,requestId:pub.requestId,sessionId:pub.sessionId,operationId:pub.operationId,projectId:pub.projectId,sourceSha:m.sourceSha,base:g.base,baseSha:g.baseSha,branch:g.branch,headSha:'b'.repeat(40),headTree:'c'.repeat(40),pr:1,files:[{path:g.path,sha:createHash('sha1').update('blob '+Buffer.byteLength(content)+'\0').update(content).digest('hex'),status:'added'}]};
- const rows={github:[{...identity(pub),observedAtMs:last+1,observation:{schema:'metralla.m08.github-readback.v1',evidenceClass:'unsigned-authenticated-http-observation',livePass:false,verified:true,intent,intentSha256:digest(intent)}}],
+ const ref=(branch,sha)=>({ref:'refs/heads/'+branch,object:{type:'commit',sha}});
+ const pr={number:intent.pr,state:'open',draft:true,merged:false,changed_files:1,head:{repo:{full_name:g.repo},ref:g.branch,sha:intent.headSha},base:{repo:{full_name:g.repo},ref:g.base,sha:g.baseSha}};
+ const responses=[ref(g.branch,intent.headSha),ref(g.base,g.baseSha),{sha:intent.headSha,tree:{sha:intent.headTree}},pr,{status:'ahead',behind_by:0,ahead_by:1,merge_base_commit:{sha:g.baseSha},files:[{filename:g.path,sha:intent.files[0].sha,status:'added'}]},pr,ref(g.base,g.baseSha),ref(g.branch,intent.headSha)];
+ let gets=0;const observation=await verifyGitHubReadback(intent,async()=>responses[gets++]);assert.equal(gets,8);
+ const rows={github:[{...identity(pub),observedAtMs:last+1,observation}],
  physical:tasks.map(task=>({...identity(task),observedAtMs:last+2,containerId:'offline-container-'+task.requestId,bootId:'offline-boot',closeOperation:'offline-close',snapshotDigest:'a'.repeat(64),taskDigest:'b'.repeat(64),nativeReceiptDigest:'c'.repeat(64),vmTerminated:true,descendants:0,nativeOperations:0,nativeSource:'independent-native'})),logical:[]};
  rows.logical=rows.physical.map(a=>({...identity(a),observedAtMs:last+3,taskDigest:a.taskDigest,physicalReceiptSha256:digest(a),generation:1,slotReleased:true,reservedMicroUsd:0,unknownMicroUsd:0,outstandingEffects:0,releaseReceiptDigest:'d'.repeat(64)}));
  const sealRole=(role,rows)=>({rows,signature:sign(null,supplementalBytes(role,plan,rows),extraPairs[role].privateKey).toString('base64')});
@@ -527,4 +554,25 @@ test('M07 bounded native journal page collection authenticates original records 
  const result=assessLiveCandidate({...t,observedJournal:x.observedJournal},{...options,journalSeals:x.journalSeals});
  assert.equal(result.contractPass,true,JSON.stringify(result));assert.equal(result.livePass,false);
  await assert.rejects(collectObserverPages({approval:options.approval,limits,trustedKeys:options.trustedKeys,readPage:async req=>({...await port(req),after:req.after+1})}),/PAGE_SCOPE/);
+});
+
+test('M07 CLI denies legacy bypass and signed fixture cannot emit acceptance',async()=>{
+ const {t,options}=await integratedFixture(1);
+ const dir=mkdtempSync(join(tmpdir(),'m07-cli-'));
+ try{
+  const save=(name,x)=>{const p=join(dir,name);writeFileSync(p,JSON.stringify(x));return p;};
+  const args=['scripts/f0-c10/verify-live.mjs','--traces',save('trace.json',t),'--limits',save('limits.json',limits),'--trust',save('trust.json',options.trustedKeys)];
+  const run=extra=>spawnSync(process.execPath,[...args,...extra],{encoding:'utf8',timeout:10000});
+  assert.equal(run([]).status,2);
+  assert.equal(run(['--legacy-t10']).status,2);
+  const x=run(['--round-evidence',save('evidence.json',{approval:options.approval,supplement:options.supplement,journalSeals:options.journalSeals})]);
+  assert.equal(x.status,1,x.stderr);const report=JSON.parse(x.stdout);assert.equal(report.result.contractPass,true);assert.equal(report.metrallaAccepted,false);assert.equal(report.remoteCallsMade,0);
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});
+test('M07 integrated campaign rejects repeated identities and incomplete rounds',async()=>{
+ const {t,options}=await integratedFixture(10);
+ const e={trace:t,approval:options.approval,supplement:options.supplement,journalSeals:options.journalSeals};
+ assert.equal(verifyIntegratedCampaign([e],{limits,trustedKeys:options.trustedKeys}).code,'M07_CAMPAIGN_ROUNDS');
+ const r=verifyIntegratedCampaign([e,e,e],{limits,trustedKeys:options.trustedKeys});
+ assert.equal(r.livePass,false);assert.equal(r.code,'M07_CAMPAIGN_SCOPE');
 });
