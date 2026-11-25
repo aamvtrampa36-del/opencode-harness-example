@@ -1,0 +1,76 @@
+name: Metralla M08 integrated offline
+on:
+  push:
+    branches: [metralla/integracion-01]
+permissions:
+  contents: read
+concurrency:
+  group: metralla-m08-integrated-offline
+  cancel-in-progress: false
+jobs:
+  offline:
+    if: github.repository == 'aamvtrampa36-del/opencode-harness-example' && github.ref == 'refs/heads/metralla/integracion-01' && github.event.repository.private == false && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Exact integrated source
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor 837dce9b283f6b4b0b2ba939407883ec95be726a HEAD
+          git rev-parse HEAD^{tree}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+          no-cache: true
+      - run: bun install --frozen-lockfile
+      - name: Integrated Node specialist contracts
+        env:
+          TSC_BIN: ./node_modules/.bin/tsc
+        run: |
+          node --experimental-strip-types --test scripts/f0-c10/metralla-m02/*.test.mjs scripts/f0-c10/metralla-m03/*.test.mjs scripts/f0-c10/metralla-m04/*.test.mjs scripts/f0-c10/metralla-m05/*.test.cjs src/metralla-m06-*.test.mjs src/task-artifact-source.test.mjs src/task-output-artifacts.test.mjs src/task-artifact-http.test.mjs scripts/f0-c10/metralla-m07/*.test.mjs src/staging-control-mcp/p08-remote.test.mjs
+      - name: Historical admission and release STOP contracts
+        if: ${{ !cancelled() }}
+        run: |
+          node --experimental-strip-types --test scripts/f0-c10-r2-t04-fault.test.mjs scripts/f0-c10/c05-t03-server.test.mjs scripts/f0-c10/c05-t04-read-only.test.mjs scripts/f0-c10/c05-t09-safety.test.mjs scripts/f0-c10/inference-durable.test.mjs
+          node --test scripts/f0-c10/r4-release-guard.test.mjs scripts/f0-c10/r4-promote.test.mjs scripts/f0-c10/r4-reconcile-plan.test.mjs scripts/f0-c10/evaluate.test.mjs scripts/f0-c10/live-evidence.test.mjs
+      - name: Full Bun unit suite
+        if: ${{ !cancelled() }}
+        run: bun test
+      - name: Typecheck
+        if: ${{ !cancelled() }}
+        run: bun run typecheck
+      - name: Security invariants
+        if: ${{ !cancelled() }}
+        run: bun scripts/check-invariants.mjs
+      - name: Offline evaluator matrix
+        if: ${{ !cancelled() }}
+        run: |
+          node scripts/f0-c10/metralla-m07/run.mjs --suite > /tmp/m08-fixtures.json
+          node scripts/f0-c10/run-offline.mjs --suite --out /tmp/m08-t10.json
+          node -e "const x=require('/tmp/m08-t10.json');if(!x.pass||x.realStagingTested)process.exit(1)"
+      - name: Build and static preview
+        if: ${{ !cancelled() }}
+        run: |
+          bun run build
+          bun scripts/test-preview.mjs
+      - name: Two existing Staging Worker dry-run packages
+        if: ${{ !cancelled() }}
+        run: |
+          CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH=wrangler.g1.jsonc bun run build
+          node scripts/f0-c10/pilot-staging-package.mjs
+      - name: Exact source and clean tracked files
+        if: ${{ !cancelled() }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
