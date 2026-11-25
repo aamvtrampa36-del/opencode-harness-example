@@ -97,26 +97,58 @@ jobs:
           set -euo pipefail
           python3 - /tmp/p26-c1-export <<'PY'
           from pathlib import Path
-          import re, sys
+          import hashlib, json, re, subprocess, sys
           root = Path(sys.argv[1])
           if not root.is_dir() or root.is_symlink():
               raise SystemExit('P26_EXPORT_ROOT_INVALID')
-          # No output of file contents or matched values. Public, deterministic build only.
+          # Keep every original rule; no token-shaped value is allowlisted.
           patterns = [
-              rb'-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----',
-              rb'\bgh[pousr]_[A-Za-z0-9]{36,}\b',
-              rb'\bgithub_pat_[A-Za-z0-9_]{50,}\b',
-              rb'\bsk-(?:proj-|or-v1-)?[A-Za-z0-9_-]{48,}\b',
-              rb'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b',
-              rb'\bxox[baprs]-[A-Za-z0-9-]{20,}\b',
-              rb'\bAIza[A-Za-z0-9_-]{35}\b',
-              rb'\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{25,}\b',
+              ('pem_header', rb'-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----'),
+              ('github_token', rb'\bgh[pousr]_[A-Za-z0-9]{36,}\b'),
+              ('github_pat', rb'\bgithub_pat_[A-Za-z0-9_]{50,}\b'),
+              ('sk_token', rb'\bsk-(?:proj-|or-v1-)?[A-Za-z0-9_-]{48,}\b'),
+              ('aws_key', rb'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b'),
+              ('slack_token', rb'\bxox[baprs]-[A-Za-z0-9-]{20,}\b'),
+              ('google_key', rb'\bAIza[A-Za-z0-9_-]{35}\b'),
+              ('jwt', rb'\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{25,}\b'),
           ]
+          # Prove a bare public PEM delimiter in a parsed JS/TS expression, not a
+          # credential. A literal embedded in data, comments, templates or concatenations
+          # cannot pass. Any other rule always blocks. Offsets are UTF-8 byte offsets.
+          proof_js = r'''
+          import fs from 'node:fs';
+          import ts from 'typescript';
+          const file=process.argv[1], bytes=fs.readFileSync(file), s=bytes.toString('utf8');
+          if(!Buffer.from(s).equals(bytes))process.exit(2);
+          const sf=ts.createSourceFile(file,s,ts.ScriptTarget.Latest,true);
+          if(sf.parseDiagnostics.length)process.exit(3);
+          const marker=/^-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----$/;
+          const out=[];
+          function visit(n){
+            const p=n.parent, start=n.getStart(sf), raw=s.slice(start,n.end);
+            let off=-1, kind='';
+            if(ts.isStringLiteral(n)&&marker.test(n.text)&&raw.slice(1,-1)===n.text&&['"',"'"].includes(raw[0])&&raw.at(-1)===raw[0]){
+              if(ts.isCallExpression(p)&&p.arguments[0]===n&&ts.isPropertyAccessExpression(p.expression)){
+                const m=p.expression.name.text;
+                if(['startsWith','endsWith','includes','indexOf','lastIndexOf'].includes(m)&&p.arguments.length===1){off=start+1;kind='literal-parser-argument';}
+                if(['replace','replaceAll'].includes(m)&&p.arguments.length===2&&ts.isStringLiteral(p.arguments[1])&&p.arguments[1].text===''){off=start+1;kind='literal-strip-argument';}
+              }
+            }else if(n.kind===ts.SyntaxKind.RegularExpressionLiteral){
+              const end=raw.lastIndexOf('/'), body=raw.slice(1,end), flags=raw.slice(end+1);
+              if(raw[0]==='/'&&marker.test(body)&&/^[gimsuyd]*$/.test(flags)){
+                if(ts.isCallExpression(p)&&p.arguments[0]===n&&ts.isPropertyAccessExpression(p.expression)&&['replace','replaceAll'].includes(p.expression.name.text)&&p.arguments.length===2&&ts.isStringLiteral(p.arguments[1])&&p.arguments[1].text===''){off=start+1;kind='regex-strip-argument';}
+                if(ts.isPropertyAccessExpression(p)&&p.expression===n&&['test','exec'].includes(p.name.text)&&ts.isCallExpression(p.parent)&&p.parent.expression===p){off=start+1;kind='regex-parser-receiver';}
+              }
+            }
+            if(off>=0)out.push([Buffer.byteLength(s.slice(0,off)),kind]);
+            ts.forEachChild(n,visit);
+          }
+          visit(sf);console.log(JSON.stringify(out));
+          '''
           blocked = {'.git','.env','.npmrc','.netrc','.dev.vars','credentials.json','secrets.json','id_rsa','id_ed25519'}
-          total = 0
-          count = 0
+          total = count = findings = benign = unresolved = 0
           limit = 100 * 1024 * 1024
-          for p in root.rglob('*'):
+          for p in sorted(root.rglob('*')):
               rel = p.relative_to(root)
               if p.is_symlink() or any(x.lower() in blocked or x.lower().startswith(('.env.', '.dev.vars.')) or x.lower().endswith(('.pem','.p12','.pfx','.key')) for x in rel.parts):
                   raise SystemExit('P26_EXPORT_DISALLOWED_ENTRY')
@@ -130,12 +162,33 @@ jobs:
               if total > limit:
                   raise SystemExit('P26_EXPORT_SIZE_LIMIT')
               data = p.read_bytes()
-              if any(re.search(pattern, data) for pattern in patterns):
-                  raise SystemExit('P26_EXPORT_CREDENTIAL_PATTERN')
+              evidence = {}
+              if re.search(patterns[0][1], data) and p.suffix.lower() in {'.js','.mjs','.cjs','.ts','.tsx','.jsx'}:
+                  try:
+                      proc = subprocess.run(['node','--input-type=module','-e',proof_js,str(p)], capture_output=True, timeout=60, check=True)
+                      evidence = dict(json.loads(proc.stdout))
+                  except (subprocess.SubprocessError, ValueError, OSError):
+                      pass  # Unknown parser/format cannot be exempted.
+              for rule, pattern in patterns:
+                  for m in re.finditer(pattern, data):
+                      proof = evidence.get(m.start()) if rule == 'pem_header' else None
+                      findings += 1
+                      if proof:
+                          benign += 1
+                      else:
+                          unresolved += 1
+                      if findings <= 100:
+                          name = str(rel)
+                          if not re.fullmatch(r'[A-Za-z0-9_./@+\-]+',name) or any(re.search(rx,name.encode()) for _,rx in patterns):
+                              name = 'path-sha256:'+hashlib.sha256(name.encode()).hexdigest()
+                          print('P26_EXPORT_FINDING '+json.dumps({'file':name,'file_sha256':hashlib.sha256(data).hexdigest(),'rule':rule,'offset':m.start(),'length':m.end()-m.start(),'proof':proof or 'UNRESOLVED'},separators=(',',':')))
               count += 1
           if not count:
               raise SystemExit('P26_EXPORT_EMPTY')
-          print(f'P26_EXPORT_SCREEN_PASS files={count} bytes={total} cap={limit}; pattern screen only')
+          print(f'P26_EXPORT_SCREEN_SUMMARY files={count} bytes={total} cap={limit} findings={findings} benign={benign} unresolved={unresolved}')
+          if unresolved or findings > 100:
+              raise SystemExit('P26_EXPORT_CREDENTIAL_PATTERN')
+          print('P26_EXPORT_SCREEN_PASS; pattern screen only; all exceptions are parsed bare PEM delimiter operations')
           PY
       - uses: actions/upload-artifact@v4
         with:
