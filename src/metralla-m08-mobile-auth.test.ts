@@ -1,5 +1,5 @@
 import {test,expect} from "bun:test";
-import {mobileOwnerAuthorized,handleMobileArtifactRead,type MobileOwnerEnv} from "./metralla-m08-mobile-auth";
+import {mobileOwnerAuthorized,remoteOwnerPrincipal,handleMobileArtifactRead,type MobileOwnerEnv} from "./metralla-m08-mobile-auth";
 const now=1700000000000,subject="fixture-owner-sub",origin="https://fixture.invalid",issuer="https://fixture.cloudflareaccess.com";
 const b64=(x:Uint8Array)=>Buffer.from(x).toString("base64url");
 const json=(x:unknown)=>Buffer.from(JSON.stringify(x)).toString("base64url");
@@ -63,4 +63,24 @@ test("route never reaches storage without owner auth; no writes, query tokens or
  expect((await handleMobileArtifactRead(req(token,download),f.env,reads,authorize)).status).toBe(200);
  expect((await handleMobileArtifactRead(req(token,download.replace(sid,"sesOther")),f.env,reads,authorize)).status).toBe(404);
  expect(calls).toBe(3);
+});
+
+test("Remote principal cryptographically bound to exact audience, origin and configured principal kind",async()=>{
+ const f=await setup(),token=await f.token();
+ const pins={OPENCODE_REMOTE_ACCESS_ORIGIN:origin,OPENCODE_REMOTE_ACCESS_ISSUER:issuer,
+ OPENCODE_REMOTE_ACCESS_AUDIENCE:"a".repeat(64),OPENCODE_REMOTE_OWNER_SHA256:f.env.OPENCODE_MOBILE_OWNER_SUB_SHA256,
+ OPENCODE_REMOTE_PRINCIPAL_KIND:"human"};
+ const remote=(t:string,url=origin+"/mcp")=>new Request(url,{method:"POST",headers:{"Cf-Access-Jwt-Assertion":t}});
+ expect(await remoteOwnerPrincipal(remote(token),pins,f.http,now)).toBe(pins.OPENCODE_REMOTE_OWNER_SHA256);
+ expect(await remoteOwnerPrincipal(remote(token),{},f.http,now)).toBeUndefined();
+ expect(await remoteOwnerPrincipal(remote(token,origin+"/other"),pins,f.http,now)).toBeUndefined();
+ expect(await remoteOwnerPrincipal(remote(await f.token({aud:["b".repeat(64)]})),pins,f.http,now)).toBeUndefined();
+ const serviceHash=Buffer.from(await crypto.subtle.digest("SHA-256",enc.encode("service:fixture-client"))).toString("hex");
+ const servicePins={...pins,OPENCODE_REMOTE_PRINCIPAL_KIND:"service",OPENCODE_REMOTE_OWNER_SHA256:serviceHash};
+ const service=await f.token({sub:"",email:undefined,common_name:"fixture-client"});
+ expect(await remoteOwnerPrincipal(remote(service),servicePins,f.http,now)).toBe(serviceHash);
+ expect(await remoteOwnerPrincipal(remote(service),pins,f.http,now)).toBeUndefined();
+ expect(await remoteOwnerPrincipal(remote(token),servicePins,f.http,now)).toBeUndefined();
+ expect(await remoteOwnerPrincipal(remote(await f.token({sub:"",email:undefined,common_name:"foreign"})),servicePins,f.http,now)).toBeUndefined();
+ expect(await remoteOwnerPrincipal(remote(await f.token({exp:now/1000})),pins,f.http,now)).toBeUndefined();
 });

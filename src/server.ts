@@ -1290,18 +1290,19 @@ export class OpenCodeAgent extends DurableObject<Env> {
       passed: false, verified: false };
   }
 
-  private projectionPrincipal(){
+  private projectionPrincipal(verifiedPrincipal?:string){
     this.assertStagingRemote();if(this.ctx.id.name!==SUPERVISOR_WORKSPACE)throw Error("REMOTE_SCOPE_FORBIDDEN");
     const cfg=this.env as Env & {OPENCODE_REMOTE_OWNER_SHA256?:string};
     if(typeof cfg.OPENCODE_REMOTE_OWNER_SHA256!=="string"||!/^[a-f0-9]{64}$/.test(cfg.OPENCODE_REMOTE_OWNER_SHA256))throw Error("REMOTE_OWNER_UNCONFIGURED");
-    return cfg.OPENCODE_REMOTE_OWNER_SHA256;
+    if(verifiedPrincipal!==cfg.OPENCODE_REMOTE_OWNER_SHA256)throw Error("REMOTE_OWNER_AUTH_REQUIRED");
+    return verifiedPrincipal;
   }
-  async remoteSupervisorStatusV1(id:string,afterRevision:number|null){
-    this.projectionPrincipal();const p=await readTaskProjection(this.ctx.storage,id);
+  async remoteSupervisorStatusV1(id:string,afterRevision:number|null,verifiedPrincipal?:string){
+    this.projectionPrincipal(verifiedPrincipal);const p=await readTaskProjection(this.ctx.storage,id);
     return validateStatus({schema:REMOTE_SCHEMA,id,workspace:null,revision:p.revision,status:p.status},{id,workspace:null},afterRevision);
   }
-  async remoteSupervisorProgressV1(id:string,cursor?:string){
-    const principal=this.projectionPrincipal(),workspace=SUPERVISOR_WORKSPACE;
+  async remoteSupervisorProgressV1(id:string,cursor?:string,verifiedPrincipal?:string){
+    const principal=this.projectionPrincipal(verifiedPrincipal),workspace=SUPERVISOR_WORKSPACE;
     const p=await readTaskProjection(this.ctx.storage,id);if(!p.session)throw Error("REMOTE_SESSION_NOT_BOUND");
     const key=await importProjectionCursorKey((this.env as Env & {OPENCODE_REMOTE_CURSOR_KEY?:string}).OPENCODE_REMOTE_CURSOR_KEY);
     const digest=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify([principal,id])))),b=>b.toString(16).padStart(2,"0")).join("");

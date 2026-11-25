@@ -34,13 +34,9 @@ export function mobileOwnerConfigured(env:MobileOwnerEnv):boolean{
     typeof env.OPENCODE_MOBILE_ACCESS_AUDIENCE==="string"&&hex64.test(env.OPENCODE_MOBILE_ACCESS_AUDIENCE)&&
     typeof env.OPENCODE_MOBILE_OWNER_SUB_SHA256==="string"&&hex64.test(env.OPENCODE_MOBILE_OWNER_SUB_SHA256);
 }
-export async function mobileOwnerAuthorized(request:Request,env:MobileOwnerEnv,http:typeof fetch=fetch,now=Date.now()):Promise<boolean>{
+async function pinnedAccessAuthorized(request:Request,env:MobileOwnerEnv,kind:"human"|"service",http:typeof fetch,now:number):Promise<boolean>{
   try {
-    if(!mobileOwnerConfigured(env)||request.method!=="GET"||
-       new URL(request.url).origin!==env.OPENCODE_MOBILE_ACCESS_ORIGIN||
-       request.headers.get("X-OpenCode-Artifact-Read")!=="v1")return false;
-    const origin=request.headers.get("Origin"),site=request.headers.get("Sec-Fetch-Site");
-    if((origin&&origin!==env.OPENCODE_MOBILE_ACCESS_ORIGIN)||(site&&site!=="same-origin"))return false;
+    if(!mobileOwnerConfigured(env)||new URL(request.url).origin!==env.OPENCODE_MOBILE_ACCESS_ORIGIN)return false;
     // Access injects a signed application token; a spoofed email header, a
     // cookie alone or a service token is insufficient. No bearer in browser.
     const raw=request.headers.get("Cf-Access-Jwt-Assertion");
@@ -51,14 +47,24 @@ export async function mobileOwnerAuthorized(request:Request,env:MobileOwnerEnv,h
        header.jku!==undefined||header.x5u!==undefined||
        claims.iss!==env.OPENCODE_MOBILE_ACCESS_ISSUER||claims.type!=="app"||
        !Array.isArray(claims.aud)||claims.aud.length!==1||claims.aud[0]!==env.OPENCODE_MOBILE_ACCESS_AUDIENCE||
-       typeof claims.sub!=="string"||!claims.sub||claims.sub.length>256||
-       typeof claims.email!=="string"||!claims.email.includes("@")||claims.email.length>320||
-       claims.common_name!==undefined)return false;
+       false)return false;
+    let subject:string;
+    if(kind==="human"){
+      if(typeof claims.sub!=="string"||!claims.sub||claims.sub.length>256||
+         typeof claims.email!=="string"||!claims.email.includes("@")||claims.email.length>320||
+         claims.common_name!==undefined)return false;
+      subject=claims.sub;
+    }else{
+      if(typeof claims.common_name!=="string"||!claims.common_name||claims.common_name.length>256||
+         (claims.email!==undefined&&claims.email!=="")||
+         (claims.sub!==undefined&&claims.sub!==""))return false;
+      subject="service:"+claims.common_name;
+    }
     const seconds=Math.floor(now/1000);
     if(!Number.isSafeInteger(now)||!Number.isSafeInteger(claims.exp)||Number(claims.exp)<=seconds||
        !Number.isSafeInteger(claims.iat)||Number(claims.iat)>seconds+60||Number(claims.exp)<=Number(claims.iat)||
        (claims.nbf!==undefined&&(!Number.isSafeInteger(claims.nbf)||Number(claims.nbf)>seconds)))return false;
-    const subjectHash=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",enc.encode(claims.sub))),b=>b.toString(16).padStart(2,"0")).join("");
+    const subjectHash=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",enc.encode(subject))),b=>b.toString(16).padStart(2,"0")).join("");
     if(subjectHash!==env.OPENCODE_MOBILE_OWNER_SUB_SHA256)return false;
     // Only the pinned Access issuer is contacted, never JWT-supplied URLs.
     // The browser's cookies, JWT and other credentials are not forwarded.
@@ -77,6 +83,30 @@ export async function mobileOwnerAuthorized(request:Request,env:MobileOwnerEnv,h
     const publicKey=await crypto.subtle.importKey("jwk",key as JsonWebKey,{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["verify"]);
     return await crypto.subtle.verify("RSASSA-PKCS1-v1_5",publicKey,decode(s),enc.encode(h+"."+p));
   }catch{return false;}
+}
+export async function mobileOwnerAuthorized(request:Request,env:MobileOwnerEnv,http:typeof fetch=fetch,now=Date.now()):Promise<boolean>{
+  if(request.method!=="GET"||request.headers.get("X-OpenCode-Artifact-Read")!=="v1")return false;
+  const origin=request.headers.get("Origin"),site=request.headers.get("Sec-Fetch-Site");
+  if((origin&&origin!==env.OPENCODE_MOBILE_ACCESS_ORIGIN)||(site&&site!=="same-origin"))return false;
+  return pinnedAccessAuthorized(request,env,"human",http,now);
+}
+export type RemoteOwnerEnv={
+  OPENCODE_REMOTE_ACCESS_ORIGIN?:string;
+  OPENCODE_REMOTE_ACCESS_ISSUER?:string;
+  OPENCODE_REMOTE_ACCESS_AUDIENCE?:string;
+  OPENCODE_REMOTE_OWNER_SHA256?:string;
+  OPENCODE_REMOTE_PRINCIPAL_KIND?:string;
+};
+/** No trust in tool args, forwarded identity headers or unsigned JWT claims. */
+export async function remoteOwnerPrincipal(request:Request,env:RemoteOwnerEnv,http:typeof fetch=fetch,now=Date.now()):Promise<string|undefined>{
+  const kind=env.OPENCODE_REMOTE_PRINCIPAL_KIND;
+  if(kind!=="human"&&kind!=="service")return;
+  if(new URL(request.url).pathname!=="/mcp"||!["GET","POST","DELETE"].includes(request.method))return;
+  const pins:MobileOwnerEnv={OPENCODE_MOBILE_ACCESS_ORIGIN:env.OPENCODE_REMOTE_ACCESS_ORIGIN,
+    OPENCODE_MOBILE_ACCESS_ISSUER:env.OPENCODE_REMOTE_ACCESS_ISSUER,
+    OPENCODE_MOBILE_ACCESS_AUDIENCE:env.OPENCODE_REMOTE_ACCESS_AUDIENCE,
+    OPENCODE_MOBILE_OWNER_SUB_SHA256:env.OPENCODE_REMOTE_OWNER_SHA256};
+  if(await pinnedAccessAuthorized(request,pins,kind,http,now))return env.OPENCODE_REMOTE_OWNER_SHA256;
 }
 type MobileReads={
   manifest:(id:string)=>Promise<unknown>;

@@ -28,8 +28,8 @@ export interface StagingSupervisor {
   supervisedTaskArtifacts?(id: string): Promise<unknown>;
   supervisedArtifactCapture?(id: string, raw: unknown): Promise<unknown>;
   remoteSupervisorProgress(id: string, after?: number): Promise<unknown>;
-  remoteSupervisorStatusV1?(id: string, afterRevision: number | null): Promise<unknown>;
-  remoteSupervisorProgressV1?(id: string, cursor?: string): Promise<unknown>;
+  remoteSupervisorStatusV1?(id: string, afterRevision: number | null, principal?:string): Promise<unknown>;
+  remoteSupervisorProgressV1?(id: string, cursor?: string, principal?:string): Promise<unknown>;
   remoteSupervisorContinue(input: unknown): Promise<unknown>;
   remoteSupervisorSelectModel(id: string, model: string): Promise<unknown>;
   remoteSupervisorModels(): Promise<unknown>;
@@ -50,6 +50,7 @@ export interface StagingSupervisor {
 }
 
 export interface StagingControlBindings {
+  verifiedPrincipal?:string;
   /** Optional: never enable phase telemetry unless both workers are explicitly configured. */
   phaseTelemetryEnabled?: boolean;
   readHealth(): Promise<Response>;
@@ -301,7 +302,8 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
     const supervisor = bindings.supervisor(scope.workspace ?? undefined);
     if (schema === REMOTE_SCHEMA) {
       if (!supervisor.remoteSupervisorStatusV1) throw Error("REMOTE_SCHEMA_UNAVAILABLE");
-      return validateStatus(await supervisor.remoteSupervisorStatusV1(id, afterRevision ?? null), scope, afterRevision ?? null);
+      if(!bindings.verifiedPrincipal)throw Error("REMOTE_OWNER_AUTH_REQUIRED");
+      return validateStatus(await supervisor.remoteSupervisorStatusV1(id, afterRevision ?? null,bindings.verifiedPrincipal), scope, afterRevision ?? null);
     }
     if (!supervisor.remoteSupervisorTaskStatusSnapshot)
       throw new Error("SUPERVISOR_STATUS_SNAPSHOT_UNAVAILABLE_OLD_WORKER");
@@ -343,7 +345,8 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
     const supervisor = bindings.supervisor(scope.workspace ?? undefined);
     if (schema === REMOTE_SCHEMA) {
       if (!supervisor.remoteSupervisorProgressV1) throw Error("REMOTE_SCHEMA_UNAVAILABLE");
-      return validateProgress(await supervisor.remoteSupervisorProgressV1(id, cursor), scope, cursor);
+      if(!bindings.verifiedPrincipal)throw Error("REMOTE_OWNER_AUTH_REQUIRED");
+      return validateProgress(await supervisor.remoteSupervisorProgressV1(id, cursor,bindings.verifiedPrincipal), scope, cursor);
     }
     const value = asRecord(await supervisor.remoteSupervisorProgress(id, after));
     if (value.taskId !== undefined && value.taskId !== id) throw Error("REMOTE_UPSTREAM_IDENTITY_MISMATCH");
