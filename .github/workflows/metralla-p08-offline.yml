@@ -1,0 +1,47 @@
+name: Metralla P08 Remote boundary (OFFLINE ONLY)
+on:
+  push:
+    branches: [metralla/m02]
+    paths:
+      - '.github/workflows/metralla-p08-offline.yml'
+      - 'src/staging-control-mcp/**'
+permissions:
+  contents: read
+concurrency:
+  group: metralla-p08-offline
+  cancel-in-progress: false
+jobs:
+  offline:
+    if: github.event.repository.private == false && github.ref == 'refs/heads/metralla/m02'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Exact SHA and P07 ancestry
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor 94973933b8649dfd548cc5680d56ca779e92cc42 HEAD
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+          no-cache: true
+      - name: Install frozen dependencies
+        run: bun install --frozen-lockfile
+      - name: P08 and P07 Node tests
+        run: node --experimental-strip-types --test src/staging-control-mcp/p08-remote.test.mjs scripts/f0-c10/metralla-m02/projection.test.mjs
+      - name: MCP and regression tests
+        run: bun test src/staging-control-mcp/server.test.ts src/staging-control-mcp/p08-mcp.test.ts src/supervisor-progress.test.ts src/supervisor-directory.test.ts src/supervisor-metrics.test.ts src/supervisor-transcript-containment.test.ts
+      - name: Typecheck and invariants
+        run: |
+          bun run typecheck
+          bun scripts/check-invariants.mjs
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
