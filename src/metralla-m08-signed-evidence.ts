@@ -33,3 +33,10 @@ export async function verifyNormalClose(rawKey:unknown,release:string,signature:
   if(!await crypto.subtle.verify("Ed25519",key,bytes(signature),await evidenceMessage(release,"closure",e)))
     throw Error("NORMAL_CLOSE_SIGNATURE_INVALID");
 }
+
+export async function verifyBudgetTransitionSignature(raw:unknown,release:string,signature:unknown,a:import("./supervisor-inference-budget").BudgetTransition){
+  if(!hex(raw,64)||!hex(signature,128)||a.releaseSha!==release)return false;
+  try{const key=await crypto.subtle.importKey("raw",bytes(raw),{name:"Ed25519"},false,["verify"]);
+    return await crypto.subtle.verify("Ed25519",key,bytes(signature),await evidenceMessage(release,"authorization",a));
+  }catch{return false;}
+}

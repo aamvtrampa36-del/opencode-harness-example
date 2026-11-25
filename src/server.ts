@@ -56,8 +56,8 @@ import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import { GitHubBridge, type GitHubAction } from "./github";
 import { parseNormalApproval, approvedNormalTask, assertNormalTaskPin, assertNormalGitHubFence } from "./metralla-m08-normal-approval";
 import { makeNormalMeteredBinding, normalMeteredPlugin, type NormalContext } from "./metralla-m08-normal-binding";
-import { assertNormalBudgetReady } from "./supervisor-inference-budget";
-import { signedConsumedVerifier, verifyNormalClose, type NormalCloseEvidence } from "./metralla-m08-signed-evidence";
+import { assertNormalBudgetReady, normalBudgetTransitionSnapshot, transitionConsumedBudget, type BudgetTransition } from "./supervisor-inference-budget";
+import { signedConsumedVerifier, verifyNormalClose, verifyBudgetTransitionSignature, type NormalCloseEvidence } from "./metralla-m08-signed-evidence";
 import { releasePhysicallyClosedNormal } from "./supervisor-admission";
 import { type GitHubSourcePin, assertPinnedGitHubAction } from "./metralla-m05-source";
 import { DurableGitHubPublicationGate, assertSupervisedPublicationScope } from "./github-publication-durable";
@@ -197,7 +197,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
     if(!pilotLane&&!start.mode){
-      try{const approval=this.normalApproval();job.githubSource=approvedNormalTask(approval,job).pin;
+      try{const approval=this.normalApproval();job.githubSource=approvedNormalTask(approval,job).pin;job.normalWorkUntil=approval.policy.normal!.validUntil;
         await assertNormalBudgetReady(this.ctx.storage,approval.policy,approval.preflight);}
       catch{return {id:start.requestId,accepted:false,confirmed:false,stop:true,reason:"NORMAL_METERED_APPROVAL_OR_BUDGET_STOP"};}
     }
@@ -774,6 +774,22 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const root=(this.env as Env & {OPENCODE_M08_CONSUMED_ROOTS?:string}).OPENCODE_M08_CONSUMED_ROOTS;
     const verifier=await signedConsumedVerifier(root,freeze.releaseSha,args.signatures);
     return archiveConsumedPilot(this.ctx.storage,args.evidence,args.closure,args.authorization,verifier);
+  }
+  /** Only account Workflow, frozen pilot lane, exact pre-authorized normal policy.
+   * No billing action, no clear of outstanding or unknown exposure. */
+  async workflowBudgetTransition(raw:unknown):Promise<unknown>{
+    this.assertStagingRemote();const freeze=this.r4FreezeManifest();
+    if(!freeze)throw Error("BUDGET_TRANSITION_FREEZE_REQUIRED");
+    const cfg=this.env as Env & {OPENCODE_NORMAL_AUTHORIZATION?:string;OPENCODE_M08_BUDGET_TRANSITION_KEY?:string};
+    const release=typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"";
+    const approval=parseNormalApproval(cfg.OPENCODE_NORMAL_AUTHORIZATION,release);
+    const args=raw as {action:string;authority:BudgetTransition;signature:string;approvalRef:string};
+    if(!args||args.approvalRef!==freeze.approvalRef||JSON.stringify(args).length>12000)throw Error("BUDGET_TRANSITION_SCOPE");
+    if(args.action==="metralla_inspect_budget")return normalBudgetTransitionSnapshot(this.ctx.storage,approval.policy);
+    if(args.action!=="metralla_transition_budget"||args.authority?.approvalRef!==approval.approvalRef||args.authority?.releaseSha!==release||args.authority?.expiresAt>Math.min(freeze.expiresAt,approval.expiresAt))
+      throw Error("BUDGET_TRANSITION_SCOPE");
+    return transitionConsumedBudget(this.ctx.storage,approval.policy,approval.preflight,args.authority,
+      a=>verifyBudgetTransitionSignature(cfg.OPENCODE_M08_BUDGET_TRANSITION_KEY,release,args.signature,a));
   }
   async workflowNormalClose(raw:unknown):Promise<unknown>{
     this.assertStagingRemote();
@@ -2503,7 +2519,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           const slot=await supervisorAdmissionSlot(this.ctx.storage,task.id);
           const fresh=await this.supervisedRecord(task.id);
           assertNormalGitHubFence(fresh,slot,ctx.grant,pin,"mutation",sessionID);
-          const lease={requestId:task.id,project,generation:slot!.generation,token:slot!.token,expiresAt:Math.min(slot!.expiresAt,this.normalApproval().expiresAt)};
+          const lease={requestId:task.id,project,generation:slot!.generation,token:slot!.token,expiresAt:Math.min(fresh.normalWorkUntil!,this.normalApproval().expiresAt,Date.now()+180000)};
           result=await dev.runFenced({source,boot,lease},lease,command);
         }else result=await (await this.isolatedProject(project, sessionID)).run(project, command);
         const incident = observeLinux(result);

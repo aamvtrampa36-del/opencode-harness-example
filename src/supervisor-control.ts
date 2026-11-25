@@ -60,6 +60,8 @@ export type SupervisorTask = {
   baseCommit?: string;
   /** Server-approved immutable normal-lane pin, committed with admission. */
   githubSource?: import("./metralla-m05-source").GitHubSourcePin;
+  /** Exact server-approved work deadline, distinct from the pre-effect admission TTL. */
+  normalWorkUntil?: number;
   /** Immutable requested pins; baseCommit alone records the verified commit. */
   mode?: SupervisorMode;
   sourceCommit?: string;

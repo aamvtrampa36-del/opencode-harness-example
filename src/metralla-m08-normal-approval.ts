@@ -45,14 +45,16 @@ export function approvedNormalTask(a:NormalApproval,task:Pick<SupervisorTask,"id
 export function assertNormalTaskPin(a:NormalApproval,task:SupervisorTask){
   const x=approvedNormalTask(a,task);
   check(task.githubSource&&sameGitHubSourcePin(task.githubSource,x.pin)&&
-    (!task.baseCommit||task.baseCommit===x.pin.commit)&&(!task.sourceTree||task.sourceTree===x.pin.tree),
+    (!task.baseCommit||task.baseCommit===x.pin.commit)&&(!task.sourceTree||task.sourceTree===x.pin.tree)&&
+    task.normalWorkUntil===a.policy.normal!.validUntil,
     "NORMAL_DURABLE_PIN_MISMATCH");return x.pin;
 }
 export function assertNormalGitHubFence(task:SupervisorTask|undefined,slot:AdmissionSlot|undefined,grant:StartGrant,pin:GitHubSourcePin,
   phase:"branch"|"mutation",session?:string){
   check(task&&task.id===grant.id&&!task.pilotInstance&&!task.mode&&task.githubSource&&sameGitHubSourcePin(task.githubSource,pin)&&
     task.project==="supervised-"+grant.id&&task.repository.toLowerCase()===pin.repo&&task.branch===pin.branch&&
-    slot&&slot.token===grant.token&&slot.generation===grant.generation&&!task.cancelAmbiguous&&!task.pendingTurn,
+    slot&&slot.token===grant.token&&slot.generation===grant.generation&&!task.cancelAmbiguous&&!task.pendingTurn&&
+    Number.isSafeInteger(task.normalWorkUntil)&&task.normalWorkUntil!>Date.now(),
     "NORMAL_GITHUB_FENCE");
   if(phase==="branch"){
     check(task.status==="preparing"&&!task.session&&!task.operationId&&slot.phase==="effect_unknown"&&slot.effect==="github_branch","NORMAL_BRANCH_FENCE");
