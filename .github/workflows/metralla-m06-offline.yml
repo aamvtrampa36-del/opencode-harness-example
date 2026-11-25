@@ -1,0 +1,19 @@
+name: Metralla M06 offline
+on:
+  push:
+    branches: [metralla/m06]
+permissions:
+  contents: read
+jobs:
+  artifacts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: P19 and artifact regression
+        run: node --experimental-strip-types --test src/metralla-m06-*.test.mjs src/task-artifact-source.test.mjs src/task-output-artifacts.test.mjs src/task-artifact-http.test.mjs
