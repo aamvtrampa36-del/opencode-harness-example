@@ -156,8 +156,9 @@ jobs:
                   raw=t['raw']; cooked=t['cooked']; normalized=cooked.replace('\\r\\n','\n').replace('\\n','\n').replace('\r\n','\n')
                   # Only explicit placeholder text between exactly one matching pair of PEM delimiters.
                   blocks=re.findall(r'-----BEGIN PRIVATE KEY-----\s*(.*?)\s*-----END PRIVATE KEY-----',normalized,re.S)
-                  benign=(t['property'] and normalized.count(marker.decode())==1 and normalized.count('-----END PRIVATE KEY-----')==1 and len(blocks)==1 and placeholder.fullmatch(blocks[0].strip()) is not None)
                   exact,candidates=source_match(t)
+                  # Only the independently verified public npm documentation example.
+                  benign=(t['property'] and normalized.count(marker.decode())==1 and normalized.count('-----END PRIVATE KEY-----')==1 and len(blocks)==1 and blocks[0].strip()=='XXXX\nXXXX' and sha(cooked.encode())=='6cb1f9bd8c1cd5c5de345631a3001c2160e664cc5c982dcad287c7c0d09d43e4' and any(x['package']=='@npmcli/config@10.8.1' and x['path']=='node_modules/@npmcli/config/lib/definitions/definitions.js' and x['sourceSha256']=='6d1a21868e9f46538c1e4999c73987325a516f03e3b7fe8f986df932325e3b83' for x in exact))
                   print('P26_SOURCE_EVIDENCE '+json.dumps({'compiledSha256':digest,'literalLength':len(cooked),'literalSha256':sha(cooked.encode()),'property':t['property'],'explicitPlaceholder':benign,'exactSources':exact,'markerCandidates':candidates},separators=(',',':')))
                   if benign and exact and raw.count(marker.decode())==1:verified.add(t['offset']+1+len(raw.split(marker.decode(),1)[0].encode()))
               cache[digest]=verified;return verified
