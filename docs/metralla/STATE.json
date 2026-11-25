@@ -1,9 +1,9 @@
 {
   "planVersion": "1.0",
   "promptRevision": "R2",
-  "revision": 3,
-  "expectedPreviousRevision": 2,
-  "expectedParentCommit": "dd325b64fb844cc2de1b623e68d96335eb6ad3d9",
+  "revision": 4,
+  "expectedPreviousRevision": 3,
+  "expectedParentCommit": "4745c5e7f0a2d0406dd11288ad60878ccd5607e8",
   "date": "2026-11-24",
   "actor": "ChatGPT coordinator P25 via GitHub (offline only)",
   "repository": "aamvtrampa36-del/opencode-harness-example",
@@ -159,9 +159,20 @@
         45534019987,
         45534318316
       ],
-      "ciStatus": "first failure (diagnosed), corrected HEAD in_progress at observation",
+      "ciStatus": "success on exact corrected HEAD; runtime integration gate still PARTIAL",
       "level": "offline candidate only",
-      "ciJob": 138937053947
+      "ciJob": 138937053947,
+      "regression": {
+        "node": 296,
+        "bun": 1165,
+        "failed": 0
+      },
+      "dryRunPackages": {
+        "principal": "7302c19e7d94795d4b9b41eb0e4b020b5c9f3d61db119e451e268b108db6a9ad",
+        "mcp": "5c6e37e33667d1e2506bc26949377ace2d71723c1e9773161b22c5a7e71c1f5d",
+        "deployed": false,
+        "independentRebuildVerified": false
+      }
     },
     "M09": {
       "status": "WAITING",
@@ -533,7 +544,7 @@
     "liveGate": "STOP"
   },
   "blockers": [
-    "M08 partial: seven lane deltas and 12 shared hunks; CI 45534019987 RED corrected in 64e8ab6e; CI 45534318316 in_progress at observation. Authoritative SDK budget, projection coverage, pinned publication, authenticated mobile bytes and independent closure/evidence collectors remain incomplete; C1 null.",
+    "M08 PARTIAL: integrated regression exact HEAD 64e8ab6e/CI 45534318316 green; 296 Node and 1165 Bun, typecheck, invariants, matrix, preview/build and both dry-run packages. Still missing authoritative SDK budget, projection coverage, pinned publication, authenticated mobile bytes, independent closure/evidence collectors, cross-module runtime tests and reproducible artifact/rollback proof. C1 remains null; no L-D.",
     "Live STOP: consumed pilot github_branch effect_unknown; indexed active slot 1; native physical activity not measured",
     "C1 and immutable image/pilot reference not certified for live",
     "Budget, operator exclusion, future lot approvals pending",
