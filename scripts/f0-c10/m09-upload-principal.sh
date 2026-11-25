@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Explicit principal upload-only executor. No promotion, dispatch, or pilot grant.
 set -euo pipefail
-mode="$1"; source_sha="$2"; tree="$3"; expiry="$4"; pin="${5:-}"; normal_cfg_pin="${6:-}"; recovery_cfg_pin="${7:-}"
+mode="$1"; source_sha="$2"; tree="$3"; expiry="$4"; pin="${5:-}"
 [[ "$source_sha" =~ ^[0-9a-f]{40}$ && "$tree" =~ ^[0-9a-f]{40}$ && "$expiry" =~ ^[0-9]+$ ]]
 test "${WORKERS_CI_COMMIT_SHA:?}" = "$source_sha"
 test "$(git rev-parse HEAD)" = "$source_sha"
@@ -14,12 +14,11 @@ if [ "$mode" = build ]; then
   exit 0
 fi
 test "$mode" = upload
-[[ "$pin" =~ ^[0-9a-f]{64}$ && "$normal_cfg_pin" =~ ^[0-9a-f]{64}$ && "$recovery_cfg_pin" =~ ^[0-9a-f]{64}$ ]]
-export P26_NORMAL_CONFIG_PIN="$normal_cfg_pin" P26_RECOVERY_CONFIG_PIN="$recovery_cfg_pin"
+[[ "$pin" =~ ^[0-9a-f]{64}$ ]]
 git diff --exit-code
 git diff --cached --exit-code
 node scripts/f0-c10/r4-release-guard.mjs inventory principal "$source_sha" "$tmp" > "$tmp/receipt"
-printf '%s  %s\n' "$pin" "$tmp/receipt" | sha256sum -c -
+export P26_RELEASE_PIN="$pin" P26_INVENTORY_RECEIPT="$tmp/receipt"
 node --input-type=module <<'JS'
 import {readFileSync,writeFileSync} from "node:fs";
 import {createHash} from "node:crypto";
@@ -29,7 +28,7 @@ const c=JSON.parse(readFileSync(p,"utf8"));
 const hash=x=>createHash("sha256").update(JSON.stringify(x)).digest("hex");
 const normalize=x=>({...x,configPath:"/home/runner/work/opencode-harness-example/opencode-harness-example/wrangler.g1.jsonc",userConfigPath:"/home/runner/work/opencode-harness-example/opencode-harness-example/wrangler.g1.jsonc"});
 assert.equal(c.name,"opencode-g1-staging");
-assert.equal(hash(normalize(c)),process.env.P26_NORMAL_CONFIG_PIN);
+const normalConfigSha256=hash(normalize(c));
 assert.equal(c.containers.length,1);
 assert.equal(c.containers[0].class_name,"DevContainer");
 assert.equal(c.containers[0].scheduling_policy,"durable_object");
@@ -37,7 +36,11 @@ assert.deepEqual(c.containers[0].images,{pilot:{image:"registry.cloudflare.com/8
 assert(!Object.keys(c.vars).some(k=>k.startsWith("OPENCODE_PILOT_")||k==="OPENCODE_NORMAL_AUTHORIZATION"));
 c.vars.OPENCODE_M08_RECOVERY_MODE="true";
 c.assets.run_worker_first=true;
-assert.equal(hash(normalize(c)),process.env.P26_RECOVERY_CONFIG_PIN);
+const recoveryConfigSha256=hash(normalize(c));
+// Independently derive this one pin from the exact CI inventory and configs.
+// Compact enough for Workers Builds; binds every prior guard in a single digest.
+const inventorySha256=createHash("sha256").update(readFileSync(process.env.P26_INVENTORY_RECEIPT)).digest("hex");
+assert.equal(hash({inventorySha256,normalConfigSha256,recoveryConfigSha256}),process.env.P26_RELEASE_PIN);
 writeFileSync(d+".m08-recovery-principal.json",JSON.stringify(c),{flag:"wx",mode:0o600});
 console.log("P26_PRINCIPAL_EXACT_CONFIGS_PASS");
 JS
