@@ -201,7 +201,7 @@ test("P02 concurrent identical archival is idempotent and does not disturb histo
  expect(await f.db.get("supervisor:turn:"+pid+":"+id(4))).toEqual({phase:"settled"});
 });
 
-import {normalBudgetTransitionSnapshot,transitionConsumedBudget,pilotBudgetPolicy,PILOT_FREE,PILOT_GLM,type BudgetPolicy,type PaidPreflight,type BudgetTransition} from "./supervisor-inference-budget";
+import {inspectNormalBudgetReady,normalBudgetTransitionSnapshot,transitionConsumedBudget,pilotBudgetPolicy,PILOT_FREE,PILOT_GLM,type BudgetPolicy,type PaidPreflight,type BudgetTransition} from "./supervisor-inference-budget";
 const globalKey="supervisor:inference:budget:v1",newId=id(800);
 function nextPolicy():BudgetPolicy{
  return {experimentId:newId,totalMicroUsd:10000,taskMicroUsd:10000,maxAttempts:1,
@@ -246,6 +246,14 @@ for(const mode of ["none","settled"] as const)test("M08 budget transition "+mode
  const saved=await db.get<any>("supervisor:inference:transition:v1:"+newId);
  expect(saved.previous).toEqual(before.get(globalKey)??null);expect(saved.digest).toBe(results[0].digest);
  expect((await db.get<any>(globalKey)).normal.active).toBe(0);
+ const after=structuredClone([...db.rows]);
+ const ready=await inspectNormalBudgetReady(db.asDO(),next,budgetProof,()=>now);
+ expect(ready.accountingReady).toBe(true);expect(ready.archiveDigest).toBe(a.archiveDigest);
+ expect(ready.policyDigest).toBe(a.nextPolicyDigest);expect([...db.rows]).toEqual(after);
+ await db.put(globalKey,{...await db.get<any>(globalKey),unknown:1});
+ const blocked=structuredClone([...db.rows]);
+ await expect(inspectNormalBudgetReady(db.asDO(),next,budgetProof,()=>now)).rejects.toThrow("NORMAL_LEDGER_NOT_READY");
+ expect([...db.rows]).toEqual(blocked);
 });
 test("M08 budget transition refuses unknown charge, blocked payment, stale digest, live slot and reused ID without mutation",async()=>{
  for(const mode of ["unknown","paymentBlocked"] as const){

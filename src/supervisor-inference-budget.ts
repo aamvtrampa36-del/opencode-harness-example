@@ -544,6 +544,55 @@ export async function normalBudgetTransitionSnapshot(storage:DurableObjectStorag
     return {previousDigest:await reconciliationDigest(previous??null),nextPolicyDigest:await reconciliationDigest(nextPolicy),archiveDigest:archive?.digest??null};
   });
 }
+/** Read-only accounting evidence for the fixed consumed pilot. Not external closure or authorization. */
+async function assertConsumedBudgetSettled(tx:Pick<DurableObjectTransaction,"get"|"list">,previous:Global|undefined){
+  // Scan only the consumed pilot's bounded history, not the complete historical database.
+  const rows=await tx.list<Row>({prefix:"supervisor:inference:call:"+CONSUMED_PILOT_ID+":",limit:PILOT_MAX_CALLS+1});
+  requireValue(rows.size<=PILOT_MAX_CALLS,"BUDGET_TRANSITION_HISTORY_LIMIT");
+  const task=await tx.get<Counter>(TASK(CONSUMED_PILOT_ID));
+  if(previous){
+    let old:BudgetPolicy;try{old=JSON.parse(previous.policy);}catch{throw Error("BUDGET_TRANSITION_OLD_POLICY");}
+    requireValue(old.experimentId===CONSUMED_PILOT_ID&&old.hybrid&&!old.normal&&policySnapshot(old)===previous.policy&&previous.version===1&&
+      previous.hybrid&&!previous.normal&&!previous.paymentBlocked&&!previous.hybrid.pending&&previous.reserved===0&&previous.unknown===0&&
+      int(previous.confirmed,0,old.totalMicroUsd)&&previous.hybrid.calls===rows.size,"BUDGET_TRANSITION_OLD_UNSETTLED");
+    let confirmed=0;
+    for(const [rowKey,row] of rows){
+      requireValue(row.requestId===CONSUMED_PILOT_ID&&rowKey===CALL(row.requestId,row.callId)&&row.attempts===1&&
+        ["settled","rejected"].includes(row.state)&&int(row.exposure,0,old.totalMicroUsd),"BUDGET_TRANSITION_CALL_UNSETTLED");
+      const allowed=Object.hasOwn(old.selections,row.selection)?old.selections[row.selection]:undefined;
+      requireValue(allowed&&allowed.providerID===row.providerID&&allowed.modelID===row.modelID&&await reconciliationDigest(row.price)===await reconciliationDigest(allowed.price),"BUDGET_TRANSITION_CALL_POLICY");
+      if(row.state==="settled"){
+        requireValue(int(row.charge,0,row.exposure)&&int(row.inputTokens,0,row.inputTokenCeiling)&&int(row.outputTokens,0,row.outputTokenCeiling)&&
+          row.charge===Math.ceil((row.inputTokens!*allowed.price.inputMicroUsdPerMillion+row.outputTokens!*allowed.price.outputMicroUsdPerMillion)/1000000)&&typeof row.receiptId==="string"&&await tx.get(RECEIPT(row.providerID,row.receiptId))===rowKey,"BUDGET_TRANSITION_RECEIPT_INVALID");
+        confirmed+=row.charge!;
+      }
+    }
+    requireValue(confirmed===previous.confirmed&&(!rows.size&&!task&&confirmed===0||task&&task.confirmed===confirmed&&task.reserved===0&&task.unknown===0),"BUDGET_TRANSITION_COUNTER_MISMATCH");
+  }else requireValue(rows.size===0&&!task,"BUDGET_TRANSITION_ORPHAN_HISTORY");
+  return {schema:"metralla-consumed-budget-readback-v1" as const,requestId:CONSUMED_PILOT_ID,
+    previousDigest:await reconciliationDigest(previous??null),calls:rows.size,
+    confirmedMicroUsd:previous?.confirmed??0,reservedMicroUsd:0,unknownMicroUsd:0,
+    ledgerPresent:previous!==undefined,accountingSettled:true as const};
+}
+export async function inspectConsumedBudget(storage:DurableObjectStorage){
+  return storage.transaction(async tx=>assertConsumedBudgetSettled(tx,await tx.get<Global>(GLOBAL)));
+}
+/** Private readback of an actual, settled normal ledger. Never initializes a missing ledger. */
+export async function inspectNormalBudgetReady(storage:DurableObjectStorage,policy:BudgetPolicy,proof:PaidPreflight,clock=Date.now){
+  const snap=policySnapshot(policy);
+  requireValue(policy.normal&&!policy.hybrid&&paidPreflight({...proof,now:clock()}).decision==="GO","PAID_PREFLIGHT_STOP");
+  return storage.transaction(async tx=>{
+    const g=await tx.get<Global>(GLOBAL);
+    requireValue(g?.version===1&&g.policy===snap&&g.normal&&!g.hybrid&&!g.paymentBlocked&&
+      int(g.confirmed,0,policy.totalMicroUsd)&&g.reserved===0&&g.unknown===0&&g.normal.active===0,"NORMAL_LEDGER_NOT_READY");
+    const ledger=await tx.get<{version:number;slots:Record<string,unknown>}>("supervisor:admission:v1");
+    requireValue(ledger?.version===1&&ledger.slots&&Object.keys(ledger.slots).length===0&&await consumedArchiveExempts(tx,ledger.slots),"BUDGET_TRANSITION_NOT_DRAINED");
+    const archive=await tx.get<{digest:string}>("supervisor:consumed-pilot:archive:v1:"+CONSUMED_PILOT_ID);
+    requireValue(archive&&paidPreflight({...proof,now:clock()}).decision==="GO","NORMAL_LEDGER_NOT_READY");
+    return {schema:"metralla-normal-budget-readback-v1",policyDigest:await reconciliationDigest(snap),ledgerDigest:await reconciliationDigest(g),
+      archiveDigest:archive.digest,confirmedMicroUsd:g.confirmed,reservedMicroUsd:0,unknownMicroUsd:0,active:0,accountingReady:true};
+  });
+}
 export async function transitionConsumedBudget(storage:DurableObjectStorage,policy:BudgetPolicy,proof:PaidPreflight,
   authority:BudgetTransition,verify:(a:BudgetTransition)=>Promise<boolean>,clock=Date.now){
   const a=structuredClone(authority),snap=policySnapshot(policy),nextPolicyDigest=await reconciliationDigest(snap);
@@ -566,29 +615,7 @@ export async function transitionConsumedBudget(storage:DurableObjectStorage,poli
     requireValue(ledger?.version===1&&ledger.slots&&Object.keys(ledger.slots).length===0&&await consumedArchiveExempts(tx,ledger.slots),"BUDGET_TRANSITION_NOT_DRAINED");
     const archive=await tx.get<{digest:string}>("supervisor:consumed-pilot:archive:v1:"+CONSUMED_PILOT_ID);
     requireValue(archive?.digest===a.archiveDigest,"BUDGET_TRANSITION_ARCHIVE_CHANGED");
-    // Scan only the consumed pilot's bounded history, not the complete historical database.
-    const rows=await tx.list<Row>({prefix:"supervisor:inference:call:"+CONSUMED_PILOT_ID+":",limit:PILOT_MAX_CALLS+1});
-    requireValue(rows.size<=PILOT_MAX_CALLS,"BUDGET_TRANSITION_HISTORY_LIMIT");
-    const task=await tx.get<Counter>(TASK(CONSUMED_PILOT_ID));
-    if(previous){
-      let old:BudgetPolicy;try{old=JSON.parse(previous.policy);}catch{throw Error("BUDGET_TRANSITION_OLD_POLICY");}
-      requireValue(old.experimentId===CONSUMED_PILOT_ID&&old.hybrid&&!old.normal&&policySnapshot(old)===previous.policy&&previous.version===1&&
-        previous.hybrid&&!previous.normal&&!previous.paymentBlocked&&!previous.hybrid.pending&&previous.reserved===0&&previous.unknown===0&&
-        int(previous.confirmed,0,old.totalMicroUsd)&&previous.hybrid.calls===rows.size,"BUDGET_TRANSITION_OLD_UNSETTLED");
-      let confirmed=0;
-      for(const [rowKey,row] of rows){
-        requireValue(row.requestId===CONSUMED_PILOT_ID&&rowKey===CALL(row.requestId,row.callId)&&row.attempts===1&&
-          ["settled","rejected"].includes(row.state)&&int(row.exposure,0,old.totalMicroUsd),"BUDGET_TRANSITION_CALL_UNSETTLED");
-        const allowed=Object.hasOwn(old.selections,row.selection)?old.selections[row.selection]:undefined;
-        requireValue(allowed&&allowed.providerID===row.providerID&&allowed.modelID===row.modelID&&await reconciliationDigest(row.price)===await reconciliationDigest(allowed.price),"BUDGET_TRANSITION_CALL_POLICY");
-        if(row.state==="settled"){
-          requireValue(int(row.charge,0,row.exposure)&&int(row.inputTokens,0,row.inputTokenCeiling)&&int(row.outputTokens,0,row.outputTokenCeiling)&&
-            row.charge===Math.ceil((row.inputTokens!*allowed.price.inputMicroUsdPerMillion+row.outputTokens!*allowed.price.outputMicroUsdPerMillion)/1000000)&&typeof row.receiptId==="string"&&await tx.get(RECEIPT(row.providerID,row.receiptId))===rowKey,"BUDGET_TRANSITION_RECEIPT_INVALID");
-          confirmed+=row.charge!;
-        }
-      }
-      requireValue(confirmed===previous.confirmed&&(!rows.size&&!task&&confirmed===0||task&&task.confirmed===confirmed&&task.reserved===0&&task.unknown===0),"BUDGET_TRANSITION_COUNTER_MISMATCH");
-    }else requireValue(rows.size===0&&!task,"BUDGET_TRANSITION_ORPHAN_HISTORY");
+    await assertConsumedBudgetSettled(tx,previous);
     requireValue(policy.experimentId!==CONSUMED_PILOT_ID,"BUDGET_TRANSITION_ID_REUSED");
     for(const id of Object.values(policy.normal!.rounds).flatMap(x=>x.taskIds)){
       requireValue(id!==CONSUMED_PILOT_ID&&!await tx.get("supervisor:task:"+id)&&!await tx.get(TASK(id))&&

@@ -57,7 +57,7 @@ import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import { GitHubBridge, type GitHubAction } from "./github";
 import { parseNormalApproval, approvedNormalTask, assertNormalTaskPin, assertNormalGitHubFence } from "./metralla-m08-normal-approval";
 import { makeNormalMeteredBinding, normalMeteredPlugin, type NormalContext } from "./metralla-m08-normal-binding";
-import { assertNormalBudgetReady, normalBudgetTransitionSnapshot, transitionConsumedBudget, readProviderReceipts, type BudgetTransition } from "./supervisor-inference-budget";
+import { assertNormalBudgetReady, inspectConsumedBudget, inspectNormalBudgetReady, normalBudgetTransitionSnapshot, transitionConsumedBudget, readProviderReceipts, type BudgetTransition } from "./supervisor-inference-budget";
 import { signedConsumedVerifier, verifyNormalClose, verifyBudgetTransitionSignature, type NormalCloseEvidence } from "./metralla-m08-signed-evidence";
 import { releasePhysicallyClosedNormal } from "./supervisor-admission";
 import { type GitHubSourcePin, assertPinnedGitHubAction } from "./metralla-m05-source";
@@ -770,7 +770,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const freeze=this.r4FreezeManifest();if(!freeze)throw Error("HISTORICAL_FREEZE_REQUIRED");
     const args=raw as {action:string;approvalRef:string;evidence:ConsumedEvidence;closure:ConsumedClosure;authorization:ConsumedAuthorization;signatures:unknown};
     if(!args||args.approvalRef!==freeze.approvalRef||JSON.stringify(args).length>12000)throw Error("CONSUMED_WORKFLOW_SCOPE");
-    if(args.action==="metralla_inspect_consumed")return inspectConsumedPilot(this.ctx.storage);
+    if(args.action==="metralla_inspect_consumed"){
+      const identity=await inspectConsumedPilot(this.ctx.storage);
+      const budget=await inspectConsumedBudget(this.ctx.storage);
+      const after=await inspectConsumedPilot(this.ctx.storage);
+      if(after.snapshotDigest!==identity.snapshotDigest)throw Error("P02_SNAPSHOT_CHANGED");
+      return {...identity,budget};
+    }
     if(args.action!=="metralla_archive_consumed"||args.authorization?.approvalRef!==freeze.approvalRef||
       args.authorization?.expiresAt>freeze.expiresAt)throw Error("CONSUMED_WORKFLOW_SCOPE");
     const root=(this.env as Env & {OPENCODE_M08_CONSUMED_ROOTS?:string}).OPENCODE_M08_CONSUMED_ROOTS;
@@ -781,7 +787,19 @@ export class OpenCodeAgent extends DurableObject<Env> {
    * No billing action, no clear of outstanding or unknown exposure. */
   async workflowBudgetTransition(raw:unknown):Promise<unknown>{
     this.assertStagingRemote();const freeze=this.r4FreezeManifest();
-    if(!freeze)throw Error("BUDGET_TRANSITION_FREEZE_REQUIRED");
+    // The existing private account Workflow can verify the live normal ledger
+    // after promotion without dispatching, reserving or changing any data.
+    if(!freeze){
+      const q=raw as {action?:unknown;approvalRef?:unknown};
+      if(!q||q.action!=="metralla_inspect_budget"||JSON.stringify(q).length>12000||
+        Object.keys(q).some(k=>k!=="action"&&k!=="approvalRef"))throw Error("BUDGET_TRANSITION_FREEZE_REQUIRED");
+      const approval=this.normalApproval();
+      if(q.approvalRef!==approval.approvalRef)throw Error("BUDGET_TRANSITION_SCOPE");
+      const capacity=await inspectSupervisorAdmissionCapacity(this.ctx.storage);
+      if(capacity.activeSlots!==0||!capacity.inventoryComplete||capacity.stopReason)throw Error("BUDGET_TRANSITION_NOT_DRAINED");
+      return {releaseSha:approval.releaseSha,approvalRef:approval.approvalRef,
+        budget:await inspectNormalBudgetReady(this.ctx.storage,approval.policy,approval.preflight),capacity,dispatchPerformed:false};
+    }
     const cfg=this.env as Env & {OPENCODE_NORMAL_AUTHORIZATION?:string;OPENCODE_M08_BUDGET_TRANSITION_KEY?:string};
     const release=typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"";
     const approval=parseNormalApproval(cfg.OPENCODE_NORMAL_AUTHORIZATION,release);
