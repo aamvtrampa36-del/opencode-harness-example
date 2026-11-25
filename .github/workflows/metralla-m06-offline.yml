@@ -7,7 +7,10 @@ permissions:
 jobs:
   artifacts:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -15,5 +18,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: P19 and artifact regression
-        run: node --experimental-strip-types --test src/metralla-m06-*.test.mjs src/task-artifact-source.test.mjs src/task-output-artifacts.test.mjs src/task-artifact-http.test.mjs
+      - name: Exact HEAD and bounded byte regression
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          node --experimental-strip-types --test src/metralla-m06-*.test.mjs src/task-artifact-source.test.mjs src/task-output-artifacts.test.mjs src/task-artifact-http.test.mjs
+      - name: Check exact B0 shared hunks in disposable checkout
+        run: |
+          test "$(git hash-object src/server.ts)" = 1930a35b4f248f224bcdfdc5d9d5703ba0338ee4
+          test "$(git hash-object src/client.tsx)" = 3d131c09e2c849df584c6c3d4e2ecd7526540702
+          git apply --check docs/metralla/packets/M06/P20-server-combined.patch docs/metralla/packets/M06/P21-client.patch
+          git apply docs/metralla/packets/M06/P20-server-combined.patch docs/metralla/packets/M06/P21-client.patch
+          test "$(git diff --name-only | sort | tr '\n' ' ')" = "src/client.tsx src/server.ts "
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+          no-cache: true
+      - run: bun install --frozen-lockfile
+      - name: Synthetic UI and export/download regression
+        run: bun test src/metralla-m06-ui.test.tsx src/session-export.test.ts src/download-response.test.ts
+      - run: bun run typecheck
+      - run: bun run build
+      - run: bun scripts/check-invariants.mjs
+      - run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"

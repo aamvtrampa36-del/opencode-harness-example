@@ -82,6 +82,11 @@ export function validateCaptureRequest(raw: unknown): CaptureRequest {
   return { path, name, mime };
 }
 
+function containsArtifactSecret(value: string): boolean {
+  return /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----|\bBearer\s+[A-Za-z0-9._~+/-]{12,}|\b(?:sk-(?:proj-|or-v1-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/i.test(value) ||
+    /(?:^|[\s,{])["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|client[_-]?secret|authorization)["']?\s*[:=]\s*["']?[^\s,"'}]{4,}/i.test(value);
+}
+
 async function shaHex(data: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new Uint8Array(data));
   return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
@@ -116,6 +121,7 @@ export async function captureInspectedArtifact(args: {
   let contents: string;
   try { contents = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
   catch { throw new Error("NON_UTF8_ARTIFACT"); }
+  assert(!containsArtifactSecret(contents) && !containsArtifactSecret(req.name), "ARTIFACT_SECRET_PATTERN");
   assert(/^[a-z][a-z0-9-]{0,39}$/.test(args.ownerProject) &&
     /^ses[A-Za-z0-9_]{1,64}$/.test(args.ownerSession) &&
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(args.repository), "INVALID_OWNER_SCOPE");
@@ -192,6 +198,9 @@ export async function verifiedArtifactDownload(artifact: StoredTaskArtifact, now
     const identity = validateCaptureRequest({
       path: artifact.sourcePath, name: artifact.name, mime: artifact.mime
     });
+    const decoded = new TextDecoder("utf-8",{fatal:true}).decode(artifact.bytes);
+    if (containsArtifactSecret(decoded) || containsArtifactSecret(identity.name)) return artifactErrorResponse("ARTIFACT_SECRET_PATTERN", 502);
+    if (identity.mime === "application/json") JSON.parse(decoded);
     if (!Number.isSafeInteger(artifact.createdAt) ||
         !Number.isSafeInteger(artifact.expiresAt) ||
         artifact.createdAt < 0 || artifact.createdAt > now ||

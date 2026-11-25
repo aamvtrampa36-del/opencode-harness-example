@@ -1,0 +1,24 @@
+diff --git a/src/client.tsx b/src/client.tsx
+--- a/src/client.tsx
++++ b/src/client.tsx
+@@ -3,6 +3,8 @@
+ import { readSessionSpecialization, saveSessionSpecialization } from "./session-specialization";
+ import { isInternalReminder } from "./message-display";
+ import { ToolFileAttachments } from "./tool-file-attachments";
++import { VerifiedTaskArtifacts } from "./metralla-m06-artifact-ui";
++import { withoutVerifiedArtifactParts } from "./metralla-m06-artifact-client";
+ import { repositoryProjectSlug } from "./project-container";
+ import { SettingsPanel } from "./settings-panel";
+ import { MODEL_PRESETS, isModelSelection, resolveModelSelection, type ModelSelectionID } from "./model-presets";
+@@ -210,7 +212,10 @@
+         ) : null}
+       </div>
+     </details>
+-    {status === "completed" ? <ToolFileAttachments content={part.state.content} /> : null}
++    {status === "completed" ? <>
++      <VerifiedTaskArtifacts content={part.state.content} />
++      <ToolFileAttachments content={withoutVerifiedArtifactParts(part.state.content)} />
++    </> : null}
+     </div>
+   );
+ }
