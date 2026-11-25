@@ -96,7 +96,7 @@ async function loadServerClass(fakeFetch: typeof fetch) {
   };
   // Load the real pure modules that implement the server's relevant contracts.
   // An unbound future import is an explicit integration failure, never a mock.
-  const safe = /^\.\/(?:supervisor-[\w-]+|github(?:-[\w-]+)?|project-scope|project-container|model-presets|g9-selfdev|openrouter-catalog|repository-import-scope|read-only-policy|read-only-[\w-]+)$/;
+  const safe = /^\.\/(?:supervisor-[\w-]+|github(?:-[\w-]+)?|project-scope|project-container|model-presets|g9-selfdev|openrouter-catalog|repository-import-scope|read-only-policy|read-only-[\w-]+|metralla-m08-task-projection)$/;
   for (const statement of ast.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
     const name = statement.moduleSpecifier.text;

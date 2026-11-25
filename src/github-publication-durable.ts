@@ -313,3 +313,7 @@ export class DurableGitHubPublicationGate implements GitHubPrPublicationGate {
     }
   }
 }
+
+export async function githubPublicationIdle(tx:Pick<DurableObjectTransaction,"get">,repo:string,base:string){
+  return !readLedger(await tx.get(PREFIX+await digest(repo.toLowerCase()+"\n"+base))).active;
+}

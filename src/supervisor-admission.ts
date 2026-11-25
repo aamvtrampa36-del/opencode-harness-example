@@ -92,7 +92,7 @@ export async function reserveSupervisorAdmission(
     for (const [id, slot] of Object.entries(ledger.slots)) {
       const task = await tx.get<SupervisorTask>(supervisorTaskKey(id));
       if (!task) throw new Error("ADMISSION_ORPHAN_SLOT");
-      if (slot.phase !== "effect_unknown" && terminal(task.status) &&
+      if (!task.githubSource && slot.phase !== "effect_unknown" && terminal(task.status) &&
           !task.pendingTurn && !task.cancelAmbiguous) {
         delete ledger.slots[id]; changed = true;
       }
@@ -406,6 +406,7 @@ export async function reserveSupervisorContinuation(
     const taskKey = supervisorTaskKey(id);
     const task = await tx.get<SupervisorTask>(taskKey);
     if (!task?.session) throw Error("Tarea no disponible");
+    if(task.githubSource)throw Error("NORMAL_CONTINUATION_REQUIRES_OPERATION_APPROVAL");
     if(task.pilotInstance||(await tx.get<PilotClaim>(PILOT_CLAIM))?.approval.requestId===id)throw Error("PILOT_NO_REPLAY");
     const previous = await tx.get<R2TurnJournal>(key);
     if (previous && (previous.hash !== hash || previous.session !== task.session ||
@@ -438,7 +439,7 @@ export async function reserveSupervisorContinuation(
         if (slot.phase === "effect_unknown") continue;
         const other = await tx.get<SupervisorTask>(supervisorTaskKey(owner));
         if (!other) throw Error("ADMISSION_ORPHAN_SLOT");
-        if (terminal(other.status) && !other.pendingTurn && !other.cancelAmbiguous)
+        if (!other.githubSource && terminal(other.status) && !other.pendingTurn && !other.cancelAmbiguous)
           delete ledger.slots[owner];
       }
       let slot = ledger.slots[id];
@@ -971,4 +972,28 @@ export async function reconcileHistoricalSupervisor(storage:DurableObjectStorage
     throw Error("HISTORICAL_RECONCILIATION_INCOMPLETE");
   return {...publicHistoricalCertificate(cert),capacity};
  });
+}
+
+/** Only the account Workflow's verified signed observation can call this.
+ * Slot generation and complete task digest are rechecked in the same transaction.
+ * No terminal string, timeout or destroy acknowledgement frees a pinned task. */
+export async function releasePhysicallyClosedNormal(storage:DurableObjectStorage,e:import("./metralla-m08-signed-evidence").NormalCloseEvidence,now=Date.now()){
+  const {reconciliationDigest}=await import("./supervisor-reconciliation");
+  const {normalTaskAccountingClosed}=await import("./supervisor-inference-budget");
+  const {githubPublicationIdle}=await import("./github-publication-durable");
+  return storage.transaction(async tx=>{
+    const key=supervisorTaskKey(e.requestId),task=await tx.get<SupervisorTask>(key);
+    const ledger=decodeLedger(await tx.get(LEDGER_KEY)),slot=ledger.slots[e.requestId];
+    const receiptKey="supervisor:normal-close:v1:"+e.requestId;
+    const digest=await reconciliationDigest(e),prior=await tx.get<{digest:string}>(receiptKey);
+    if(prior?.digest===digest&&!slot)return {id:e.requestId,reused:true,released:true};
+    if(prior||!task?.githubSource||!terminal(task.status)||task.pendingTurn||task.cancelAmbiguous||!slot||
+      slot.phase!=="running"||slot.effect||slot.generation!==e.generation||e.taskDigest!==await reconciliationDigest(task)||
+      e.observedAt>now||now-e.observedAt>60000)throw Error("NORMAL_CLOSE_FENCE");
+    if(!await normalTaskAccountingClosed(tx,task.id)||!await githubPublicationIdle(tx,task.githubSource.repo,task.githubSource.base))
+      throw Error("NORMAL_CLOSE_OUTSTANDING_EFFECT");
+    await tx.put(receiptKey,{digest,evidence:e});delete ledger.slots[e.requestId];
+    await tx.put(LEDGER_KEY,ledger);
+    return {id:e.requestId,reused:false,released:true};
+  });
 }

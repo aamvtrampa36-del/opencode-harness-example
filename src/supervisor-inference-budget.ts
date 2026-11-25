@@ -513,3 +513,12 @@ export async function normalFallbackAllowed(storage:DurableObjectStorage,grant:S
     return {selection:target,requiresNewAuthorizedT03Selection:true};
   });
 }
+
+/** Unknown provider effect is never physical-close accounting evidence. */
+export async function normalTaskAccountingClosed(tx:Pick<DurableObjectTransaction,"get">,id:string){
+  const global=await tx.get<Global>(GLOBAL),task=await tx.get<Counter>(TASK(id));
+  if(!global?.normal||global.hybrid||global.version!==1)return false;
+  const state=global.normal.tasks[id];
+  return Boolean(state&&state.active===0&&task&&task.reserved===0&&task.unknown===0&&
+    int(task.confirmed,0,CASH_LIMIT)&&int(state.calls,0,10000));
+}

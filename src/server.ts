@@ -27,7 +27,7 @@ import { REMOTE_SCHEMA, projectRemoteProgress, validateStatus } from "./staging-
 import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
 // Progress is read from the bounded supervisor ledger, never raw SDK log().
 import { requireMeteredDiagnosticAdmission } from "./supervisor-legacy-capacity";
-import { parseFreezeManifest, reconciliationFromFrozenWorkflow, historicalCertificate, publicHistoricalCertificate, retiredHistoricalTask, observeNativeQuiescence } from "./supervisor-reconciliation";
+import { parseFreezeManifest, reconciliationFromFrozenWorkflow, historicalCertificate, publicHistoricalCertificate, retiredHistoricalTask, observeNativeQuiescence, inspectConsumedPilot, archiveConsumedPilot, type ConsumedEvidence, type ConsumedClosure, type ConsumedAuthorization } from "./supervisor-reconciliation";
 import {
   reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot,
@@ -57,6 +57,8 @@ import { GitHubBridge, type GitHubAction } from "./github";
 import { parseNormalApproval, approvedNormalTask, assertNormalTaskPin, assertNormalGitHubFence } from "./metralla-m08-normal-approval";
 import { makeNormalMeteredBinding, normalMeteredPlugin, type NormalContext } from "./metralla-m08-normal-binding";
 import { assertNormalBudgetReady } from "./supervisor-inference-budget";
+import { signedConsumedVerifier, verifyNormalClose, type NormalCloseEvidence } from "./metralla-m08-signed-evidence";
+import { releasePhysicallyClosedNormal } from "./supervisor-admission";
 import { type GitHubSourcePin, assertPinnedGitHubAction } from "./metralla-m05-source";
 import { DurableGitHubPublicationGate, assertSupervisedPublicationScope } from "./github-publication-durable";
 import { verifyG8Proofs, G8_PROOFS } from "./g8-smoke";
@@ -758,6 +760,34 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const manifest=reconciliationFromFrozenWorkflow(freeze,raw);
     return reconcileHistoricalSupervisor(this.ctx.storage,manifest,this.ctx.id.toString(),
       ()=>this.observeHistoricalNative(Math.min(manifest.expiresAt,Date.now()+120_000)));
+  }
+
+  /** Account Workflow only; never accepts a model or MCP-provided trust root. */
+  async workflowConsumedPilot(raw:unknown):Promise<unknown>{
+    this.assertStagingRemote();
+    const freeze=this.r4FreezeManifest();if(!freeze)throw Error("HISTORICAL_FREEZE_REQUIRED");
+    const args=raw as {action:string;approvalRef:string;evidence:ConsumedEvidence;closure:ConsumedClosure;authorization:ConsumedAuthorization;signatures:unknown};
+    if(!args||args.approvalRef!==freeze.approvalRef||JSON.stringify(args).length>12000)throw Error("CONSUMED_WORKFLOW_SCOPE");
+    if(args.action==="metralla_inspect_consumed")return inspectConsumedPilot(this.ctx.storage);
+    if(args.action!=="metralla_archive_consumed"||args.authorization?.approvalRef!==freeze.approvalRef||
+      args.authorization?.expiresAt>freeze.expiresAt)throw Error("CONSUMED_WORKFLOW_SCOPE");
+    const root=(this.env as Env & {OPENCODE_M08_CONSUMED_ROOTS?:string}).OPENCODE_M08_CONSUMED_ROOTS;
+    const verifier=await signedConsumedVerifier(root,freeze.releaseSha,args.signatures);
+    return archiveConsumedPilot(this.ctx.storage,args.evidence,args.closure,args.authorization,verifier);
+  }
+  async workflowNormalClose(raw:unknown):Promise<unknown>{
+    this.assertStagingRemote();
+    if(this.ctx.id.name!==SUPERVISOR_WORKSPACE||this.pilotLaneId())throw Error("NORMAL_CLOSE_WRONG_AUTHORITY");
+    const args=raw as {action:string;evidence:NormalCloseEvidence;signature:string};
+    if(!args||args.action!=="metralla_normal_close"||JSON.stringify(args).length>12000)throw Error("NORMAL_CLOSE_SCOPE");
+    const e=args.evidence;
+    const task=await this.supervisedRecord(e.requestId);
+    if(!task.githubSource||task.project!=="supervised-"+e.requestId)throw Error("NORMAL_CLOSE_SCOPE");
+    const close=await this.env.DEV.getByName(projectContainerName(task.project)).readCloseReceipt(task.project);
+    if(!close)throw Error("NORMAL_CLOSE_RECORD_MISSING");
+    await verifyNormalClose((this.env as Env & {OPENCODE_M08_NATIVE_CLOSE_KEY?:string}).OPENCODE_M08_NATIVE_CLOSE_KEY,
+      typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"",args.signature,e,close);
+    return releasePhysicallyClosedNormal(this.ctx.storage,e);
   }
 
   async remoteSupervisorModels(): Promise<unknown> {
@@ -1986,6 +2016,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const grant={id,token:slot.token,generation:slot.generation};assertNormalGitHubFence(task,slot,grant,pin,"mutation",session);
     const scope=await this.ctx.storage.get<ProjectScope>(scopeStorageKey(session));requirePinnedGitHubScope(scope,pin);
     if(await this.ctx.storage.get<string>("supervisor:session:"+session)!==id)throw Error("NORMAL_SESSION_SCOPE");
+    await assertNormalBudgetReady(this.ctx.storage,approval.policy,approval.preflight);
     const selection=task.model??"economy";return {storage:this.ctx.storage,grant,policy:approval.policy,preflight:approval.preflight,selection,operationId:task.operationId!,contextBoundEvidence:approval.contextBoundEvidence[selection]};
   }
   private normalPublicationGate(grant:StartGrant,pin:GitHubSourcePin,phase:"branch"|"mutation",session?:string){
@@ -2458,7 +2489,23 @@ export class OpenCodeAgent extends DurableObject<Env> {
   readonly linuxRunner = {
     run: async (project: string, command: string, sessionID?: string) => {
       try {
-        const result = await (await this.isolatedProject(project, sessionID)).run(project, command);
+        const scope=sessionID?await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID)):undefined;
+        let result;
+        if(scope?.githubSource){
+          const ctx=await this.normalContext(sessionID!);
+          const task=await this.supervisedRecord(ctx.grant.id);
+          const pin=assertNormalTaskPin(this.normalApproval(),task);
+          if(task.project!==project)throw Error("NORMAL_LINUX_SCOPE");
+          const source={project,repository:task.repository,commit:pin.commit,tree:pin.tree};
+          const dev=await this.isolatedProject(project,sessionID);
+          const boot=await dev.executionBoot(source);
+          await this.normalContext(sessionID!);
+          const slot=await supervisorAdmissionSlot(this.ctx.storage,task.id);
+          const fresh=await this.supervisedRecord(task.id);
+          assertNormalGitHubFence(fresh,slot,ctx.grant,pin,"mutation",sessionID);
+          const lease={requestId:task.id,project,generation:slot!.generation,token:slot!.token,expiresAt:Math.min(slot!.expiresAt,this.normalApproval().expiresAt)};
+          result=await dev.runFenced({source,boot,lease},lease,command);
+        }else result=await (await this.isolatedProject(project, sessionID)).run(project, command);
         const incident = observeLinux(result);
         if (incident) await this.noteIncident(incident);
         return result;
