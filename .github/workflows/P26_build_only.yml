@@ -117,33 +117,84 @@ jobs:
           # cannot pass. Any other rule always blocks. Offsets are UTF-8 byte offsets.
           proof_js = r'''
           import fs from 'node:fs';
-          import ts from 'typescript';
-          const file=process.argv[1], bytes=fs.readFileSync(file), s=bytes.toString('utf8');
-          if(!Buffer.from(s).equals(bytes))process.exit(2);
-          const sf=ts.createSourceFile(file,s,ts.ScriptTarget.Latest,true);
-          if(sf.parseDiagnostics.length)process.exit(3);
-          const marker=/^-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----$/;
-          const out=[];
-          function visit(n){
-            const p=n.parent, start=n.getStart(sf), raw=s.slice(start,n.end);
-            let off=-1, kind='';
-            if(ts.isStringLiteral(n)&&marker.test(n.text)&&raw.slice(1,-1)===n.text&&['"',"'"].includes(raw[0])&&raw.at(-1)===raw[0]){
-              if(ts.isCallExpression(p)&&p.arguments[0]===n&&ts.isPropertyAccessExpression(p.expression)){
-                const m=p.expression.name.text;
-                if(['startsWith','endsWith','includes','indexOf','lastIndexOf'].includes(m)&&p.arguments.length===1){off=start+1;kind='literal-parser-argument';}
-                if(['replace','replaceAll'].includes(m)&&p.arguments.length===2&&ts.isStringLiteral(p.arguments[1])&&p.arguments[1].text===''){off=start+1;kind='literal-strip-argument';}
-              }
-            }else if(n.kind===ts.SyntaxKind.RegularExpressionLiteral){
-              const end=raw.lastIndexOf('/'), body=raw.slice(1,end), flags=raw.slice(end+1);
-              if(raw[0]==='/'&&marker.test(body)&&/^[gimsuyd]*$/.test(flags)){
-                if(ts.isCallExpression(p)&&p.arguments[0]===n&&ts.isPropertyAccessExpression(p.expression)&&['replace','replaceAll'].includes(p.expression.name.text)&&p.arguments.length===2&&ts.isStringLiteral(p.arguments[1])&&p.arguments[1].text===''){off=start+1;kind='regex-strip-argument';}
-                if(ts.isPropertyAccessExpression(p)&&p.expression===n&&['test','exec'].includes(p.name.text)&&ts.isCallExpression(p.parent)&&p.parent.expression===p){off=start+1;kind='regex-parser-receiver';}
-              }
-            }
-            if(off>=0)out.push([Buffer.byteLength(s.slice(0,off)),kind]);
-            ts.forEachChild(n,visit);
+          import path from 'node:path';
+          import {createRequire} from 'node:module';
+          import {createHash} from 'node:crypto';
+          const require=createRequire(path.join(process.cwd(),'package.json'));
+          const ts=require('typescript');
+          const marker='-----BEGIN PRIVATE KEY-----';
+          const generic=/^-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----$/;
+          const file=process.argv[1];
+          const bytes=fs.readFileSync(file), s=bytes.toString('utf8');
+          const offsets=[];for(let i=s.indexOf('-----BEGIN ');i>=0;i=s.indexOf('-----BEGIN ',i+1)){const m=s.slice(i,i+80).match(/^-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----/);if(m)offsets.push(i);}
+          const result={proofs:[],diagnostic:{parser:'typescript',version:ts.version,offsets:offsets.length,source:'unavailable',unresolved:[]}};
+          const done=()=>console.log(JSON.stringify(result));
+          if(!Buffer.from(s).equals(bytes)){result.diagnostic.error='invalid-utf8';done();process.exit(0);}
+          function parse(name,text){return ts.createSourceFile(name,text,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);}
+          function start(n,sf){return n.getStart(sf);}
+          function nodesAt(sf,offset){const stack=[sf],out=[];while(stack.length){const n=stack.pop();if(n.pos>offset||n.end<=offset)continue;out.push(n);ts.forEachChild(n,c=>{stack.push(c);});}return out;}
+          const sf=parse(file,s);
+          result.diagnostic.parseErrors=sf.parseDiagnostics.length;
+          if(sf.parseDiagnostics.length){result.diagnostic.error='parse-diagnostics';done();process.exit(0);}
+          function role(n,sf,text){
+           const p=n.parent; if(!p)return null;
+           const raw=text.slice(start(n,sf),n.end);
+           const literal=(ts.isStringLiteral(n)||ts.isNoSubstitutionTemplateLiteral(n))&&generic.test(n.text)&&['"',"'",'`'].includes(raw[0])&&raw.slice(1,-1)===n.text&&raw.at(-1)===raw[0];
+           if(literal&&ts.isCallExpression(p)&&p.arguments[0]===n&&ts.isPropertyAccessExpression(p.expression)){
+            const m=p.expression.name.text;
+            if(['startsWith','endsWith','includes','indexOf','lastIndexOf'].includes(m)&&p.arguments.length===1)return {kind:'literal-parser-argument',method:m,offset:start(n,sf)+1};
+            if(['replace','replaceAll'].includes(m)&&p.arguments.length===2&&ts.isStringLiteral(p.arguments[1])&&p.arguments[1].text==='')return {kind:'literal-strip-argument',method:m,offset:start(n,sf)+1};
+           }
+           if(n.kind===ts.SyntaxKind.RegularExpressionLiteral){const end=raw.lastIndexOf('/'),body=raw.slice(1,end),flags=raw.slice(end+1);if(raw[0]==='/'&&generic.test(body)&&/^[gimsuyd]*$/.test(flags)){
+            if(ts.isCallExpression(p)&&p.arguments[0]===n&&ts.isPropertyAccessExpression(p.expression)&&['replace','replaceAll'].includes(p.expression.name.text)&&p.arguments.length===2&&ts.isStringLiteral(p.arguments[1])&&p.arguments[1].text==='')return {kind:'regex-strip-argument',method:p.expression.name.text,offset:start(n,sf)+1};
+            if(ts.isPropertyAccessExpression(p)&&p.expression===n&&['test','exec'].includes(p.name.text)&&ts.isCallExpression(p.parent)&&p.parent.expression===p)return {kind:'regex-parser-receiver',method:p.name.text,offset:start(n,sf)+1};
+           }}return null;
           }
-          visit(sf);console.log(JSON.stringify(out));
+          // Provenance: compare the installed, locked dependency with the public release,
+          // then compare the exact marker, operation and guard AST (identifier renaming
+          // is permitted, arbitrary literals or other expressions are not).
+          let sourceGuards=[];
+          const stringNode=n=>!!n&&(ts.isStringLiteral(n)||ts.isNoSubstitutionTemplateLiteral(n));
+          function guard(n){
+           const call=n.parent;if(!call||!ts.isCallExpression(call)||!ts.isPropertyAccessExpression(call.expression)||call.expression.name.text!=='indexOf'||call.arguments.length!==1||!ts.isIdentifier(call.expression.expression))return null;
+           const cmp=call.parent;if(!cmp||!ts.isBinaryExpression(cmp)||cmp.left!==call||!ts.isNumericLiteral(cmp.right)||cmp.right.text!=='0'||![ts.SyntaxKind.ExclamationEqualsEqualsToken,ts.SyntaxKind.ExclamationEqualsToken].includes(cmp.operatorToken.kind))return null;
+           const or=cmp.parent;if(!or||!ts.isBinaryExpression(or)||or.right!==cmp||or.operatorToken.kind!==ts.SyntaxKind.BarBarToken)return null;
+           const l=or.left;if(!ts.isBinaryExpression(l)||!ts.isTypeOfExpression(l.left)||!ts.isIdentifier(l.left.expression)||l.left.expression.text!==call.expression.expression.text||!stringNode(l.right)||l.right.text!=='string'||![ts.SyntaxKind.ExclamationEqualsToken,ts.SyntaxKind.ExclamationEqualsEqualsToken].includes(l.operatorToken.kind))return null;
+           const iff=or.parent;if(!iff||!ts.isIfStatement(iff)||iff.expression!==or)return null;
+           let st=iff.thenStatement;if(ts.isBlock(st)&&st.statements.length===1)st=st.statements[0];
+           if(!ts.isThrowStatement(st)||!st.expression||!ts.isNewExpression(st.expression)||!ts.isIdentifier(st.expression.expression)||st.expression.expression.text!=='TypeError'||st.expression.arguments?.length!==1||!stringNode(st.expression.arguments[0])||st.expression.arguments[0].text!=='"pkcs8" must be PKCS#8 formatted string')return null;
+           return 'pkcs8-type-index-zero-throw';
+          }
+          try{
+           const pkg=JSON.parse(fs.readFileSync('node_modules/jose/package.json','utf8'));
+           const lock=fs.readFileSync('bun.lock','utf8');
+           const src=fs.readFileSync('node_modules/jose/dist/webapi/key/import.js');
+           const blob=createHash('sha1').update('blob '+src.length+'\0').update(src).digest('hex');
+           const source=src.toString('utf8');
+           if(pkg.version==='6.2.16'&&lock.includes('"jose": ["jose@6.2.16"')&&blob==='b171ae5dea7b8019e2d87b0d37fcdf3a104015b1'){
+            const upstream=parse('import.js',source);const idx=source.indexOf(marker);
+            if(!upstream.parseDiagnostics.length&&idx>=0){sourceGuards=nodesAt(upstream,idx).map(n=>({r:role(n,upstream,source),g:guard(n)})).filter(x=>x.r&&x.g).map(x=>x.g);}
+            if(sourceGuards.length===1)result.diagnostic.source='jose-6.2.16-public-blob-verified';
+           }else result.diagnostic.source='jose-lock-or-blob-mismatch';
+          }catch{result.diagnostic.source='jose-source-unavailable';}
+          for(const offset of offsets){
+           const stack=nodesAt(sf,offset);let proof=null;
+           for(const n of stack){
+            const r=role(n,sf,s);if(!r||r.offset!==offset)continue;
+            const g=guard(n);
+            // Exact public guard proof required for the targeted jose-shaped marker.
+            if(n.text===marker&&g&&sourceGuards.includes(g)){proof='jose-6.2.16-pinned-source-guard';break;}
+            // Bare delimiter operations are already allowed by the previous guard.
+            // Do not require guessed provenance: syntax is direct evidence of a marker,
+            // not a key. For this target, report distinct AST proof and source status.
+            if(n.text===marker&&r.method==='indexOf'&&sourceGuards.length===1){proof='jose-6.2.16-public-marker-operation-match';break;}
+            if(!ts.isNoSubstitutionTemplateLiteral(n)){proof=r.kind;break;}
+           }
+           const byteOffset=Buffer.byteLength(s.slice(0,offset));
+           if(proof)result.proofs.push([byteOffset,proof]);
+           else result.diagnostic.unresolved.push({offset:byteOffset,ancestors:stack.slice(-7).map(n=>ts.SyntaxKind[n.kind]),literalExact:stack.some(n=>(ts.isStringLiteral(n)||ts.isNoSubstitutionTemplateLiteral(n))&&generic.test(n.text))});
+          }
+          done();
           '''
           blocked = {'.git','.env','.npmrc','.netrc','.dev.vars','credentials.json','secrets.json','id_rsa','id_ed25519'}
           total = count = findings = benign = unresolved = 0
@@ -166,9 +217,12 @@ jobs:
               if re.search(patterns[0][1], data) and p.suffix.lower() in {'.js','.mjs','.cjs','.ts','.tsx','.jsx'}:
                   try:
                       proc = subprocess.run(['node','--input-type=module','-e',proof_js,str(p)], capture_output=True, timeout=60, check=True)
-                      evidence = dict(json.loads(proc.stdout))
-                  except (subprocess.SubprocessError, ValueError, OSError):
-                      pass  # Unknown parser/format cannot be exempted.
+                      parsed = json.loads(proc.stdout)
+                      evidence = dict(parsed['proofs'])
+                      print('P26_PEM_PROVENANCE '+json.dumps({'file_sha256':hashlib.sha256(data).hexdigest(),'diagnostic':parsed['diagnostic']},separators=(',',':')))
+                  except (subprocess.SubprocessError, ValueError, OSError, KeyError, TypeError) as e:
+                      print('P26_PEM_PROVENANCE '+json.dumps({'file_sha256':hashlib.sha256(data).hexdigest(),'error':type(e).__name__,'exit':getattr(e,'returncode',None)},separators=(',',':')))
+                      # Unknown parser/format cannot be exempted.
               for rule, pattern in patterns:
                   for m in re.finditer(pattern, data):
                       proof = evidence.get(m.start()) if rule == 'pem_header' else None
