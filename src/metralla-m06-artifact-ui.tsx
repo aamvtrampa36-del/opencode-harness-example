@@ -20,7 +20,7 @@ function VerifiedArtifact({artifact, authorizedFetch}: {artifact:ArtifactView;au
       const url=URL.createObjectURL(new Blob([new Uint8Array(bytes)],{type:"application/octet-stream"}));
       try {
         const a=document.createElement("a"); a.href=url; a.download=artifact.name;
-        document.body.append(a); a.click(); a.remove();
+        document.body.appendChild(a); a.click(); a.remove();
         setStatus("SHA-256 comprobado; descarga preparada.");
       } finally {setTimeout(()=>URL.revokeObjectURL(url),30000);}
     } catch(error) {setStatus(artifactDownloadError(error));}

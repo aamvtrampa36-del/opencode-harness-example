@@ -35,7 +35,7 @@ jobs:
           no-cache: true
       - run: bun install --frozen-lockfile
       - name: Synthetic UI and export/download regression
-        run: bun test src/metralla-m06-ui.test.tsx src/session-export.test.ts src/download-response.test.ts
+        run: bun test src/metralla-m06-ui.test.ts src/session-export.test.ts src/download-response.test.ts
       - run: bun run typecheck
       - run: bun run build
       - run: bun scripts/check-invariants.mjs
