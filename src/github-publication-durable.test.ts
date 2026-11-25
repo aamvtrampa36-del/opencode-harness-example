@@ -259,3 +259,40 @@ describe("R3 RED: actual GitHub PR HEAD must match the fenced write-ahead proof"
     expect(h.posts()).toBe(1);
   });
 });
+
+describe("M05 P17 ref journal and immutable PR receipt",()=>{
+  const source={repo,base:OPENCODE_STAGING_BASE,branch:branch(1),operation:"branch" as const,expected:null,target:baseSha};
+  test("lost branch response reconciles exact ref without second POST across restart",async()=>{
+    const s=new FakeStorage();let writes=0,ref:string|null=null;
+    const a=new DurableGitHubPublicationGate(s.asDO());
+    await a.withRefEffect(source,async()=>{writes++;ref=baseSha;throw Error("lost")},async()=>ref);
+    const restart=new FakeStorage();restart.restore(s.snapshot());
+    await new DurableGitHubPublicationGate(restart.asDO()).withRefEffect(source,async()=>{writes++},async()=>ref);
+    expect(writes).toBe(1);
+  });
+  test("missing or divergent ref remains unknown, blocks retry and competitor",async()=>{
+    const s=new FakeStorage(),gate=new DurableGitHubPublicationGate(s.asDO());let writes=0;
+    const apply=async()=>{writes++;throw Error("lost")};
+    await expect(gate.withRefEffect(source,apply,async()=>null)).rejects.toThrow("GITHUB_REF_EFFECT_UNKNOWN");
+    await expect(gate.withRefEffect(source,apply,async()=>headSha)).rejects.toThrow("GITHUB_REF_EFFECT_UNKNOWN");
+    await expect(gate.withRefEffect({...source,branch:branch(2)},apply,async()=>null)).rejects.toThrow("PR_PUBLICATION_BUSY_UNKNOWN");
+    expect(writes).toBe(1);
+  });
+  test("existing exact draft can be adopted but changed PR number cannot rewrite receipt",async()=>{
+    const s=new FakeStorage(),h=mockGitHub();
+    await bridge(s,h).execute(intent(1));
+    const restart=new FakeStorage();
+    await bridge(restart,h).execute(intent(1));
+    expect(h.posts()).toBe(1);
+    h.opened[0].number=9999;h.opened[0].html_url="https://github.com/"+repo+"/pull/9999";
+    await expect(bridge(restart,h).execute(intent(1))).rejects.toThrow("PR_RECEIPT_IDENTITY_CHANGED");
+    expect(h.posts()).toBe(1);
+  });
+  test("two exact drafts are ambiguous and rejected",async()=>{
+    const s=new FakeStorage(),h=mockGitHub();
+    await bridge(s,h).execute(intent(1));
+    h.opened.push({...h.opened[0],number:9999});
+    await expect(bridge(s,h).execute(intent(1))).rejects.toThrow("PR_DUPLICATE_DRAFT");
+    expect(h.posts()).toBe(1);
+  });
+});

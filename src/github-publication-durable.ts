@@ -1,5 +1,5 @@
 import type { GitHubPrPublicationGate, GitHubPrPublicationScope, GitHubPrPublicationPermit,
-  GitHubPrPublicationProof } from "./github";
+  GitHubPrPublicationProof, GitHubRefIntent } from "./github";
 
 /**
  * R2-T08: transactional publication gate for the SINGLE existing supervisor DO.
@@ -103,6 +103,66 @@ export class DurableGitHubPublicationGate implements GitHubPrPublicationGate {
     ) => Promise<void>
   ) {}
 
+  /** Same repo/base ledger and owner fence as PR publication. The per-intent
+   * record is a receipt, not another scheduler. Unknown blocks all writers.
+   * A null/404 observation never proves absence of an earlier effect. */
+  async withRefEffect(intent: GitHubRefIntent, apply: () => Promise<void>,
+    observe: () => Promise<string|null>): Promise<{reconciled:boolean}> {
+    if (!intent || !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(intent.repo) ||
+        !intent.base || intent.base === intent.branch ||
+        !/^opencode\/(?:staging|supervised)-[a-f0-9]{16}$/.test(intent.branch) ||
+        !SHA.test(intent.target) ||
+        (intent.operation === "branch" ? intent.expected !== null :
+         intent.operation !== "write" || !intent.expected || !SHA.test(intent.expected) || intent.expected===intent.target))
+      throw Error("GITHUB_REF_INTENT_INVALID");
+    const scope = {repo:intent.repo,base:intent.base,branch:intent.branch,title:"",body:""};
+    const key = PREFIX + await digest(intent.repo.toLowerCase()+"\n"+intent.base);
+    const hash = await digest(JSON.stringify(["ref",intent.repo.toLowerCase(),intent.base,intent.branch,intent.operation,intent.expected,intent.target]));
+    const receiptKey = key+":ref:"+hash;
+    const claim = await this.storage.transaction(async tx => {
+      if(this.validateOwner) await this.validateOwner(tx,scope);
+      const ledger = readLedger(await tx.get<Ledger>(key));
+      const done = await tx.get<unknown>(receiptKey);
+      if (done !== undefined && done !== intent.target) throw Error("GITHUB_REF_RECEIPT_INVALID");
+      if(ledger.active) {
+        if(ledger.active.intentHash!==hash) throw Error("PR_PUBLICATION_BUSY_UNKNOWN");
+        return {retryOnly:true,generation:ledger.active.generation,token:ledger.active.token};
+      }
+      if(done !== undefined) return {retryOnly:true,generation:ledger.generation,token:""};
+      const generation=ledger.generation+1, token=crypto.randomUUID();
+      if(!Number.isSafeInteger(generation)) throw Error("PR_LEDGER_EPOCH_EXHAUSTED");
+      ledger.generation=generation;
+      ledger.active={intentHash:hash,token,generation,deadline:this.clock()+TTL_MS,phase:"publishing",
+        proof:{baseSha:intent.expected??intent.target,headSha:intent.target}};
+      await tx.put(key,ledger);
+      return {retryOnly:false,generation,token};
+    });
+    try {
+      if(!claim.retryOnly) {
+        try { await apply(); } catch { /* exact independent readback below; never repeat */ }
+      }
+      if(await observe()!==intent.target) throw Error("GITHUB_REF_EFFECT_UNKNOWN");
+      await this.storage.transaction(async tx => {
+        const ledger=readLedger(await tx.get<Ledger>(key));
+        if(ledger.active) {
+          if(ledger.active.intentHash!==hash || ledger.active.token!==claim.token ||
+              ledger.active.generation!==claim.generation) throw Error("PR_PUBLICATION_FENCE_REJECTED");
+          delete ledger.active; await tx.put(key,ledger);
+        } else if(await tx.get(receiptKey)!==intent.target) throw Error("PR_PUBLICATION_FENCE_REJECTED");
+        await tx.put(receiptKey,intent.target);
+      });
+      return {reconciled:claim.retryOnly};
+    } catch {
+      await this.storage.transaction(async tx=>{
+        const ledger=readLedger(await tx.get<Ledger>(key));
+        if(ledger.active?.intentHash===hash && ledger.active.token===claim.token) {
+          ledger.active.phase="unknown"; await tx.put(key,ledger);
+        }
+      });
+      throw Error("GITHUB_REF_EFFECT_UNKNOWN");
+    }
+  }
+
   async withExclusive<T>(
     intent: GitHubPrPublicationScope,
     execute: (permit: GitHubPrPublicationPermit) => Promise<T>
@@ -195,6 +255,9 @@ export class DurableGitHubPublicationGate implements GitHubPrPublicationGate {
         } else if (!existing) {
           throw Error("PR_PUBLICATION_FENCE_REJECTED");
         }
+        if (existing && (existing.number!==receipt.number || existing.url!==receipt.url ||
+            existing.headSha!==receipt.headSha || existing.baseSha!==receipt.baseSha))
+          throw Error("PR_RECEIPT_IDENTITY_CHANGED");
         await tx.put(receiptKey, receipt);
       });
       return result;

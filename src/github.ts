@@ -142,7 +142,10 @@ export type GitHubPrPublicationPermit = {
   /** Durable "publishing" journal + token validation BEFORE HTTP POST. */
   beginExternalEffect(proof: GitHubPrPublicationProof): Promise<void>;
 };
+export type GitHubRefIntent = Readonly<{repo:string; base:string; branch:string; operation:"branch"|"write"; expected:string|null; target:string}>;
 export interface GitHubPrPublicationGate {
+  /** Existing supervisor publisher, same transactional authority as PRs. */
+  withRefEffect?(intent: GitHubRefIntent, apply: () => Promise<void>, observe: () => Promise<string|null>): Promise<{reconciled:boolean}>;
   withExclusive<T>(
     intent: GitHubPrPublicationScope,
     execute: (permit: GitHubPrPublicationPermit) => Promise<T>
@@ -256,6 +259,14 @@ export class GitHubBridge {
         throw new Error("La rama determinista ya existe con otra base; no se reutilizó");
       }
       return { repo, branch, source, sha, reused: true };
+    }
+    if (this.sourcePin && this.publicationGate?.withRefEffect) {
+      const observed = await this.publicationGate.withRefEffect({repo,base:source,branch,operation:"branch",expected:null,target:sha},
+        async () => {
+          const created = await this.api("POST", base + "/git/refs", {ref:"refs/heads/"+branch,sha});
+          if (created?.object?.sha !== sha) throw Error("GITHUB_BRANCH_EFFECT_UNKNOWN");
+        }, async () => (await this.api("GET", ref, undefined, true))?.object?.sha ?? null);
+      return {repo,branch,source,sha,reused:observed.reconciled};
     }
     try {
       const created = await this.api("POST", base + "/git/refs", {
@@ -440,6 +451,22 @@ export class GitHubBridge {
       throw new Error("GitHub did not return a valid replacement commit");
     }
     const updateRoute = base + "/git/refs/heads/" + encodeURIComponent(branch);
+    if (this.sourcePin) {
+      const verify = await this.api("GET", base + "/git/commits/" + commit.sha);
+      if (verify?.sha !== commit.sha || verify?.tree?.sha !== tree.sha ||
+          !Array.isArray(verify.parents) || verify.parents.length !== 1 || verify.parents[0]?.sha !== expectedHead)
+        throw Error("GITHUB_COMMIT_PROOF_INVALID");
+      if (!this.publicationGate?.withRefEffect) throw Error("GITHUB_PINNED_EFFECT_COORDINATOR_REQUIRED");
+      const outcome = await this.publicationGate.withRefEffect({
+        repo,base:this.sourcePin.base,branch,operation:"write",expected:expectedHead,target:commit.sha
+      }, async () => {
+        const current = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(branch));
+        if (current?.object?.sha !== expectedHead) throw Error("GITHUB_REF_CAS_CONFLICT");
+        const result = await this.api("PATCH",updateRoute,{sha:commit.sha,force:false});
+        if (result?.object?.sha !== commit.sha) throw Error("GITHUB_REF_UPDATE_UNKNOWN");
+      }, async () => (await this.api("GET",base+"/git/ref/heads/"+encodeURIComponent(branch)))?.object?.sha ?? null);
+      return {repo,branch,path,commitSha:commit.sha,fileSha:blob.sha,expectedHead,mode:"replacement",reconciled:outcome.reconciled};
+    }
     let updatedRef: any;
     try {
       updatedRef = await this.api("PATCH", updateRoute, { sha: commit.sha, force: false });
@@ -464,6 +491,8 @@ export class GitHubBridge {
     const base = "/repos/" + repo;
     if (this.sourcePin) {
       assertPinnedGitHubAction(this.sourcePin, {...input, operation:input.action});
+      if (["branch","write","pr"].includes(input.action) && !this.publicationGate?.withRefEffect)
+        throw Error("GITHUB_PINNED_EFFECT_COORDINATOR_REQUIRED");
       if (input.action === "branch") {
         const result = await this.ensureSupervisorBranch(repo, input.branch);
         return {...result, ref:"refs/heads/" + result.branch};
@@ -651,6 +680,9 @@ export class GitHubBridge {
           return this.replaceExact(repo, input.path, safePath, branch,
             input.expectedHead, input.oldText, input.newText, input.message);
         }
+        // The legacy Contents PUT cannot CAS the branch tip. Pinned tasks use
+        // bounded replacement until M08 exposes a full-content expected-head schema.
+        if (this.sourcePin) throw Error("GITHUB_PINNED_WRITE_EXPECTED_HEAD_REQUIRED");
         if (typeof input.content !== "string") throw new Error("File content must be plain text");
         const current = await this.api("GET", base + "/contents/" + safePath + "?ref=" + encodeURIComponent(branch), undefined, true);
         // An interrupted PUT can commit remotely even when its response is lost.
@@ -719,6 +751,7 @@ export class GitHubBridge {
         };
         const [baseSha, headSha] = await Promise.all([getHead(source), getHead(branch)]);
         if(this.pilotBase&&baseSha!==this.pilotBase.sha)throw Error("PILOT_SOURCE_SHA_CHANGED");
+        if(this.sourcePin&&baseSha!==this.sourcePin.commit)throw Error("GITHUB_SOURCE_IDENTITY_DIVERGENT");
         // A lost POST response must never be reconciled against a DIFFERENT
         // branch HEAD, even if the branch, PR title and body have not changed.
         if (permit?.retryOnly &&
@@ -726,7 +759,9 @@ export class GitHubBridge {
              permit.expectedProof?.headSha !== headSha))
           throw new Error("PR_PUBLICATION_HEAD_CHANGED: original commit proof does not match current refs");
         const comparison = await this.api("GET", base + "/compare/" +
-          encodeURIComponent(source) + "..." + encodeURIComponent(branch));
+          encodeURIComponent(this.sourcePin ? baseSha : source) + "..." + encodeURIComponent(this.sourcePin ? headSha : branch));
+        if (this.sourcePin && (comparison?.merge_base_commit?.sha !== baseSha || comparison?.behind_by !== 0))
+          throw Error("GITHUB_SOURCE_ANCESTRY_DIVERGENT");
         if (!Array.isArray(comparison?.files) || comparison.files.length === 0 ||
             comparison.files.length >= 300 ||
             !Number.isSafeInteger(comparison.total_commits) ||
@@ -749,11 +784,16 @@ export class GitHubBridge {
           return paths;
         };
         const ourPaths = pathsOf(comparison.files);
+        if (this.sourcePin) for (const path of ourPaths) {
+          assertPinnedGitHubAction(this.sourcePin,{repo,operation:"write",branch,path});
+          assertNonCanonicalWrite(repo,path);
+        }
         const existing = await this.api("GET", base + "/pulls?state=open&base=" +
           encodeURIComponent(source) + "&per_page=100&page=1");
         if (!Array.isArray(existing) || existing.length >= 100)
           throw new Error("PR_PREFLIGHT_INCOMPLETE: open PR list missing or truncated");
 
+        let matchingDraft: any;
         for (const item of existing) {
           if (!Number.isSafeInteger(item?.number) || item.number < 1 ||
               item?.base?.ref !== source || typeof item?.head?.ref !== "string")
@@ -770,11 +810,21 @@ export class GitHubBridge {
               item.draft === true &&
               typeof item.html_url === "string" && item.html_url.length > 0;
             if (exactIntent) {
-              return { repo, number: item.number, url: item.html_url, draft: true,
-                base: source, head: branch, baseSha, headSha, reconciled: true };
+              if (matchingDraft) throw Error("PR_DUPLICATE_DRAFT");
+              matchingDraft = item;
+              continue;
             }
             throw new Error("PR_ALREADY_OPEN: same branch with different or unverifiable intent");
           }
+        }
+        if (matchingDraft) {
+          const [b,h] = await Promise.all([getHead(source),getHead(branch)]);
+          if (b!==baseSha || h!==headSha) throw Error("PR_PREFLIGHT_STALE");
+          // Record the exact observed proof before adopting a preexisting draft.
+          // No external mutation follows this marker.
+          if (permit && !permit.retryOnly) await permit.beginExternalEffect({baseSha,headSha});
+          return {repo,number:matchingDraft.number,url:matchingDraft.html_url,draft:true,
+            base:source,head:branch,baseSha,headSha,reconciled:true};
         }
         // Only a bounded batch of GitHub diffs enters memory at any time.
         for (let index = 0; index < existing.length; index += 5) {
