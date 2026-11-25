@@ -87,7 +87,9 @@ export async function projectRemoteProgress(scope:RemoteScope,cursor:string|unde
     nextAfter:events.at(-1)?.seq??from,cursor:page.cursor,complete:page.complete,pageAvailable:true},exact,cursor);
 }
 export class BodyError extends Error {
-  constructor(readonly code:string,readonly httpStatus:number){super(code);}
+  readonly code:string;
+  readonly httpStatus:number;
+  constructor(code:string,httpStatus:number){super(code);this.code=code;this.httpStatus=httpStatus;}
 }
 export async function boundMcpRequest(request:Request,timeoutMs=5000):Promise<Request>{
   if(request.method!=="POST") return request;
