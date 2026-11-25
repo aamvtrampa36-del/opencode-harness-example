@@ -6,7 +6,7 @@ import {
   supervisorAdmissionAllowsContinuation, hasSupervisorAdmissionSlot,
   reconcileSupervisorCreatedSession, supervisorCommitCreatedSession, supervisorGrantStillOwned,
   reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
-  reconcileSupervisorTurnEffect, beginSupervisorCancellation, settleSupervisorCancelledTurn
+  reconcileSupervisorTurnEffect, reconcileSupervisorSubmittedEffect, beginSupervisorCancellation, settleSupervisorCancelledTurn
 } from "./supervisor-admission";
 import {
   r2SessionId, r2TurnJournalKey, r2TurnAdmission, r2CancelledByReceipt,
@@ -423,4 +423,18 @@ describe("Metralla P04 exact journal and cancellation",()=>{
   expect((await reconcileSupervisorCreatedSession(db.asDO(),g.id,r2SessionId(g.id),slot,1102)).kind).toBe("stale");
   expect(await supervisorAdmissionSlot(db.asDO(),g.id)).toEqual(slot);
  });
+});
+
+test("P05 initial unknown submit: cancellation requires exact interrupted receipt and idle",async()=>{
+ const db=new FakeDO(),g=await grant(db,250),sid=r2SessionId(g.id),op="rc-start-"+g.id,key="supervisor:task:"+g.id;
+ const job=(await db.get<SupervisorTask>(key))!;
+ await db.put(key,{...job,session:sid,operationId:op,status:"running",sessionCreationAttempted:true});
+ await supervisorBeginExternalEffect(db.asDO(),g,"submit",1101);
+ expect((await beginSupervisorCancellation(db.asDO(),g.id,1102)).kind).toBe("abort");
+ const receipt={status:"unanswered",reason:"interrupted"} as const;
+ expect(await reconcileSupervisorSubmittedEffect(db.asDO(),g.id,op,receipt,sid)).toBe(false);
+ expect(await db.transaction(tx=>settleSupervisorCancelledTurn(tx as any,g.id,sid,op,receipt,true,1103))).toBeUndefined();
+ expect((await supervisorAdmissionSlot(db.asDO(),g.id))?.phase).toBe("effect_unknown");
+ expect(await db.transaction(tx=>settleSupervisorCancelledTurn(tx as any,g.id,sid,op,receipt,false,1104))).toMatchObject({status:"cancelled",cancelAmbiguous:false});
+ await grant(db,251);expect(await supervisorAdmissionSlot(db.asDO(),g.id)).toBeUndefined();
 });

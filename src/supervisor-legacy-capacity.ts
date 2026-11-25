@@ -1,5 +1,5 @@
 import type { SupervisorTask } from "./supervisor-control";
-import { historicalCertificate, historicalPages, reconciliationDigest, HISTORICAL_AUX_KEYS, CONSUMED_PILOT_ID, type ConsumedArchive } from "./supervisor-reconciliation";
+import { historicalCertificate, historicalPages, reconciliationDigest, HISTORICAL_AUX_KEYS, CONSUMED_PILOT_ID, consumedArchiveExempts } from "./supervisor-reconciliation";
 
 /**
  * R3-T03: bounded census under the same Durable Object storage transaction as
@@ -43,25 +43,6 @@ function legacyPotentiallyActive(task: SupervisorTask): boolean {
 }
 const terminal = (status: SupervisorTask["status"]) =>
   ["finished","failed","cancelled","unanswered"].includes(status);
-
-/** P02 archive is private, immutable accounting evidence. Never infer an
- * exemption from terminal text, age, or a missing slot alone. */
-async function consumedArchiveExempts(tx:Pick<DurableObjectStorage,"get">,slots:Record<string,unknown>):Promise<boolean>{
-  const id=CONSUMED_PILOT_ID;
-  const archive=await tx.get<ConsumedArchive>("supervisor:consumed-pilot:archive:v1:"+id);
-  if(archive===undefined)return false;
-  if(!archive||typeof archive!=="object")throw Error("P03_CONSUMED_ARCHIVE_INVALID");
-  const {digest,...body}=archive;
-  const task=await tx.get<SupervisorTask>("supervisor:task:"+id);
-  const claim=await tx.get("supervisor:pilot:single-use-v1");
-  if(!task||!claim||Object.hasOwn(slots,id)||body.schema!=="metralla-consumed-pilot-v1"||body.replayAllowed!==false||
-    body.identity?.requestId!==id||body.snapshot?.task?.id!==id||body.snapshot?.claim?.approval?.requestId!==id||
-    body.snapshot?.slot?.phase!=="effect_unknown"||body.closure?.noOutstandingEffects!==true||body.closure?.writerFenced!==true||
-    !["materialized","not_materialized"].includes(body.outcome)||typeof digest!=="string"||!/^[a-f0-9]{64}$/.test(digest)||
-    await reconciliationDigest(body)!==digest||await reconciliationDigest(task)!==await reconciliationDigest(body.snapshot.task)||
-    await reconciliationDigest(claim)!==await reconciliationDigest(body.snapshot.claim))throw Error("P03_CONSUMED_ARCHIVE_INVALID");
-  return true;
-}
 
 export async function auditLegacyCapacity(
   tx: Pick<DurableObjectStorage,"get"|"list">,

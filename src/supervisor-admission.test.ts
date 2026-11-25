@@ -6,7 +6,7 @@ import type { SupervisorTask } from "./supervisor-control";
 import { PILOT_CLAIM, parsePilotApproval, evidenceFromClaim, type PilotApproval, type PilotClaim } from "./pilot-authorization";
 import { PILOT_PRICING_REVISION } from "./supervisor-inference-budget";
 import { reconcileHistoricalSupervisor } from "./supervisor-admission";
-import { reconciliationDigest,type NativeQuiescence, CONSUMED_PILOT_ID, inspectConsumedPilot, archiveConsumedPilot, type ConsumedArchive, type ConsumedEvidence, type ConsumedClosure, type ConsumedAuthorization } from "./supervisor-reconciliation";
+import { reconciliationDigest,type NativeQuiescence, CONSUMED_PILOT_ID, retiredHistoricalTask, inspectConsumedPilot, archiveConsumedPilot, type ConsumedArchive, type ConsumedEvidence, type ConsumedClosure, type ConsumedAuthorization } from "./supervisor-reconciliation";
 
 /** Test double with serialized, rollback-capable durable transactions. */
 class DurableFake {
@@ -174,18 +174,21 @@ describe("F0-C10/R2-T03 durable admission (Cloudflare transaction interface, off
     await s.put(PILOT_CLAIM,claim);await s.put(tk,job);
     await s.put("supervisor:admission:v1",{version:1,slots:{[pid]:{token:uuid,generation:2,expiresAt:5,phase:"effect_unknown",effect:"github_branch"}}});
     expect((await inspectSupervisorAdmissionCapacity(s.asDO())).activeSlots).toBe(1);
+    expect(await retiredHistoricalTask(s.asDO(),pid)).toBe(false);
     const identity=await inspectConsumedPilot(s.asDO());
     const evidence:ConsumedEvidence={identity,kind:"absent",authoritativeNegative:true,complete:true,writerDrained:true,observedAt:now-1,receiptDigest:h};
     const closure:ConsumedClosure={snapshotDigest:identity.snapshotDigest,evidenceDigest:await reconciliationDigest(evidence),observedAt:now,drainReceipt:h,closureReceipt:h,budgetReceipt:h,noOutstandingEffects:true,writerFenced:true};
     const auth:ConsumedAuthorization={action:"archive-consumed-pilot-and-release-reservation",environment:"staging",snapshotDigest:identity.snapshotDigest,evidenceDigest:closure.evidenceDigest,closureDigest:await reconciliationDigest(closure),approvalRef:"offline-fixture-only",notBefore:now-100,expiresAt:now+1000};
     await archiveConsumedPilot(s.asDO(),evidence,closure,auth,async()=>true,()=>now);
     expect(await inspectSupervisorAdmissionCapacity(s.asDO())).toMatchObject({activeSlots:0,stopReason:null});
+    expect(await retiredHistoricalTask(s.asDO(),pid)).toBe(true);
     expect(await s.get(PILOT_CLAIM)).toEqual(claim); expect(await s.get(tk)).toEqual(job);
     await expect(reserveSupervisorAdmission(s.asDO(),{...task(1),id:pid,project:job.project,branch:job.branch},now)).rejects.toThrow("PILOT_NO_REPLAY");
     expect((await at(s,99,now)).kind).toBe("granted");
     const archive=await s.get<ConsumedArchive>(ak);
     if(!archive)throw Error("fixture archive missing");
     await s.put(ak,{...archive,digest:"0".repeat(64)});
+    await expect(retiredHistoricalTask(s.asDO(),pid)).rejects.toThrow("P03_CONSUMED_ARCHIVE_INVALID");
     await expect(inspectSupervisorAdmissionCapacity(s.asDO())).rejects.toThrow("P03_CONSUMED_ARCHIVE_INVALID");
     await s.put(ak,archive);await s.put(tk,{...job,revision:8});
     await expect(at(s,100,now)).rejects.toThrow("P03_CONSUMED_ARCHIVE_INVALID");
@@ -307,15 +310,20 @@ describe("F0-C10/R2-T03 durable admission (Cloudflare transaction interface, off
   test("native not_found cannot resolve an uncertain submit, done receipt can without replay", async () => {
     const s = new DurableFake();
     const a = granted(await at(s,1));
-    await s.put("supervisor:task:"+id(1),{...task(1),operationId:"rc-start-"+id(1)});
+    await s.put("supervisor:task:"+id(1),{...task(1),session:"ses_r2_"+id(1),operationId:"rc-start-"+id(1)});
     await begin(s,a,"submit");
     expect(await reconcileSupervisorSubmittedEffect(s.asDO(),id(1),"rc-start-"+id(1),
       {status:"unanswered",reason:"not_found"})).toBe(false);
     expect((await supervisorAdmissionSlot(s.asDO(),id(1)))?.phase).toBe("effect_unknown");
     expect(await reconcileSupervisorSubmittedEffect(s.asDO(),id(1),"rc-start-"+id(2),
       {status:"done"})).toBe(false);
+    const before=s.snapshot();
+    for(const receipt of [{status:"unanswered"},{status:"unanswered",reason:"other"},{status:"done",reason:"not_found"}] as const)
+      expect(await reconcileSupervisorSubmittedEffect(s.asDO(),id(1),"rc-start-"+id(1),receipt)).toBe(false);
+    expect(await reconcileSupervisorSubmittedEffect(s.asDO(),id(1),"rc-start-"+id(1),{status:"done"},"ses_other")).toBe(false);
+    expect(s.snapshot()).toEqual(before);
     expect(await reconcileSupervisorSubmittedEffect(s.asDO(),id(1),"rc-start-"+id(1),
-      {status:"done"})).toBe(true);
+      {status:"done"},"ses_r2_"+id(1))).toBe(true);
     expect((await supervisorAdmissionSlot(s.asDO(),id(1)))?.phase).toBe("running");
   });
 });

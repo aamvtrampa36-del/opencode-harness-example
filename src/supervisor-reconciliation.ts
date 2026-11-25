@@ -178,7 +178,11 @@ export async function historicalCertificate(reader:Pick<Reader,"get">):Promise<H
  require(await reconciliationDigest(body)===digest,"HISTORICAL_CERTIFICATE_CORRUPT");return cert;
 }
 export async function retiredHistoricalTask(reader:Pick<Reader,"get">,id:string):Promise<boolean>{
- return (await historicalCertificate(reader))?.retiredIds.includes(id)??false;
+ if((await historicalCertificate(reader))?.retiredIds.includes(id))return true;
+ if(id!==CONSUMED_PILOT_ID||await reader.get(CONSUMED_ARCHIVE_KEY)===undefined)return false;
+ const ledger=await reader.get<ConsumedLedger>(CONSUMED_LEDGER_KEY);
+ require(ledger?.version===1&&ledger.slots&&typeof ledger.slots==="object"&&!Array.isArray(ledger.slots),"P03_CONSUMED_ARCHIVE_INVALID");
+ return consumedArchiveExempts(reader,ledger.slots);
 }
 export async function writeHistoricalCertificate(tx:DurableObjectTransaction,manifest:ReconciliationManifest,objectId:string,
  snap:HistoricalSnapshot,native:NativeQuiescence,slots:Record<string,unknown>,now=Date.now()):Promise<HistoricalCertificate>{
@@ -337,3 +341,23 @@ export async function archiveConsumedPilot(storage:DurableObjectStorage,evidence
   return {digest,outcome,reused:false,replayAllowed:false};
  });
 }
+
+/** P02 archive is private, immutable accounting evidence. Never infer an
+ * exemption from terminal text, age, or a missing slot alone. */
+export async function consumedArchiveExempts(tx:Pick<DurableObjectStorage,"get">,slots:Record<string,unknown>):Promise<boolean>{
+  const id=CONSUMED_PILOT_ID;
+  const archive=await tx.get<ConsumedArchive>("supervisor:consumed-pilot:archive:v1:"+id);
+  if(archive===undefined)return false;
+  if(!archive||typeof archive!=="object")throw Error("P03_CONSUMED_ARCHIVE_INVALID");
+  const {digest,...body}=archive;
+  const task=await tx.get<SupervisorTask>("supervisor:task:"+id);
+  const claim=await tx.get("supervisor:pilot:single-use-v1");
+  if(!task||!claim||Object.hasOwn(slots,id)||body.schema!=="metralla-consumed-pilot-v1"||body.replayAllowed!==false||
+    body.identity?.requestId!==id||body.snapshot?.task?.id!==id||body.snapshot?.claim?.approval?.requestId!==id||
+    body.snapshot?.slot?.phase!=="effect_unknown"||body.closure?.noOutstandingEffects!==true||body.closure?.writerFenced!==true||
+    !["materialized","not_materialized"].includes(body.outcome)||typeof digest!=="string"||!/^[a-f0-9]{64}$/.test(digest)||
+    await reconciliationDigest(body)!==digest||await reconciliationDigest(task)!==await reconciliationDigest(body.snapshot.task)||
+    await reconciliationDigest(claim)!==await reconciliationDigest(body.snapshot.claim))throw Error("P03_CONSUMED_ARCHIVE_INVALID");
+  return true;
+}
+
