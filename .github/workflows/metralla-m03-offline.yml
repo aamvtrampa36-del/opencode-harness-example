@@ -1,0 +1,38 @@
+name: Metralla M03 offline only
+on:
+  push:
+    branches: [metralla/m03]
+permissions:
+  contents: read
+concurrency:
+  group: metralla-m03-offline
+  cancel-in-progress: true
+jobs:
+  offline:
+    if: github.event.repository.private == false && github.ref == 'refs/heads/metralla/m03'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exact source
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Linux P10 tests and source regressions
+        run: node --experimental-strip-types --test scripts/f0-c10/metralla-m03/p10-*.test.mjs scripts/f0-c10/t06-r3-source-contract.test.mjs
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+          no-cache: true
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: bun run typecheck
+      - run: bun run build
+      - run: bun scripts/check-invariants.mjs
+      - run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
