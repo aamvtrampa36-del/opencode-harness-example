@@ -25,7 +25,8 @@ import { RESTORE_PROJECT_SOURCE } from "./restore-project";
 import { GITHUB_IMPORT_SOURCE } from "./github-import-source";
 import { githubSourceArchive, sourceReceiptMatches, RAW_TREE_CERTIFICATION } from "./github-import";
 import { validateIsolatedRegistration, type IsolatedProject } from "./project-container";
-import { assertRecoverableContainer, SNAPSHOT_TTL_MS } from "./snapshot-policy";
+import { assertRecoverableContainer, checkpointSnapshot, SNAPSHOT_TTL_MS } from "./snapshot-policy";
+import { CLOSE_KEY, assertCloseRecord, assertRecoveryCheckpoint, type IdleCloseRecord } from "./metralla-m03-close";
 import { BUN_RUNTIME_VERSION, commandRequiresBun } from "./dev-runtime";
 
 /**
@@ -193,6 +194,7 @@ export type LinuxResult = {
 
 export class DevContainer extends DurableObject<Env> {
   private busy = 0;
+  private closing = false;
   private readonly pilotContainerOwner=crypto.randomUUID();
   private previewStarting?: Promise<void>;
   private starting?: Promise<NonNullable<DurableObjectState["container"]>>;
@@ -259,10 +261,14 @@ export class DevContainer extends DurableObject<Env> {
   }
 
   private async ensureRunning() {
+    if(this.closing)throw Error("M03_CLOSE_IN_PROGRESS");
     const pilot=await this.checkPilotWork();
     const lane=(this.env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
     if(lane&&(!(this.env as Env & {OPENCODE_PILOT_AUTHORIZATION?:string}).OPENCODE_PILOT_AUTHORIZATION||!pilot||this.ctx.id.name!=="project-v1:supervised-"+lane))throw Error("PILOT_EXCLUSIVE_CONTAINER");
     const bound=await this.ctx.storage.get<BootReceipt>("m03-execution-boot-v1");
+    const closing=await this.ctx.storage.get<IdleCloseRecord>(CLOSE_KEY);
+    if(closing && (bound||pilot||this.ctx.container?.running))throw Error("M03_CLOSE_IN_PROGRESS");
+    if(this.closing)throw Error("M03_CLOSE_IN_PROGRESS");
     if(bound){
       if(pilot)throw Error("M03_VM_IDENTITY_MISMATCH");
       assertRuntime(bound,await this.observeNormalBoot(bound.project),bound.project,this.configuredNormalImages());
@@ -301,6 +307,20 @@ export class DevContainer extends DurableObject<Env> {
       const savedAt = await this.ctx.storage.get<number>("savedAt");
       const lastActivity = await this.ctx.storage.get<number>("lastActivity");
       assertRecoverableContainer(snapshotId, savedAt, lastActivity, Date.now());
+      const close=await this.ctx.storage.get<IdleCloseRecord>(CLOSE_KEY);
+      if(close){
+        assertRecoveryCheckpoint(close,this.ctx.id.toString(),snapshotId,savedAt,Date.now());
+        // Legacy resume only from the acknowledged, exact persisted checkpoint.
+        // Certified boot recovery still requires explicit rebind; never clear its binding here.
+        if(pilot||await this.ctx.storage.get("m03-execution-boot-v1"))throw Error("M03_RECOVERY_REBIND_REQUIRED");
+        await this.ctx.storage.transaction(async tx=>{
+          const current=await tx.get<IdleCloseRecord>(CLOSE_KEY);
+          if(JSON.stringify(current)!==JSON.stringify(close))throw Error("M03_CLOSE_EFFECT_UNKNOWN");
+          await tx.put("m03-last-close-v1",close);
+          await tx.delete(CLOSE_KEY);
+        });
+      }
+      if(this.closing)throw Error("M03_CLOSE_IN_PROGRESS");
       let label:string|undefined;
       let image="cloudflare/debian-trixie";
       const normalLabel=!pilot&&this.ctx.id.name?.startsWith("project-v1:")?crypto.randomUUID():undefined;
@@ -759,6 +779,7 @@ export class DevContainer extends DurableObject<Env> {
   /** Explicit fenced normal-lane command path. Existing unscoped legacy Linux
    * is not upgraded by guessing identity. No implicit start or bootstrap here. */
   async runFenced(scope:ExecutionScope,currentLease:Lease,command:string):Promise<LinuxResult>{
+    if(this.closing||await this.ctx.storage.get(CLOSE_KEY))throw Error("M03_CLOSE_IN_PROGRESS");
     const id=assertLinuxExecutionScope(this.ctx.id.name,scope.source.project);
     const cmd=validateCommand(command);
     assertLease(scope.lease,currentLease,id,Date.now());
@@ -775,6 +796,7 @@ export class DevContainer extends DurableObject<Env> {
       assertSourceReceipt(scope.source,receipt);
       assertLease(scope.lease,currentLease,id,Date.now());
       const observed=await this.observeNormalBoot(id);
+      if(this.closing||await this.ctx.storage.get(CLOSE_KEY))throw Error("M03_CLOSE_IN_PROGRESS");
       assertRuntime(boot,observed,id,this.configuredNormalImages());
       assertExecutionIdentity(scope,receipt,observed,currentLease,this.configuredNormalImages(),Date.now());
       const container=this.ctx.container;
@@ -790,6 +812,7 @@ export class DevContainer extends DurableObject<Env> {
 
   private async runExclusive(project: string, command: string, existing?:NonNullable<DurableObjectState["container"]>, fencedSignal?:()=>Promise<AbortSignal>): Promise<LinuxResult> {
     const container = existing ?? await this.ensureRunning();
+    if(this.closing)throw Error("M03_CLOSE_IN_PROGRESS");
     this.busy++;
     await this.ctx.storage.put("lastActivity", Date.now());
     try {
@@ -948,46 +971,89 @@ export class DevContainer extends DurableObject<Env> {
     await this.alarm();
     return {running:this.ctx.container?.running??false,close:await this.ctx.storage.get("pilot-close-v1")??null};
   }
-  /** Durable Object alarm: checkpoint then suspend the idle VM. */
+  /** Durable Object alarm: checkpoint then suspend the idle VM.
+   * Single writer in the project DO. Durable intent precedes destruction;
+   * restart/lost reply never automatically repeat the effect. */
   async alarm() {
-    const container = this.ctx.container;
-    if (!container?.running) {
-      if(await this.ctx.storage.get("pilot-deadline-v1"))await this.ctx.storage.put("pilot-close-v1",{status:"not-running",at:Date.now()});
-      return;
-    }
-    if (this.busy > 0) {
-      await this.scheduleCheck();
-      return;
-    }
+    if(this.closing||this.busy>0||this.starting){await this.scheduleCheck();return;}
+    this.closing=true;
+    try {await this.checkpointAndClose();} finally {this.closing=false;}
+  }
 
-    const lastActivity = (await this.ctx.storage.get<number>("lastActivity")) ?? 0;
-    const savedAt = (await this.ctx.storage.get<number>("savedAt")) ?? 0;
-    const pilot=await this.ctx.storage.get<{workUntil:number;closeUntil:number}>("pilot-deadline-v1");
+  private async checkpointAndClose(){
+    const container=this.ctx.container;
+    const prior=await this.ctx.storage.get<IdleCloseRecord>(CLOSE_KEY);
+    const pilot=await this.ctx.storage.get<{project:string;workUntil:number;closeUntil:number}>("pilot-deadline-v1");
+    if(prior){
+      assertCloseRecord(prior,this.ctx.id.toString());
+      // Neither running=false nor a returned destroy RPC proves native termination.
+      if(pilot)await this.ctx.storage.put("pilot-close-v1",{status:"unconfirmed",at:Date.now()});
+      return;
+    }
+    if(!container?.running){
+      if(pilot)await this.ctx.storage.put("pilot-close-v1",{status:"not-running",at:Date.now()});
+      return;
+    }
+    if(this.busy>0||this.starting){await this.scheduleCheck();return;}
+    const lastActivity=(await this.ctx.storage.get<number>("lastActivity"))??0;
+    const savedAt=(await this.ctx.storage.get<number>("savedAt"))??0;
     if(pilot&&Date.now()>=pilot.closeUntil){await this.scheduleCheck();return;}
-    const idle = pilot ? Date.now()>=pilot.workUntil||Boolean(await this.ctx.storage.get("pilot-close-requested-v1")) : Date.now()-lastActivity>=IDLE_MS;
-    const checkpointDue = lastActivity > savedAt && Date.now() - savedAt >= CHECKPOINT_MS;
-
-    if (idle || checkpointDue) {
-      try {
-        const snapshot = await container.snapshotContainer({ name: "opencode-workspace" });
-        await this.ctx.storage.put({ snapshotId: snapshot.id, savedAt: Date.now() });
-      } catch (error) {
-        // Never destroy the only unsaved copy of a project.
-        console.error("Linux checkpoint failed", error instanceof Error ? error.message : "unknown");
-        if(!pilot)await container.setInactivityTimeout(INACTIVITY_MS);
-        await this.scheduleCheck();
+    const idle=pilot?Date.now()>=pilot.workUntil||Boolean(await this.ctx.storage.get("pilot-close-requested-v1")):Date.now()-lastActivity>=IDLE_MS;
+    const checkpointDue=lastActivity>savedAt&&Date.now()-savedAt>=CHECKPOINT_MS;
+    if(!idle&&!checkpointDue){if(!pilot)await container.setInactivityTimeout(INACTIVITY_MS);await this.scheduleCheck();return;}
+    const bound=await this.ctx.storage.get<BootReceipt>("m03-execution-boot-v1");
+    const pilotBoot=pilot?await this.ctx.storage.get<PilotPreparationReceipt>("pilot-preparation-v1"):undefined;
+    const identity=async()=>{
+      if(bound){
+        const observation=await this.observeNormalBoot(bound.project);
+        assertRuntime(bound,observation,bound.project,this.configuredNormalImages());
+        return JSON.stringify({objectId:bound.objectId,boot:bound.bootId,label:bound.bootLabel,image:observation.imageReference});
+      }
+      if(pilot){
+        if(!pilotBoot||!pilotRuntimeMatches(await container.inspect(),pilotBoot.bootLabel,pilotBoot.imageDigest))
+          throw Error("M03_CLOSE_IDENTITY_MISMATCH");
+        return JSON.stringify({objectId:pilotBoot.containerObject,boot:pilotBoot.bootId,label:pilotBoot.bootLabel,image:pilotBoot.imageDigest});
+      }
+      // Legacy workspace: never claim digest or boot attestation from a tag.
+      const info=await container.inspect();
+      const image=normalizeImageRef(info?.image);
+      if(!image)throw Error("M03_CLOSE_IDENTITY_MISMATCH");
+      return JSON.stringify({objectId:this.ctx.id.toString(),image,legacy:true});
+    };
+    try {
+      const before=await identity();
+      const snapshot=await checkpointSnapshot({
+        now:Date.now,
+        snapshot:()=>container.snapshotContainer({name:"opencode-workspace"}),
+        persist:value=>this.ctx.storage.put(value),
+        readback:async()=>({snapshotId:await this.ctx.storage.get("snapshotId"),savedAt:await this.ctx.storage.get("savedAt")})
+      });
+      if(idle&&this.busy===0&&!this.starting&&container.running&&
+         ((await this.ctx.storage.get<number>("lastActivity"))??0)===lastActivity&&
+         await identity()===before&&(!pilot||Date.now()<pilot.closeUntil)){
+        const intent:IdleCloseRecord={operation:crypto.randomUUID(),objectId:this.ctx.id.toString(),identity:before,
+          activity:lastActivity,snapshot,phase:"destroy_requested"};
+        await this.ctx.storage.transaction(async tx=>{
+          if(await tx.get(CLOSE_KEY)||((await tx.get<number>("lastActivity"))??0)!==lastActivity||
+             await tx.get("snapshotId")!==snapshot.snapshotId||await tx.get("savedAt")!==snapshot.savedAt)
+            throw Error("M03_CLOSE_FENCED");
+          await tx.put(CLOSE_KEY,intent);
+        });
+        const recorded=await this.ctx.storage.get<IdleCloseRecord>(CLOSE_KEY);
+        if(JSON.stringify(recorded)!==JSON.stringify(intent)||this.busy!==0||this.starting||
+           !container.running||await identity()!==before|| (pilot&&Date.now()>=pilot.closeUntil))
+          throw Error("M03_CLOSE_FENCED");
+        await container.destroy("idle");
+        // A lost reply leaves the original durable intent; never issue destroy again.
+        await this.ctx.storage.put(CLOSE_KEY,{...intent,phase:"destroy_acknowledged"});
+        if(pilot)await this.ctx.storage.put("pilot-close-v1",{status:"unconfirmed",at:Date.now()});
         return;
       }
+    }catch{
+      // Preserve the unsaved copy and previous checkpoint. No blind retry of destroy.
+      if(pilot)await this.ctx.storage.put("pilot-close-v1",{status:"unconfirmed",at:Date.now()});
     }
-
-    if (idle && this.busy === 0 &&
-        (await this.ctx.storage.get<number>("lastActivity")) === lastActivity) {
-      await container.destroy("idle");
-      if(pilot)await this.ctx.storage.put("pilot-close-v1",{status:container.running?"unconfirmed":"stopped",at:Date.now()});
-      if(pilot&&container.running)await this.scheduleCheck();
-      return;
-    }
-    if(!pilot)await container.setInactivityTimeout(INACTIVITY_MS);
+    if(!pilot&&container.running)await container.setInactivityTimeout(INACTIVITY_MS);
     await this.scheduleCheck();
   }
 
