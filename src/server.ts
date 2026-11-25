@@ -1162,7 +1162,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
             turnReceiptBound=slot?.phase==="running"&&!slot.effect&&match.journal.receiptStatus===operation.status&&
               match.journal.receiptReason===operation.reason?.slice(0,120);
           }else{
-            await reconcileSupervisorTurnEffect(tx,id,job.operationId,operation);
+            await reconcileSupervisorTurnEffect(tx, id, job.operationId, operation);
             const slot=await supervisorAdmissionSlot(tx,id);
             if(slot?.phase==="running"&&!slot.effect){
               await tx.put(match.key,{...match.journal,phase:"settled" as const,receiptStatus:operation.status,

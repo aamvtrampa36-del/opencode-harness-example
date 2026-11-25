@@ -222,7 +222,7 @@ export function publicHistoricalCertificate(c:HistoricalCertificate){
  * archive/ledger mutation share a transaction. No second scheduler or ledger. */
 import type {PilotClaim} from "./pilot-authorization";
 import type {AdmissionSlot} from "./supervisor-admission";
-import {r2SessionId,r2TerminalNativeReceipt} from "./supervisor-r2";
+import {r2SessionId,r2TerminalNativeReceipt} from "./supervisor-r2.ts";
 export const CONSUMED_PILOT_ID="42574cb3f5ee0cbf";
 const CONSUMED_CLAIM_KEY="supervisor:pilot:single-use-v1";
 const CONSUMED_LEDGER_KEY="supervisor:admission:v1";
