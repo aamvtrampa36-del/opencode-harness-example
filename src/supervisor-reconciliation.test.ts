@@ -128,3 +128,75 @@ test("concurrent maintenance calls and lost responses preserve the first immutab
  await expect(reconcileHistoricalSupervisor(db.asDO(),{...manifest,externalDrainReceipt:"0".repeat(64)},object,()=>native(),()=>now)).rejects.toThrow("HISTORICAL_RECONCILIATION_ALREADY_RECORDED");
  expect(calls).toBeLessThanOrEqual(2);
 });
+
+import {CONSUMED_PILOT_ID,inspectConsumedPilot,classifyConsumedPilot,archiveConsumedPilot,
+ type ConsumedEvidence,type ConsumedClosure,type ConsumedAuthorization,type ConsumedVerifier} from "./supervisor-reconciliation";
+const pid=CONSUMED_PILOT_ID, ck="supervisor:pilot:single-use-v1", lk="supervisor:admission:v1", tk="supervisor:task:"+pid;
+const ak="supervisor:consumed-pilot:archive:v1:"+pid, h="a".repeat(64), sh="b".repeat(40), uuid="11111111-1111-4111-8111-111111111111";
+const trust:ConsumedVerifier=async()=>true; // fixture ONLY
+async function consumedFixture(effect:"github_branch"|"session_create"|"submit"="github_branch"){
+ const db=new DB();
+ const claim={approval:{schema:"pilot-release-v2",environment:"staging",requestId:pid,releaseSha:sh,sourceCommit:sh,sourceTree:sh,fingerprint:h},instance:uuid,objectId:h,startedAt:10};
+ const job={...task(1),id:pid,project:"supervised-"+pid,branch:"opencode/staging-"+pid,fingerprint:h,createdAt:10,pilotInstance:uuid,
+  sessionIdPolicy:"deterministic-v1",sessionCreationAttempted:effect!=="github_branch",session:effect==="submit"?"ses_r2_"+pid:undefined,
+  operationId:effect==="submit"?"rc-start-"+pid:undefined,status:"cancel_requested",cancelAmbiguous:true};
+ const slot={token:uuid,generation:2,expiresAt:5,phase:"effect_unknown",effect};
+ await db.put(ck,claim);await db.put(tk,job);await db.put(lk,{version:1,slots:{[pid]:slot,[id(9)]:{...slot,generation:3}}});
+ const identity=await inspectConsumedPilot(db.asDO());
+ const present:ConsumedEvidence={identity,kind:"present",exactIdentity:true,observedAt:now-1,receiptDigest:h,branchCommit:sh,nativeStatus:"done"};
+ const absent:ConsumedEvidence={identity,kind:"absent",authoritativeNegative:true,complete:true,writerDrained:true,observedAt:now-1,receiptDigest:h};
+ const proof=async(e:ConsumedEvidence)=>{
+  const c:ConsumedClosure={snapshotDigest:identity.snapshotDigest,evidenceDigest:await reconciliationDigest(e),observedAt:now,
+   drainReceipt:h,closureReceipt:h,budgetReceipt:h,noOutstandingEffects:true,writerFenced:true};
+  const a:ConsumedAuthorization={action:"archive-consumed-pilot-and-release-reservation",environment:"staging",snapshotDigest:identity.snapshotDigest,
+   evidenceDigest:c.evidenceDigest,closureDigest:await reconciliationDigest(c),approvalRef:"offline-fixture",notBefore:now-100,expiresAt:now+1000};
+  return {c,a};
+ };
+ return {db,claim,job,identity,present,absent,proof};
+}
+for(const effect of ["github_branch","session_create","submit"] as const){
+ test("P02 lost "+effect+" response: exact presence, positive absence, failed read",async()=>{
+  const f=await consumedFixture(effect);
+  expect(await classifyConsumedPilot(f.identity,f.present,trust,now)).toBe("materialized");
+  expect(await classifyConsumedPilot(f.identity,f.absent,trust,now)).toBe("not_materialized");
+  expect(await classifyConsumedPilot(f.identity,f.absent,async()=>{throw Error("timeout");},now)).toBe("unknown");
+  expect(await classifyConsumedPilot(f.identity,{...f.absent,writerDrained:false} as unknown as ConsumedEvidence,trust,now)).toBe("unknown");
+  expect(await classifyConsumedPilot(f.identity,{...f.present,identity:{...f.identity,project:"other"}},trust,now)).toBe("unknown");
+  const {c,a}=await f.proof(f.absent);
+  const one=await archiveConsumedPilot(f.db.asDO(),f.absent,c,a,trust,()=>now);
+  expect(one).toMatchObject({outcome:"not_materialized",reused:false,replayAllowed:false});
+  expect(await f.db.get(ck)).toEqual(f.claim);expect(await f.db.get(tk)).toEqual(f.job);
+  expect(await f.db.get(lk)).toEqual({version:1,slots:{[id(9)]:{token:uuid,generation:3,expiresAt:5,phase:"effect_unknown",effect}}});
+  expect((await archiveConsumedPilot(f.db.asDO(),f.absent,c,a,trust,()=>now+2000)).digest).toBe(one.digest);
+  await expect(archiveConsumedPilot(f.db.asDO(),f.present,c,a,trust,()=>now)).rejects.toThrow("P02_ARCHIVE_CONFLICT");
+  await expect(reconcile(f.db)).rejects.toThrow("HISTORICAL_PILOT_ALREADY_CONSUMED");
+ });
+}
+test("P02 incompatible receipts never settle or release",async()=>{
+ const f=await consumedFixture("github_branch");
+ expect(await classifyConsumedPilot(f.identity,{...f.present,branchCommit:"c".repeat(40)} as ConsumedEvidence,trust,now)).toBe("unknown");
+ const s=await consumedFixture("submit");
+ expect(await classifyConsumedPilot(s.identity,{...s.present,nativeStatus:"unanswered",reason:"not_found"} as ConsumedEvidence,trust,now)).toBe("unknown");
+ const {c,a}=await f.proof(f.absent);
+ const before=await f.db.get(lk);
+ for(const fail of ["effect","closure","authorization"]){
+  await expect(archiveConsumedPilot(f.db.asDO(),f.absent,c,a,async p=>p!==fail,()=>now)).rejects.toThrow();
+  expect(await f.db.get(lk)).toEqual(before);expect(await f.db.get(ak)).toBeUndefined();
+ }
+ await expect(archiveConsumedPilot(f.db.asDO(),f.absent,c,{...a,expiresAt:now},trust,()=>now)).rejects.toThrow("P02_AUTHORIZATION_REQUIRED");
+});
+test("P02 concurrent snapshot change fails CAS; no archive or slot release",async()=>{
+ const f=await consumedFixture(),{c,a}=await f.proof(f.present);
+ const before=await f.db.get(lk);
+ await expect(archiveConsumedPilot(f.db.asDO(),f.present,c,a,async p=>{
+  if(p==="authorization")await f.db.put(tk,{...f.job,revision:2});return true;
+ },()=>now)).rejects.toThrow("P02_SNAPSHOT_CHANGED");
+ expect(await f.db.get(lk)).toEqual(before);expect(await f.db.get(ak)).toBeUndefined();
+});
+test("P02 concurrent identical archival is idempotent and does not disturb history",async()=>{
+ const f=await consumedFixture();await f.db.put("supervisor:turn:"+pid+":"+id(4),{phase:"settled"});
+ const {c,a}=await f.proof(f.present);
+ const both=await Promise.all([archiveConsumedPilot(f.db.asDO(),f.present,c,a,trust,()=>now),archiveConsumedPilot(f.db.asDO(),f.present,c,a,trust,()=>now)]);
+ expect(both[0].digest).toBe(both[1].digest);expect(both.filter(x=>x.reused).length).toBe(1);
+ expect(await f.db.get("supervisor:turn:"+pid+":"+id(4))).toEqual({phase:"settled"});
+});

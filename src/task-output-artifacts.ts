@@ -56,9 +56,12 @@ export function artifactIndexKey(requestId: string): string {
   assertTaskId(requestId);
   return `supervisor:output-index:v1:${requestId}`;
 }
-export function artifactDownloadPath(requestId: string, artifactId: string): string {
+export function artifactDownloadPath(requestId: string, artifactId: string, expiresAt?: number): string {
   assertTaskId(requestId); assertArtifactId(artifactId);
-  return `${TASK_ARTIFACT_PREFIX}/${requestId}/artifacts/${artifactId}`;
+  const path = `${TASK_ARTIFACT_PREFIX}/${requestId}/artifacts/${artifactId}`;
+  if (expiresAt === undefined) return path;
+  assert(Number.isSafeInteger(expiresAt) && expiresAt > 0, "INVALID_ARTIFACT_EXPIRY");
+  return path + "?expires=" + expiresAt;
 }
 
 /** Only an explicit relative dist/ file can be captured; never arbitrary /bundle. */
@@ -77,6 +80,11 @@ export function validateCaptureRequest(raw: unknown): CaptureRequest {
   assert(typeof mime === "string" && MIMES[ext] === mime, "UNSAFE_OR_MISMATCHED_MIME");
   assert(path.toLowerCase().endsWith("." + ext), "SOURCE_EXTENSION_MISMATCH");
   return { path, name, mime };
+}
+
+function containsArtifactSecret(value: string): boolean {
+  return /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----|\bBearer\s+[A-Za-z0-9._~+/-]{12,}|\b(?:sk-(?:proj-|or-v1-)?[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/i.test(value) ||
+    /(?:^|[\s,{])["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|client[_-]?secret|authorization)["']?\s*[:=]\s*["']?[^\s,"'}]{4,}/i.test(value);
 }
 
 async function shaHex(data: Uint8Array): Promise<string> {
@@ -113,6 +121,7 @@ export async function captureInspectedArtifact(args: {
   let contents: string;
   try { contents = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
   catch { throw new Error("NON_UTF8_ARTIFACT"); }
+  assert(!containsArtifactSecret(contents) && !containsArtifactSecret(req.name), "ARTIFACT_SECRET_PATTERN");
   assert(/^[a-z][a-z0-9-]{0,39}$/.test(args.ownerProject) &&
     /^ses[A-Za-z0-9_]{1,64}$/.test(args.ownerSession) &&
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(args.repository), "INVALID_OWNER_SCOPE");
@@ -140,18 +149,22 @@ export function artifactView(artifact: StoredTaskArtifact): ArtifactView {
     name: artifact.name, mime: artifact.mime, byteSize: artifact.byteSize,
     sha256: artifact.sha256, createdAt: artifact.createdAt,
     delivery: {
-      kind: "authenticated-route", path: artifactDownloadPath(artifact.requestId, artifact.artifactId),
+      kind: "authenticated-route", path: artifactDownloadPath(artifact.requestId, artifact.artifactId, artifact.expiresAt),
       expiresAt: artifact.expiresAt
     }
   };
 }
 
-export function artifactIsOwnedBy(artifact: StoredTaskArtifact | undefined, task: {
+export function artifactMatchesScope(artifact: StoredTaskArtifact | undefined, task: {
   id: string; project: string; session: string; repository: string;
-}, now = Date.now()): boolean {
+}): boolean {
   return Boolean(artifact && artifact.requestId === task.id && artifact.ownerProject === task.project &&
-    artifact.ownerSession === task.session && artifact.repository.toLowerCase() === task.repository.toLowerCase() &&
-    Number.isSafeInteger(artifact.expiresAt) && now < artifact.expiresAt);
+    artifact.ownerSession === task.session && typeof artifact.repository === "string" &&
+    typeof task.repository === "string" && artifact.repository.toLowerCase() === task.repository.toLowerCase());
+}
+
+export function artifactIsOwnedBy(artifact: StoredTaskArtifact | undefined, task: ArtifactTaskScope, now = Date.now()): boolean {
+  return Boolean(artifactMatchesScope(artifact, task) && artifact && Number.isSafeInteger(artifact.expiresAt) && now < artifact.expiresAt);
 }
 
 export function artifactErrorResponse(code: string, status: number): Response {
@@ -185,6 +198,9 @@ export async function verifiedArtifactDownload(artifact: StoredTaskArtifact, now
     const identity = validateCaptureRequest({
       path: artifact.sourcePath, name: artifact.name, mime: artifact.mime
     });
+    const decoded = new TextDecoder("utf-8",{fatal:true}).decode(artifact.bytes);
+    if (containsArtifactSecret(decoded) || containsArtifactSecret(identity.name)) return artifactErrorResponse("ARTIFACT_SECRET_PATTERN", 502);
+    if (identity.mime === "application/json") JSON.parse(decoded);
     if (!Number.isSafeInteger(artifact.createdAt) ||
         !Number.isSafeInteger(artifact.expiresAt) ||
         artifact.createdAt < 0 || artifact.createdAt > now ||
@@ -205,6 +221,104 @@ export async function verifiedArtifactDownload(artifact: StoredTaskArtifact, now
     "Content-Length": String(artifact.byteSize),
     "Content-Disposition": contentDisposition(artifact.name),
     "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store, private",
-    "Referrer-Policy": "no-referrer", "Cross-Origin-Resource-Policy": "same-origin"
+    "Referrer-Policy": "no-referrer", "Cross-Origin-Resource-Policy": "same-origin",
+    "Content-Security-Policy": "default-src 'none'; sandbox", "Accept-Ranges": "none", "X-Artifact-SHA256": artifact.sha256
   } });
+}
+
+/** Existing DO storage contract; callers must authenticate and resolve scope first. */
+export type ArtifactTaskScope = { id: string; project: string; session: string; repository: string };
+export type ArtifactReadStorage = { get<T>(key: string): Promise<T | undefined> };
+export type ArtifactTransaction = ArtifactReadStorage & {
+  put<T>(key: string, value: T): Promise<void>;
+  delete(key: string): Promise<unknown>;
+};
+
+async function readArtifactIndex(storage: ArtifactReadStorage, id: string): Promise<string[]> {
+  const raw = await storage.get<unknown>(artifactIndexKey(id));
+  if (raw === undefined) return [];
+  assert(Array.isArray(raw) && raw.length <= TASK_ARTIFACT_MAX_PER_TASK, "ARTIFACT_INDEX_INVALID");
+  const ids: string[] = [];
+  for (const key of raw) { assertArtifactId(key); ids.push(key); }
+  assert(new Set(ids).size === ids.length, "ARTIFACT_INDEX_INVALID");
+  return ids;
+}
+
+async function verifyScopedStored(record: StoredTaskArtifact | undefined, scope: ArtifactTaskScope,
+                                  id: string, now: number): Promise<StoredTaskArtifact> {
+  assert(record && record.artifactId === id && artifactIsOwnedBy(record, scope, now), "ARTIFACT_SCOPE_OR_EXPIRY");
+  assert((await verifiedArtifactDownload(record, now)).status === 200, "ARTIFACT_INTEGRITY_FAILURE");
+  return record;
+}
+
+/** Use inside the existing DO transaction, never as two independent writes.
+ * Active idempotent replay keeps the original timestamp and bytes. Corrupt/missing
+ * index records fail closed; no opportunistic deletion of another scope's data.
+ * Expiry cleanup is limited to verified expired records of this exact scope.
+ */
+export async function persistTaskArtifact(tx: ArtifactTransaction, scope: ArtifactTaskScope,
+                                          prepared: StoredTaskArtifact, now = Date.now()): Promise<StoredTaskArtifact> {
+  assertTaskId(scope.id);
+  await verifyScopedStored(prepared, scope, prepared.artifactId, now);
+  const index = await readArtifactIndex(tx, scope.id);
+  const key = artifactKey(scope.id, prepared.artifactId);
+  const existing = await tx.get<StoredTaskArtifact>(key);
+  if (existing !== undefined || index.includes(prepared.artifactId)) {
+    assert(index.includes(prepared.artifactId), "ARTIFACT_INDEX_INVALID");
+    return verifyScopedStored(existing, scope, prepared.artifactId, now);
+  }
+  const live: string[] = [];
+  const expired: string[] = [];
+  for (const id of index) {
+    const priorKey = artifactKey(scope.id, id);
+    const prior = await tx.get<StoredTaskArtifact>(priorKey);
+    assert(prior && Number.isSafeInteger(prior.expiresAt), "ARTIFACT_INDEX_INVALID");
+    if (now >= prior.expiresAt) {
+      await verifyScopedStored(prior, scope, id, prior.expiresAt - 1);
+      expired.push(priorKey);
+    } else {
+      await verifyScopedStored(prior, scope, id, now);
+      live.push(id);
+    }
+  }
+  assert(live.length < TASK_ARTIFACT_MAX_PER_TASK, "ARTIFACT_TASK_LIMIT");
+  for (const oldKey of expired) await tx.delete(oldKey);
+  await tx.put(key, prepared);
+  await tx.put(artifactIndexKey(scope.id), [...live, prepared.artifactId]);
+  return prepared;
+}
+
+/** Bounded read-only projection: scan at most limit records, never a transcript,
+ * never list all storage. Cursor is scoped to task + current index and is internal
+ * to Artifact v1; P20 will handle the public HTTP cursor contract.
+ */
+export async function readTaskArtifactPage(storage: ArtifactReadStorage, scope: ArtifactTaskScope,
+                                           after: string | undefined, limit = 2, now = Date.now()): Promise<{
+  artifacts: ArtifactView[]; nextAfter: string | null; scanned: number;
+}> {
+  assertTaskId(scope.id);
+  assert(Number.isSafeInteger(limit) && limit >= 1 && limit <= TASK_ARTIFACT_MAX_PER_TASK, "ARTIFACT_PAGE_LIMIT");
+  const index = await readArtifactIndex(storage, scope.id);
+  let start = 0;
+  if (after !== undefined) {
+    assert(typeof after === "string" && after.startsWith(scope.id + ":"), "ARTIFACT_CURSOR_INVALID");
+    const prior = after.slice(scope.id.length + 1);
+    assertArtifactId(prior);
+    const position = index.indexOf(prior);
+    assert(position >= 0, "ARTIFACT_CURSOR_INVALID");
+    start = position + 1;
+  }
+  const selected = index.slice(start, start + limit);
+  const artifacts: ArtifactView[] = [];
+  for (const id of selected) {
+    const record = await storage.get<StoredTaskArtifact>(artifactKey(scope.id, id));
+    // A valid, scoped expired record is omitted; a foreign or malformed row fails closed.
+    if (record && Number.isSafeInteger(record.expiresAt) && now >= record.expiresAt) {
+      await verifyScopedStored(record, scope, id, record.expiresAt - 1);
+      continue;
+    }
+    artifacts.push(artifactView(await verifyScopedStored(record, scope, id, now)));
+  }
+  return { artifacts, scanned: selected.length,
+    nextAfter: start + selected.length < index.length ? scope.id + ":" + selected[selected.length - 1] : null };
 }

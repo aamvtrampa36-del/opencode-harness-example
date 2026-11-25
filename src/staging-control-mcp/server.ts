@@ -1,3 +1,4 @@
+import { REMOTE_SCHEMA, remoteScope, validateStatus, validateProgress } from "./p08-remote";
 import { boundedMcpJsonText, redactMcpString } from "./bounded-response";
 import { readOnlyStartFields } from "./start-contract";
 import { createSupervisorMemoryProbe } from "../supervisor-phase-telemetry";
@@ -27,6 +28,8 @@ export interface StagingSupervisor {
   supervisedTaskArtifacts?(id: string): Promise<unknown>;
   supervisedArtifactCapture?(id: string, raw: unknown): Promise<unknown>;
   remoteSupervisorProgress(id: string, after?: number): Promise<unknown>;
+  remoteSupervisorStatusV1?(id: string, afterRevision: number | null): Promise<unknown>;
+  remoteSupervisorProgressV1?(id: string, cursor?: string): Promise<unknown>;
   remoteSupervisorContinue(input: unknown): Promise<unknown>;
   remoteSupervisorSelectModel(id: string, model: string): Promise<unknown>;
   remoteSupervisorModels(): Promise<unknown>;
@@ -291,12 +294,20 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
 
   server.registerTool("staging_task_status", {
     description: `Snapshot durable de una tarea: SOLO LECTURA, sin espera SDK, no certifica finalización ni PASS. ${WORKSPACE_HINT}`,
-    inputSchema: { id: taskIdSchema.describe("ID de tarea hexadecimal de 16 caracteres"), workspace: workspaceSchema }
-  }, async ({ id, workspace }) => callTask(async () => {
-    const supervisor = bindings.supervisor(workspace);
+    inputSchema: { id: taskIdSchema.describe("ID de tarea hexadecimal de 16 caracteres"), workspace: workspaceSchema, schema: z.literal(REMOTE_SCHEMA).optional(), afterRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional() }
+  }, async ({ id, workspace, schema, afterRevision }) => callTask(async () => {
+    const scope = remoteScope(id, workspace);
+    if (afterRevision !== undefined && schema !== REMOTE_SCHEMA) throw Error("REMOTE_SCHEMA_REQUIRED");
+    const supervisor = bindings.supervisor(scope.workspace ?? undefined);
+    if (schema === REMOTE_SCHEMA) {
+      if (!supervisor.remoteSupervisorStatusV1) throw Error("REMOTE_SCHEMA_UNAVAILABLE");
+      return validateStatus(await supervisor.remoteSupervisorStatusV1(id, afterRevision ?? null), scope, afterRevision ?? null);
+    }
     if (!supervisor.remoteSupervisorTaskStatusSnapshot)
       throw new Error("SUPERVISOR_STATUS_SNAPSHOT_UNAVAILABLE_OLD_WORKER");
-    return supervisor.remoteSupervisorTaskStatusSnapshot(id);
+    const value = asRecord(await supervisor.remoteSupervisorTaskStatusSnapshot(id));
+    if (value.id !== id) throw Error("REMOTE_UPSTREAM_IDENTITY_MISMATCH");
+    return value;
   }, undefined, true));
 
   server.registerTool("staging_task_artifacts", {
@@ -323,10 +334,22 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
   }, undefined, true));
 
   server.registerTool("staging_task_progress", {
-    description: `Progreso detallado temporalmente UNAVAILABLE_UNBOUNDED_SDK por eventos nativos de tamaño no acotado; devuelve snapshot y error explícito sin mover el cursor. ${WORKSPACE_HINT}`,
-    inputSchema: { id: taskIdSchema, workspace: workspaceSchema, after: z.number().int().min(0).default(0) }
-  }, async ({ id, workspace, after }) =>
-    callTask(() => bindings.supervisor(workspace).remoteSupervisorProgress(id, after), undefined, true));
+    description: `Progreso legacy indisponible por SDK no acotado. schema=opencode.remote-evidence.v1 usa cursor firmado y RPC acotado si está disponible; no fallback. ${WORKSPACE_HINT}`,
+    inputSchema: { id: taskIdSchema, workspace: workspaceSchema, after: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0), schema: z.literal(REMOTE_SCHEMA).optional(), cursor: z.string().max(2048).regex(/^[a-f0-9]+\.[a-f0-9]{64}$/).optional() }
+  }, async ({ id, workspace, after, schema, cursor }) => callTask(async () => {
+    const scope = remoteScope(id, workspace);
+    if (cursor !== undefined && schema !== REMOTE_SCHEMA) throw Error("REMOTE_SCHEMA_REQUIRED");
+    if (schema === REMOTE_SCHEMA && after !== 0) throw Error("REMOTE_CURSOR_INVALID");
+    const supervisor = bindings.supervisor(scope.workspace ?? undefined);
+    if (schema === REMOTE_SCHEMA) {
+      if (!supervisor.remoteSupervisorProgressV1) throw Error("REMOTE_SCHEMA_UNAVAILABLE");
+      return validateProgress(await supervisor.remoteSupervisorProgressV1(id, cursor), scope, cursor);
+    }
+    const value = asRecord(await supervisor.remoteSupervisorProgress(id, after));
+    if (value.taskId !== undefined && value.taskId !== id) throw Error("REMOTE_UPSTREAM_IDENTITY_MISMATCH");
+    if (value.pageAvailable !== false || value.nextAfter !== after) throw Error("REMOTE_SCHEMA_MISMATCH");
+    return value;
+  }, undefined, true));
 
   server.registerTool("staging_task_continue", {
     description: `Envía una nueva instrucción para continuar o corregir una tarea. turnId hace idempotentes los reintentos; una instrucción sobre una tarea activa se aplica como steer. ${WORKSPACE_HINT}`,
@@ -372,9 +395,9 @@ async function callTaskWithProbe(
     const value = await trace.run("mcp", "rpc", operation);
     const json = await trace.run("mcp", "serialize", () =>
       boundedMcpJsonText(value, maxChars, STAGING_WORKER, supervisorTask));
-    const page = JSON.parse(json) as { pageAvailable?: boolean; error?: string };
+    const page = JSON.parse(json) as { pageAvailable?: boolean; error?: string; _responseTruncated?: boolean };
     const unavailable = supervisorTask && (
-      page.pageAvailable === false ||
+      page._responseTruncated === true || page.pageAvailable === false ||
       page.error === "SUPERVISOR_PROGRESS_UNAVAILABLE_UNBOUNDED_SDK" ||
       page.error === "SUPERVISOR_NATIVE_NOT_FOUND"
     );

@@ -44,3 +44,12 @@ describe("bounded supervisor session directory (no SDK full session listing)",()
    await expect(collectSupervisorDirectory(bad,async()=>false)).rejects.toThrow("SUPERVISOR_DIRECTORY_INVALID");
  });
 });
+
+
+test('P07 bounded directory entry point is distinct from legacy materialized listing',async()=>{
+ const {collectProjectedSupervisorDirectory}=await import('./supervisor-directory');
+ const key=await crypto.subtle.importKey('raw',new Uint8Array(32).fill(7),{name:'HMAC',hash:'SHA-256'},false,['sign','verify']);
+ const row={key:'supervisor:task:'+'a'.repeat(16),session:'ses_fixture',status:'running',createdAt:1};
+ const page=await collectProjectedSupervisorDirectory({next:async()=>({kind:'row',row})},{principal:'fixture',workspace:'fixture',view:'directory',session:'directory'},key,undefined,{rows:1,bytes:2048,ms:1000});
+ expect(page.rows).toEqual([row]);expect(page.complete).toBe(false);expect(page.cursor).not.toBeNull();
+});

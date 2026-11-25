@@ -7,6 +7,8 @@
  * writes ONLY to opencode/* review branches. No merging, force-push, deletion,
  * releases or production deployments.
  */
+import { githubRestNoRedirect, freezeGitHubSourcePin, assertPinnedGitHubAction, assertGitHubSourceIdentity, type GitHubSourcePin } from "./metralla-m05-source";
+
 export const ALLOWED_REPOS = [
   "aamvtrampa36-del/cdf-cloud-engine",
   "aamvtrampa36-del/CDF-WorkBench-",
@@ -23,7 +25,7 @@ export type GitHubAction =
   | { action: "pr_reviews"; repo: string; number: number; page?: number }
   | { action: "pr_checks"; repo: string; sha: string }
   | { action: "branch"; repo: string; branch: string }
-  | { action: "write"; repo: string; path: string; branch: string; content: string; message?: string }
+  | { action: "write"; repo: string; path: string; branch: string; content: string; message?: string; expectedHead?: string }
   | { action: "write"; repo: string; path: string; branch: string; expectedHead: string;
       oldText: string; newText: string; message?: string }
   | { action: "pr"; repo: string; branch: string; title: string; body?: string }
@@ -140,7 +142,14 @@ export type GitHubPrPublicationPermit = {
   /** Durable "publishing" journal + token validation BEFORE HTTP POST. */
   beginExternalEffect(proof: GitHubPrPublicationProof): Promise<void>;
 };
+export type GitHubRefIntent = Readonly<{repo:string; base:string; branch:string; operation:"branch"|"write"; expected:string|null; target:string}>;
+export type GitHubPreparedRefIntent = Omit<GitHubRefIntent,"target"> & Readonly<{identity:string}>;
 export interface GitHubPrPublicationGate {
+  /** Existing supervisor publisher, same transactional authority as PRs. */
+  withPreparedRefEffect?(intent: GitHubPreparedRefIntent, prepare: () => Promise<string>,
+    apply: (target:string,fence:()=>Promise<void>)=>Promise<void>, observe:()=>Promise<string|null>):
+    Promise<{target:string;reconciled:boolean}>;
+  withRefEffect?(intent: GitHubRefIntent, apply: () => Promise<void>, observe: () => Promise<string|null>): Promise<{reconciled:boolean}>;
   withExclusive<T>(
     intent: GitHubPrPublicationScope,
     execute: (permit: GitHubPrPublicationPermit) => Promise<T>
@@ -149,26 +158,37 @@ export interface GitHubPrPublicationGate {
 
 export class GitHubBridge {
   private readonly allowed: ReadonlySet<string>;
+  private readonly sourcePin?: GitHubSourcePin;
   constructor(
     private readonly token: string,
     private readonly http: GitHubFetch = fetch,
     allowedRepos: readonly string[] = ALLOWED_REPOS,
     private readonly publicationGate?: GitHubPrPublicationGate,
-    private readonly pilotBase?: {branch:string;sha:string;base:string}
+    private readonly pilotBase?: {branch:string;sha:string;base:string},
+    sourcePin?: GitHubSourcePin
   ) {
     if (!token) throw new Error("GITHUB_TOKEN is not configured in Cloudflare Secrets");
     this.allowed = new Set(allowedRepos.map(normalizeOwnedRepository));
+    this.sourcePin = sourcePin ? freezeGitHubSourcePin(sourcePin) : undefined;
+    if (this.sourcePin) {
+      repoChecked(this.sourcePin.repo, this.allowed);
+      if (pilotBase && (pilotBase.branch !== this.sourcePin.branch || pilotBase.sha !== this.sourcePin.commit || pilotBase.base !== this.sourcePin.base)) throw Error("GITHUB_SOURCE_PIN_PILOT_MISMATCH");
+    }
   }
 
   private reviewedBase(repo:string,branch:string,defaultBranch:string){
+    if (this.sourcePin) {
+      assertPinnedGitHubAction(this.sourcePin, {repo, operation:"branch", branch});
+      return this.sourcePin.base;
+    }
     if(!this.pilotBase)return reviewedBase(repo,branch,defaultBranch);
     if(repo.toLowerCase()!==OPENCODE_REPO.toLowerCase()||branch!==this.pilotBase.branch||
       !STAGING_REVIEW.test(branch)||this.pilotBase.base!=="f0-c10/integracion-final-20261123"||!/^[a-f0-9]{40}$/.test(this.pilotBase.sha))throw Error("PILOT_GITHUB_BASE_INVALID");
     return this.pilotBase.base;
   }
   private async api(method: string, route: string, data?: unknown, allow404 = false,
-    rejectRedirect = false): Promise<any> {
-    const response = await this.http("https://api.github.com" + route, {
+    _rejectRedirect = false): Promise<any> {
+    const response = await githubRestNoRedirect(this.http, "https://api.github.com" + route, {
       method,
       headers: {
         "Authorization": "Bearer " + this.token,
@@ -178,11 +198,8 @@ export class GitHubBridge {
         "User-Agent": "OpenCode-Cloud"
       },
       ...(data === undefined ? {} : { body: JSON.stringify(data) }),
-      ...(rejectRedirect ? { redirect: "manual" as const } : {})
+      signal: AbortSignal.timeout(45_000)
     });
-    if (rejectRedirect && response.status >= 300 && response.status < 400) {
-      throw new Error("GitHub source identity redirect refused");
-    }
     if (response.status === 404 && allow404) return null;
     const body = await response.json() as any;
     if (!response.ok) {
@@ -205,6 +222,16 @@ export class GitHubBridge {
     return body;
   }
 
+  /** Verify the selected immutable source before a scoped mutation. The pin is
+   * injected by server-owned admission; it is not accepted from GitHubAction. */
+  private async verifyPinnedSource(repo: string, info: any, baseCommit: unknown): Promise<void> {
+    if (!this.sourcePin) return;
+    if (info?.full_name?.toLowerCase() !== this.sourcePin.repo || baseCommit !== this.sourcePin.commit)
+      throw Error("GITHUB_SOURCE_IDENTITY_DIVERGENT");
+    const record = await this.api("GET", "/repos/" + repo + "/commits/" + this.sourcePin.commit);
+    assertGitHubSourceIdentity(this.sourcePin, {repo:info.full_name, baseCommit, commit:record?.sha, tree:record?.commit?.tree?.sha});
+  }
+
   /**
    * Idempotent branch reservation for the supervisor. The agent-facing branch
    * action remains non-idempotent; this helper only accepts deterministic
@@ -215,6 +242,7 @@ export class GitHubBridge {
   }> {
     const repo = repoChecked(repoInput, this.allowed);
     const branch = branchChecked(branchInput);
+    if (this.sourcePin) assertPinnedGitHubAction(this.sourcePin, {repo, operation:"branch", branch});
     if (!/^opencode\/(?:staging|supervised)-[a-f0-9]{16}$/.test(branch)) {
       throw new Error("Solo se aceptan ramas deterministas del supervisor");
     }
@@ -227,14 +255,26 @@ export class GitHubBridge {
       throw new Error("Source branch commit is unverifiable");
     }
     if(this.pilotBase&&sha!==this.pilotBase.sha)throw Error("PILOT_SOURCE_SHA_CHANGED");
+    await this.verifyPinnedSource(repo, info, sha);
     const ref = base + "/git/ref/heads/" + encodeURIComponent(branch);
     const existing = await this.api("GET", ref, undefined, true);
-    if (existing) {
-      if (existing.object?.sha !== sha) {
-        throw new Error("La rama determinista ya existe con otra base; no se reutilizó");
-      }
-      return { repo, branch, source, sha, reused: true };
+    if (existing && existing.object?.sha !== sha)
+      throw Error("La rama determinista ya existe con otra base; no se reutilizó");
+    if (this.sourcePin && this.publicationGate?.withPreparedRefEffect) {
+      let reused=!!existing;
+      const outcome = await this.publicationGate.withPreparedRefEffect({
+        repo,base:source,branch,operation:"branch",expected:null,identity:sha
+      },async()=>sha,async(target,fence)=>{
+        const current=await this.api("GET",ref,undefined,true);
+        if(current?.object?.sha===target){reused=true;return;}
+        if(current)throw Error("GITHUB_BRANCH_EFFECT_UNKNOWN");
+        await fence();
+        const created=await this.api("POST",base+"/git/refs",{ref:"refs/heads/"+branch,sha:target});
+        if(created?.object?.sha!==target)throw Error("GITHUB_BRANCH_EFFECT_UNKNOWN");
+      },async()=>(await this.api("GET",ref,undefined,true))?.object?.sha??null);
+      return {repo,branch,source,sha,reused:reused||outcome.reconciled};
     }
+    if (existing) return {repo,branch,source,sha,reused:true};
     try {
       const created = await this.api("POST", base + "/git/refs", {
         ref: "refs/heads/" + branch, sha
@@ -244,6 +284,13 @@ export class GitHubBridge {
     } catch (error) {
       // A concurrent retry may have won the create race. Accept only the
       // exact source commit reserved above; never overwrite or force-update.
+      if (this.sourcePin) {
+        try {
+          const observed = await this.api("GET", ref, undefined, true);
+          if (observed?.object?.sha === sha) return { repo, branch, source, sha, reused: true };
+        } catch { /* A failed read is not evidence of absence. */ }
+        throw Error("GITHUB_BRANCH_EFFECT_UNKNOWN");
+      }
       const raced = await this.api("GET", ref, undefined, true);
       if (raced?.object?.sha === sha) return { repo, branch, source, sha, reused: true };
       throw error;
@@ -430,9 +477,118 @@ export class GitHubBridge {
     return { repo, branch, path, commitSha: commit.sha, fileSha: blob.sha, expectedHead, mode: "replacement" };
   }
 
+  /** Pinned mutations use immutable Git objects plus a durable ref CAS.
+   * Legacy review branches retain their existing API shape. */
+  private async writePinned(repo:string,branch:string,path:string,safePath:string,
+    input:Extract<GitHubAction,{action:"write"}>):Promise<unknown>{
+    const pin=this.sourcePin!;
+    const gate=this.publicationGate;
+    if(!gate?.withPreparedRefEffect)throw Error("GITHUB_PINNED_EFFECT_COORDINATOR_REQUIRED");
+    if(typeof input.expectedHead!=="string" || !/^[a-f0-9]{40}$/.test(input.expectedHead))
+      throw Error("GITHUB_PINNED_WRITE_EXPECTED_HEAD_REQUIRED");
+    const expected=input.expectedHead, base="/repos/"+repo;
+    const ref=base+"/git/ref/heads/"+encodeURIComponent(branch);
+    const full="content" in input;
+    const message=(input.message||"chore: scoped update from OpenCode").slice(0,150);
+    if(full){
+      if("oldText" in input || "newText" in input || typeof input.content!=="string")throw Error("GITHUB_PINNED_WRITE_INVALID");
+      toBase64(input.content);
+    }else if(typeof input.oldText!=="string" || !input.oldText || typeof input.newText!=="string" ||
+      new TextEncoder().encode(input.oldText).length>MAX_REPLACEMENT_TEXT_BYTES ||
+      new TextEncoder().encode(input.newText).length>MAX_REPLACEMENT_TEXT_BYTES)
+      throw Error("GITHUB_PINNED_WRITE_INVALID");
+    const observe=async()=>(await this.api("GET",ref))?.object?.sha??null;
+    const intended=JSON.stringify([path,message,full?["full",input.content]:["replace",input.oldText,input.newText]]);
+    const outcome=await gate.withPreparedRefEffect({repo,base:pin.base,branch,operation:"write",expected,identity:intended},
+      async()=>{
+        if(await observe()!==expected)throw Error("GITHUB_REF_CAS_CONFLICT");
+        if(expected!==pin.commit){
+          const diff=await this.api("GET",base+"/compare/"+pin.commit+"..."+expected);
+          if(diff?.merge_base_commit?.sha!==pin.commit || diff.behind_by!==0 || !Array.isArray(diff.files) || diff.files.length>=300)
+            throw Error("GITHUB_SOURCE_ANCESTRY_DIVERGENT");
+          for(const f of diff.files){
+            for(const p of f?.status==="renamed"?[f.filename,f.previous_filename]:[f?.filename]){
+              assertPinnedGitHubAction(pin,{repo,operation:"write",branch,path:p});assertNonCanonicalWrite(repo,p);
+            }
+          }
+        }
+        const parent=await this.api("GET",base+"/git/commits/"+expected);
+        const baseTree=parent?.tree?.sha;
+        if(parent?.sha!==expected || typeof baseTree!=="string" || !/^[a-f0-9]{40}$/.test(baseTree))
+          throw Error("GITHUB_COMMIT_PROOF_INVALID");
+        let cursor=baseTree,mode:"100644"|"100755"="100644",oldBlob:string|undefined;
+        const parts=path.split("/");
+        for(let i=0;i<parts.length;i++){
+          const tr=await this.api("GET",base+"/git/trees/"+cursor);
+          if(tr?.sha!==cursor || tr.truncated===true || !Array.isArray(tr.tree))throw Error("GITHUB_TREE_PROOF_INVALID");
+          const entry=tr.tree.find((v:any)=>v.path===parts[i]);
+          if(!entry){if(!full)throw Error("Replacement target is not present");break;}
+          if(typeof entry.sha!=="string" || !/^[a-f0-9]{40}$/.test(entry.sha))throw Error("GITHUB_TREE_PROOF_INVALID");
+          if(i===parts.length-1){
+            if(entry.type!=="blob" || !["100644","100755"].includes(entry.mode))throw Error("GITHUB_PATH_NOT_REGULAR");
+            mode=entry.mode;oldBlob=entry.sha;
+          }else{
+            if(entry.type!=="tree")throw Error("GITHUB_PATH_NOT_DIRECTORY");
+            cursor=entry.sha;
+          }
+        }
+        let content:string;
+        if(full)content=input.content;
+        else{
+          const file=await this.api("GET",base+"/contents/"+safePath+"?ref="+expected);
+          if(file?.sha!==oldBlob || file.type!=="file" || file.encoding!=="base64" || typeof file.content!=="string" ||
+            !Number.isSafeInteger(file.size)||file.size>MAX_REPLACEMENT_FILE_BYTES)throw Error("GITHUB_FILE_PROOF_INVALID");
+          const bytes=Uint8Array.from(atob(file.content.replace(/\s/g,"")),c=>c.charCodeAt(0));
+          if(bytes.length!==file.size)throw Error("GITHUB_FILE_PROOF_INVALID");
+          const source=new TextDecoder("utf-8",{fatal:true}).decode(bytes),first=source.indexOf(input.oldText);
+          if(first<0||source.indexOf(input.oldText,first+1)>=0)throw Error("Replacement anchor must match exactly once");
+          content=source.slice(0,first)+input.newText+source.slice(first+input.oldText.length);
+        }
+        const bytes=new TextEncoder().encode(content);
+        if(bytes.length>MAX_REPLACEMENT_FILE_BYTES)throw Error("GITHUB_FILE_TOO_LARGE");
+        const blob=await this.api("POST",base+"/git/blobs",{content,encoding:"utf-8"});
+        if(typeof blob?.sha!=="string" || !/^[a-f0-9]{40}$/.test(blob.sha))throw Error("GITHUB_BLOB_PROOF_INVALID");
+        if(blob.sha===oldBlob)throw Error("GITHUB_WRITE_UNCHANGED");
+        const tr=await this.api("POST",base+"/git/trees",{base_tree:baseTree,tree:[{path,mode,type:"blob",sha:blob.sha}]});
+        if(typeof tr?.sha!=="string" || !/^[a-f0-9]{40}$/.test(tr.sha))throw Error("GITHUB_TREE_PROOF_INVALID");
+        const commit=await this.api("POST",base+"/git/commits",{message,tree:tr.sha,parents:[expected]});
+        if(typeof commit?.sha!=="string" || !/^[a-f0-9]{40}$/.test(commit.sha))throw Error("GITHUB_COMMIT_PROOF_INVALID");
+        const proof=await this.api("GET",base+"/git/commits/"+commit.sha);
+        if(proof?.sha!==commit.sha || proof?.tree?.sha!==tr.sha || !Array.isArray(proof.parents) ||
+            proof.parents.length!==1 || proof.parents[0]?.sha!==expected)throw Error("GITHUB_COMMIT_PROOF_INVALID");
+        const file=await this.api("GET",base+"/contents/"+safePath+"?ref="+commit.sha);
+        if(file?.type!=="file" || file.sha!==blob.sha || file.encoding!=="base64" || typeof file.content!=="string" ||
+            fromBase64(file.content)!==content)throw Error("GITHUB_FILE_PROOF_INVALID");
+        return commit.sha;
+      },async(target,fence)=>{
+        if(await observe()!==expected)throw Error("GITHUB_REF_CAS_CONFLICT");
+        await fence();
+        const update=await this.api("PATCH",base+"/git/refs/heads/"+encodeURIComponent(branch),{sha:target,force:false});
+        if(update?.object?.sha!==target)throw Error("GITHUB_REF_UPDATE_UNKNOWN");
+      },observe);
+    const file=await this.api("GET",base+"/contents/"+safePath+"?ref="+outcome.target);
+    if(file?.type!=="file" || typeof file.sha!=="string" || !/^[a-f0-9]{40}$/.test(file.sha))throw Error("GITHUB_FILE_PROOF_INVALID");
+    return {repo,branch,path,commitSha:outcome.target,fileSha:file.sha,expectedHead:expected,
+      mode:full?"content":"replacement",reconciled:outcome.reconciled};
+  }
+
   async execute(input: GitHubAction): Promise<unknown> {
     const repo = repoChecked(input.repo, this.allowed);
     const base = "/repos/" + repo;
+    if (this.sourcePin) {
+      assertPinnedGitHubAction(this.sourcePin, {...input, operation:input.action});
+      if (["branch","write","pr"].includes(input.action) && !this.publicationGate?.withPreparedRefEffect)
+        throw Error("GITHUB_PINNED_EFFECT_COORDINATOR_REQUIRED");
+      if (input.action === "branch") {
+        const result = await this.ensureSupervisorBranch(repo, input.branch);
+        return {...result, ref:"refs/heads/" + result.branch};
+      }
+      if (input.action === "write" || input.action === "pr") {
+        const info = await this.api("GET", base);
+        const from = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(this.sourcePin.base));
+        await this.verifyPinnedSource(repo, info, from?.object?.sha);
+      }
+    }
     switch (input.action) {
       case "repo": {
         const info = await this.api("GET", base);
@@ -603,6 +759,7 @@ export class GitHubBridge {
         const branch = branchChecked(input.branch);
         const safePath = pathChecked(input.path);
         assertNonCanonicalWrite(repo, input.path);
+        if(this.sourcePin) return this.writePinned(repo,branch,input.path,safePath,input);
         if ("expectedHead" in input || "oldText" in input || "newText" in input) {
           if (!("expectedHead" in input) || !("oldText" in input) || !("newText" in input) || "content" in input) {
             throw new Error("Choose full content or a complete bounded replacement, not both");
@@ -678,6 +835,7 @@ export class GitHubBridge {
         };
         const [baseSha, headSha] = await Promise.all([getHead(source), getHead(branch)]);
         if(this.pilotBase&&baseSha!==this.pilotBase.sha)throw Error("PILOT_SOURCE_SHA_CHANGED");
+        if(this.sourcePin&&baseSha!==this.sourcePin.commit)throw Error("GITHUB_SOURCE_IDENTITY_DIVERGENT");
         // A lost POST response must never be reconciled against a DIFFERENT
         // branch HEAD, even if the branch, PR title and body have not changed.
         if (permit?.retryOnly &&
@@ -685,7 +843,9 @@ export class GitHubBridge {
              permit.expectedProof?.headSha !== headSha))
           throw new Error("PR_PUBLICATION_HEAD_CHANGED: original commit proof does not match current refs");
         const comparison = await this.api("GET", base + "/compare/" +
-          encodeURIComponent(source) + "..." + encodeURIComponent(branch));
+          encodeURIComponent(this.sourcePin ? baseSha : source) + "..." + encodeURIComponent(this.sourcePin ? headSha : branch));
+        if (this.sourcePin && (comparison?.merge_base_commit?.sha !== baseSha || comparison?.behind_by !== 0))
+          throw Error("GITHUB_SOURCE_ANCESTRY_DIVERGENT");
         if (!Array.isArray(comparison?.files) || comparison.files.length === 0 ||
             comparison.files.length >= 300 ||
             !Number.isSafeInteger(comparison.total_commits) ||
@@ -708,11 +868,16 @@ export class GitHubBridge {
           return paths;
         };
         const ourPaths = pathsOf(comparison.files);
+        if (this.sourcePin) for (const path of ourPaths) {
+          assertPinnedGitHubAction(this.sourcePin,{repo,operation:"write",branch,path});
+          assertNonCanonicalWrite(repo,path);
+        }
         const existing = await this.api("GET", base + "/pulls?state=open&base=" +
           encodeURIComponent(source) + "&per_page=100&page=1");
         if (!Array.isArray(existing) || existing.length >= 100)
           throw new Error("PR_PREFLIGHT_INCOMPLETE: open PR list missing or truncated");
 
+        let matchingDraft: any;
         for (const item of existing) {
           if (!Number.isSafeInteger(item?.number) || item.number < 1 ||
               item?.base?.ref !== source || typeof item?.head?.ref !== "string")
@@ -729,11 +894,21 @@ export class GitHubBridge {
               item.draft === true &&
               typeof item.html_url === "string" && item.html_url.length > 0;
             if (exactIntent) {
-              return { repo, number: item.number, url: item.html_url, draft: true,
-                base: source, head: branch, baseSha, headSha, reconciled: true };
+              if (matchingDraft) throw Error("PR_DUPLICATE_DRAFT");
+              matchingDraft = item;
+              continue;
             }
             throw new Error("PR_ALREADY_OPEN: same branch with different or unverifiable intent");
           }
+        }
+        if (matchingDraft) {
+          const [b,h] = await Promise.all([getHead(source),getHead(branch)]);
+          if (b!==baseSha || h!==headSha) throw Error("PR_PREFLIGHT_STALE");
+          // Record the exact observed proof before adopting a preexisting draft.
+          // No external mutation follows this marker.
+          if (permit && !permit.retryOnly) await permit.beginExternalEffect({baseSha,headSha});
+          return {repo,number:matchingDraft.number,url:matchingDraft.html_url,draft:true,
+            base:source,head:branch,baseSha,headSha,reconciled:true};
         }
         // Only a bounded batch of GitHub diffs enters memory at any time.
         for (let index = 0; index < existing.length; index += 5) {

@@ -57,3 +57,11 @@ export async function foldSupervisorToolLog(
   if (!validSupervisorToolCounts(metrics)) throw new Error("SUPERVISOR_METRICS_INVALID");
   return {metrics, complete, eventsRead};
 }
+
+// Logical evidence counts must never be interpreted as physical native activity.
+export { logicalPhaseCounts } from './metralla-m02-phase-evidence.ts';
+
+export { logicalEvidenceSnapshot } from './metralla-m02-phase-journal.ts';
+
+// P07: accept bounded projected events; preserve the legacy raw-log API for existing callers.
+export { projectedProgress as readProjectedSupervisorProgress, foldProjectedCounts as foldProjectedSupervisorToolCounts } from './metralla-m02-projection.ts';

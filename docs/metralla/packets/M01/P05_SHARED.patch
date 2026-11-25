@@ -1,0 +1,140 @@
+diff --git a/src/supervisor-control.ts b/src/supervisor-control.ts
+--- a/src/supervisor-control.ts
++++ b/src/supervisor-control.ts
+@@ -1,6 +1,6 @@
+ import { normalizeOwnedRepository, OPENCODE_STAGING_BASE } from "./github";
+ import { isModelSelection, type ModelSelectionID } from "./model-presets";
+-import type { R2PendingTurn } from "./supervisor-r2";
++import { r2TerminalNativeReceipt, type R2PendingTurn } from "./supervisor-r2";
+ 
+ /**
+  * The remote MCP authenticates at Cloudflare Access. Every Durable Object
+@@ -102,7 +102,8 @@
+   const task = typeof stored === "string" ? undefined : stored;
+   const status = task?.status ?? stored as SupervisorTask["status"];
+   const receipt = task && !task.operationId ? undefined : operation;
+-  if (receipt?.status === "done") return "finished";
++  if(receipt&&!r2TerminalNativeReceipt(receipt))return "unknown";
++  if (receipt?.status === "done") return "finished";
+   if (receipt?.status === "unanswered") {
+     if (receipt.reason === "interrupted" && status === "cancel_requested") return "cancelled";
+     if (receipt.reason === "failed") return "failed";
+diff --git a/src/server.ts b/src/server.ts
+--- a/src/server.ts
++++ b/src/server.ts
+@@ -33,7 +33,8 @@
+   hasSupervisorAdmissionSlot, supervisorAdmissionAllowsContinuation,
+   reconcileSupervisorCreatedSession, supervisorCommitCreatedSession,
+   reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
+-  reconcileSupervisorTurnEffect, inspectSupervisorAdmissionCapacity,
++  reconcileSupervisorTurnEffect, inspectSupervisorAdmissionCapacity,
++  beginSupervisorCancellation, settleSupervisorCancelledTurn, matchingSupervisorTurnJournal,
+   reconcileSupervisorSubmittedEffect, supervisorGrantStillOwned, type StartGrant, type AdmissionDecision,
+   supervisorVerifyReadOnlySource, supervisorBeginReadOnlyEffect, supervisorConfirmReadOnlyEffect,
+   supervisorRecordReadOnlyFailure, inspectSupervisorReadOnlyAdmission, reconcileSupervisorReadOnlyPreparation, reconcileHistoricalSupervisor
+@@ -1149,11 +1150,9 @@
+     } finally {
+       clearTimeout(waitTimer);
+     }
+-    if (job.operationId && operation &&
+-        (operation.status === "done" ||
+-          operation.status === "unanswered" && operation.reason !== "not_found")) {
+-      await reconcileSupervisorSubmittedEffect(this.ctx.storage, id, job.operationId, operation);
+-    }
++    if(job.operationId&&operation&&r2TerminalNativeReceipt(operation)){
++      await reconcileSupervisorSubmittedEffect(this.ctx.storage,id,job.operationId,operation,job.session);
++    }
+     // Never materialize a complete tool transcript in the supervisor's
+     // memory-constrained Durable Object on every status poll. The durable
+     // OpenCode event log is incremental and its cursor survives DO restarts.
+@@ -1189,33 +1188,38 @@
+     const reconciled = await this.ctx.storage.transaction(async tx => {
+       const fresh = await tx.get<SupervisorTask>(supervisorTaskKey(id));
+       if (!fresh) throw new Error("Tarea del supervisor inexistente");
+-      if (!job.operationId || fresh.operationId !== job.operationId ||
+-          fresh.status === "cancelled") return fresh;
+-      // Persist an authentic SDK terminal receipt with the turn journal.
+-      // not_found and timeouts are explicitly NOT settled outcomes.
+-      const turnPrefix = "rc-turn-" + id + "-";
+-      if (fresh.operationId?.startsWith(turnPrefix) && r2TerminalNativeReceipt(operation)) {
+-        const turnId = fresh.operationId.slice(turnPrefix.length);
+-        if (/^[a-f0-9]{16}$/.test(turnId)) {
+-          const turnKey = r2TurnJournalKey(id, turnId);
+-          const journal = await tx.get<R2TurnJournal>(turnKey);
+-          if (journal?.operationId === fresh.operationId && journal.phase !== "settled") {
+-            // Native terminal evidence also reconciles a prior lost
+-            // continuation-submit receipt in T03's global capacity ledger.
+-            await reconcileSupervisorTurnEffect(tx, id, job.operationId, operation!);
+-            await tx.put(turnKey, { ...journal, phase: "settled" as const,
+-              receiptStatus: operation!.status, receiptReason: operation!.reason?.slice(0, 120),
+-              settledAt: Date.now() });
+-          }
+-        }
+-      }
+-      const settlePending = r2PendingTurnReconcileAllowed(fresh, job.operationId, operation);
+-      if (fresh.pendingTurn && !settlePending) return fresh;
+-      if (!settlePending && !r2StatusWriteAllowed(fresh, job.operationId)) return fresh;
+-      const state = settlePending ? { ...fresh, pendingTurn: undefined } : fresh;
+-      let status = classifySupervisorOperation(state, busy, operation);
+-      if (status === "cancelled" &&
+-          (!r2CancelledByReceipt(state, job.operationId, operation) || state.cancelAmbiguous)) {
++      if (!job.operationId || !job.session || fresh.operationId !== job.operationId ||
++          fresh.session!==job.session || fresh.status === "cancelled") return fresh;
++      if(fresh.status==="cancel_requested"&&fresh.cancelAmbiguous){
++        const settled=await settleSupervisorCancelledTurn(tx,id,job.session,job.operationId,operation,busy);
++        return settled??fresh;
++      }
++      let turnReceiptBound=false;
++      if(fresh.pendingTurn&&operation&&r2TerminalNativeReceipt(operation)){
++        const match=await matchingSupervisorTurnJournal(tx,id,fresh,job.operationId);
++        if(match){
++          if(match.journal.phase==="settled"){
++            const slot=await supervisorAdmissionSlot(tx,id);
++            turnReceiptBound=slot?.phase==="running"&&!slot.effect&&match.journal.receiptStatus===operation.status&&
++              match.journal.receiptReason===operation.reason?.slice(0,120);
++          }else{
++            await reconcileSupervisorTurnEffect(tx,id,job.operationId,operation);
++            const slot=await supervisorAdmissionSlot(tx,id);
++            if(slot?.phase==="running"&&!slot.effect){
++              await tx.put(match.key,{...match.journal,phase:"settled" as const,receiptStatus:operation.status,
++                receiptReason:operation.reason?.slice(0,120),settledAt:Date.now()});
++              turnReceiptBound=true;
++            }
++          }
++        }
++      }
++      const settlePending = turnReceiptBound&&r2PendingTurnReconcileAllowed(fresh, job.operationId, operation);
++      if (fresh.pendingTurn && !settlePending) return fresh;
++      if (!settlePending && !r2StatusWriteAllowed(fresh, job.operationId)) return fresh;
++      const state = settlePending ? { ...fresh, pendingTurn: undefined } : fresh;
++      let status = classifySupervisorOperation(state, busy, operation);
++      if (status === "cancelled" &&
++          (busy!==false || !r2CancelledByReceipt(state, job.operationId, operation) || state.cancelAmbiguous)) {
+         status = "unknown"; // no false terminal for an ambiguous concurrent steer
+       }
+       if (state.cancelAmbiguous && status === "finished") status = "unknown";
+@@ -1280,9 +1284,21 @@
+           .catch(()=>({running:null,close:null}));
+         return {id,status:"cancel_requested",confirmed:false,container,reason:"PILOT_PREPARATION_CLOSED_OR_PENDING"};
+       }
+-      job=await this.supervisedRecord(id);
+-    }
+-    if (["cancelled", "failed", "finished", "unanswered"].includes(job.status))
++      job=await this.supervisedRecord(id);
++    }
++    if(job.sessionIdPolicy==="deterministic-v1"&&job.mode!=="read_only"&&!job.pilotInstance){
++      const intent=await beginSupervisorCancellation(this.ctx.storage,id);
++      if(intent.kind==="confirmed")return {id,status:"cancelled",confirmed:true,reason:"logical pre-start fence"};
++      if(intent.kind==="terminal")return {id,status:intent.task.status};
++      if(intent.kind!=="abort")return {id,status:intent.task.status,confirmed:false,reason:"ABORT_RECEIPT_RECONCILIATION_PENDING"};
++      let abortAccepted=false,abortError:string|undefined;
++      try{abortAccepted=await this.harness.session(intent.task.session!).abort(intent.task.operationId!);}
++      catch(error){abortError=error instanceof Error?error.message.slice(0,200):"Abort failed";}
++      const current=await this.supervisedTaskStatus(id) as {status?:string;operationReason?:string};
++      return {id,status:current.status??"cancel_requested",confirmed:current.status==="cancelled",
++        abortAccepted,abortError,operationReason:current.operationReason};
++    }
++    if (["cancelled", "failed", "finished", "unanswered"].includes(job.status))
+       return { id, status: job.status };
+     if (!job.session) {
+       // Serialize the no-session decision with the durable start lease and

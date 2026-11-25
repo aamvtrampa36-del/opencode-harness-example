@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { createMcpHandler } from "agents/mcp/server";
+import { dispatchBoundedMcp } from "./p08-remote";
 import {
   createStagingControlServer,
   SUPERVISOR_OBJECT,
@@ -38,6 +39,6 @@ export default {
   fetch(request: Request, _env: ControlEnv, ctx: ExecutionContext): Promise<Response> | Response {
     if (new URL(request.url).pathname !== "/mcp") return new Response("Not found", { status: 404 });
     if (controlEnv.MCP_ENABLED !== "true") return new Response("Staging MCP is not enabled", { status: 503 });
-    return handler(request, controlEnv, ctx);
+    return dispatchBoundedMcp(request, bounded => handler(bounded, controlEnv, ctx));
   }
 } satisfies ExportedHandler<ControlEnv>;

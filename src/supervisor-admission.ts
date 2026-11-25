@@ -4,7 +4,7 @@ import { auditLegacyCapacity, type AdmissionCapacityEvidence,
   type LegacyCapacityStop } from "./supervisor-legacy-capacity";
 import { r2TurnAdmission, r2SessionId, r2TurnJournalKey, r2TerminalNativeReceipt, type R2TurnJournal } from "./supervisor-r2";
 import { scopeStorageKey, type ProjectScope } from "./project-scope";
-import { captureHistoricalSnapshot, historicalCertificate, retiredHistoricalTask, writeHistoricalCertificate, publicHistoricalCertificate, validNativeQuiescence, parseReconciliationManifest, type ReconciliationManifest, type NativeQuiescence } from "./supervisor-reconciliation";
+import { CONSUMED_PILOT_ID, captureHistoricalSnapshot, historicalCertificate, retiredHistoricalTask, writeHistoricalCertificate, publicHistoricalCertificate, validNativeQuiescence, parseReconciliationManifest, type ReconciliationManifest, type NativeQuiescence } from "./supervisor-reconciliation";
 
 /**
  * One durable admission authority in the existing supervisor DO. This is NOT
@@ -60,16 +60,17 @@ export async function reserveSupervisorAdmission(
   storage: DurableObjectStorage, candidate: SupervisorTask, now = Date.now(),
   readOnlyPins?: ReadOnlySourcePins, pilot?: PilotClaim, nativeQuiescence?:NativeQuiescence
 ): Promise<AdmissionDecision> {
-  if (!Number.isSafeInteger(now) || now < 0) throw new Error("ADMISSION_CLOCK_INVALID");
+  validClock(now);
   const key = supervisorTaskKey(candidate.id);
   const readOnly = isReadOnlyTask(candidate);
   if (readOnly !== (readOnlyPins !== undefined)) throw Error("READ_ONLY_ADMISSION_PINS_REQUIRED");
   if (readOnlyPins) { validClock(now); validateReadOnlyCandidate(candidate, readOnlyPins); }
   return storage.transaction(async tx => {
-    if(await retiredHistoricalTask(tx,candidate.id))throw Error("HISTORICAL_TASK_QUARANTINED");
+    if(await retiredHistoricalTask(tx,candidate.id))throw Error(candidate.id===CONSUMED_PILOT_ID?"PILOT_NO_REPLAY":"HISTORICAL_TASK_QUARANTINED");
     const old = await tx.get<SupervisorTask>(key);
     const previousPilot=await tx.get<PilotClaim>(PILOT_CLAIM);
     if(Boolean(candidate.pilotInstance)!==Boolean(pilot))throw Error("PILOT_AUTHORIZATION_REQUIRED");
+    if(!pilot&&(old?.pilotInstance||previousPilot?.approval.requestId===candidate.id))throw Error("PILOT_NO_REPLAY");
     if(pilot){
       validatePilotClaim(pilot,candidate,now);
       if(previousPilot||old)throw Error("PILOT_NO_REPLAY");
@@ -110,6 +111,10 @@ export async function reserveSupervisorAdmission(
       if (readOnly && (old.status !== "preparing" || !activeReadOnlyStart(old))) {
         if (changed) await tx.put(LEDGER_KEY,ledger);
         return {kind:"reused" as const,task:old,reason:"READ_ONLY_START_NOT_ACTIVE",slot};
+      }
+      if (!readOnly && (old.status !== "preparing" || old.pendingTurn || old.cancelAmbiguous)) {
+        if (changed) await tx.put(LEDGER_KEY, ledger);
+        return {kind:"reused" as const,task:old,reason:"ADMISSION_START_NOT_ACTIVE",slot};
       }
       // A pre-effect lease can be reclaimed only when old unmetered work
       // cannot silently consume more capacity. Check in the SAME transaction.
@@ -168,6 +173,7 @@ export async function reserveSupervisorAdmission(
 export async function supervisorBeginExternalEffect(
   storage: DurableObjectStorage, grant: StartGrant, effect: StartEffect, now = Date.now()
 ): Promise<void> {
+  validClock(now);
   await storage.transaction(async tx => {
     const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
     const slot = ledger.slots[grant.id];
@@ -175,6 +181,7 @@ export async function supervisorBeginExternalEffect(
     if (task && isReadOnlyTask(task) || await readOnlyJournal(tx, grant.id))
       throw Error("READ_ONLY_TRANSACTION_REQUIRED");
     if (!task || task.status !== "preparing" && task.status !== "running" ||
+        task.pendingTurn || task.cancelAmbiguous ||
         !slot || slot.token !== grant.token || slot.generation !== grant.generation ||
         slot.phase !== "reserved" || slot.expiresAt <= now)
       throw new Error("ADMISSION_FENCE_REJECTED");
@@ -189,6 +196,7 @@ export async function supervisorConfirmExternalEffect(
   receipt: { confirmed: boolean }, now = Date.now()
 ): Promise<void> {
   if (!receipt.confirmed) throw new Error("ADMISSION_RECEIPT_UNCONFIRMED");
+  validClock(now);
   await storage.transaction(async tx => {
     const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
     const slot = ledger.slots[grant.id];
@@ -233,15 +241,17 @@ export async function hasSupervisorAdmissionSlot(
  */
 export async function reconcileSupervisorSubmittedEffect(
   storage: DurableObjectStorage, id: string, operationId: string,
-  receipt: { status: "done" | "unanswered"; reason?: string }
+  receipt: { status: "done" | "unanswered"; reason?: string }, expectedSession?: string
 ): Promise<boolean> {
   supervisorTaskKey(id);
-  if (receipt.status !== "done" && receipt.status !== "unanswered" ||
-      receipt.reason === "not_found") return false;
+  if (!r2TerminalNativeReceipt(receipt) || operationId!==supervisorStartOperationId(id)) return false;
   return storage.transaction(async tx => {
     const task = await tx.get<SupervisorTask>(supervisorTaskKey(id));
-    if (!task || task.operationId !== operationId || !/^rc-start-[a-f0-9]{16}$/.test(operationId))
+    if (!task || task.id!==id || !task.session || task.operationId !== operationId ||
+        (expectedSession!==undefined&&task.session!==expectedSession) || task.pendingTurn)
       return false;
+    // Managed cancellation requires independent idle observation in its own transaction.
+    if(task.status==="cancel_requested"&&task.cancelAmbiguous&&!isReadOnlyTask(task)&&!task.pilotInstance)return false;
     const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
     const slot = ledger.slots[id];
     if (!slot || slot.phase !== "effect_unknown" || slot.effect !== "submit") return false;
@@ -288,7 +298,7 @@ export async function reconcileSupervisorCreatedSession(
     const slot = ledger.slots[id];
     if (!task || !slot || task.sessionIdPolicy !== "deterministic-v1" ||
         task.forkedFrom || task.session || task.sessionCreationAttempted !== true ||
-        isReadOnlyTask(task) && (task.cancelAmbiguous || task.pendingTurn) ||
+        (task.cancelAmbiguous || task.pendingTurn) ||
         task.status !== "preparing" && task.status !== "unknown" ||
         slot.token !== expected.token || slot.generation !== expected.generation ||
         slot.phase !== "effect_unknown" || slot.effect !== "session_create")
@@ -326,12 +336,13 @@ export async function reconcileSupervisorCreatedSession(
  * would modify the task after any external SDK failure. An earlier GET or a
  * local lock TTL does not fence a writer after session_create recovery. */
 export async function supervisorGrantStillOwned(
-  tx: Pick<DurableObjectTransaction, "get">, grant: StartGrant
+  tx: Pick<DurableObjectTransaction, "get">, grant: StartGrant, now = Date.now()
 ): Promise<boolean> {
+  validClock(now);
   const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
   const slot = ledger.slots[grant.id];
   return Boolean(slot && slot.token === grant.token &&
-    slot.generation === grant.generation);
+    slot.generation === grant.generation && (slot.phase !== "reserved" || slot.expiresAt > now));
 }
 
 /** Original creator must commit its receipt under the exact initial fence.
@@ -384,13 +395,15 @@ export async function reserveSupervisorContinuation(
   hash: string, operationId: string, now = Date.now()
 ): Promise<TurnReservation> {
   const key = r2TurnJournalKey(id, turnId);
-  if (!/^[a-f0-9]{64}$/.test(hash) || !Number.isSafeInteger(now) || now < 0)
+  validClock(now);
+  if (!/^[a-f0-9]{64}$/.test(hash) || operationId !== "rc-turn-" + id + "-" + turnId)
     throw Error("SUPERVISOR_TURN_INPUT_INVALID");
   return storage.transaction(async tx => {
     if(await retiredHistoricalTask(tx,id))throw Error("HISTORICAL_TASK_QUARANTINED");
     const taskKey = supervisorTaskKey(id);
     const task = await tx.get<SupervisorTask>(taskKey);
     if (!task?.session) throw Error("Tarea no disponible");
+    if(task.pilotInstance||(await tx.get<PilotClaim>(PILOT_CLAIM))?.approval.requestId===id)throw Error("PILOT_NO_REPLAY");
     const previous = await tx.get<R2TurnJournal>(key);
     if (previous && (previous.hash !== hash || previous.session !== task.session ||
         previous.operationId !== operationId)) throw Error("turnId reutilizado con otra instrucción");
@@ -408,6 +421,8 @@ export async function reserveSupervisorContinuation(
     const decision = r2TurnAdmission(task, operationId);
     if (decision === "denied") throw Error("SUPERVISOR_TURN_DENIED_TERMINAL_OR_CANCEL");
     if (decision === "busy") throw Error("SUPERVISOR_TURN_IN_FLIGHT");
+    // A pending turn without its atomic journal is inconsistent, never replay it.
+    if (decision === "retry") throw Error("SUPERVISOR_TURN_JOURNAL_MISSING");
     if (task.sessionIdPolicy === "deterministic-v1") {
       const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
       const census = await auditLegacyCapacity(tx, ledger.slots);
@@ -462,14 +477,19 @@ export async function recordSupervisorContinuationReceipt(
   storage: DurableObjectStorage, id: string, turnId: string, operationId: string,
   result: { accepted?: boolean; error?: string }, now = Date.now()
 ): Promise<SupervisorTask> {
+  validClock(now);
   return storage.transaction(async tx => {
     const key = r2TurnJournalKey(id,turnId);
     const taskKey = supervisorTaskKey(id);
     const journal = await tx.get<R2TurnJournal>(key);
     const task = await tx.get<SupervisorTask>(taskKey);
-    if (!journal || !task || journal.operationId !== operationId)
+    if (!journal || !task || journal.operationId !== operationId || journal.session !== task.session ||
+        operationId !== "rc-turn-"+id+"-"+turnId)
       throw Error("SUPERVISOR_TURN_JOURNAL_MISSING");
     if (journal.phase !== "intent") return task;
+    if (task.operationId !== operationId || task.pendingTurn?.operationId !== operationId ||
+        task.pendingTurn?.turnId !== turnId)
+      throw Error("SUPERVISOR_TURN_RECEIPT_STALE");
     const accepted = !result.error && typeof result.accepted === "boolean";
     await tx.put(key,{...journal,phase:accepted ? "accepted" as const : "unknown" as const});
     if (task.sessionIdPolicy === "deterministic-v1") {
@@ -493,6 +513,21 @@ export async function recordSupervisorContinuationReceipt(
   });
 }
 
+/** Exact current turn identity, shared by terminal and cancellation reconciliation.
+ * No external reads or writes. A stored journal alone cannot certify native completion. */
+export async function matchingSupervisorTurnJournal(
+  tx: Pick<DurableObjectTransaction,"get">, id:string, task:SupervisorTask, operationId:string
+): Promise<{key:string;journal:R2TurnJournal}|undefined> {
+  const turn=task.pendingTurn;
+  if(task.id!==id||!task.session||!turn||task.operationId!==operationId||
+     turn.operationId!==operationId||!(/^[a-f0-9]{16}$/).test(turn.turnId)||
+     operationId!=="rc-turn-"+id+"-"+turn.turnId)return;
+  const key=r2TurnJournalKey(id,turn.turnId), journal=await tx.get<R2TurnJournal>(key);
+  if(!journal||journal.operationId!==operationId||journal.session!==task.session||
+     !["intent","accepted","unknown","settled"].includes(journal.phase))return;
+  return {key,journal};
+}
+
 /** Call inside the existing T04 status CAS transaction after a matching
  * native terminal receipt. Only a persisted terminal native receipt allows
  * a turn-submit unknown lease to return to running/terminal reclamation. */
@@ -501,17 +536,85 @@ export async function reconcileSupervisorTurnEffect(
   id: string, operationId: string,
   receipt: {status:"done"|"unanswered";reason?:string}
 ): Promise<boolean> {
-  if (!r2TerminalNativeReceipt(receipt)) return false;
+  if (receipt.reason==="not_found" || !r2TerminalNativeReceipt(receipt)) return false;
   const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
   const slot = ledger.slots[id];
   if (!slot || slot.phase !== "effect_unknown" || slot.effect !== "turn_submit")
     return false;
   const task = await tx.get<SupervisorTask>(supervisorTaskKey(id));
-  if (!task || task.operationId !== operationId || task.pendingTurn?.operationId !== operationId)
-    return false;
+  const match=task?await matchingSupervisorTurnJournal(tx,id,task,operationId):undefined;
+  if(!match||match.journal.phase==="settled")return false;
   slot.phase="running";slot.effect=undefined;
   await tx.put(LEDGER_KEY,ledger);
   return true;
+}
+
+/** Normal managed lane: write cancellation before any abort RPC; duplicate
+ * cancellation never replays abort. Pilot/read_only/legacy retain their existing paths.
+ * Confirmed pre-start is LOGICAL fencing, not a physical close certificate. */
+export async function beginSupervisorCancellation(
+ storage:DurableObjectStorage,id:string,now=Date.now()
+):Promise<{kind:"terminal"|"existing"|"confirmed"|"uncertain"|"abort";task:SupervisorTask}> {
+ validClock(now);
+ const key=supervisorTaskKey(id);
+ return storage.transaction(async tx=>{
+  if(await retiredHistoricalTask(tx,id))throw Error("HISTORICAL_TASK_QUARANTINED");
+  const task=await tx.get<SupervisorTask>(key);
+  if(!task||task.id!==id)throw Error("SUPERVISOR_CANCEL_TASK_MISSING");
+  if(task.sessionIdPolicy!=="deterministic-v1"||isReadOnlyTask(task)||task.pilotInstance||
+     (await tx.get<PilotClaim>(PILOT_CLAIM))?.approval.requestId===id)
+   throw Error("SUPERVISOR_CANCEL_SPECIAL_PATH");
+  const ledger=decodeLedger(await tx.get<Ledger>(LEDGER_KEY)),slot=ledger.slots[id];
+  if(terminal(task.status)&&!task.pendingTurn&&!task.cancelAmbiguous&&slot?.phase!=="effect_unknown")
+   return {kind:"terminal",task};
+  if(task.status==="cancel_requested")return {kind:"existing",task};
+  const lock=await tx.get("supervisor:lock:"+id);
+  const safePreStart=!task.session&&!task.operationId&&!task.pendingTurn&&!task.cancelAmbiguous&&
+   task.sessionCreationAttempted===false&&!lock&&(!slot||slot.phase==="reserved"&&!slot.effect);
+  const canAbort=Boolean(task.session&&task.operationId&&(!slot||slot.phase==="running"||
+   slot.phase==="effect_unknown"&&(slot.effect==="submit"||slot.effect==="turn_submit")));
+  const next:SupervisorTask={...task,status:safePreStart?"cancelled":"cancel_requested",
+   cancelAmbiguous:safePreStart?false:Boolean(!canAbort||!slot||task.cancelAmbiguous||task.pendingTurn||slot.phase==="effect_unknown"),
+   revision:(task.revision??0)+1,updatedAt:now};
+  await tx.put(key,next);
+  return {kind:safePreStart?"confirmed":canAbort?"abort":"uncertain",task:next};
+ });
+}
+
+/** Exact interrupted current turn + independent native idle observation.
+ * Caller obtains evidence from SDK (not a request body), then calls inside its
+ * status transaction. Atomically settle journal, accounting and task; never
+ * clear a different effect or infer physical Container closure. */
+export async function settleSupervisorCancelledTurn(
+ tx:Pick<DurableObjectTransaction,"get"|"put">,id:string,sessionId:string,operationId:string,
+ receipt:{status:"done"|"unanswered";reason?:string}|undefined,busy:boolean,now=Date.now()
+):Promise<SupervisorTask|undefined> {
+ validClock(now);
+ if(busy!==false||receipt?.status!=="unanswered"||receipt.reason!=="interrupted")return;
+ const key=supervisorTaskKey(id),task=await tx.get<SupervisorTask>(key);
+ if(!task||task.status!=="cancel_requested"||!task.cancelAmbiguous||task.session!==sessionId||
+    task.sessionIdPolicy!=="deterministic-v1"||isReadOnlyTask(task)||task.pilotInstance||
+    (await tx.get<PilotClaim>(PILOT_CLAIM))?.approval.requestId===id)return;
+ const ledger=decodeLedger(await tx.get<Ledger>(LEDGER_KEY)),slot=ledger.slots[id];
+ if(!slot||task.id!==id||task.operationId!==operationId)return;
+ if(!task.pendingTurn){
+   if(operationId!==supervisorStartOperationId(id)||
+     !(slot.phase==="running"&&!slot.effect||slot.phase==="effect_unknown"&&slot.effect==="submit"))return;
+ }else{
+   const match=await matchingSupervisorTurnJournal(tx,id,task,operationId);
+   if(!match)return;
+   if(match.journal.phase==="settled"&&(match.journal.receiptStatus!=="unanswered"||
+      match.journal.receiptReason!=="interrupted"))return;
+   if(!(slot.phase==="running"&&!slot.effect||slot.phase==="effect_unknown"&&
+      slot.effect==="turn_submit"&&match.journal.phase!=="settled"))return;
+   if(match.journal.phase!=="settled")await tx.put(match.key,{...match.journal,phase:"settled",
+      receiptStatus:"unanswered",receiptReason:"interrupted",settledAt:now} satisfies R2TurnJournal);
+ }
+ slot.phase="running";slot.effect=undefined;
+ const next:SupervisorTask={...task,status:"cancelled",pendingTurn:undefined,cancelAmbiguous:false,
+  error:"interrupted",revision:(task.revision??0)+1,updatedAt:now};
+ await tx.put(LEDGER_KEY,ledger);await tx.put(key,next);
+ return next;
 }
 
 /** Bounded status-only evidence: not a native execution metric. */
