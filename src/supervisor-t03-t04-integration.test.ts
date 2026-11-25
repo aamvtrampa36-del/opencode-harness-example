@@ -324,7 +324,7 @@ describe("F0-C10/R2-T11 T03 admission + T04 recovery contract (OFFLINE)", () => 
     expect(settled?.status).toBe("preparing");
     expect((await db.get<SupervisorTask>(key))?.session).toBe(session);
     expect((await db.get<SupervisorTask>(key))?.status).toBe("preparing");
-    expect(await db.transaction(tx => supervisorGrantStillOwned(tx.asDO() as any, recovery.grant)))
+    expect(await db.transaction(tx => supervisorGrantStillOwned(tx.asDO() as any, recovery.grant, 1_103)))
       .toBe(true);
     await expect(supervisorCommitCreatedSession(db.asDO(), original, session, 1_103))
       .rejects.toThrow("ADMISSION_FENCE_REJECTED");

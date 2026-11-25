@@ -60,7 +60,7 @@ export async function reserveSupervisorAdmission(
   storage: DurableObjectStorage, candidate: SupervisorTask, now = Date.now(),
   readOnlyPins?: ReadOnlySourcePins, pilot?: PilotClaim, nativeQuiescence?:NativeQuiescence
 ): Promise<AdmissionDecision> {
-  if (!Number.isSafeInteger(now) || now < 0) throw new Error("ADMISSION_CLOCK_INVALID");
+  validClock(now);
   const key = supervisorTaskKey(candidate.id);
   const readOnly = isReadOnlyTask(candidate);
   if (readOnly !== (readOnlyPins !== undefined)) throw Error("READ_ONLY_ADMISSION_PINS_REQUIRED");
@@ -70,6 +70,7 @@ export async function reserveSupervisorAdmission(
     const old = await tx.get<SupervisorTask>(key);
     const previousPilot=await tx.get<PilotClaim>(PILOT_CLAIM);
     if(Boolean(candidate.pilotInstance)!==Boolean(pilot))throw Error("PILOT_AUTHORIZATION_REQUIRED");
+    if(!pilot&&(old?.pilotInstance||previousPilot?.approval.requestId===candidate.id))throw Error("PILOT_NO_REPLAY");
     if(pilot){
       validatePilotClaim(pilot,candidate,now);
       if(previousPilot||old)throw Error("PILOT_NO_REPLAY");
@@ -110,6 +111,10 @@ export async function reserveSupervisorAdmission(
       if (readOnly && (old.status !== "preparing" || !activeReadOnlyStart(old))) {
         if (changed) await tx.put(LEDGER_KEY,ledger);
         return {kind:"reused" as const,task:old,reason:"READ_ONLY_START_NOT_ACTIVE",slot};
+      }
+      if (!readOnly && (old.status !== "preparing" || old.pendingTurn || old.cancelAmbiguous)) {
+        if (changed) await tx.put(LEDGER_KEY, ledger);
+        return {kind:"reused" as const,task:old,reason:"ADMISSION_START_NOT_ACTIVE",slot};
       }
       // A pre-effect lease can be reclaimed only when old unmetered work
       // cannot silently consume more capacity. Check in the SAME transaction.
@@ -168,6 +173,7 @@ export async function reserveSupervisorAdmission(
 export async function supervisorBeginExternalEffect(
   storage: DurableObjectStorage, grant: StartGrant, effect: StartEffect, now = Date.now()
 ): Promise<void> {
+  validClock(now);
   await storage.transaction(async tx => {
     const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
     const slot = ledger.slots[grant.id];
@@ -175,6 +181,7 @@ export async function supervisorBeginExternalEffect(
     if (task && isReadOnlyTask(task) || await readOnlyJournal(tx, grant.id))
       throw Error("READ_ONLY_TRANSACTION_REQUIRED");
     if (!task || task.status !== "preparing" && task.status !== "running" ||
+        task.pendingTurn || task.cancelAmbiguous ||
         !slot || slot.token !== grant.token || slot.generation !== grant.generation ||
         slot.phase !== "reserved" || slot.expiresAt <= now)
       throw new Error("ADMISSION_FENCE_REJECTED");
@@ -189,6 +196,7 @@ export async function supervisorConfirmExternalEffect(
   receipt: { confirmed: boolean }, now = Date.now()
 ): Promise<void> {
   if (!receipt.confirmed) throw new Error("ADMISSION_RECEIPT_UNCONFIRMED");
+  validClock(now);
   await storage.transaction(async tx => {
     const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
     const slot = ledger.slots[grant.id];
@@ -326,12 +334,13 @@ export async function reconcileSupervisorCreatedSession(
  * would modify the task after any external SDK failure. An earlier GET or a
  * local lock TTL does not fence a writer after session_create recovery. */
 export async function supervisorGrantStillOwned(
-  tx: Pick<DurableObjectTransaction, "get">, grant: StartGrant
+  tx: Pick<DurableObjectTransaction, "get">, grant: StartGrant, now = Date.now()
 ): Promise<boolean> {
+  validClock(now);
   const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
   const slot = ledger.slots[grant.id];
   return Boolean(slot && slot.token === grant.token &&
-    slot.generation === grant.generation);
+    slot.generation === grant.generation && (slot.phase !== "reserved" || slot.expiresAt > now));
 }
 
 /** Original creator must commit its receipt under the exact initial fence.
@@ -384,13 +393,15 @@ export async function reserveSupervisorContinuation(
   hash: string, operationId: string, now = Date.now()
 ): Promise<TurnReservation> {
   const key = r2TurnJournalKey(id, turnId);
-  if (!/^[a-f0-9]{64}$/.test(hash) || !Number.isSafeInteger(now) || now < 0)
+  validClock(now);
+  if (!/^[a-f0-9]{64}$/.test(hash) || operationId !== "rc-turn-" + id + "-" + turnId)
     throw Error("SUPERVISOR_TURN_INPUT_INVALID");
   return storage.transaction(async tx => {
     if(await retiredHistoricalTask(tx,id))throw Error("HISTORICAL_TASK_QUARANTINED");
     const taskKey = supervisorTaskKey(id);
     const task = await tx.get<SupervisorTask>(taskKey);
     if (!task?.session) throw Error("Tarea no disponible");
+    if(task.pilotInstance||(await tx.get<PilotClaim>(PILOT_CLAIM))?.approval.requestId===id)throw Error("PILOT_NO_REPLAY");
     const previous = await tx.get<R2TurnJournal>(key);
     if (previous && (previous.hash !== hash || previous.session !== task.session ||
         previous.operationId !== operationId)) throw Error("turnId reutilizado con otra instrucción");
@@ -408,6 +419,8 @@ export async function reserveSupervisorContinuation(
     const decision = r2TurnAdmission(task, operationId);
     if (decision === "denied") throw Error("SUPERVISOR_TURN_DENIED_TERMINAL_OR_CANCEL");
     if (decision === "busy") throw Error("SUPERVISOR_TURN_IN_FLIGHT");
+    // A pending turn without its atomic journal is inconsistent, never replay it.
+    if (decision === "retry") throw Error("SUPERVISOR_TURN_JOURNAL_MISSING");
     if (task.sessionIdPolicy === "deterministic-v1") {
       const ledger = decodeLedger(await tx.get<Ledger>(LEDGER_KEY));
       const census = await auditLegacyCapacity(tx, ledger.slots);
