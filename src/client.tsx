@@ -4,6 +4,7 @@ import { readSessionSpecialization, saveSessionSpecialization } from "./session-
 import { isInternalReminder } from "./message-display";
 import { ToolFileAttachments } from "./tool-file-attachments";
 import { VerifiedTaskArtifacts } from "./metralla-m06-artifact-ui";
+import { OwnerTaskArtifacts } from "./metralla-m08-mobile-artifacts";
 import { withoutVerifiedArtifactParts } from "./metralla-m06-artifact-client";
 import { repositoryProjectSlug } from "./project-container";
 import { SettingsPanel } from "./settings-panel";
@@ -1188,6 +1189,7 @@ function App() {
             </p> : null}
             <div id="opencode-options" aria-label="Opciones de OpenCode"
               className={`absolute inset-x-2 top-full z-30 ${actionsOpen ? "flex sm:grid" : "hidden"} max-h-[70dvh] flex-col gap-2 overflow-y-auto overscroll-contain rounded-2xl border border-kumo-line bg-kumo-base p-3 shadow-xl sm:left-auto sm:right-5 sm:w-[min(94vw,520px)] sm:grid-cols-2 sm:gap-2`}>
+              {actionsOpen && window.location.hostname.startsWith("opencode-g1-staging.") ? <OwnerTaskArtifacts /> : null}
               <Button type="button" variant="ghost" size="sm"
                 aria-label="Gestionar mis proyectos" title="Ver proyectos creados"
                 onClick={() => { setActionsOpen(false); setProjectsOpen(true); void loadProjects(); }}>

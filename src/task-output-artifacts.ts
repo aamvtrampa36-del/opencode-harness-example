@@ -265,7 +265,16 @@ export async function persistTaskArtifact(tx: ArtifactTransaction, scope: Artifa
   const existing = await tx.get<StoredTaskArtifact>(key);
   if (existing !== undefined || index.includes(prepared.artifactId)) {
     assert(index.includes(prepared.artifactId), "ARTIFACT_INDEX_INVALID");
-    return verifyScopedStored(existing, scope, prepared.artifactId, now);
+    assert(existing && Number.isSafeInteger(existing.expiresAt), "ARTIFACT_INDEX_INVALID");
+    if (now < existing.expiresAt) return verifyScopedStored(existing, scope, prepared.artifactId, now);
+    // Explicit recapture of the same immutable content may renew its delivery
+    // generation after expiry. Verify old bytes/scope first; never renew an
+    // orphan or a stale preparation. Old URLs remain expired.
+    await verifyScopedStored(existing, scope, prepared.artifactId, existing.expiresAt - 1);
+    assert(prepared.createdAt >= existing.expiresAt && prepared.sha256 === existing.sha256 &&
+      prepared.byteSize === existing.byteSize, "ARTIFACT_STALE_RECAPTURE");
+    await tx.put(key, prepared);
+    return prepared;
   }
   const live: string[] = [];
   const expired: string[] = [];
@@ -321,4 +330,28 @@ export async function readTaskArtifactPage(storage: ArtifactReadStorage, scope: 
   }
   return { artifacts, scanned: selected.length,
     nextAfter: start + selected.length < index.length ? scope.id + ":" + selected[selected.length - 1] : null };
+}
+
+/** M08 offline repair primitive for an explicitly inventoried task. Must run
+ * within the existing authorized DO transaction; it is not a public route.
+ * No scan, delete, expiry refresh or guessing of missing bytes. Validate all
+ * known records and existing index entries before a single index write. */
+export async function reconcileTaskArtifactIndex(tx: ArtifactTransaction, scope: ArtifactTaskScope,
+    knownArtifactIds: readonly string[], now=Date.now()): Promise<{added:string[];index:string[]}> {
+  assertTaskId(scope.id);
+  assert(Number.isSafeInteger(now)&&now>=0&&Array.isArray(knownArtifactIds)&&
+    knownArtifactIds.length<=TASK_ARTIFACT_MAX_PER_TASK,"ARTIFACT_REPAIR_SCOPE");
+  for(const id of knownArtifactIds)assertArtifactId(id);
+  assert(new Set(knownArtifactIds).size===knownArtifactIds.length,"ARTIFACT_REPAIR_SCOPE");
+  const prior=await readArtifactIndex(tx,scope.id);
+  const added=knownArtifactIds.filter(id=>!prior.includes(id));
+  const index=[...prior,...added];
+  assert(index.length<=TASK_ARTIFACT_MAX_PER_TASK,"ARTIFACT_TASK_LIMIT");
+  for(const id of index){
+    const record=await tx.get<StoredTaskArtifact>(artifactKey(scope.id,id));
+    assert(record&&Number.isSafeInteger(record.expiresAt),"ARTIFACT_INDEX_INVALID");
+    await verifyScopedStored(record,scope,id,Math.min(now,record.expiresAt-1));
+  }
+  if(added.length)await tx.put(artifactIndexKey(scope.id),index);
+  return {added,index};
 }

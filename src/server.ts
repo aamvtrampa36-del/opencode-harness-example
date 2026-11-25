@@ -85,6 +85,7 @@ import {
   artifactView, TASK_ARTIFACT_MAX_PER_TASK, TASK_ARTIFACT_SCHEMA
 } from "./task-output-artifacts";
 import { parseArtifactQuery, scopedArtifactDownload } from "./metralla-m06-artifact-http";
+import { handleMobileArtifactRead, type MobileOwnerEnv } from "./metralla-m08-mobile-auth";
 
 import { createSupervisorMemoryProbe, type PhaseProbe } from "./supervisor-phase-telemetry";
 
@@ -1031,6 +1032,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async supervisedTaskArtifactExport(id: string, format: "text" | "json", after?: string, limit = 2): Promise<Response> {
     const task = await this.scopedArtifactTask(id);
     return taskArtifactExportResponse(this.ctx.storage, task, format, after, limit);
+  }
+
+  /** Owner browser route: the session comes from the independently retrieved manifest. */
+  async supervisedMobileArtifactDownload(id: string, session: string, artifactId: string, expiresAt: number, range: string | null): Promise<Response> {
+    const task = await this.scopedArtifactTask(id);
+    if (task.session !== session) return new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } });
+    return scopedArtifactDownload(this.ctx.storage, task, artifactId, expiresAt, range);
   }
 
   async supervisedTaskArtifactDownload(id: string, artifactId: string, expiresAt: number, range: string | null): Promise<Response> {
@@ -2523,6 +2531,16 @@ export default {
         const enabled = (env as Env & { OPENCODE_SUPERVISOR_ENABLED?: string })
           .OPENCODE_SUPERVISOR_ENABLED === "true";
         if (!enabled) return new Response("Not found", { status: 404 });
+        // Separate owner-identity browser read bridge; all legacy supervisor routes
+        // below retain their mandatory bearer. No service-token or cookie-only bypass.
+        if (url.pathname.startsWith(SUPERVISOR_API_PREFIX + "/mobile/")) {
+          if (pilot) return supervisorResponse({ error: "PILOT_EXCLUSIVE_WORKSPACE" }, 503);
+          return handleMobileArtifactRead(request, env as Env & MobileOwnerEnv, {
+            manifest: id => env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE).supervisedTaskArtifacts(id),
+            download: (id, session, artifactId, expiresAt, range) =>
+              env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE).supervisedMobileArtifactDownload(id, session, artifactId, expiresAt, range)
+          });
+        }
         const secret = (env as Env & { OPENCODE_SUPERVISOR_TOKEN?: string })
           .OPENCODE_SUPERVISOR_TOKEN ?? "";
         if (secret.length < 32) return supervisorResponse({ error: "Supervisor no configurado" }, 503);

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { captureInspectedArtifact, persistTaskArtifact, readTaskArtifactPage, artifactKey, artifactIndexKey, artifactIsOwnedBy, verifiedArtifactDownload, TASK_ARTIFACT_TTL_MS } from './task-output-artifacts.ts';
+import { captureInspectedArtifact, persistTaskArtifact, readTaskArtifactPage, artifactKey, artifactIndexKey, artifactIsOwnedBy, verifiedArtifactDownload, TASK_ARTIFACT_TTL_MS, reconcileTaskArtifactIndex } from './task-output-artifacts.ts';
 const scope = { id:'0000000000000001', project:'supervised-0000000000000001', session:'sesFixture1', repository:'fixture/repository' };
 const NOW=1000;
 function store(rows=new Map()) {
@@ -58,10 +58,28 @@ test('bounded retention, expiration, JSON and bytes stay distinct',async()=>{
   await assert.rejects(persistTaskArtifact(s,scope,await capture('ninth'),NOW),/ARTIFACT_TASK_LIMIT/);
   const expired=await readTaskArtifactPage(s,scope,undefined,8,NOW+TASK_ARTIFACT_TTL_MS);
   assert.equal(expired.scanned,8);assert.deepEqual(expired.artifacts,[]);
-  await assert.rejects(persistTaskArtifact(s,scope,await capture('{"ok":true}',NOW+TASK_ARTIFACT_TTL_MS,scope,'application/json'),NOW+TASK_ARTIFACT_TTL_MS),/ARTIFACT_SCOPE_OR_EXPIRY/);
+  const renewed=await persistTaskArtifact(s,scope,await capture('{"ok":true}',NOW+TASK_ARTIFACT_TTL_MS,scope,'application/json'),NOW+TASK_ARTIFACT_TTL_MS);
+  assert.equal(renewed.artifactId,a.artifactId);assert.equal(renewed.createdAt,a.expiresAt);assert.equal(renewed.sha256,a.sha256);
   await assert.rejects(capture('{broken',NOW,scope,'application/json'),/INVALID_JSON_ARTIFACT/);
   const fresh=await capture('new distinct report',NOW+TASK_ARTIFACT_TTL_MS);
   await persistTaskArtifact(s,scope,fresh,NOW+TASK_ARTIFACT_TTL_MS);
-  assert.deepEqual(s.rows.get(artifactIndexKey(scope.id)),[fresh.artifactId]);
-  assert.equal(s.rows.size,2);
+  assert.deepEqual(s.rows.get(artifactIndexKey(scope.id)),[renewed.artifactId,fresh.artifactId]);
+  assert.equal(s.rows.size,3);
+});
+
+test('orphan index recovery only for independently inventoried, intact exact scope; no bytes removed',async()=>{
+ const s=store(),a=await capture('orphan preserved'),b=await capture('indexed');
+ await persistTaskArtifact(s,scope,b,NOW);s.rows.set(artifactKey(scope.id,a.artifactId),a);
+ const old=structuredClone(s.rows.get(artifactKey(scope.id,a.artifactId)));
+ assert.deepEqual((await readTaskArtifactPage(s,scope,undefined,8,NOW)).artifacts.map(x=>x.artifactId),[b.artifactId]);
+ await assert.rejects(reconcileTaskArtifactIndex(s,scope,[a.artifactId,'f'.repeat(32)],NOW),/ARTIFACT_INDEX_INVALID/);
+ assert.deepEqual(s.rows.get(artifactIndexKey(scope.id)),[b.artifactId]);
+ const result=await reconcileTaskArtifactIndex(s,scope,[a.artifactId],NOW);
+ assert.deepEqual(result.added,[a.artifactId]);assert.deepEqual(result.index,[b.artifactId,a.artifactId]);
+ assert.deepEqual(s.rows.get(artifactKey(scope.id,a.artifactId)),old);
+ assert.deepEqual((await reconcileTaskArtifactIndex(s,scope,[a.artifactId],NOW)).added,[]);
+ await assert.rejects(reconcileTaskArtifactIndex(s,{...scope,session:'sesOther'},[a.artifactId],NOW),/ARTIFACT_SCOPE_OR_EXPIRY/);
+ const corrupt=store();corrupt.rows.set(artifactKey(scope.id,a.artifactId),{...a,bytes:new Uint8Array(a.byteSize)});
+ await assert.rejects(reconcileTaskArtifactIndex(corrupt,scope,[a.artifactId],NOW),/ARTIFACT_INTEGRITY_FAILURE/);
+ assert.equal(corrupt.rows.has(artifactIndexKey(scope.id)),false);
 });

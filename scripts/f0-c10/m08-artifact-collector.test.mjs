@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {manifest} from './metralla-m07/manifest.mjs';
+import {fixtureTrace} from './metralla-m07/fixture-trace.mjs';
+import {evaluateFixture} from './metralla-m07/evaluator.mjs';
 import {captureInspectedArtifact,persistTaskArtifact,readTaskArtifactPage,artifactKey} from '../../src/task-output-artifacts.ts';
 import {scopedArtifactDownload} from '../../src/metralla-m06-artifact-http.ts';
-import {selectExpectedArtifact,checkCollectedBytes,collectM06Artifact} from './m08-artifact-collector.mjs';
+import {selectExpectedArtifact,checkCollectedBytes,collectM06Artifact,M08_STAGING_ORIGIN} from './m08-artifact-collector.mjs';
 const now=1000;
 function storage(rows=new Map()){return {rows,get:async k=>structuredClone(rows.get(k)),put:async(k,v)=>rows.set(k,structuredClone(v)),delete:async k=>rows.delete(k)};}
 async function prepare(spec,i){
@@ -50,5 +52,23 @@ test('cross-task, session, operation, incomplete manifest, external URL and wron
 });
 test('live collector rejects insecure origins and missing credentials before any fetch',async()=>{
  await assert.rejects(collectM06Artifact({origin:'http://fixture.invalid'}),/M08_ORIGIN_INVALID/);
- await assert.rejects(collectM06Artifact({origin:'https://fixture.invalid'}),/M08_CREDENTIALS_REQUIRED/);
+ await assert.rejects(collectM06Artifact({origin:M08_STAGING_ORIGIN}),/M08_CREDENTIALS_REQUIRED/);
+});
+
+test('M07 evaluator consumes M06 verified fixture readbacks at 1/2/4/10; never live',async()=>{
+ for(const n of [1,2,4,10]){
+  const {m,trace}=fixtureTrace(n);
+  for(const [i,spec] of m.tasks.entries()){
+   const x=await prepare(spec,i),view=selectExpectedArtifact(x.response,x.expected);
+   const observed=await checkCollectedBytes(view,x.expected,x.fetcher,now);
+   // Logical fixture path is distinct from physical captured dist path.
+   const event=trace.events.find(e=>e.fixtureId===spec.fixtureId&&e.type==="readback");
+   event.artifact={content:observed.content,sha256:observed.sha256,size:observed.byteLength,type:view.mime,path:spec.expected.path};
+   event.fixturePhysicalSourcePath=observed.path;
+  }
+  const result=evaluateFixture(m,trace);
+  assert.equal(result.fixturePass,true,JSON.stringify(result.failures));assert.equal(result.livePass,false);
+  trace.events.find(e=>e.type==="readback").artifact.content="{}";
+  assert.equal(evaluateFixture(m,trace).fixturePass,false);
+ }
 });

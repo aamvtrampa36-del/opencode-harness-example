@@ -6,6 +6,7 @@ import { verifyArtifact } from './tasks.mjs';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const check=(condition,code)=>{if(!condition)throw Error(code);};
 const MAX_MANIFEST=16384;
+export const M08_STAGING_ORIGIN='https://opencode-g1-staging.cdf-cloud-mvp-20261019.workers.dev';
 
 // The expected identity and oracle come from the independently frozen operator plan,
 // never from the returned manifest or a model assertion.
@@ -59,7 +60,7 @@ async function boundedJson(response) {
 // This is an unsigned observation, NOT evidence that a live gate passed.
 export async function collectM06Artifact({origin,supervisorBearer,accessClientId,accessClientSecret,expected}) {
   const base=new URL(origin);
-  check(base.protocol==='https:' && base.origin===origin && !base.username && !base.password &&
+  check(origin===M08_STAGING_ORIGIN && base.protocol==='https:' && base.origin===origin && !base.username && !base.password &&
     !base.hash && !base.search,'M08_ORIGIN_INVALID');
   check(typeof supervisorBearer==='string' && supervisorBearer.length>=32 &&
     typeof accessClientId==='string' && accessClientId.length>0 &&
