@@ -197,7 +197,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
     if(!pilotLane&&!start.mode){
-      try{const approval=this.normalApproval();job.githubSource=approvedNormalTask(approval,job).pin;job.normalWorkUntil=approval.policy.normal!.validUntil;job.normalReleaseSha=approval.releaseSha;
+      try{const approval=this.normalApproval();job.githubSource=approvedNormalTask(approval,job).pin;job.normalWorkUntil=approval.policy.normal!.validUntil;job.normalReleaseSha=approval.releaseSha;job.normalImageDigest=approval.containerImageDigest;job.normalCloseUntil=approval.closeUntil;
         await assertNormalBudgetReady(this.ctx.storage,approval.policy,approval.preflight);}
       catch{return {id:start.requestId,accepted:false,confirmed:false,stop:true,reason:"NORMAL_METERED_APPROVAL_OR_BUDGET_STOP"};}
     }
@@ -804,6 +804,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if(q.source==="provider")return readProviderReceipts(this.ctx.storage,task,q.after);
     if(q.source==="container")return this.env.DEV.getByName(projectContainerName(task.project)).readNativeLinuxReceipts(task.project,q.releaseSha,q.after);
     return readLogicalReceiptPage(this.ctx.storage,task,q.after);
+  }
+  async workflowRequestNormalClose(raw:unknown):Promise<unknown>{
+    this.assertStagingRemote();
+    if(this.ctx.id.name!==SUPERVISOR_WORKSPACE||this.pilotLaneId())throw Error("NORMAL_CLOSE_WRONG_AUTHORITY");
+    const q=raw as {id:string;releaseSha:string;generation:number;action:string};
+    if(q.action!=="metralla_request_close"||!/^[a-f0-9]{16}$/.test(q.id)||q.releaseSha!==__OPENCODE_RELEASE_SHA__)throw Error("NORMAL_CLOSE_SCOPE");
+    const task=await this.supervisedRecord(q.id),slot=await supervisorAdmissionSlot(this.ctx.storage,q.id);
+    const {normalTaskAccountingClosed}=await import("./supervisor-inference-budget");
+    const {githubPublicationIdle}=await import("./github-publication-durable");
+    if(!task.githubSource||task.normalReleaseSha!==q.releaseSha||!["finished","failed","cancelled"].includes(task.status)||task.pendingTurn||task.cancelAmbiguous||slot?.phase!=="running"||slot.effect||slot.generation!==q.generation||
+       !await normalTaskAccountingClosed(this.ctx.storage,q.id)||!await githubPublicationIdle(this.ctx.storage,task.githubSource.repo,task.githubSource.base))throw Error("NORMAL_CLOSE_OUTSTANDING_EFFECT");
+    return this.env.DEV.getByName(projectContainerName(task.project)).requestNormalClose(task.project,q.generation,q.releaseSha);
   }
   async workflowNormalClose(raw:unknown):Promise<unknown>{
     this.assertStagingRemote();
@@ -2509,6 +2521,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const task=await this.supervisedRecord(pilot.grant.id);
       if(!task.pilotPreparation)throw Error("PILOT_PREPARATION_REQUIRED");
       sourceTree=task.pilotPreparation.input.sourceTree;
+    }
+    if(scope?.githubSource){
+      const ctx=await this.normalContext(sessionID!);const task=await this.supervisedRecord(ctx.grant.id);
+      await dev.bindNormalExecution({source:{project,repository:task.repository,commit:scope.githubSource.commit,tree:scope.githubSource.tree},requestId:task.id,generation:ctx.grant.generation,token:ctx.grant.token,releaseSha:task.normalReleaseSha!,imageDigest:task.normalImageDigest!,workUntil:task.normalWorkUntil!,closeUntil:task.normalCloseUntil!});
     }
     if (scope?.repository) {
       const receipt = await dev.prepareRepository(project, scope.repository, sourceCommit, sourceTree);

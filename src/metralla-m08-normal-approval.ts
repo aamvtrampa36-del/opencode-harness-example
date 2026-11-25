@@ -9,7 +9,7 @@ const HASH=/^[a-f0-9]{64}$/;
 type TaskApproval={requestId:string;fingerprint:string;selection:ModelSelectionID;pin:GitHubSourcePin};
 export type NormalApproval={schema:"metralla-normal-v1";releaseSha:string;notBefore:number;expiresAt:number;
   approvalRef:string;policy:BudgetPolicy;preflight:PaidPreflight;tasks:TaskApproval[];
-  contextBoundEvidence:Record<string,string>};
+  contextBoundEvidence:Record<string,string>;containerImageDigest:string;closeUntil:number};
 function check(ok:unknown,code:string):asserts ok {if(!ok)throw Error(code);}
 export function parseNormalApproval(raw:unknown,release:string,now=Date.now()):NormalApproval{
   check(typeof raw==="string"&&raw.length<=65536&&SHA.test(release),"NORMAL_APPROVAL_REQUIRED");
@@ -18,7 +18,7 @@ export function parseNormalApproval(raw:unknown,release:string,now=Date.now()):N
     Number.isSafeInteger(a.notBefore)&&a.notBefore<=now&&Number.isSafeInteger(a.expiresAt)&&a.expiresAt>now&&
     a.expiresAt-now<=24*3600000&&typeof a.approvalRef==="string"&&a.approvalRef.length>=8&&a.approvalRef.length<=160&&
     a.policy?.normal&&!a.policy.hybrid&&a.policy.normal.validUntil<=a.expiresAt&&
-    a.policy.normal.validUntil>now&&a.policy.maxAttempts===1&&a.preflight&&
+    a.policy.normal.validUntil>now&&/^sha256:[a-f0-9]{64}$/.test(a.containerImageDigest)&&Number.isSafeInteger(a.closeUntil)&&a.closeUntil>a.policy.normal.validUntil&&a.closeUntil<=a.expiresAt&&a.closeUntil-a.policy.normal.validUntil<=300000&&a.policy.maxAttempts===1&&a.preflight&&
     paidPreflight({...a.preflight,now}).decision==="GO"&&Array.isArray(a.tasks)&&a.tasks.length>0&&a.tasks.length<=10,
     "NORMAL_APPROVAL_INVALID");
   const ids=new Set<string>();
@@ -46,7 +46,7 @@ export function assertNormalTaskPin(a:NormalApproval,task:SupervisorTask){
   const x=approvedNormalTask(a,task);
   check(task.githubSource&&sameGitHubSourcePin(task.githubSource,x.pin)&&
     (!task.baseCommit||task.baseCommit===x.pin.commit)&&(!task.sourceTree||task.sourceTree===x.pin.tree)&&
-    task.normalWorkUntil===a.policy.normal!.validUntil&&task.normalReleaseSha===a.releaseSha,
+    task.normalWorkUntil===a.policy.normal!.validUntil&&task.normalReleaseSha===a.releaseSha&&task.normalImageDigest===a.containerImageDigest&&task.normalCloseUntil===a.closeUntil,
     "NORMAL_DURABLE_PIN_MISMATCH");return x.pin;
 }
 export function assertNormalGitHubFence(task:SupervisorTask|undefined,slot:AdmissionSlot|undefined,grant:StartGrant,pin:GitHubSourcePin,

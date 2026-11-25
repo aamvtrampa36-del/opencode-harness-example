@@ -39,6 +39,7 @@ function fixture(){
  checkPilotWork:async()=>undefined,recordProject:async()=>{},scheduleCheck:async()=>{},startOrRecover:async()=>{starts++;throw Error("unexpected restart")},ensureGitAvailable:async()=>{throw Error("unexpected bootstrap")},ensureBunAvailable:async()=>{throw Error("unexpected bootstrap")}});
  const lease={requestId:"0123456789abcdef",project,generation:1,token:"fixture-only",expiresAt:Date.now()+60000};
  const scope={source,boot,lease};
+ data.set("m08-normal-container-v1",{source,requestId:lease.requestId,generation:lease.generation,token:lease.token,releaseSha,imageDigest:"sha256:"+"a".repeat(64),workUntil:Date.now()+120000,closeUntil:Date.now()+180000});
  return {p,data,scope,lease,set:(v:{running?:boolean;label?:string;kernel?:string;image?:string})=>{if(v.running!==undefined)running=v.running;if(v.label!==undefined)label=v.label;if(v.kernel!==undefined)kernel=v.kernel;if(v.image!==undefined)image=v.image;},counts:()=>({payloads,starts,probes,signal})};
 }
 test("actual DevContainer fenced methods: live observation, source and lease before payload",async()=>{

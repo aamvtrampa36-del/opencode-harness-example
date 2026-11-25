@@ -63,6 +63,8 @@ export type SupervisorTask = {
   /** Exact server-approved work deadline, distinct from the pre-effect admission TTL. */
   normalWorkUntil?: number;
   normalReleaseSha?: string;
+  normalImageDigest?: string;
+  normalCloseUntil?: number;
   /** Immutable requested pins; baseCommit alone records the verified commit. */
   mode?: SupervisorMode;
   sourceCommit?: string;
