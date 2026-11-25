@@ -178,7 +178,11 @@ export async function historicalCertificate(reader:Pick<Reader,"get">):Promise<H
  require(await reconciliationDigest(body)===digest,"HISTORICAL_CERTIFICATE_CORRUPT");return cert;
 }
 export async function retiredHistoricalTask(reader:Pick<Reader,"get">,id:string):Promise<boolean>{
- return (await historicalCertificate(reader))?.retiredIds.includes(id)??false;
+ if((await historicalCertificate(reader))?.retiredIds.includes(id))return true;
+ if(id!==CONSUMED_PILOT_ID||await reader.get(CONSUMED_ARCHIVE_KEY)===undefined)return false;
+ const ledger=await reader.get<ConsumedLedger>(CONSUMED_LEDGER_KEY);
+ require(ledger?.version===1&&ledger.slots&&typeof ledger.slots==="object"&&!Array.isArray(ledger.slots),"P03_CONSUMED_ARCHIVE_INVALID");
+ return consumedArchiveExempts(reader,ledger.slots);
 }
 export async function writeHistoricalCertificate(tx:DurableObjectTransaction,manifest:ReconciliationManifest,objectId:string,
  snap:HistoricalSnapshot,native:NativeQuiescence,slots:Record<string,unknown>,now=Date.now()):Promise<HistoricalCertificate>{
@@ -210,3 +214,150 @@ export function publicHistoricalCertificate(c:HistoricalCertificate){
   retiredTaskIds:c.retiredIds.length,archivedSlots:Object.keys(c.archivedSlots).length,historyPreserved:true,
   scope:"fixed-supervisor-do-only",historicalOutcomesResolved:false,providerDispatchAuthorized:false,completePass:false};
 }
+
+/** Metralla P02: one consumed pilot only. No HTTP route, RPC, provider dispatch
+ * or replay. M09 must supply server-owned verifiers after independently draining
+ * writers. Evidence digests bind exact observations; hashes alone are not proof.
+ * External verifiers run OUTSIDE the DO transaction; the final snapshot CAS and
+ * archive/ledger mutation share a transaction. No second scheduler or ledger. */
+import type {PilotClaim} from "./pilot-authorization";
+import type {AdmissionSlot} from "./supervisor-admission";
+import {r2SessionId,r2TerminalNativeReceipt} from "./supervisor-r2";
+export const CONSUMED_PILOT_ID="42574cb3f5ee0cbf";
+const CONSUMED_CLAIM_KEY="supervisor:pilot:single-use-v1";
+const CONSUMED_LEDGER_KEY="supervisor:admission:v1";
+const CONSUMED_TASK_KEY="supervisor:task:"+CONSUMED_PILOT_ID;
+const CONSUMED_ARCHIVE_KEY="supervisor:consumed-pilot:archive:v1:"+CONSUMED_PILOT_ID;
+type ConsumedEffect="github_branch"|"session_create"|"submit";
+type ConsumedLedger={version:1;slots:Record<string,AdmissionSlot>};
+type ConsumedSnapshot={claim:PilotClaim;task:SupervisorTask;slot:AdmissionSlot;contextDigest:string};
+export type ConsumedIdentity={requestId:string;repository:string;project:string;branch:string;sessionId:string;operationId:string;
+ objectId:string;releaseSha:string;sourceCommit:string;sourceTree:string;effect:ConsumedEffect;snapshotDigest:string};
+export type ConsumedEvidence={identity:ConsumedIdentity;observedAt:number;receiptDigest:string}&(
+ {kind:"unavailable"}|{kind:"absent";authoritativeNegative:true;complete:true;writerDrained:true}|
+ {kind:"present";exactIdentity:true;branchCommit?:string;nativeStatus?:"done"|"unanswered";reason?:string});
+export type ConsumedClosure={snapshotDigest:string;evidenceDigest:string;observedAt:number;drainReceipt:string;closureReceipt:string;
+ budgetReceipt:string;noOutstandingEffects:true;writerFenced:true};
+export type ConsumedAuthorization={action:"archive-consumed-pilot-and-release-reservation";environment:"staging";
+ snapshotDigest:string;evidenceDigest:string;closureDigest:string;approvalRef:string;notBefore:number;expiresAt:number};
+export type ConsumedArchive={schema:"metralla-consumed-pilot-v1";identity:ConsumedIdentity;snapshot:ConsumedSnapshot;
+ evidence:ConsumedEvidence;closure:ConsumedClosure;authorization:ConsumedAuthorization;
+ outcome:"materialized"|"not_materialized";replayAllowed:false;digest:string};
+export type ConsumedVerifier=(purpose:"effect"|"closure"|"authorization",value:ConsumedEvidence|ConsumedClosure|ConsumedAuthorization)=>Promise<boolean>;
+const consumedFresh=(t:number,now:number)=>Number.isSafeInteger(now)&&Number.isSafeInteger(t)&&t>=0&&t<=now&&now-t<=60_000;
+const consumedUuid=(x:unknown)=>typeof x==="string"&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(x);
+async function consumedLoad(tx:Pick<DurableObjectTransaction,"get">){
+ const claim=await tx.get<PilotClaim>(CONSUMED_CLAIM_KEY),task=await tx.get<SupervisorTask>(CONSUMED_TASK_KEY);
+ const ledger=await tx.get<ConsumedLedger>(CONSUMED_LEDGER_KEY);
+ require(claim&&task&&ledger?.version===1&&ledger.slots&&typeof ledger.slots==="object"&&!Array.isArray(ledger.slots)&&
+  Object.keys(ledger.slots).length<=10&&Object.keys(ledger.slots).every(k=>ID.test(k)),"P02_LEDGER_OR_CLAIM_INVALID");
+ const archive=await tx.get<ConsumedArchive>(CONSUMED_ARCHIVE_KEY);
+ const contextDigest=await reconciliationDigest({
+  historicalPointer:await tx.get(HISTORICAL_POINTER)??null,
+  budget:await tx.get("supervisor:inference:budget:v1")??null,
+  lock:await tx.get("supervisor:lock:"+CONSUMED_PILOT_ID)??null,
+  sessionOwner:await tx.get("supervisor:session:"+r2SessionId(CONSUMED_PILOT_ID))??null
+ });
+ return {claim,task,ledger,archive,contextDigest};
+}
+async function consumedIdentity(s:ConsumedSnapshot):Promise<ConsumedIdentity>{
+ const {claim:c,task:t,slot}=s,a=c.approval,id=CONSUMED_PILOT_ID;
+ require(a?.schema==="pilot-release-v2"&&a.environment==="staging"&&a.requestId===id&&t.id===id&&
+  t.repository==="aamvtrampa36-del/opencode-harness-example"&&t.branch==="opencode/staging-"+id&&t.project==="supervised-"+id&&
+  t.fingerprint===a.fingerprint&&hex(a.fingerprint,64)&&hex(c.objectId,64)&&hex(a.releaseSha,40)&&hex(a.sourceCommit,40)&&hex(a.sourceTree,40)&&
+  t.createdAt===c.startedAt&&t.pilotInstance===c.instance&&consumedUuid(c.instance)&&t.sessionIdPolicy==="deterministic-v1"&&!t.forkedFrom&&!t.mode,
+  "P02_CLAIM_IDENTITY");
+ require(slot?.phase==="effect_unknown"&&consumedUuid(slot.token)&&Number.isSafeInteger(slot.generation)&&slot.generation>0&&
+  Number.isSafeInteger(slot.expiresAt)&&(slot.effect==="github_branch"||slot.effect==="session_create"||slot.effect==="submit"),"P02_SLOT_IDENTITY");
+ const sessionId=r2SessionId(id),operationId="rc-start-"+id;
+ require(["unknown","cancel_requested","preparing"].includes(t.status)&&!t.pendingTurn&&(!t.session||t.session===sessionId)&&
+  (!t.operationId||t.operationId===operationId),"P02_TASK_CURSOR");
+ require(slot.effect!=="github_branch"||(!t.session&&!t.operationId&&t.sessionCreationAttempted===false),"P02_BRANCH_CURSOR");
+ require(slot.effect!=="session_create"||(t.sessionCreationAttempted===true&&!t.operationId),"P02_SESSION_CURSOR");
+ require(slot.effect!=="submit"||(t.session===sessionId&&t.operationId===operationId),"P02_SUBMIT_CURSOR");
+ return {requestId:id,repository:t.repository,project:t.project,branch:t.branch,sessionId,operationId,objectId:c.objectId,
+  releaseSha:a.releaseSha,sourceCommit:a.sourceCommit,sourceTree:a.sourceTree,effect:slot.effect,snapshotDigest:await reconciliationDigest(s)};
+}
+export async function inspectConsumedPilot(storage:DurableObjectStorage):Promise<ConsumedIdentity>{
+ return storage.transaction(async tx=>{
+  const r=await consumedLoad(tx);require(!r.archive,"P02_ALREADY_ARCHIVED");
+  return consumedIdentity({claim:r.claim,task:r.task,slot:r.ledger.slots[CONSUMED_PILOT_ID],contextDigest:r.contextDigest});
+ });
+}
+async function consumedTrusted(verify:ConsumedVerifier,purpose:Parameters<ConsumedVerifier>[0],value:Parameters<ConsumedVerifier>[1]){
+ try{return await verify(purpose,structuredClone(value))===true;}catch{return false;}
+}
+export async function classifyConsumedPilot(i:ConsumedIdentity,e:ConsumedEvidence,verify:ConsumedVerifier,now:number):
+ Promise<"materialized"|"not_materialized"|"unknown">{
+ if(!e||await reconciliationDigest(e.identity)!==await reconciliationDigest(i)||!consumedFresh(e.observedAt,now)||
+  !hex(e.receiptDigest,64)||e.kind==="unavailable"||!await consumedTrusted(verify,"effect",e))return "unknown";
+ if(e.kind==="absent")return e.authoritativeNegative===true&&e.complete===true&&e.writerDrained===true?"not_materialized":"unknown";
+ if(e.kind!=="present"||e.exactIdentity!==true||e.reason==="not_found")return "unknown";
+ if(i.effect==="github_branch"&&e.branchCommit!==i.sourceCommit)return "unknown";
+ if(i.effect==="submit"&&(!e.nativeStatus||!r2TerminalNativeReceipt({status:e.nativeStatus,reason:e.reason})))return "unknown";
+ return "materialized";
+}
+function consumedWindow(a:ConsumedAuthorization,now:number){
+ return a.action==="archive-consumed-pilot-and-release-reservation"&&a.environment==="staging"&&
+  Number.isSafeInteger(a.notBefore)&&Number.isSafeInteger(a.expiresAt)&&a.notBefore>=0&&a.notBefore<=now&&now<a.expiresAt&&
+  a.expiresAt-now<=3600_000&&typeof a.approvalRef==="string"&&a.approvalRef.length>=8&&a.approvalRef.length<=160;
+}
+/** Private receipt, not a public payload: contains original claim and fencing token.
+ * Idempotent after a lost transaction response; conflicting receipt fails closed.
+ * P03 must retain consumed-ID prohibition and honor the archived digest in admission;
+ * releasing accounting ownership is not proof of successful pilot or runtime closure. */
+export async function archiveConsumedPilot(storage:DurableObjectStorage,evidence:ConsumedEvidence,closure:ConsumedClosure,
+ authorization:ConsumedAuthorization,verify:ConsumedVerifier,clock=Date.now):Promise<{digest:string;outcome:ConsumedArchive["outcome"];reused:boolean;replayAllowed:false}>{
+ const e=structuredClone(evidence),c=structuredClone(closure),a=structuredClone(authorization),id=CONSUMED_PILOT_ID;
+ const same=async(x:unknown,y:unknown)=>await reconciliationDigest(x)===await reconciliationDigest(y);
+ const replay=async(r:Awaited<ReturnType<typeof consumedLoad>>)=>{
+  if(!r.archive)return;
+  const {digest,...body}=r.archive;
+  require(body.schema==="metralla-consumed-pilot-v1"&&body.replayAllowed===false&&hex(digest,64)&&digest===await reconciliationDigest(body)&&
+   !r.ledger.slots[id]&&await same(r.claim,body.snapshot.claim)&&await same(r.task,body.snapshot.task)&&
+   await same(e,body.evidence)&&await same(c,body.closure)&&await same(a,body.authorization),"P02_ARCHIVE_CONFLICT");
+  return {digest,outcome:body.outcome,reused:true,replayAllowed:false as const};
+ };
+ const before=await storage.transaction(consumedLoad),old=await replay(before);if(old)return old;
+ const s={claim:before.claim,task:before.task,slot:before.ledger.slots[id],contextDigest:before.contextDigest};
+ const i=await consumedIdentity(s),now=clock(),outcome=await classifyConsumedPilot(i,e,verify,now);
+ require(outcome!=="unknown","P02_EFFECT_UNKNOWN");
+ const ed=await reconciliationDigest(e),cd=await reconciliationDigest(c);
+ require(c.snapshotDigest===i.snapshotDigest&&c.evidenceDigest===ed&&consumedFresh(c.observedAt,now)&&c.observedAt>=e.observedAt&&
+  [c.drainReceipt,c.closureReceipt,c.budgetReceipt].every(x=>hex(x,64))&&c.noOutstandingEffects===true&&c.writerFenced===true&&
+  await consumedTrusted(verify,"closure",c),"P02_CLOSURE_REQUIRED");
+ require(consumedWindow(a,now)&&a.snapshotDigest===i.snapshotDigest&&a.evidenceDigest===ed&&a.closureDigest===cd&&
+  await consumedTrusted(verify,"authorization",a),"P02_AUTHORIZATION_REQUIRED");
+ const body:Omit<ConsumedArchive,"digest">={schema:"metralla-consumed-pilot-v1",identity:i,snapshot:s,evidence:e,closure:c,authorization:a,outcome,replayAllowed:false};
+ const digest=await reconciliationDigest(body),archive={...body,digest};
+ require(new TextEncoder().encode(JSON.stringify(archive)).length<=120*1024,"P02_ARCHIVE_LIMIT");
+ return storage.transaction(async tx=>{
+  const r=await consumedLoad(tx),prior=await replay(r);if(prior)return prior;
+  require(consumedWindow(a,clock())&&consumedFresh(e.observedAt,clock())&&consumedFresh(c.observedAt,clock()),"P02_PROOF_EXPIRED");
+  require(await same(s,{claim:r.claim,task:r.task,slot:r.ledger.slots[id],contextDigest:r.contextDigest}),"P02_SNAPSHOT_CHANGED");
+  const slots={...r.ledger.slots};delete slots[id];
+  await tx.put(CONSUMED_ARCHIVE_KEY,archive);
+  await tx.put(CONSUMED_LEDGER_KEY,{...r.ledger,slots});
+  return {digest,outcome,reused:false,replayAllowed:false};
+ });
+}
+
+/** P02 archive is private, immutable accounting evidence. Never infer an
+ * exemption from terminal text, age, or a missing slot alone. */
+export async function consumedArchiveExempts(tx:Pick<DurableObjectStorage,"get">,slots:Record<string,unknown>):Promise<boolean>{
+  const id=CONSUMED_PILOT_ID;
+  const archive=await tx.get<ConsumedArchive>("supervisor:consumed-pilot:archive:v1:"+id);
+  if(archive===undefined)return false;
+  if(!archive||typeof archive!=="object")throw Error("P03_CONSUMED_ARCHIVE_INVALID");
+  const {digest,...body}=archive;
+  const task=await tx.get<SupervisorTask>("supervisor:task:"+id);
+  const claim=await tx.get("supervisor:pilot:single-use-v1");
+  if(!task||!claim||Object.hasOwn(slots,id)||body.schema!=="metralla-consumed-pilot-v1"||body.replayAllowed!==false||
+    body.identity?.requestId!==id||body.snapshot?.task?.id!==id||body.snapshot?.claim?.approval?.requestId!==id||
+    body.snapshot?.slot?.phase!=="effect_unknown"||body.closure?.noOutstandingEffects!==true||body.closure?.writerFenced!==true||
+    !["materialized","not_materialized"].includes(body.outcome)||typeof digest!=="string"||!/^[a-f0-9]{64}$/.test(digest)||
+    await reconciliationDigest(body)!==digest||await reconciliationDigest(task)!==await reconciliationDigest(body.snapshot.task)||
+    await reconciliationDigest(claim)!==await reconciliationDigest(body.snapshot.claim))throw Error("P03_CONSUMED_ARCHIVE_INVALID");
+  return true;
+}
+

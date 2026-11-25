@@ -1,0 +1,52 @@
+name: Metralla M01 exact offline CI
+on:
+  push:
+    branches: [metralla/m01]
+permissions:
+  contents: read
+concurrency:
+  group: metralla-m01-offline
+  cancel-in-progress: false
+jobs:
+  offline:
+    if: github.repository == 'aamvtrampa36-del/opencode-harness-example' && github.ref == 'refs/heads/metralla/m01' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Confirm exact candidate SHA
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+          no-cache: true
+      - name: Frozen dependencies
+        run: bun install --frozen-lockfile
+      - name: M01 reconciliation and admission regressions
+        run: bun test src/supervisor-reconciliation.test.ts src/supervisor-admission.test.ts src/supervisor-recovery.test.ts src/supervisor-t03-t04-integration.test.ts
+      - name: T04 fault injection (disposable storage)
+        run: node --experimental-strip-types --test scripts/f0-c10-r2-t04-fault.test.mjs
+      - name: Full Bun unit suite
+        run: bun test
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build (no deploy)
+        run: bun run build
+      - name: Static preview
+        run: bun scripts/test-preview.mjs
+      - name: Source invariants
+        run: bun scripts/check-invariants.mjs
+      - name: Confirm unchanged tracked sources
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code

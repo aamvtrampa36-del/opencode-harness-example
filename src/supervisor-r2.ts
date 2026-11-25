@@ -72,8 +72,8 @@ export function r2StatusWriteAllowed(
 export function r2TerminalNativeReceipt(
   receipt: { status: "done" | "unanswered"; reason?: string } | undefined
 ): boolean {
-  return receipt?.status === "done" || (receipt?.status === "unanswered" &&
-    ["failed", "interrupted", "aborted"].includes(receipt.reason ?? ""));
+  return receipt?.reason !== "not_found" && (receipt?.status === "done" || (receipt?.status === "unanswered" &&
+    ["failed", "interrupted", "aborted"].includes(receipt.reason ?? "")));
 }
 
 /** A pending turn can leave the journal only upon a matching native
