@@ -262,6 +262,14 @@ export class DevContainer extends DurableObject<Env> {
     const pilot=await this.checkPilotWork();
     const lane=(this.env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
     if(lane&&(!(this.env as Env & {OPENCODE_PILOT_AUTHORIZATION?:string}).OPENCODE_PILOT_AUTHORIZATION||!pilot||this.ctx.id.name!=="project-v1:supervised-"+lane))throw Error("PILOT_EXCLUSIVE_CONTAINER");
+    const bound=await this.ctx.storage.get<BootReceipt>("m03-execution-boot-v1");
+    if(bound){
+      if(pilot)throw Error("M03_VM_IDENTITY_MISMATCH");
+      assertRuntime(bound,await this.observeNormalBoot(bound.project),bound.project,this.configuredNormalImages());
+      const container=this.ctx.container;
+      if(!container?.running)throw Error("M03_VM_IDENTITY_MISMATCH");
+      return container;
+    }
     this.starting ??= this.startOrRecover().finally(() => { this.starting = undefined; });
     return await this.starting;
   }
@@ -696,6 +704,7 @@ export class DevContainer extends DurableObject<Env> {
           await this.ctx.storage.get("restore-pending-v1")) {
         throw Error("El proyecto está pendiente de importación o restauración");
       }
+      if(await this.ctx.storage.get("m03-execution-boot-v1"))throw Error("M03_FENCED_EXECUTION_REQUIRED");
       return await this.runExclusive(id, cmd);
     } finally {
       release();
@@ -764,6 +773,7 @@ export class DevContainer extends DurableObject<Env> {
       const boot=await this.ctx.storage.get<BootReceipt>("m03-execution-boot-v1");
       if(!receipt||!boot)throw Error("M03_VM_IDENTITY_MISMATCH");
       assertSourceReceipt(scope.source,receipt);
+      assertLease(scope.lease,currentLease,id,Date.now());
       const observed=await this.observeNormalBoot(id);
       assertRuntime(boot,observed,id,this.configuredNormalImages());
       assertExecutionIdentity(scope,receipt,observed,currentLease,this.configuredNormalImages(),Date.now());

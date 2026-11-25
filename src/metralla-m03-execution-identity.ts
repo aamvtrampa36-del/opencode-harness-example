@@ -42,6 +42,7 @@ export function assertImagePolicy(policy: ImagePolicy, configured: readonly stri
 export function assertLease(expected: Lease, current: Lease | undefined, project: string, now: number): void {
   if (!expected || !current || !Number.isSafeInteger(now) || now < 0 ||
       !matches(/^[a-f0-9]{16}$/, expected.requestId) || expected.project !== project ||
+      (project.startsWith("supervised-") && project !== "supervised-" + expected.requestId) ||
       !Number.isSafeInteger(expected.generation) || expected.generation < 1 ||
       typeof expected.token !== 'string' || !expected.token ||
       !Number.isSafeInteger(expected.expiresAt) || now >= expected.expiresAt ||
