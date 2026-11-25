@@ -1,0 +1,50 @@
+name: Metralla P06 phase evidence (OFFLINE ONLY)
+on:
+  push:
+    branches: [metralla/m02]
+    paths:
+      - '.github/workflows/metralla-p06-offline.yml'
+      - 'src/metralla-m02-phase-*.ts'
+      - 'src/supervisor-phase-telemetry.ts'
+      - 'src/supervisor-metrics.ts'
+permissions:
+  contents: read
+concurrency:
+  group: metralla-p06-offline
+  cancel-in-progress: false
+jobs:
+  offline:
+    if: github.event.repository.private == false && github.ref == 'refs/heads/metralla/m02'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Exact SHA and B0 ancestry
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor 837dce9b283f6b4b0b2ba939407883ec95be726a HEAD
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+          no-cache: true
+      - name: P06 Node evidence and historical RED GREEN regression
+        run: node --experimental-strip-types --test src/metralla-m02-phase-evidence.test.ts src/metralla-m02-phase-journal.test.ts scripts/f0-c10/r3-memory-baseline.test.mjs scripts/f0-c10/phase-memory-profile.test.mjs
+      - name: Existing T01 and metrics regressions
+        run: bun test src/supervisor-phase-telemetry.test.ts src/supervisor-metrics.test.ts
+      - name: Frozen dependencies
+        run: bun install --frozen-lockfile
+      - name: Full source typecheck
+        run: bun run typecheck
+      - name: Source invariants
+        run: bun scripts/check-invariants.mjs
+      - name: Verify exact tested SHA
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"

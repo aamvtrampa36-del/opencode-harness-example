@@ -89,7 +89,7 @@ export function createSupervisorMemoryProbe(
 }
 
 // M02 scoped evidence is distinct from the anonymous logging probe.
-export { readPhaseEvidence, restorePhaseCheckpoint, PHASE_EVIDENCE_LIMITS } from './metralla-m02-phase-evidence';
-export type { PhaseRow, PhaseCheckpoint, PhaseRead } from './metralla-m02-phase-evidence';
+export { readPhaseEvidence, restorePhaseCheckpoint, PHASE_EVIDENCE_LIMITS } from './metralla-m02-phase-evidence.ts';
+export type { PhaseRow, PhaseCheckpoint, PhaseRead } from './metralla-m02-phase-evidence.ts';
 
-export { appendPhaseTransition, phaseCheckpointSource, projectPhaseMetadata } from './metralla-m02-phase-journal';
+export { appendPhaseTransition, phaseCheckpointSource, projectPhaseMetadata } from './metralla-m02-phase-journal.ts';
