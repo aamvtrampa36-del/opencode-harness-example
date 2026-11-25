@@ -1,11 +1,11 @@
 {
   "planVersion": "1.0",
   "promptRevision": "R2",
-  "revision": 5,
-  "expectedPreviousRevision": 4,
-  "expectedParentCommit": "640a9f26c720afecbf273693833097a7cb422c4d",
-  "date": "2026-11-24",
-  "actor": "ChatGPT exclusive P25 coordinator; owner confirmed previous writer stopped; GitHub L-C offline",
+  "revision": 6,
+  "expectedPreviousRevision": 5,
+  "expectedParentCommit": "3725ed9706919818b0f852c9c6104e7dd7f515ce",
+  "date": "2026-11-25",
+  "actor": "ChatGPT P25 sole writer, owner explicitly confirmed handoff; L-C offline only",
   "repository": "aamvtrampa36-del/opencode-harness-example",
   "B0": {
     "sha": "837dce9b283f6b4b0b2ba939407883ec95be726a",
@@ -152,41 +152,377 @@
       "authorization": "L-C_GRANTED",
       "receipt": "docs/metralla/receipts/M08.md",
       "owner": "ChatGPT coordinator P25",
-      "head": "025716c4c0f1f25b48088b3f28acd981472af39b",
-      "tree": "a84fd28f65e2af195189a4abe7157f0aa17e1bde",
+      "head": "cf911fa3d30d140a4e16b27e67bc7241da9e39e0",
+      "tree": "e0783de1b17c4a1f50e1932991aa43a625a693b7",
       "pr": 172,
       "ci": [
         45534019987,
         45534318316,
         45535609745,
         45536054762,
-        45536336876
+        45536336876,
+        45537505375
       ],
-      "ciStatus": "success on exact HEAD; deployable output reproducible in two clean builds; raw README metadata differs; not C1",
+      "ciStatus": "success exact HEAD; offline candidate only; not C1",
       "level": "offline candidate only",
-      "ciJob": 138943726924,
+      "ciJob": 138947612032,
+      "integratedThisHandoff": [
+        "M06 owner-only mobile read route and exact scoped download; requires verified server-side Access pins, no live activation",
+        "M06 explicit recapture generation and bounded orphan-index repair primitive; no historical mutation",
+        "M06/M07 independent bounded byte readback + synthetic 1/2/4/10 oracles",
+        "two clean builds; raw inventory and deployable hashes",
+        "M05/M07 bounded independent GitHub GET collector; exact request/session/operation/project, ref, base, tree, draft PR, path/blob diff; repeated ref/PR checks; unsigned, no live PASS"
+      ],
+      "lastCertifiedCandidate": {
+        "head": "025716c4c0f1f25b48088b3f28acd981472af39b",
+        "tree": "a84fd28f65e2af195189a4abe7157f0aa17e1bde",
+        "ci": 45536336876,
+        "job": 138943726924,
+        "regression": {
+          "node": 301,
+          "bun": 1172,
+          "failed": 0
+        },
+        "dryRunPackages": {
+          "principal": "9d9d306d04aa829798d1320234385f788fe0a775cd30a11ba752d11ff8402c5c",
+          "mcp": "b32fafdabd60833a6fe1d5bc92ed27839f59f899b21ce35cf0be21a8c04e1f39",
+          "assets": {
+            "files": 308,
+            "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
+          },
+          "build": {
+            "files": 539,
+            "sha256": "b90822f27b647073af22579f557cfe6d10fb841fd99a6c5c9486adb56f3cc291"
+          },
+          "deployed": false,
+          "independentRebuildVerified": true,
+          "scope": "all deployable files across two clean builds in same CI job; generated top-level Wrangler README excluded only from deployable comparison; raw hashes retained",
+          "fullArchiveByteIdentical": false,
+          "rawA": {
+            "source": "025716c4c0f1f25b48088b3f28acd981472af39b",
+            "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
+            "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
+            "assets": {
+              "files": 308,
+              "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
+            },
+            "build": {
+              "files": 539,
+              "sha256": "b90822f27b647073af22579f557cfe6d10fb841fd99a6c5c9486adb56f3cc291"
+            },
+            "bindings": [
+              "DEV",
+              "OpenCodeAgent",
+              "SESSION_BK",
+              "SETTINGS"
+            ],
+            "migration": "v4",
+            "principal": {
+              "files": 230,
+              "sha256": "640654f463088cc5ac7b43dfcc8a177b7c6e0f8169ec88162122f0a3cbde7d00",
+              "generatedReadmeSha256": "4b108bf71e42c5166a33ed4aa0438b95ca0432ddb2fa5a79d4e3019d7b3a04e0",
+              "deployable": {
+                "files": 229,
+                "sha256": "9d9d306d04aa829798d1320234385f788fe0a775cd30a11ba752d11ff8402c5c"
+              }
+            },
+            "mcp": {
+              "files": 3,
+              "sha256": "48d1435c5a0b291aec0da000c90c4e086f53c57954d521652c99bb4b230761a7",
+              "generatedReadmeSha256": "e7d21c735f4772bbb1a68659df1d9ffc58d4113954d56a59d43ed72df768623c",
+              "deployable": {
+                "files": 2,
+                "sha256": "b32fafdabd60833a6fe1d5bc92ed27839f59f899b21ce35cf0be21a8c04e1f39"
+              }
+            },
+            "deployed": false
+          },
+          "rawB": {
+            "source": "025716c4c0f1f25b48088b3f28acd981472af39b",
+            "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
+            "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
+            "assets": {
+              "files": 308,
+              "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
+            },
+            "build": {
+              "files": 539,
+              "sha256": "b90822f27b647073af22579f557cfe6d10fb841fd99a6c5c9486adb56f3cc291"
+            },
+            "bindings": [
+              "DEV",
+              "OpenCodeAgent",
+              "SESSION_BK",
+              "SETTINGS"
+            ],
+            "migration": "v4",
+            "principal": {
+              "files": 230,
+              "sha256": "8846504427810dbd8a84963d0d38091cd8be5456f0ddd90e419fdb4b8e1596fe",
+              "generatedReadmeSha256": "db2d8e571452857e0c12ee65c0bb3ddcae7934eaefd04c48c7abb26ea6cb21c6",
+              "deployable": {
+                "files": 229,
+                "sha256": "9d9d306d04aa829798d1320234385f788fe0a775cd30a11ba752d11ff8402c5c"
+              }
+            },
+            "mcp": {
+              "files": 3,
+              "sha256": "0e08610a0eb5facd0b3dcdd92aed7e9d0bdbbc5f8060d7aac47f738c731f7d09",
+              "generatedReadmeSha256": "6b93fbd6107c0dfea3e73e341a51bf02a8cc956398ef9c781fa1249fa0278b18",
+              "deployable": {
+                "files": 2,
+                "sha256": "b32fafdabd60833a6fe1d5bc92ed27839f59f899b21ce35cf0be21a8c04e1f39"
+              }
+            },
+            "deployed": false
+          }
+        }
+      },
+      "candidateEvidence": {
+        "run": 45537505375,
+        "job": 138947612032,
+        "head": "cf911fa3d30d140a4e16b27e67bc7241da9e39e0",
+        "tree": "e0783de1b17c4a1f50e1932991aa43a625a693b7",
+        "status": "completed",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Exact integrated source",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run oven-sh/setup-bun@v2",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run bun install --frozen-lockfile",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Integrated Node specialist contracts",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Historical admission and release STOP contracts",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Full Bun unit suite",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Typecheck",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Security invariants",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Offline evaluator matrix",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Build and static preview",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Two existing Staging Worker dry-run packages",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Exact source and clean tracked files",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run oven-sh/setup-bun@v2",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "regression": {
+          "node": 312,
+          "nodeGroups": [
+            196,
+            39,
+            77
+          ],
+          "bun": 1183,
+          "failed": 0
+        },
+        "rebuild": {
+          "payload": {
+            "source": "cf911fa3d30d140a4e16b27e67bc7241da9e39e0",
+            "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
+            "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
+            "assets": {
+              "files": 308,
+              "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
+            },
+            "build": {
+              "files": 539,
+              "sha256": "27afa43bdaedf6c31894eb4a8de6b59b0718eed0f2a820f690ce2a2b19919210"
+            },
+            "bindings": [
+              "DEV",
+              "OpenCodeAgent",
+              "SESSION_BK",
+              "SETTINGS"
+            ],
+            "migration": "v4",
+            "principal": {
+              "files": 230,
+              "deployable": {
+                "files": 229,
+                "sha256": "fcc91a9a0cdad8aa555fa90a04dd6f440c9a3fc336f61613677fe832c85b1f7b"
+              }
+            },
+            "mcp": {
+              "files": 3,
+              "deployable": {
+                "files": 2,
+                "sha256": "b32fafdabd60833a6fe1d5bc92ed27839f59f899b21ce35cf0be21a8c04e1f39"
+              }
+            },
+            "deployed": false
+          },
+          "rawA": {
+            "source": "cf911fa3d30d140a4e16b27e67bc7241da9e39e0",
+            "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
+            "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
+            "assets": {
+              "files": 308,
+              "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
+            },
+            "build": {
+              "files": 539,
+              "sha256": "27afa43bdaedf6c31894eb4a8de6b59b0718eed0f2a820f690ce2a2b19919210"
+            },
+            "bindings": [
+              "DEV",
+              "OpenCodeAgent",
+              "SESSION_BK",
+              "SETTINGS"
+            ],
+            "migration": "v4",
+            "principal": {
+              "files": 230,
+              "sha256": "4ec20569f1e8ffc45c91c587efc35a66dd3e4d50ccb0da1adf0b55e585d69d93",
+              "generatedReadmeSha256": "a2e02484d56a5e18a147677444e4c1b1046e1d10b0128f2e8fe573b62b4cc6a1",
+              "deployable": {
+                "files": 229,
+                "sha256": "fcc91a9a0cdad8aa555fa90a04dd6f440c9a3fc336f61613677fe832c85b1f7b"
+              }
+            },
+            "mcp": {
+              "files": 3,
+              "sha256": "6ca9c7b670b779c23011ede90198b14005136b44a4f5d0a32cf21aefc7393062",
+              "generatedReadmeSha256": "a43e6d9d91f5556f75e98abb5bad3f8047a38a763f92bd357345505fd95c899d",
+              "deployable": {
+                "files": 2,
+                "sha256": "b32fafdabd60833a6fe1d5bc92ed27839f59f899b21ce35cf0be21a8c04e1f39"
+              }
+            },
+            "deployed": false
+          },
+          "rawB": {
+            "source": "cf911fa3d30d140a4e16b27e67bc7241da9e39e0",
+            "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
+            "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
+            "assets": {
+              "files": 308,
+              "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
+            },
+            "build": {
+              "files": 539,
+              "sha256": "27afa43bdaedf6c31894eb4a8de6b59b0718eed0f2a820f690ce2a2b19919210"
+            },
+            "bindings": [
+              "DEV",
+              "OpenCodeAgent",
+              "SESSION_BK",
+              "SETTINGS"
+            ],
+            "migration": "v4",
+            "principal": {
+              "files": 230,
+              "sha256": "b239956cee7e0c89fad06dbb248c5ffc86303517d7474ca2ed65e27af3732ae5",
+              "generatedReadmeSha256": "005a235ebafd44d340658e9b159dcecbe98162258943eb083597c327b37defd3",
+              "deployable": {
+                "files": 229,
+                "sha256": "fcc91a9a0cdad8aa555fa90a04dd6f440c9a3fc336f61613677fe832c85b1f7b"
+              }
+            },
+            "mcp": {
+              "files": 3,
+              "sha256": "aaf1633d95b4fd0bc86bb9d76658bb7d18705cf553424556d22c6a883f356e5e",
+              "generatedReadmeSha256": "0ad96d55695fc3a6a9bc740d6ffce9bc676a6801826844229cb0db29e97992bf",
+              "deployable": {
+                "files": 2,
+                "sha256": "b32fafdabd60833a6fe1d5bc92ed27839f59f899b21ce35cf0be21a8c04e1f39"
+              }
+            },
+            "deployed": false
+          },
+          "excludedFromPayloadComparison": "Wrangler-generated top-level README.md only",
+          "fullArchiveByteIdentical": false
+        }
+      },
       "regression": {
-        "node": 301,
-        "bun": 1172,
+        "node": 312,
+        "nodeGroups": [
+          196,
+          39,
+          77
+        ],
+        "bun": 1183,
         "failed": 0
       },
       "dryRunPackages": {
-        "principal": "9d9d306d04aa829798d1320234385f788fe0a775cd30a11ba752d11ff8402c5c",
-        "mcp": "b32fafdabd60833a6fe1d5bc92ed27839f59f899b21ce35cf0be21a8c04e1f39",
-        "assets": {
-          "files": 308,
-          "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
-        },
-        "build": {
-          "files": 539,
-          "sha256": "b90822f27b647073af22579f557cfe6d10fb841fd99a6c5c9486adb56f3cc291"
-        },
-        "deployed": false,
-        "independentRebuildVerified": true,
-        "scope": "all deployable files across two clean builds in same CI job; generated top-level Wrangler README excluded only from deployable comparison; raw hashes retained",
-        "fullArchiveByteIdentical": false,
-        "rawA": {
-          "source": "025716c4c0f1f25b48088b3f28acd981472af39b",
+        "payload": {
+          "source": "cf911fa3d30d140a4e16b27e67bc7241da9e39e0",
           "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
           "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
           "assets": {
@@ -195,7 +531,7 @@
           },
           "build": {
             "files": 539,
-            "sha256": "b90822f27b647073af22579f557cfe6d10fb841fd99a6c5c9486adb56f3cc291"
+            "sha256": "27afa43bdaedf6c31894eb4a8de6b59b0718eed0f2a820f690ce2a2b19919210"
           },
           "bindings": [
             "DEV",
@@ -206,17 +542,52 @@
           "migration": "v4",
           "principal": {
             "files": 230,
-            "sha256": "640654f463088cc5ac7b43dfcc8a177b7c6e0f8169ec88162122f0a3cbde7d00",
-            "generatedReadmeSha256": "4b108bf71e42c5166a33ed4aa0438b95ca0432ddb2fa5a79d4e3019d7b3a04e0",
             "deployable": {
               "files": 229,
-              "sha256": "9d9d306d04aa829798d1320234385f788fe0a775cd30a11ba752d11ff8402c5c"
+              "sha256": "fcc91a9a0cdad8aa555fa90a04dd6f440c9a3fc336f61613677fe832c85b1f7b"
             }
           },
           "mcp": {
             "files": 3,
-            "sha256": "48d1435c5a0b291aec0da000c90c4e086f53c57954d521652c99bb4b230761a7",
-            "generatedReadmeSha256": "e7d21c735f4772bbb1a68659df1d9ffc58d4113954d56a59d43ed72df768623c",
+            "deployable": {
+              "files": 2,
+              "sha256": "b32fafdabd60833a6fe1d5bc92ed27839f59f899b21ce35cf0be21a8c04e1f39"
+            }
+          },
+          "deployed": false
+        },
+        "rawA": {
+          "source": "cf911fa3d30d140a4e16b27e67bc7241da9e39e0",
+          "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
+          "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
+          "assets": {
+            "files": 308,
+            "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
+          },
+          "build": {
+            "files": 539,
+            "sha256": "27afa43bdaedf6c31894eb4a8de6b59b0718eed0f2a820f690ce2a2b19919210"
+          },
+          "bindings": [
+            "DEV",
+            "OpenCodeAgent",
+            "SESSION_BK",
+            "SETTINGS"
+          ],
+          "migration": "v4",
+          "principal": {
+            "files": 230,
+            "sha256": "4ec20569f1e8ffc45c91c587efc35a66dd3e4d50ccb0da1adf0b55e585d69d93",
+            "generatedReadmeSha256": "a2e02484d56a5e18a147677444e4c1b1046e1d10b0128f2e8fe573b62b4cc6a1",
+            "deployable": {
+              "files": 229,
+              "sha256": "fcc91a9a0cdad8aa555fa90a04dd6f440c9a3fc336f61613677fe832c85b1f7b"
+            }
+          },
+          "mcp": {
+            "files": 3,
+            "sha256": "6ca9c7b670b779c23011ede90198b14005136b44a4f5d0a32cf21aefc7393062",
+            "generatedReadmeSha256": "a43e6d9d91f5556f75e98abb5bad3f8047a38a763f92bd357345505fd95c899d",
             "deployable": {
               "files": 2,
               "sha256": "b32fafdabd60833a6fe1d5bc92ed27839f59f899b21ce35cf0be21a8c04e1f39"
@@ -225,7 +596,7 @@
           "deployed": false
         },
         "rawB": {
-          "source": "025716c4c0f1f25b48088b3f28acd981472af39b",
+          "source": "cf911fa3d30d140a4e16b27e67bc7241da9e39e0",
           "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
           "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
           "assets": {
@@ -234,7 +605,7 @@
           },
           "build": {
             "files": 539,
-            "sha256": "b90822f27b647073af22579f557cfe6d10fb841fd99a6c5c9486adb56f3cc291"
+            "sha256": "27afa43bdaedf6c31894eb4a8de6b59b0718eed0f2a820f690ce2a2b19919210"
           },
           "bindings": [
             "DEV",
@@ -245,31 +616,27 @@
           "migration": "v4",
           "principal": {
             "files": 230,
-            "sha256": "8846504427810dbd8a84963d0d38091cd8be5456f0ddd90e419fdb4b8e1596fe",
-            "generatedReadmeSha256": "db2d8e571452857e0c12ee65c0bb3ddcae7934eaefd04c48c7abb26ea6cb21c6",
+            "sha256": "b239956cee7e0c89fad06dbb248c5ffc86303517d7474ca2ed65e27af3732ae5",
+            "generatedReadmeSha256": "005a235ebafd44d340658e9b159dcecbe98162258943eb083597c327b37defd3",
             "deployable": {
               "files": 229,
-              "sha256": "9d9d306d04aa829798d1320234385f788fe0a775cd30a11ba752d11ff8402c5c"
+              "sha256": "fcc91a9a0cdad8aa555fa90a04dd6f440c9a3fc336f61613677fe832c85b1f7b"
             }
           },
           "mcp": {
             "files": 3,
-            "sha256": "0e08610a0eb5facd0b3dcdd92aed7e9d0bdbbc5f8060d7aac47f738c731f7d09",
-            "generatedReadmeSha256": "6b93fbd6107c0dfea3e73e341a51bf02a8cc956398ef9c781fa1249fa0278b18",
+            "sha256": "aaf1633d95b4fd0bc86bb9d76658bb7d18705cf553424556d22c6a883f356e5e",
+            "generatedReadmeSha256": "0ad96d55695fc3a6a9bc740d6ffce9bc676a6801826844229cb0db29e97992bf",
             "deployable": {
               "files": 2,
               "sha256": "b32fafdabd60833a6fe1d5bc92ed27839f59f899b21ce35cf0be21a8c04e1f39"
             }
           },
           "deployed": false
-        }
-      },
-      "integratedThisHandoff": [
-        "M06 owner-only mobile read route and exact scoped download; requires verified server-side Access pins, no live activation",
-        "M06 explicit recapture generation and bounded orphan-index repair primitive; no historical mutation",
-        "M06/M07 independent bounded byte readback + synthetic 1/2/4/10 oracles",
-        "two clean builds; raw inventory and deployable hashes"
-      ]
+        },
+        "excludedFromPayloadComparison": "Wrangler-generated top-level README.md only",
+        "fullArchiveByteIdentical": false
+      }
     },
     "M09": {
       "status": "WAITING",
@@ -641,7 +1008,7 @@
     "liveGate": "STOP"
   },
   "blockers": [
-    "M08 PARTIAL: exact HEAD 025716c4/CI 45536336876 success (301 Node + 1172 Bun, zero failures, typecheck, invariants, offline matrix, preview/build, both deployable dry-run outputs reproducible). M02 authoritative bounded projection/event coverage + cursor, M03 independent physical-close collector, M04 native SDK budget interception/verified policy, M05 fenced pin and all writes, M07 live independent signed collectors, compatible runtime rollback proof remain open. M06 mobile route remains closed until verified server-side owner/Access pins; no Android test or actual historical artifact repair. C1 null; no L-D.",
+    "M08 PARTIAL: cf911fa3d30d140a4e16b27e67bc7241da9e39e0 / CI 45537505375 completed/success. M05/M07 independent GitHub readback seam added; live signer and runtime write fencing still absent. M02 authoritative storage/event coverage and scoped cursor, M03 independent native physical-close collector, M04 actual native SDK interception and trusted metering/policy, M05 runtime pins and all write fences, M07 signed independent collectors, rollback compatibility remain open. M06 mobile owner/Access configuration unverified; no Android proof. C1 null; no L-D.",
     "Live STOP: consumed pilot github_branch effect_unknown; indexed active slot 1; native physical activity not measured",
     "C1 and immutable image/pilot reference not certified for live",
     "Budget, operator exclusion, future lot approvals pending",
