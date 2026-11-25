@@ -4,15 +4,16 @@ import { test, expect } from "bun:test";
 import { createStagingControlServer, type StagingSupervisor } from "./server";
 import { REMOTE_SCHEMA as schema } from "./p08-remote";
 test("versioned RPC MCP scopes, old backend, no fallback, no false pass", async()=>{
-  const id="0000000000000001";let legacy=0, calls=0;
+  const id="0000000000000001";let legacy=0, calls=0;const principal="a".repeat(64);
   const supervisor={
     async supervisedTaskStatus(){legacy++;throw Error("MUTATING_STATUS");},
     async remoteSupervisorTaskStatusSnapshot(){legacy++;return {id,status:"running"};},
     async remoteSupervisorProgress(){legacy++;return {taskId:id,nextAfter:0,pageAvailable:false};},
-    async remoteSupervisorStatusV1(request:string){calls++;return {schema,id:request,workspace:null,revision:4,status:"finished",verified:true};},
-    async remoteSupervisorProgressV1(request:string){calls++;return {schema,id:request,workspace:null,requestCursor:null,from:0,nextAfter:1,events:[{seq:1,type:"event"}],cursor:null,complete:true,pageAvailable:true};}
+    async remoteSupervisorStatusV1(request:string,_after:number|null,owner:string){expect(owner).toBe(principal);calls++;return {schema,id:request,workspace:null,revision:4,status:"finished",verified:true};},
+    async remoteSupervisorProgressV1(request:string,_cursor:string|undefined,owner:string){expect(owner).toBe(principal);calls++;return {schema,id:request,workspace:null,requestCursor:null,from:0,nextAfter:1,events:[{seq:1,type:"event"}],cursor:null,complete:true,pageAvailable:true};}
   } as unknown as StagingSupervisor;
-  const server=createStagingControlServer({readHealth:async()=>Response.json({status:"ok"}),supervisor:()=>supervisor});
+  const bindings={readHealth:async()=>Response.json({status:"ok"}),supervisor:()=>supervisor,verifiedPrincipal:principal};
+  const server=createStagingControlServer(bindings);
   const client=new Client({name:"p08-fixture",version:"1"});
   const [a,b]=InMemoryTransport.createLinkedPair();
   await server.connect(a);await client.connect(b);
@@ -32,5 +33,8 @@ test("versioned RPC MCP scopes, old backend, no fallback, no false pass", async(
     const cross=await client.callTool({name:"staging_task_progress",arguments:{id,schema}});
     expect(cross.isError).toBe(true);expect(json(cross).code).toBe("REMOTE_UPSTREAM_IDENTITY_MISMATCH");
     expect(legacy).toBe(0);
+    const before=calls; bindings.verifiedPrincipal=undefined as unknown as string;
+    const unauthorized=await client.callTool({name:"staging_task_progress",arguments:{id,schema}});
+    expect(unauthorized.isError).toBe(true);expect(json(unauthorized).code).toBe("REMOTE_OWNER_AUTH_REQUIRED");expect(calls).toBe(before);
   }finally{await client.close();await server.close();}
 });

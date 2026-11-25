@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { makePreparationReceipt, preparationReceiptValid, pilotRuntimeMatches, pilotBootDisposition, pilotPinnedImage, validPreparationInput, type PilotPreparationInput, type PilotPreparationReceipt } from "./pilot-preparation";
 import { assertSourceScope, assertSourceReceipt, assertImagePolicy, assertLease, assertRuntime, assertExecutionIdentity, type SourceScope, type SourceReceipt, type ImagePolicy, type BootReceipt, type RuntimeObservation, type ExecutionScope, type Lease } from "./metralla-m03-execution-identity";
+import {assertContainerAuthority,assertContainerLease,type NormalContainerAuthority} from "./metralla-m08-container-authority";
 import { MAX_SHELL_OUTPUT, validateCommand, validateProject, assertLinuxExecutionScope, linuxProjectCwdSource } from "./dev-guard";
 import { captureBoundedOutput } from "./bounded-process-output";
 import { PREVIEW_SOURCE, PREVIEW_PORT } from "./preview-server";
@@ -255,6 +256,8 @@ export class DevContainer extends DurableObject<Env> {
   private async scheduleCheck(){
     const p=await this.ctx.storage.get<{workUntil:number;closeUntil:number}>("pilot-deadline-v1");
     const now=Date.now();
+    const normal=await this.ctx.storage.get<NormalContainerAuthority>("m08-normal-container-v1");
+    if(normal){if(now>=normal.closeUntil)return;await this.ctx.storage.setAlarm(Math.min(now+CHECK_MS,now<normal.workUntil?normal.workUntil:normal.closeUntil));return;}
     if(p&&now>=p.closeUntil){
       await this.ctx.storage.put("pilot-close-v1",{status:this.ctx.container?.running?"overdue":"not-running",at:now});
       return;
@@ -264,12 +267,11 @@ export class DevContainer extends DurableObject<Env> {
 
   /** Exact normal-lane authority, immutable for the lifetime of this project.
    * No automatic generation takeover, restart, or rebind after a lost effect. */
-  async bindNormalExecution(input:import("./metralla-m08-container-authority").NormalContainerAuthority){
-    const {assertContainerAuthority}=await import("./metralla-m08-container-authority");
+  async bindNormalExecution(input:NormalContainerAuthority){
     assertContainerAuthority(input,this.ctx.id.name,__OPENCODE_RELEASE_SHA__,Date.now());
     const image=pilotPinnedImage((this.ctx.container as unknown as {images?:Record<string,string>})?.images,input.imageDigest);
     await this.ctx.storage.transaction(async tx=>{
-      const old=await tx.get<import("./metralla-m08-container-authority").NormalContainerAuthority>("m08-normal-container-v1");
+      const old=await tx.get<NormalContainerAuthority>("m08-normal-container-v1");
       if(old){if(JSON.stringify(old)!==JSON.stringify(input))throw Error("NORMAL_CONTAINER_AUTHORITY_CONFLICT");return;}
       if(this.ctx.container?.running||await tx.get("lastActivity")||await tx.get("snapshotId")||await tx.get(CLOSE_KEY)||await tx.get("pilot-deadline-v1"))throw Error("NORMAL_CONTAINER_NOT_FRESH");
       await tx.put("m08-normal-container-v1",input);
@@ -279,7 +281,7 @@ export class DevContainer extends DurableObject<Env> {
   private async ensureRunning() {
     if(this.closing)throw Error("M03_CLOSE_IN_PROGRESS");
     const pilot=await this.checkPilotWork();
-    const normal=await this.ctx.storage.get<import("./metralla-m08-container-authority").NormalContainerAuthority>("m08-normal-container-v1");
+    const normal=await this.ctx.storage.get<NormalContainerAuthority>("m08-normal-container-v1");
     if(normal&&(Date.now()>=normal.workUntil||await this.ctx.storage.get("m08-normal-close-requested-v1")))throw Error("NORMAL_CONTAINER_WORK_EXPIRED");
     const lane=(this.env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
     if(lane&&(!(this.env as Env & {OPENCODE_PILOT_AUTHORIZATION?:string}).OPENCODE_PILOT_AUTHORIZATION||!pilot||this.ctx.id.name!=="project-v1:supervised-"+lane))throw Error("PILOT_EXCLUSIVE_CONTAINER");
@@ -319,7 +321,7 @@ export class DevContainer extends DurableObject<Env> {
     if (!container) throw new Error("Linux Container binding is not deployed");
     const pilot=await this.checkPilotWork();
     const prior=pilot?await this.ctx.storage.get<{owner:string;label:string}>("pilot-boot-v1"):undefined;
-    const normal=await this.ctx.storage.get<import("./metralla-m08-container-authority").NormalContainerAuthority>("m08-normal-container-v1");
+    const normal=await this.ctx.storage.get<NormalContainerAuthority>("m08-normal-container-v1");
     if(normal&&(Date.now()>=normal.workUntil||await this.ctx.storage.get("m08-normal-close-requested-v1")))throw Error("NORMAL_CONTAINER_WORK_EXPIRED");
     const normalIntent=normal?await this.ctx.storage.get<{label:string;image:string}>("m08-normal-boot-intent-v1"):undefined;
     if(normal&&normalIntent&&!container.running)throw Error("NORMAL_CONTAINER_LOST_NO_RESTART");
@@ -586,7 +588,7 @@ export class DevContainer extends DurableObject<Env> {
         throw Error("El repositorio ya no está autorizado");
       }
       const pilot=await this.checkPilotWork();
-      const normal=await this.ctx.storage.get<import("./metralla-m08-container-authority").NormalContainerAuthority>("m08-normal-container-v1");
+      const normal=await this.ctx.storage.get<NormalContainerAuthority>("m08-normal-container-v1");
       if(normal&&(normal.source.project!==id||normal.source.repository.toLowerCase()!==repository.toLowerCase()||normal.source.commit!==sourceCommit||normal.source.tree!==sourceTree||Date.now()>=normal.workUntil||await this.ctx.storage.get("m08-normal-close-requested-v1")))throw Error("NORMAL_IMPORT_SCOPE");
       const existing = await this.ctx.storage.get<{
         project: string; repository: string; commit: string; tree?: string;
@@ -791,7 +793,7 @@ export class DevContainer extends DurableObject<Env> {
 
   private async captureNormalBoot(project:string):Promise<BootReceipt>{
     const observation=await this.observeNormalBoot(project);
-    const normal=await this.ctx.storage.get<import("./metralla-m08-container-authority").NormalContainerAuthority>("m08-normal-container-v1");
+    const normal=await this.ctx.storage.get<NormalContainerAuthority>("m08-normal-container-v1");
     const intent=await this.ctx.storage.get<{label:string;image:string}>("m08-normal-boot-intent-v1");
     if(normal&&(!intent||intent.label!==observation.bootLabel||intent.image!==observation.imageReference))throw Error("NORMAL_BOOT_INTENT_MISMATCH");
     const image:ImagePolicy=normal?{kind:"pinned",reference:intent!.image,digest:normal.imageDigest}:{kind:"reference",reference:"cloudflare/debian-trixie"};
@@ -829,8 +831,8 @@ export class DevContainer extends DurableObject<Env> {
     try {
       if(await this.ctx.storage.get("repo-import-pending-v1")||await this.ctx.storage.get("restore-pending-v1"))
         throw Error("M03_SOURCE_UNCERTIFIED");
-      const authority=await this.ctx.storage.get<import("./metralla-m08-container-authority").NormalContainerAuthority>("m08-normal-container-v1");
-      if(authority){const {assertContainerLease}=await import("./metralla-m08-container-authority");assertContainerLease(authority,scope.lease,scope.source,releaseSha,Date.now());}
+      const authority=await this.ctx.storage.get<NormalContainerAuthority>("m08-normal-container-v1");
+      if(authority){assertContainerLease(authority,scope.lease,scope.source,releaseSha,Date.now());}
       const receipt=await this.ctx.storage.get<SourceReceipt>("isolated-repository-v1");
       const boot=await this.ctx.storage.get<BootReceipt>("m03-execution-boot-v1");
       if(!receipt||!boot)throw Error("M03_VM_IDENTITY_MISMATCH");
@@ -848,7 +850,6 @@ export class DevContainer extends DurableObject<Env> {
       const observe=(event:Parameters<typeof advanceLinuxReceipt>[3])=>this.ctx.storage.transaction(tx=>advanceLinuxReceipt(tx,seq,callId,event));
       try{return await this.runExclusive(id,cmd,container,async()=>{
         assertExecutionIdentity(scope,receipt,await this.observeNormalBoot(id),currentLease,this.configuredNormalImages(),Date.now());
-        const {assertContainerLease}=await import("./metralla-m08-container-authority");
         assertContainerLease(authority!,scope.lease,scope.source,releaseSha,Date.now());
         if(await this.ctx.storage.get("m08-normal-close-requested-v1"))throw Error("NORMAL_CONTAINER_WORK_EXPIRED");
         const remaining=currentLease.expiresAt-Date.now();
@@ -1027,7 +1028,7 @@ export class DevContainer extends DurableObject<Env> {
 
   /** Stop admitting work, preserve files via normal snapshot, report state. */
   async requestNormalClose(project:string,generation:number,releaseSha:string){
-    const normal=await this.ctx.storage.get<import("./metralla-m08-container-authority").NormalContainerAuthority>("m08-normal-container-v1");
+    const normal=await this.ctx.storage.get<NormalContainerAuthority>("m08-normal-container-v1");
     if(!normal||normal.source.project!==project||this.ctx.id.name!=="project-v1:"+project||normal.generation!==generation||normal.releaseSha!==releaseSha||releaseSha!==__OPENCODE_RELEASE_SHA__||Date.now()>=normal.closeUntil)throw Error("NORMAL_CLOSE_SCOPE");
     await this.ctx.storage.put("m08-normal-close-requested-v1",true);
     await this.alarm();
@@ -1071,7 +1072,7 @@ export class DevContainer extends DurableObject<Env> {
     const lastActivity=(await this.ctx.storage.get<number>("lastActivity"))??0;
     const savedAt=(await this.ctx.storage.get<number>("savedAt"))??0;
     if(pilot&&Date.now()>=pilot.closeUntil){await this.scheduleCheck();return;}
-    const normal=await this.ctx.storage.get<import("./metralla-m08-container-authority").NormalContainerAuthority>("m08-normal-container-v1");
+    const normal=await this.ctx.storage.get<NormalContainerAuthority>("m08-normal-container-v1");
     if(normal&&Date.now()>=normal.closeUntil)return;
     const idle=pilot?Date.now()>=pilot.workUntil||Boolean(await this.ctx.storage.get("pilot-close-requested-v1")):normal?Date.now()>=normal.workUntil||Boolean(await this.ctx.storage.get("m08-normal-close-requested-v1")):Date.now()-lastActivity>=IDLE_MS;
     const checkpointDue=lastActivity>savedAt&&Date.now()-savedAt>=CHECKPOINT_MS;

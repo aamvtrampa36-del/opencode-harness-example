@@ -1,6 +1,7 @@
 import {test,expect} from "bun:test";
 import {readFileSync} from "node:fs";
 import * as guards from "./metralla-m03-execution-identity";
+import {assertContainerLease} from "./metralla-m08-container-authority";
 import {beginLinuxReceipt,advanceLinuxReceipt} from "./metralla-m08-native-receipts";
 import {CLOSE_KEY} from "./metralla-m03-close";
 import {captureBoundedOutput} from "./bounded-process-output";
@@ -16,8 +17,8 @@ const methods=section("  private async ensureRunning()","  /** Read-only pre-adm
 const js=new Bun.Transpiler({loader:"ts"}).transformSync("class Projected {\n"+methods+"\n}");
 const releaseSha="e".repeat(40),callId="12345678-1234-1234-1234-123456789abc";
 const sha256Hex=async(bytes:Uint8Array)=>Buffer.from(await crypto.subtle.digest("SHA-256",bytes as Uint8Array<ArrayBuffer>)).toString("hex");
-const Projected=new Function("CLOSE_KEY","assertRuntime","assertSourceReceipt","assertImagePolicy","assertLease","assertExecutionIdentity","assertLinuxExecutionScope","validateCommand","linuxProjectCwdSource","MAX_SHELL_OUTPUT","captureBoundedOutput","commandRequiresBun","LINUX_RUNNER_SOURCE","__OPENCODE_RELEASE_SHA__","sha256Hex","beginLinuxReceipt","advanceLinuxReceipt",js+"\nreturn Projected;")(
- CLOSE_KEY,guards.assertRuntime,guards.assertSourceReceipt,guards.assertImagePolicy,guards.assertLease,guards.assertExecutionIdentity,assertLinuxExecutionScope,validateCommand,linuxProjectCwdSource,MAX_SHELL_OUTPUT,captureBoundedOutput,()=>false,"// fixture runner",releaseSha,sha256Hex,beginLinuxReceipt,advanceLinuxReceipt);
+const Projected=new Function("CLOSE_KEY","assertRuntime","assertSourceReceipt","assertImagePolicy","assertLease","assertExecutionIdentity","assertLinuxExecutionScope","validateCommand","linuxProjectCwdSource","MAX_SHELL_OUTPUT","captureBoundedOutput","commandRequiresBun","LINUX_RUNNER_SOURCE","__OPENCODE_RELEASE_SHA__","sha256Hex","beginLinuxReceipt","advanceLinuxReceipt","assertContainerLease",js+"\nreturn Projected;")(
+ CLOSE_KEY,guards.assertRuntime,guards.assertSourceReceipt,guards.assertImagePolicy,guards.assertLease,guards.assertExecutionIdentity,assertLinuxExecutionScope,validateCommand,linuxProjectCwdSource,MAX_SHELL_OUTPUT,captureBoundedOutput,()=>false,"// fixture runner",releaseSha,sha256Hex,beginLinuxReceipt,advanceLinuxReceipt,assertContainerLease);
 const project="supervised-0123456789abcdef",objectId="a".repeat(64),bootLabel="12345678-1234-1234-1234-123456789abc",bootId="23456789-1234-1234-1234-123456789abc";
 const ref="cloudflare/debian-trixie";
 const source={project,repository:"aamvtrampa36-del/opencode-harness-example",commit:"b".repeat(40),tree:"c".repeat(40)};
