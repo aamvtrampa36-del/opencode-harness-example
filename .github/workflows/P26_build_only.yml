@@ -97,152 +97,88 @@ jobs:
           set -euo pipefail
           python3 - /tmp/p26-c1-export <<'PY'
           from pathlib import Path
-          import hashlib, json, re, subprocess, sys
-          root = Path(sys.argv[1])
-          if not root.is_dir() or root.is_symlink():
-              raise SystemExit('P26_EXPORT_ROOT_INVALID')
-          # Keep every original rule; no token-shaped value is allowlisted.
-          patterns = [
-              ('pem_header', rb'-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----'),
-              ('github_token', rb'\bgh[pousr]_[A-Za-z0-9]{36,}\b'),
-              ('github_pat', rb'\bgithub_pat_[A-Za-z0-9_]{50,}\b'),
-              ('sk_token', rb'\bsk-(?:proj-|or-v1-)?[A-Za-z0-9_-]{48,}\b'),
-              ('aws_key', rb'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b'),
-              ('slack_token', rb'\bxox[baprs]-[A-Za-z0-9-]{20,}\b'),
-              ('google_key', rb'\bAIza[A-Za-z0-9_-]{35}\b'),
-              ('jwt', rb'\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{25,}\b'),
-          ]
-          # Prove a bare public PEM delimiter in a parsed JS/TS expression, not a
-          # credential. A literal embedded in data, comments, templates or concatenations
-          # cannot pass. Any other rule always blocks. Offsets are UTF-8 byte offsets.
-          proof_js = r'''
-          import fs from 'node:fs';
-          import path from 'node:path';
-          import {createRequire} from 'node:module';
-          import {createHash} from 'node:crypto';
-          const require=createRequire(path.join(process.cwd(),'package.json'));
-          const ts=require('typescript');
-          const marker='-----BEGIN PRIVATE KEY-----';
-          const generic=/^-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----$/;
-          const file=process.argv[1];
-          const bytes=fs.readFileSync(file), s=bytes.toString('utf8');
-          const offsets=[];for(let i=s.indexOf('-----BEGIN ');i>=0;i=s.indexOf('-----BEGIN ',i+1)){const m=s.slice(i,i+80).match(/^-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----/);if(m)offsets.push(i);}
-          const result={proofs:[],diagnostic:{parser:'typescript',version:ts.version,offsets:offsets.length,source:'unavailable',unresolved:[]}};
-          const done=()=>console.log(JSON.stringify(result));
-          if(!Buffer.from(s).equals(bytes)){result.diagnostic.error='invalid-utf8';done();process.exit(0);}
-          function parse(name,text){return ts.createSourceFile(name,text,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);}
-          function start(n,sf){return n.getStart(sf);}
-          function nodesAt(sf,offset){const stack=[sf],out=[];while(stack.length){const n=stack.pop();if(n.pos>offset||n.end<=offset)continue;out.push(n);ts.forEachChild(n,c=>{stack.push(c);});}return out;}
-          const sf=parse(file,s);
-          result.diagnostic.parseErrors=sf.parseDiagnostics.length;
-          if(sf.parseDiagnostics.length){result.diagnostic.error='parse-diagnostics';done();process.exit(0);}
-          function role(n,sf,text){
-           const p=n.parent; if(!p)return null;
-           const raw=text.slice(start(n,sf),n.end);
-           const literal=(ts.isStringLiteral(n)||ts.isNoSubstitutionTemplateLiteral(n))&&generic.test(n.text)&&['"',"'",'`'].includes(raw[0])&&raw.slice(1,-1)===n.text&&raw.at(-1)===raw[0];
-           if(literal&&ts.isCallExpression(p)&&p.arguments[0]===n&&ts.isPropertyAccessExpression(p.expression)){
-            const m=p.expression.name.text;
-            if(['startsWith','endsWith','includes','indexOf','lastIndexOf'].includes(m)&&p.arguments.length===1)return {kind:'literal-parser-argument',method:m,offset:start(n,sf)+1};
-            if(['replace','replaceAll'].includes(m)&&p.arguments.length===2&&ts.isStringLiteral(p.arguments[1])&&p.arguments[1].text==='')return {kind:'literal-strip-argument',method:m,offset:start(n,sf)+1};
-           }
-           if(n.kind===ts.SyntaxKind.RegularExpressionLiteral){const end=raw.lastIndexOf('/'),body=raw.slice(1,end),flags=raw.slice(end+1);if(raw[0]==='/'&&generic.test(body)&&/^[gimsuyd]*$/.test(flags)){
-            if(ts.isCallExpression(p)&&p.arguments[0]===n&&ts.isPropertyAccessExpression(p.expression)&&['replace','replaceAll'].includes(p.expression.name.text)&&p.arguments.length===2&&ts.isStringLiteral(p.arguments[1])&&p.arguments[1].text==='')return {kind:'regex-strip-argument',method:p.expression.name.text,offset:start(n,sf)+1};
-            if(ts.isPropertyAccessExpression(p)&&p.expression===n&&['test','exec'].includes(p.name.text)&&ts.isCallExpression(p.parent)&&p.parent.expression===p)return {kind:'regex-parser-receiver',method:p.name.text,offset:start(n,sf)+1};
-           }}return null;
-          }
-          // Provenance: compare the installed, locked dependency with the public release,
-          // then compare the exact marker, operation and guard AST (identifier renaming
-          // is permitted, arbitrary literals or other expressions are not).
-          let sourceGuards=[];
-          const stringNode=n=>!!n&&(ts.isStringLiteral(n)||ts.isNoSubstitutionTemplateLiteral(n));
-          function guard(n){
-           const call=n.parent;if(!call||!ts.isCallExpression(call)||!ts.isPropertyAccessExpression(call.expression)||call.expression.name.text!=='indexOf'||call.arguments.length!==1||!ts.isIdentifier(call.expression.expression))return null;
-           const cmp=call.parent;if(!cmp||!ts.isBinaryExpression(cmp)||cmp.left!==call||!ts.isNumericLiteral(cmp.right)||cmp.right.text!=='0'||![ts.SyntaxKind.ExclamationEqualsEqualsToken,ts.SyntaxKind.ExclamationEqualsToken].includes(cmp.operatorToken.kind))return null;
-           const or=cmp.parent;if(!or||!ts.isBinaryExpression(or)||or.right!==cmp||or.operatorToken.kind!==ts.SyntaxKind.BarBarToken)return null;
-           const l=or.left;if(!ts.isBinaryExpression(l)||!ts.isTypeOfExpression(l.left)||!ts.isIdentifier(l.left.expression)||l.left.expression.text!==call.expression.expression.text||!stringNode(l.right)||l.right.text!=='string'||![ts.SyntaxKind.ExclamationEqualsToken,ts.SyntaxKind.ExclamationEqualsEqualsToken].includes(l.operatorToken.kind))return null;
-           const iff=or.parent;if(!iff||!ts.isIfStatement(iff)||iff.expression!==or)return null;
-           let st=iff.thenStatement;if(ts.isBlock(st)&&st.statements.length===1)st=st.statements[0];
-           if(!ts.isThrowStatement(st)||!st.expression||!ts.isNewExpression(st.expression)||!ts.isIdentifier(st.expression.expression)||st.expression.expression.text!=='TypeError'||st.expression.arguments?.length!==1||!stringNode(st.expression.arguments[0])||st.expression.arguments[0].text!=='"pkcs8" must be PKCS#8 formatted string')return null;
-           return 'pkcs8-type-index-zero-throw';
-          }
-          try{
-           const pkg=JSON.parse(fs.readFileSync('node_modules/jose/package.json','utf8'));
-           const lock=fs.readFileSync('bun.lock','utf8');
-           const src=fs.readFileSync('node_modules/jose/dist/webapi/key/import.js');
-           const blob=createHash('sha1').update('blob '+src.length+'\0').update(src).digest('hex');
-           const source=src.toString('utf8');
-           if(pkg.version==='6.2.16'&&lock.includes('"jose": ["jose@6.2.16"')&&blob==='b171ae5dea7b8019e2d87b0d37fcdf3a104015b1'){
-            const upstream=parse('import.js',source);const idx=source.indexOf(marker);
-            if(!upstream.parseDiagnostics.length&&idx>=0){sourceGuards=nodesAt(upstream,idx).map(n=>({r:role(n,upstream,source),g:guard(n)})).filter(x=>x.r&&x.g).map(x=>x.g);}
-            if(sourceGuards.length===1)result.diagnostic.source='jose-6.2.16-public-blob-verified';
-           }else result.diagnostic.source='jose-lock-or-blob-mismatch';
-          }catch{result.diagnostic.source='jose-source-unavailable';}
-          for(const offset of offsets){
-           const stack=nodesAt(sf,offset);let proof=null;
-           for(const n of stack){
-            const r=role(n,sf,s);if(!r||r.offset!==offset)continue;
-            const g=guard(n);
-            // Exact public guard proof required for the targeted jose-shaped marker.
-            if(n.text===marker&&g&&sourceGuards.includes(g)){proof='jose-6.2.16-pinned-source-guard';break;}
-            // Bare delimiter operations are already allowed by the previous guard.
-            // Do not require guessed provenance: syntax is direct evidence of a marker,
-            // not a key. For this target, report distinct AST proof and source status.
-            if(n.text===marker&&r.method==='indexOf'&&sourceGuards.length===1){proof='jose-6.2.16-public-marker-operation-match';break;}
-            if(!ts.isNoSubstitutionTemplateLiteral(n)){proof=r.kind;break;}
-           }
-           const byteOffset=Buffer.byteLength(s.slice(0,offset));
-           if(proof)result.proofs.push([byteOffset,proof]);
-           else result.diagnostic.unresolved.push({offset:byteOffset,ancestors:stack.slice(-7).map(n=>ts.SyntaxKind[n.kind]),literalExact:stack.some(n=>(ts.isStringLiteral(n)||ts.isNoSubstitutionTemplateLiteral(n))&&generic.test(n.text))});
-          }
-          done();
+          import hashlib,json,os,re,subprocess,sys
+          root=Path(sys.argv[1]); marker=b'-----BEGIN PRIVATE KEY-----'
+          if not root.is_dir() or root.is_symlink():raise SystemExit('P26_EXPORT_ROOT_INVALID')
+          # Original rules preserved. The PEM finding can pass only via exact source evidence.
+          patterns=[rb'-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----',rb'\bgh[pousr]_[A-Za-z0-9]{36,}\b',rb'\bgithub_pat_[A-Za-z0-9_]{50,}\b',rb'\bsk-(?:proj-|or-v1-)?[A-Za-z0-9_-]{48,}\b',rb'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b',rb'\bxox[baprs]-[A-Za-z0-9-]{20,}\b',rb'\bAIza[A-Za-z0-9_-]{35}\b',rb'\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{25,}\b']
+          blocked={'.git','.env','.npmrc','.netrc','.dev.vars','credentials.json','secrets.json','id_rsa','id_ed25519'}
+          cap=100*1024*1024
+          ast=r'''
+          const fs=require('fs'),ts=require('typescript');const b=fs.readFileSync(process.argv[1]),s=b.toString('utf8');if(!Buffer.from(s).equals(b))process.exit(2);const sf=ts.createSourceFile('compiled.js',s,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);if(sf.parseDiagnostics.length)process.exit(3);const out=[];function walk(n){if((ts.isStringLiteral(n)||ts.isNoSubstitutionTemplateLiteral(n))&&n.text.includes('-----BEGIN PRIVATE KEY-----')){const raw=n.getText(sf);out.push({offset:Buffer.byteLength(s.slice(0,n.getStart(sf))),raw:raw.slice(1,-1),cooked:n.text,property:ts.isPropertyAssignment(n.parent)});}ts.forEachChild(n,walk);}walk(sf);process.stdout.write(JSON.stringify(out));
           '''
-          blocked = {'.git','.env','.npmrc','.netrc','.dev.vars','credentials.json','secrets.json','id_rsa','id_ed25519'}
-          total = count = findings = benign = unresolved = 0
-          limit = 100 * 1024 * 1024
+          placeholder=re.compile(r'(?:\.{3}|…|<(?:(?:YOUR|your)[ _-]?)?(?:PRIVATE|private)[ _-]?(?:KEY|key)(?:[ _-]?(?:HERE|here))?>|\[(?:(?:YOUR|your)[ _-]?)?(?:PRIVATE|private)[ _-]?(?:KEY|key)(?:[ _-]?(?:HERE|here))?\]|YOUR_PRIVATE_KEY(?:_HERE)?|REPLACE_WITH_YOUR_PRIVATE_KEY)')
+          lock=Path('bun.lock').read_text(); cache={}
+          def sha(b):return hashlib.sha256(b).hexdigest()
+          def source_match(token):
+              # Exact whole literal, not merely an occurrence of the header.
+              forms={token['raw'].encode(),token['cooked'].encode(),json.dumps(token['cooked'],ensure_ascii=False)[1:-1].encode()}
+              forms={b for b in forms if len(b)>len(marker)}
+              exact=[];candidates=[]
+              for base in (Path('src'),Path('node_modules')):
+                  for dp,dirs,files in os.walk(base,followlinks=False):
+                      dirs[:]=[d for d in dirs if d not in {'.git','.cache'}]
+                      for name in files:
+                          f=Path(dp)/name
+                          if f.suffix not in {'.js','.mjs','.cjs','.ts','.tsx','.json','.md','.map','.txt','.yaml','.yml'} or f.is_symlink():continue
+                          try:
+                              if f.stat().st_size>32*1024*1024:continue
+                              data=f.read_bytes()
+                          except OSError:continue
+                          if marker not in data:continue
+                          if not re.fullmatch(r'[A-Za-z0-9_./@+\-]+',str(f)):continue
+                          if len(candidates)<30:candidates.append(str(f))
+                          if not any(form in data for form in forms):continue
+                          package=None
+                          if base.name=='src':package='C1 tracked source'
+                          else:
+                              for parent in f.parents:
+                                  if parent==base:break
+                                  pkg=parent/'package.json'
+                                  if not pkg.is_file():continue
+                                  try:
+                                      p=json.loads(pkg.read_text());n=p['name'];v=p['version']
+                                  except (OSError,ValueError,KeyError,TypeError):continue
+                                  if isinstance(n,str) and isinstance(v,str) and re.fullmatch(r'[A-Za-z0-9@_./+\-]+',n+'@'+v) and ('"'+n+'@'+v+'"') in lock:package=n+'@'+v
+                                  break
+                          if package and len(exact)<10:exact.append({'path':str(f),'package':package,'sourceSha256':sha(data)})
+              return exact,candidates
+
+          def prove(p,data):
+              digest=sha(data)
+              if digest in cache:return cache[digest]
+              try:
+                  pr=subprocess.run(['node','-e',ast,str(p)],capture_output=True,check=True,timeout=60)
+                  tokens=json.loads(pr.stdout)
+              except (OSError,ValueError,subprocess.SubprocessError):tokens=[]
+              verified=set()
+              for t in tokens:
+                  raw=t['raw']; cooked=t['cooked']; normalized=cooked.replace('\\r\\n','\n').replace('\\n','\n').replace('\r\n','\n')
+                  # Only explicit placeholder text between exactly one matching pair of PEM delimiters.
+                  blocks=re.findall(r'-----BEGIN PRIVATE KEY-----\s*(.*?)\s*-----END PRIVATE KEY-----',normalized,re.S)
+                  benign=(t['property'] and normalized.count(marker.decode())==1 and normalized.count('-----END PRIVATE KEY-----')==1 and len(blocks)==1 and placeholder.fullmatch(blocks[0].strip()) is not None)
+                  exact,candidates=source_match(t)
+                  print('P26_SOURCE_EVIDENCE '+json.dumps({'compiledSha256':digest,'literalLength':len(cooked),'literalSha256':sha(cooked.encode()),'property':t['property'],'explicitPlaceholder':benign,'exactSources':exact,'markerCandidates':candidates},separators=(',',':')))
+                  if benign and exact and raw.count(marker.decode())==1:verified.add(t['offset']+1+len(raw.split(marker.decode(),1)[0].encode()))
+              cache[digest]=verified;return verified
+          count=total=unresolved=0
           for p in sorted(root.rglob('*')):
-              rel = p.relative_to(root)
-              if p.is_symlink() or any(x.lower() in blocked or x.lower().startswith(('.env.', '.dev.vars.')) or x.lower().endswith(('.pem','.p12','.pfx','.key')) for x in rel.parts):
-                  raise SystemExit('P26_EXPORT_DISALLOWED_ENTRY')
-              if p.is_dir():
-                  continue
-              if not p.is_file():
-                  raise SystemExit('P26_EXPORT_NONREGULAR')
-              if rel.parts[0] not in {'payloads','dist','wrangler.mcp-staging.jsonc','.m08-recovery-mcp.json','receipt.json'}:
-                  raise SystemExit('P26_EXPORT_UNEXPECTED_TOPLEVEL')
-              total += p.stat().st_size
-              if total > limit:
-                  raise SystemExit('P26_EXPORT_SIZE_LIMIT')
-              data = p.read_bytes()
-              evidence = {}
-              if re.search(patterns[0][1], data) and p.suffix.lower() in {'.js','.mjs','.cjs','.ts','.tsx','.jsx'}:
-                  try:
-                      proc = subprocess.run(['node','--input-type=module','-e',proof_js,str(p)], capture_output=True, timeout=60, check=True)
-                      parsed = json.loads(proc.stdout)
-                      evidence = dict(parsed['proofs'])
-                      print('P26_PEM_PROVENANCE '+json.dumps({'file_sha256':hashlib.sha256(data).hexdigest(),'diagnostic':parsed['diagnostic']},separators=(',',':')))
-                  except (subprocess.SubprocessError, ValueError, OSError, KeyError, TypeError) as e:
-                      print('P26_PEM_PROVENANCE '+json.dumps({'file_sha256':hashlib.sha256(data).hexdigest(),'error':type(e).__name__,'exit':getattr(e,'returncode',None)},separators=(',',':')))
-                      # Unknown parser/format cannot be exempted.
-              for rule, pattern in patterns:
-                  for m in re.finditer(pattern, data):
-                      proof = evidence.get(m.start()) if rule == 'pem_header' else None
-                      findings += 1
-                      if proof:
-                          benign += 1
-                      else:
-                          unresolved += 1
-                      if findings <= 100:
-                          name = str(rel)
-                          if not re.fullmatch(r'[A-Za-z0-9_./@+\-]+',name) or any(re.search(rx,name.encode()) for _,rx in patterns):
-                              name = 'path-sha256:'+hashlib.sha256(name.encode()).hexdigest()
-                          print('P26_EXPORT_FINDING '+json.dumps({'file':name,'file_sha256':hashlib.sha256(data).hexdigest(),'rule':rule,'offset':m.start(),'length':m.end()-m.start(),'proof':proof or 'UNRESOLVED'},separators=(',',':')))
-              count += 1
-          if not count:
-              raise SystemExit('P26_EXPORT_EMPTY')
-          print(f'P26_EXPORT_SCREEN_SUMMARY files={count} bytes={total} cap={limit} findings={findings} benign={benign} unresolved={unresolved}')
-          if unresolved or findings > 100:
-              raise SystemExit('P26_EXPORT_CREDENTIAL_PATTERN')
-          print('P26_EXPORT_SCREEN_PASS; pattern screen only; all exceptions are parsed bare PEM delimiter operations')
+              rel=p.relative_to(root)
+              if p.is_symlink() or any(x.lower() in blocked or x.lower().startswith(('.env.','.dev.vars.')) or x.lower().endswith(('.pem','.p12','.pfx','.key')) for x in rel.parts):raise SystemExit('P26_EXPORT_DISALLOWED_ENTRY')
+              if p.is_dir():continue
+              if not p.is_file():raise SystemExit('P26_EXPORT_NONREGULAR')
+              if rel.parts[0] not in {'payloads','dist','wrangler.mcp-staging.jsonc','.m08-recovery-mcp.json','receipt.json'}:raise SystemExit('P26_EXPORT_UNEXPECTED_TOPLEVEL')
+              total+=p.stat().st_size
+              if total>cap:raise SystemExit('P26_EXPORT_SIZE_LIMIT')
+              data=p.read_bytes(); allowed=prove(p,data) if marker in data and p.suffix in {'.js','.mjs','.cjs'} else set()
+              for i,rx in enumerate(patterns):
+                  for m in re.finditer(rx,data):
+                      if i==0 and m.group()==marker and m.start() in allowed:continue
+                      unresolved+=1
+                      print('P26_EXPORT_UNRESOLVED '+json.dumps({'sha256':sha(data),'rule':i,'offset':m.start(),'length':m.end()-m.start()}))
+              count+=1
+          if not count or unresolved:raise SystemExit('P26_EXPORT_STOP')
+          print(f'P26_EXPORT_SCREEN_PASS files={count} bytes={total} cap={cap}')
           PY
       - uses: actions/upload-artifact@v4
         with:
