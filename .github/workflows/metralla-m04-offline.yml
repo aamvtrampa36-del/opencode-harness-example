@@ -1,0 +1,42 @@
+name: Metralla M04 offline
+on:
+  push:
+    branches: [metralla/m04]
+permissions:
+  contents: read
+concurrency:
+  group: metralla-m04-offline
+  cancel-in-progress: false
+jobs:
+  offline:
+    if: github.ref == 'refs/heads/metralla/m04'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Confirm exact branch HEAD
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+          no-cache: true
+      - run: bun install --frozen-lockfile
+      - name: M04 Node budget, transport and scale contracts
+        run: node --experimental-strip-types --test scripts/f0-c10/metralla-m04/*.test.mjs scripts/f0-c10/inference-durable.test.mjs
+      - name: Relevant B0 pilot and catalogue regressions
+        run: bun test src/pilot-http.test.ts src/pilot-hybrid.test.ts src/model-presets.test.ts src/openrouter-catalog.test.ts
+      - run: bun run typecheck
+      - run: bun run build
+      - run: bun scripts/check-invariants.mjs
+      - name: Confirm exact SHA and no tracked modifications
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code

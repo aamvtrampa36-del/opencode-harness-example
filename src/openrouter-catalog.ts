@@ -1,3 +1,4 @@
+import { pilotFetchNoRedirect, readBoundedJson, abortable } from "./pilot-http";
 import { OPENROUTER_AUTO, isOpenRouterSelection } from "./model-presets";
 
 export type OpenRouterCatalogModel = {
@@ -20,7 +21,7 @@ const defaultFetch = fetch;
 let cache: { at: number; models: OpenRouterCatalogModel[] } | null = null;
 
 const price = (value: unknown): number | null => {
-  if (typeof value !== "string" && typeof value !== "number") return null;
+  if ((typeof value !== "string" && typeof value !== "number") || (typeof value==="string"&&!value.trim())) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed * 1_000_000 : null;
 };
@@ -91,12 +92,12 @@ export async function getOpenRouterCatalogue(
   request: typeof fetch = fetch
 ): Promise<OpenRouterCatalogModel[]> {
   if (request === defaultFetch && cache && Date.now() - cache.at < TTL_MS) return cache.models;
-  const response = await request(ENDPOINT, {
-    headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(10_000)
-  });
+  const signal=AbortSignal.timeout(10_000);
+  const response = await abortable(pilotFetchNoRedirect(request,ENDPOINT,{
+    headers:{Accept:"application/json"},signal
+  }),signal);
   if (!response.ok) throw new Error("No se pudo consultar OpenRouter (" + response.status + ")");
-  const payload: unknown = await response.json();
+  const payload: unknown = await readBoundedJson(response,4*1024*1024,signal);
   const models = parseOpenRouterCatalogue(payload);
   if (request === defaultFetch) cache = { at: Date.now(), models };
   return models;

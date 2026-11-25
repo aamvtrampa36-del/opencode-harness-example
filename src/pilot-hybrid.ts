@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode/plugin";
-import { pilotFetchNoRedirect } from "./pilot-http";
+import { pilotFetchNoRedirect, readBoundedJson, abortable } from "./pilot-http";
 import type { StartGrant } from "./supervisor-admission";
 import { PILOT_FREE, PILOT_BACKUP, PILOT_GLM, PILOT_INPUT_TOKENS, PILOT_OUTPUT_TOKENS, PILOT_GLM_BILLABLE_INPUT_CEILING, PILOT_MAX_WIRE_BYTES,
   type BudgetPolicy, type PilotDispatchEvidence, type InferenceIntent, pilotDispatchEvidenceValid,
@@ -35,15 +35,7 @@ function shape(input:unknown): Record<string,unknown> {
   check(new TextEncoder().encode(JSON.stringify(body)).length<=PILOT_MAX_WIRE_BYTES,"PILOT_INPUT_WIRE_LIMIT");
   return body;
 }
-async function readJson(r:Response) {
-  check(r.body && !r.headers.get("content-type")?.includes("text/event-stream"),"PILOT_NON_JSON_RESPONSE");
-  const reader=r.body.getReader(), chunks:Uint8Array[]=[];let size=0;
-  try {for(;;){const x=await reader.read();if(x.done)break;size+=x.value.length;
-    if(size>512*1024){await reader.cancel();throw Error("PILOT_RESPONSE_LIMIT");}chunks.push(x.value);}}
-  finally{reader.releaseLock();}
-  const bytes=new Uint8Array(size);let off=0;for(const c of chunks){bytes.set(c,off);off+=c.length;}
-  return obj(JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes)));
-}
+async function readJson(r:Response,signal:AbortSignal){return obj(await readBoundedJson(r,512*1024,signal));}
 async function receiptId(id:string) {
   return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(id))),b=>b.toString(16).padStart(2,"0")).join("");
 }
@@ -98,15 +90,15 @@ export function makePilotHybridBinding(binding:Ai, context:(session:string)=>Pro
           let response:Response;
           if(selection===PILOT_FREE){
             check(key,"PILOT_FREE_KEY_MISSING");
-            response=await pilotFetchNoRedirect(request,ENDPOINT,{method:"POST",signal,
+            response=await abortable(pilotFetchNoRedirect(request,ENDPOINT,{method:"POST",signal,
               headers:{"Authorization":"Bearer "+key,"Content-Type":"application/json"},
-              body:encoded});
+              body:encoded}),signal);
           }else{
             check(selection===PILOT_BACKUP,"PILOT_PROVIDER_FORBIDDEN");
-            response=await raw.run(PILOT_GLM,payload,{returnRawResponse:true,signal});
+            response=await abortable(raw.run(PILOT_GLM,payload,{returnRawResponse:true,signal}),signal);
           }
           check(!signal.aborted,"PILOT_DEADLINE");
-          let data=await readJson(response);
+          let data=await readJson(response,signal);
           if(selection===PILOT_FREE && quotaRejected(response,data)){
             await rejectInferenceBeforeGeneration(c.storage,i,{origin:"trusted-provider-adapter",beforeGeneration:true,
               code:"429",preGenerationSource:data.error.metadata.limit_source});
