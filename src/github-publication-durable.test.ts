@@ -296,3 +296,23 @@ describe("M05 P17 ref journal and immutable PR receipt",()=>{
     expect(h.posts()).toBe(1);
   });
 });
+
+test("M05 prepared write target survives restart; preparation and ref effect never repeat",async()=>{
+  const s=new FakeStorage();let prepare=0,apply=0,observed:string|null=null;
+  const request={repo,base:OPENCODE_STAGING_BASE,branch:branch(1),operation:"write" as const,expected:baseSha,identity:"file + content"};
+  const build=async()=>{prepare++;return headSha;};
+  const effect=async(target:string,fence:()=>Promise<void>)=>{await fence();apply++;observed=target;throw Error("lost")};
+  const gate=new DurableGitHubPublicationGate(s.asDO());
+  await expect(gate.withPreparedRefEffect(request,build,effect,async()=>null)).rejects.toThrow("GITHUB_REF_EFFECT_UNKNOWN");
+  const restart=new FakeStorage();restart.restore(s.snapshot());
+  expect(await new DurableGitHubPublicationGate(restart.asDO()).withPreparedRefEffect(request,build,effect,async()=>observed))
+    .toEqual({target:headSha,reconciled:true});
+  expect(prepare).toBe(1);expect(apply).toBe(1);
+});
+test("M05 revocation during prepare prevents ref publication",async()=>{
+  const s=new FakeStorage();let active=true,writes=0;
+  const gate=new DurableGitHubPublicationGate(s.asDO(),Date.now,async()=>{if(!active)throw Error("denied")});
+  await expect(gate.withPreparedRefEffect({repo,base:OPENCODE_STAGING_BASE,branch:branch(1),operation:"write",expected:baseSha,identity:"revoked"},
+    async()=>{active=false;return headSha;},async()=>{writes++;},async()=>baseSha)).rejects.toThrow("denied");
+  expect(writes).toBe(0);
+});

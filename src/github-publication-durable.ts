@@ -1,5 +1,5 @@
 import type { GitHubPrPublicationGate, GitHubPrPublicationScope, GitHubPrPublicationPermit,
-  GitHubPrPublicationProof, GitHubRefIntent } from "./github";
+  GitHubPrPublicationProof, GitHubRefIntent, GitHubPreparedRefIntent } from "./github";
 
 /**
  * R2-T08: transactional publication gate for the SINGLE existing supervisor DO.
@@ -108,58 +108,93 @@ export class DurableGitHubPublicationGate implements GitHubPrPublicationGate {
    * A null/404 observation never proves absence of an earlier effect. */
   async withRefEffect(intent: GitHubRefIntent, apply: () => Promise<void>,
     observe: () => Promise<string|null>): Promise<{reconciled:boolean}> {
+    return this.withPreparedRefEffect({...intent,identity:intent.target},async()=>intent.target,async(_,fence)=>{
+      await fence();await apply();
+    },observe);
+  }
+
+  async withPreparedRefEffect(intent:GitHubPreparedRefIntent,prepare:()=>Promise<string>,
+    apply:(target:string,fence:()=>Promise<void>)=>Promise<void>,observe:()=>Promise<string|null>):
+    Promise<{target:string;reconciled:boolean}> {
     if (!intent || !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(intent.repo) ||
-        !intent.base || intent.base === intent.branch ||
+        !intent.base || intent.base===intent.branch ||
         !/^opencode\/(?:staging|supervised)-[a-f0-9]{16}$/.test(intent.branch) ||
-        !SHA.test(intent.target) ||
-        (intent.operation === "branch" ? intent.expected !== null :
-         intent.operation !== "write" || !intent.expected || !SHA.test(intent.expected) || intent.expected===intent.target))
+        typeof intent.identity!=="string" || !intent.identity || intent.identity.length>1500000 ||
+        (intent.operation==="branch"?intent.expected!==null:
+          intent.operation!=="write" || !intent.expected || !SHA.test(intent.expected)))
       throw Error("GITHUB_REF_INTENT_INVALID");
-    const scope = {repo:intent.repo,base:intent.base,branch:intent.branch,title:"",body:""};
-    const key = PREFIX + await digest(intent.repo.toLowerCase()+"\n"+intent.base);
-    const hash = await digest(JSON.stringify(["ref",intent.repo.toLowerCase(),intent.base,intent.branch,intent.operation,intent.expected,intent.target]));
-    const receiptKey = key+":ref:"+hash;
-    const claim = await this.storage.transaction(async tx => {
-      if(this.validateOwner) await this.validateOwner(tx,scope);
-      const ledger = readLedger(await tx.get<Ledger>(key));
-      const done = await tx.get<unknown>(receiptKey);
-      if (done !== undefined && done !== intent.target) throw Error("GITHUB_REF_RECEIPT_INVALID");
-      if(ledger.active) {
-        if(ledger.active.intentHash!==hash) throw Error("PR_PUBLICATION_BUSY_UNKNOWN");
-        return {retryOnly:true,generation:ledger.active.generation,token:ledger.active.token};
+    const scope={repo:intent.repo,base:intent.base,branch:intent.branch,title:"",body:""};
+    const key=PREFIX+await digest(intent.repo.toLowerCase()+"\n"+intent.base);
+    const hash=await digest(JSON.stringify(["ref",intent.repo.toLowerCase(),intent.base,intent.branch,intent.operation,intent.expected,intent.identity]));
+    const receiptKey=key+":ref:"+hash;
+    const now=this.clock();
+    if(!Number.isSafeInteger(now)||now<0)throw Error("PR_LEDGER_CLOCK_INVALID");
+    const claim=await this.storage.transaction(async tx=>{
+      if(this.validateOwner)await this.validateOwner(tx,scope);
+      const ledger=readLedger(await tx.get<Ledger>(key));
+      const done=await tx.get<unknown>(receiptKey);
+      if(done!==undefined&&(typeof done!=="string"||!SHA.test(done)))throw Error("GITHUB_REF_RECEIPT_INVALID");
+      if(ledger.active){
+        const a=ledger.active;
+        if(a.phase!=="reserved"){
+          if(a.intentHash!==hash||!a.proof)throw Error("PR_PUBLICATION_BUSY_UNKNOWN");
+          return {retryOnly:true,generation:a.generation,token:a.token,target:a.proof.headSha};
+        }
+        if(a.deadline>now)throw Error("PR_PUBLICATION_BUSY");
       }
-      if(done !== undefined) return {retryOnly:true,generation:ledger.generation,token:""};
-      const generation=ledger.generation+1, token=crypto.randomUUID();
-      if(!Number.isSafeInteger(generation)) throw Error("PR_LEDGER_EPOCH_EXHAUSTED");
+      if(typeof done==="string")return {retryOnly:true,generation:ledger.generation,token:"",target:done};
+      const generation=ledger.generation+1,token=crypto.randomUUID();
+      if(!Number.isSafeInteger(generation))throw Error("PR_LEDGER_EPOCH_EXHAUSTED");
       ledger.generation=generation;
-      ledger.active={intentHash:hash,token,generation,deadline:this.clock()+TTL_MS,phase:"publishing",
-        proof:{baseSha:intent.expected??intent.target,headSha:intent.target}};
+      ledger.active={intentHash:hash,token,generation,deadline:now+TTL_MS,phase:"reserved"};
       await tx.put(key,ledger);
-      return {retryOnly:false,generation,token};
+      return {retryOnly:false,generation,token,target:undefined};
     });
-    try {
-      if(!claim.retryOnly) {
-        try { await apply(); } catch { /* exact independent readback below; never repeat */ }
+    const owned=(a:Active|undefined)=>!!a&&a.intentHash===hash&&a.token===claim.token&&a.generation===claim.generation;
+    let target=claim.target;
+    try{
+      if(!claim.retryOnly){
+        target=await prepare();
+        if(typeof target!=="string"||!SHA.test(target)||target===intent.expected)throw Error("GITHUB_REF_TARGET_INVALID");
+        const exact=target;
+        await this.storage.transaction(async tx=>{
+          if(this.validateOwner)await this.validateOwner(tx,scope);
+          const ledger=readLedger(await tx.get<Ledger>(key)),a=ledger.active;
+          if(!a||!owned(a)||a.phase!=="reserved"||a.deadline<=this.clock())throw Error("PR_PUBLICATION_FENCE_REJECTED");
+          a.phase="publishing";a.proof={baseSha:intent.expected??exact,headSha:exact};
+          await tx.put(key,ledger);
+        });
+        const fence=async()=>this.storage.transaction(async tx=>{
+          if(this.validateOwner)await this.validateOwner(tx,scope);
+          const a=readLedger(await tx.get<Ledger>(key)).active;
+          if(!a||!owned(a)||a.phase!=="publishing"||a.proof?.headSha!==exact||a.deadline<=this.clock())
+            throw Error("PR_PUBLICATION_FENCE_REJECTED");
+        });
+        try{await apply(exact,fence);}catch{/* only exact readback can settle */}
       }
-      if(await observe()!==intent.target) throw Error("GITHUB_REF_EFFECT_UNKNOWN");
-      await this.storage.transaction(async tx => {
-        const ledger=readLedger(await tx.get<Ledger>(key));
-        if(ledger.active) {
-          if(ledger.active.intentHash!==hash || ledger.active.token!==claim.token ||
-              ledger.active.generation!==claim.generation) throw Error("PR_PUBLICATION_FENCE_REJECTED");
-          delete ledger.active; await tx.put(key,ledger);
-        } else if(await tx.get(receiptKey)!==intent.target) throw Error("PR_PUBLICATION_FENCE_REJECTED");
-        await tx.put(receiptKey,intent.target);
-      });
-      return {reconciled:claim.retryOnly};
-    } catch {
+      if(!target||await observe()!==target)throw Error("GITHUB_REF_EFFECT_UNKNOWN");
+      const exact=target;
       await this.storage.transaction(async tx=>{
         const ledger=readLedger(await tx.get<Ledger>(key));
-        if(ledger.active?.intentHash===hash && ledger.active.token===claim.token) {
-          ledger.active.phase="unknown"; await tx.put(key,ledger);
+        if(ledger.active){
+          if(!owned(ledger.active)||ledger.active.proof?.headSha!==exact)throw Error("PR_PUBLICATION_FENCE_REJECTED");
+          delete ledger.active;await tx.put(key,ledger);
+        }else if(await tx.get(receiptKey)!==exact)throw Error("PR_PUBLICATION_FENCE_REJECTED");
+        await tx.put(receiptKey,exact);
+      });
+      return {target:exact,reconciled:claim.retryOnly};
+    }catch(error){
+      let unknown=claim.retryOnly;
+      await this.storage.transaction(async tx=>{
+        const ledger=readLedger(await tx.get<Ledger>(key)),a=ledger.active;
+        if(a&&owned(a)){
+          if(a.phase==="reserved")delete ledger.active;
+          else {a.phase="unknown";unknown=true;}
+          await tx.put(key,ledger);
         }
       });
-      throw Error("GITHUB_REF_EFFECT_UNKNOWN");
+      if(unknown)throw Error("GITHUB_REF_EFFECT_UNKNOWN");
+      throw error;
     }
   }
 

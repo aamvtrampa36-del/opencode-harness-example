@@ -25,7 +25,7 @@ export type GitHubAction =
   | { action: "pr_reviews"; repo: string; number: number; page?: number }
   | { action: "pr_checks"; repo: string; sha: string }
   | { action: "branch"; repo: string; branch: string }
-  | { action: "write"; repo: string; path: string; branch: string; content: string; message?: string }
+  | { action: "write"; repo: string; path: string; branch: string; content: string; message?: string; expectedHead?: string }
   | { action: "write"; repo: string; path: string; branch: string; expectedHead: string;
       oldText: string; newText: string; message?: string }
   | { action: "pr"; repo: string; branch: string; title: string; body?: string }
@@ -143,8 +143,12 @@ export type GitHubPrPublicationPermit = {
   beginExternalEffect(proof: GitHubPrPublicationProof): Promise<void>;
 };
 export type GitHubRefIntent = Readonly<{repo:string; base:string; branch:string; operation:"branch"|"write"; expected:string|null; target:string}>;
+export type GitHubPreparedRefIntent = Omit<GitHubRefIntent,"target"> & Readonly<{identity:string}>;
 export interface GitHubPrPublicationGate {
   /** Existing supervisor publisher, same transactional authority as PRs. */
+  withPreparedRefEffect?(intent: GitHubPreparedRefIntent, prepare: () => Promise<string>,
+    apply: (target:string,fence:()=>Promise<void>)=>Promise<void>, observe:()=>Promise<string|null>):
+    Promise<{target:string;reconciled:boolean}>;
   withRefEffect?(intent: GitHubRefIntent, apply: () => Promise<void>, observe: () => Promise<string|null>): Promise<{reconciled:boolean}>;
   withExclusive<T>(
     intent: GitHubPrPublicationScope,
@@ -254,20 +258,23 @@ export class GitHubBridge {
     await this.verifyPinnedSource(repo, info, sha);
     const ref = base + "/git/ref/heads/" + encodeURIComponent(branch);
     const existing = await this.api("GET", ref, undefined, true);
-    if (existing) {
-      if (existing.object?.sha !== sha) {
-        throw new Error("La rama determinista ya existe con otra base; no se reutilizó");
-      }
-      return { repo, branch, source, sha, reused: true };
+    if (existing && existing.object?.sha !== sha)
+      throw Error("La rama determinista ya existe con otra base; no se reutilizó");
+    if (this.sourcePin && this.publicationGate?.withPreparedRefEffect) {
+      let reused=!!existing;
+      const outcome = await this.publicationGate.withPreparedRefEffect({
+        repo,base:source,branch,operation:"branch",expected:null,identity:sha
+      },async()=>sha,async(target,fence)=>{
+        const current=await this.api("GET",ref,undefined,true);
+        if(current?.object?.sha===target){reused=true;return;}
+        if(current)throw Error("GITHUB_BRANCH_EFFECT_UNKNOWN");
+        await fence();
+        const created=await this.api("POST",base+"/git/refs",{ref:"refs/heads/"+branch,sha:target});
+        if(created?.object?.sha!==target)throw Error("GITHUB_BRANCH_EFFECT_UNKNOWN");
+      },async()=>(await this.api("GET",ref,undefined,true))?.object?.sha??null);
+      return {repo,branch,source,sha,reused:reused||outcome.reconciled};
     }
-    if (this.sourcePin && this.publicationGate?.withRefEffect) {
-      const observed = await this.publicationGate.withRefEffect({repo,base:source,branch,operation:"branch",expected:null,target:sha},
-        async () => {
-          const created = await this.api("POST", base + "/git/refs", {ref:"refs/heads/"+branch,sha});
-          if (created?.object?.sha !== sha) throw Error("GITHUB_BRANCH_EFFECT_UNKNOWN");
-        }, async () => (await this.api("GET", ref, undefined, true))?.object?.sha ?? null);
-      return {repo,branch,source,sha,reused:observed.reconciled};
-    }
+    if (existing) return {repo,branch,source,sha,reused:true};
     try {
       const created = await this.api("POST", base + "/git/refs", {
         ref: "refs/heads/" + branch, sha
@@ -451,22 +458,6 @@ export class GitHubBridge {
       throw new Error("GitHub did not return a valid replacement commit");
     }
     const updateRoute = base + "/git/refs/heads/" + encodeURIComponent(branch);
-    if (this.sourcePin) {
-      const verify = await this.api("GET", base + "/git/commits/" + commit.sha);
-      if (verify?.sha !== commit.sha || verify?.tree?.sha !== tree.sha ||
-          !Array.isArray(verify.parents) || verify.parents.length !== 1 || verify.parents[0]?.sha !== expectedHead)
-        throw Error("GITHUB_COMMIT_PROOF_INVALID");
-      if (!this.publicationGate?.withRefEffect) throw Error("GITHUB_PINNED_EFFECT_COORDINATOR_REQUIRED");
-      const outcome = await this.publicationGate.withRefEffect({
-        repo,base:this.sourcePin.base,branch,operation:"write",expected:expectedHead,target:commit.sha
-      }, async () => {
-        const current = await this.api("GET", base + "/git/ref/heads/" + encodeURIComponent(branch));
-        if (current?.object?.sha !== expectedHead) throw Error("GITHUB_REF_CAS_CONFLICT");
-        const result = await this.api("PATCH",updateRoute,{sha:commit.sha,force:false});
-        if (result?.object?.sha !== commit.sha) throw Error("GITHUB_REF_UPDATE_UNKNOWN");
-      }, async () => (await this.api("GET",base+"/git/ref/heads/"+encodeURIComponent(branch)))?.object?.sha ?? null);
-      return {repo,branch,path,commitSha:commit.sha,fileSha:blob.sha,expectedHead,mode:"replacement",reconciled:outcome.reconciled};
-    }
     let updatedRef: any;
     try {
       updatedRef = await this.api("PATCH", updateRoute, { sha: commit.sha, force: false });
@@ -486,12 +477,107 @@ export class GitHubBridge {
     return { repo, branch, path, commitSha: commit.sha, fileSha: blob.sha, expectedHead, mode: "replacement" };
   }
 
+  /** Pinned mutations use immutable Git objects plus a durable ref CAS.
+   * Legacy review branches retain their existing API shape. */
+  private async writePinned(repo:string,branch:string,path:string,safePath:string,
+    input:Extract<GitHubAction,{action:"write"}>):Promise<unknown>{
+    const pin=this.sourcePin!;
+    const gate=this.publicationGate;
+    if(!gate?.withPreparedRefEffect)throw Error("GITHUB_PINNED_EFFECT_COORDINATOR_REQUIRED");
+    if(typeof input.expectedHead!=="string" || !/^[a-f0-9]{40}$/.test(input.expectedHead))
+      throw Error("GITHUB_PINNED_WRITE_EXPECTED_HEAD_REQUIRED");
+    const expected=input.expectedHead, base="/repos/"+repo;
+    const ref=base+"/git/ref/heads/"+encodeURIComponent(branch);
+    const full="content" in input;
+    const message=(input.message||"chore: scoped update from OpenCode").slice(0,150);
+    if(full){
+      if("oldText" in input || "newText" in input || typeof input.content!=="string")throw Error("GITHUB_PINNED_WRITE_INVALID");
+      toBase64(input.content);
+    }else if(typeof input.oldText!=="string" || !input.oldText || typeof input.newText!=="string" ||
+      new TextEncoder().encode(input.oldText).length>MAX_REPLACEMENT_TEXT_BYTES ||
+      new TextEncoder().encode(input.newText).length>MAX_REPLACEMENT_TEXT_BYTES)
+      throw Error("GITHUB_PINNED_WRITE_INVALID");
+    const observe=async()=>(await this.api("GET",ref))?.object?.sha??null;
+    const intended=JSON.stringify([path,message,full?["full",input.content]:["replace",input.oldText,input.newText]]);
+    const outcome=await gate.withPreparedRefEffect({repo,base:pin.base,branch,operation:"write",expected,identity:intended},
+      async()=>{
+        if(await observe()!==expected)throw Error("GITHUB_REF_CAS_CONFLICT");
+        if(expected!==pin.commit){
+          const diff=await this.api("GET",base+"/compare/"+pin.commit+"..."+expected);
+          if(diff?.merge_base_commit?.sha!==pin.commit || diff.behind_by!==0 || !Array.isArray(diff.files) || diff.files.length>=300)
+            throw Error("GITHUB_SOURCE_ANCESTRY_DIVERGENT");
+          for(const f of diff.files){
+            for(const p of f?.status==="renamed"?[f.filename,f.previous_filename]:[f?.filename]){
+              assertPinnedGitHubAction(pin,{repo,operation:"write",branch,path:p});assertNonCanonicalWrite(repo,p);
+            }
+          }
+        }
+        const parent=await this.api("GET",base+"/git/commits/"+expected);
+        const baseTree=parent?.tree?.sha;
+        if(parent?.sha!==expected || typeof baseTree!=="string" || !/^[a-f0-9]{40}$/.test(baseTree))
+          throw Error("GITHUB_COMMIT_PROOF_INVALID");
+        let cursor=baseTree,mode:"100644"|"100755"="100644",oldBlob:string|undefined;
+        const parts=path.split("/");
+        for(let i=0;i<parts.length;i++){
+          const tr=await this.api("GET",base+"/git/trees/"+cursor);
+          if(tr?.sha!==cursor || tr.truncated===true || !Array.isArray(tr.tree))throw Error("GITHUB_TREE_PROOF_INVALID");
+          const entry=tr.tree.find((v:any)=>v.path===parts[i]);
+          if(!entry){if(!full)throw Error("Replacement target is not present");break;}
+          if(typeof entry.sha!=="string" || !/^[a-f0-9]{40}$/.test(entry.sha))throw Error("GITHUB_TREE_PROOF_INVALID");
+          if(i===parts.length-1){
+            if(entry.type!=="blob" || !["100644","100755"].includes(entry.mode))throw Error("GITHUB_PATH_NOT_REGULAR");
+            mode=entry.mode;oldBlob=entry.sha;
+          }else{
+            if(entry.type!=="tree")throw Error("GITHUB_PATH_NOT_DIRECTORY");
+            cursor=entry.sha;
+          }
+        }
+        let content:string;
+        if(full)content=input.content;
+        else{
+          const file=await this.api("GET",base+"/contents/"+safePath+"?ref="+expected);
+          if(file?.sha!==oldBlob || file.type!=="file" || file.encoding!=="base64" || typeof file.content!=="string" ||
+            !Number.isSafeInteger(file.size)||file.size>MAX_REPLACEMENT_FILE_BYTES)throw Error("GITHUB_FILE_PROOF_INVALID");
+          const bytes=Uint8Array.from(atob(file.content.replace(/\s/g,"")),c=>c.charCodeAt(0));
+          if(bytes.length!==file.size)throw Error("GITHUB_FILE_PROOF_INVALID");
+          const source=new TextDecoder("utf-8",{fatal:true}).decode(bytes),first=source.indexOf(input.oldText);
+          if(first<0||source.indexOf(input.oldText,first+1)>=0)throw Error("Replacement anchor must match exactly once");
+          content=source.slice(0,first)+input.newText+source.slice(first+input.oldText.length);
+        }
+        const bytes=new TextEncoder().encode(content);
+        if(bytes.length>MAX_REPLACEMENT_FILE_BYTES)throw Error("GITHUB_FILE_TOO_LARGE");
+        const blob=await this.api("POST",base+"/git/blobs",{content,encoding:"utf-8"});
+        if(typeof blob?.sha!=="string" || !/^[a-f0-9]{40}$/.test(blob.sha))throw Error("GITHUB_BLOB_PROOF_INVALID");
+        if(blob.sha===oldBlob)throw Error("GITHUB_WRITE_UNCHANGED");
+        const tr=await this.api("POST",base+"/git/trees",{base_tree:baseTree,tree:[{path,mode,type:"blob",sha:blob.sha}]});
+        if(typeof tr?.sha!=="string" || !/^[a-f0-9]{40}$/.test(tr.sha))throw Error("GITHUB_TREE_PROOF_INVALID");
+        const commit=await this.api("POST",base+"/git/commits",{message,tree:tr.sha,parents:[expected]});
+        if(typeof commit?.sha!=="string" || !/^[a-f0-9]{40}$/.test(commit.sha))throw Error("GITHUB_COMMIT_PROOF_INVALID");
+        const proof=await this.api("GET",base+"/git/commits/"+commit.sha);
+        if(proof?.sha!==commit.sha || proof?.tree?.sha!==tr.sha || !Array.isArray(proof.parents) ||
+            proof.parents.length!==1 || proof.parents[0]?.sha!==expected)throw Error("GITHUB_COMMIT_PROOF_INVALID");
+        const file=await this.api("GET",base+"/contents/"+safePath+"?ref="+commit.sha);
+        if(file?.type!=="file" || file.sha!==blob.sha || file.encoding!=="base64" || typeof file.content!=="string" ||
+            fromBase64(file.content)!==content)throw Error("GITHUB_FILE_PROOF_INVALID");
+        return commit.sha;
+      },async(target,fence)=>{
+        if(await observe()!==expected)throw Error("GITHUB_REF_CAS_CONFLICT");
+        await fence();
+        const update=await this.api("PATCH",base+"/git/refs/heads/"+encodeURIComponent(branch),{sha:target,force:false});
+        if(update?.object?.sha!==target)throw Error("GITHUB_REF_UPDATE_UNKNOWN");
+      },observe);
+    const file=await this.api("GET",base+"/contents/"+safePath+"?ref="+outcome.target);
+    if(file?.type!=="file" || typeof file.sha!=="string" || !/^[a-f0-9]{40}$/.test(file.sha))throw Error("GITHUB_FILE_PROOF_INVALID");
+    return {repo,branch,path,commitSha:outcome.target,fileSha:file.sha,expectedHead:expected,
+      mode:full?"content":"replacement",reconciled:outcome.reconciled};
+  }
+
   async execute(input: GitHubAction): Promise<unknown> {
     const repo = repoChecked(input.repo, this.allowed);
     const base = "/repos/" + repo;
     if (this.sourcePin) {
       assertPinnedGitHubAction(this.sourcePin, {...input, operation:input.action});
-      if (["branch","write","pr"].includes(input.action) && !this.publicationGate?.withRefEffect)
+      if (["branch","write","pr"].includes(input.action) && !this.publicationGate?.withPreparedRefEffect)
         throw Error("GITHUB_PINNED_EFFECT_COORDINATOR_REQUIRED");
       if (input.action === "branch") {
         const result = await this.ensureSupervisorBranch(repo, input.branch);
@@ -673,6 +759,7 @@ export class GitHubBridge {
         const branch = branchChecked(input.branch);
         const safePath = pathChecked(input.path);
         assertNonCanonicalWrite(repo, input.path);
+        if(this.sourcePin) return this.writePinned(repo,branch,input.path,safePath,input);
         if ("expectedHead" in input || "oldText" in input || "newText" in input) {
           if (!("expectedHead" in input) || !("oldText" in input) || !("newText" in input) || "content" in input) {
             throw new Error("Choose full content or a complete bounded replacement, not both");
@@ -680,9 +767,6 @@ export class GitHubBridge {
           return this.replaceExact(repo, input.path, safePath, branch,
             input.expectedHead, input.oldText, input.newText, input.message);
         }
-        // The legacy Contents PUT cannot CAS the branch tip. Pinned tasks use
-        // bounded replacement until M08 exposes a full-content expected-head schema.
-        if (this.sourcePin) throw Error("GITHUB_PINNED_WRITE_EXPECTED_HEAD_REQUIRED");
         if (typeof input.content !== "string") throw new Error("File content must be plain text");
         const current = await this.api("GET", base + "/contents/" + safePath + "?ref=" + encodeURIComponent(branch), undefined, true);
         // An interrupted PUT can commit remotely even when its response is lost.
