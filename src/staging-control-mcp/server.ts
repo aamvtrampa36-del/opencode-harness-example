@@ -334,7 +334,7 @@ export function createStagingControlServer(bindings: StagingControlBindings): Mc
   }, undefined, true));
 
   server.registerTool("staging_task_progress", {
-    description: `Progreso legacy indisponible por SDK no acotado. schema=opencode.remote-evidence.v1 usa cursor firmado y RPC acotado si está disponible; no fallback. ${WORKSPACE_HINT}`,
+    description: `Progreso legacy indisponible por SDK no acotado. schema=opencode.remote-evidence.v1 usa cursor firmado y transiciones lógicas acotadas para tareas nuevas con proyección; no prueba actividad nativa ni usa fallback. ${WORKSPACE_HINT}`,
     inputSchema: { id: taskIdSchema, workspace: workspaceSchema, after: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0), schema: z.literal(REMOTE_SCHEMA).optional(), cursor: z.string().max(2048).regex(/^[a-f0-9]+\.[a-f0-9]{64}$/).optional() }
   }, async ({ id, workspace, after, schema, cursor }) => callTask(async () => {
     const scope = remoteScope(id, workspace);

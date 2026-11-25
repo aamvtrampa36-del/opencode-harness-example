@@ -81,7 +81,8 @@ export function validateProgress(raw:unknown,scope:RemoteScope,requested:string|
     if(next.position!==last||(prior&&prior.digest!==next.digest))return fail("REMOTE_CURSOR_POSITION_MISMATCH");
   }
   return checked({schema:REMOTE_SCHEMA,...scope,requestCursor:requested??null,from:x.from,events,
-    nextAfter:last,cursor:x.cursor,complete:x.complete,pageAvailable:true,passed:false,verified:false,nativeOperationsMeasured:false});
+    nextAfter:last,cursor:x.cursor,complete:x.complete,pageAvailable:true,passed:false,verified:false,nativeOperationsMeasured:false,
+    ...(x.source==="logical-supervisor-transitions"?{source:"logical-supervisor-transitions"}:{})});
 }
 /** Backend candidate: lookup must be authenticated before any source read.
  * Key and principal come from server context, never caller input. Scope includes

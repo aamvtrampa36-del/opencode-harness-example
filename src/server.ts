@@ -22,7 +22,8 @@ import { Lifecycle } from "agents/lifecycle";
 import { createAI } from "agents/models/opencode";
 import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
-import { collectSupervisorDirectory, supervisorTaskCount } from "./supervisor-directory";
+import { putProjectedSupervisorTask, readTaskProjection, projectedTaskDirectory, logicalEventSource, importProjectionCursorKey } from "./metralla-m08-task-projection";
+import { REMOTE_SCHEMA, projectRemoteProgress, validateStatus } from "./staging-control-mcp/p08-remote";
 import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
 // Progress is read from the bounded supervisor ledger, never raw SDK log().
 import { requireMeteredDiagnosticAdmission } from "./supervisor-legacy-capacity";
@@ -164,7 +165,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         error: busy === undefined ? "LEGACY_BUSY_STATE_UNVERIFIED" : "LEGACY_OPERATION_ID_MISSING",
         updatedAt: Date.now()
       };
-      await this.ctx.storage.put(key, legacy);
+      await this.ctx.storage.transaction(tx=>putProjectedSupervisorTask(tx,key,legacy));
       return this.supervisorTaskReceipt(legacy, true);
     }
     if (old && ["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(old.status)) {
@@ -366,7 +367,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           !await supervisorGrantStillOwned(tx, grant))
         throw Error("ADMISSION_FENCE_REJECTED");
       const next = { ...change(fresh), revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-      await tx.put(key, next);
+      await putProjectedSupervisorTask(tx,key,next);
       return next;
     });
   }
@@ -597,7 +598,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           const updated: SupervisorTask = { ...fresh,
             operationId: supervisorStartOperationId(job.id), status: "running",
             revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-          await tx.put(key, updated);
+          await putProjectedSupervisorTask(tx,key,updated);
           return updated;
         });
         if (!prepared || prepared.operationId !== supervisorStartOperationId(job.id))
@@ -632,7 +633,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           error: uncertainCreate ? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED: " + detail :
             uncertainEffect ? "ADMISSION_EXTERNAL_EFFECT_UNCONFIRMED: " + detail : detail,
           revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-        await tx.put(key, updated);
+        await putProjectedSupervisorTask(tx,key,updated);
         return updated;
       });
     }
@@ -662,7 +663,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
             !await supervisorGrantStillOwned(tx, grant)) return fresh;
         const updated: SupervisorTask = { ...fresh, status: "running",
           error: undefined, revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-        await tx.put(key, updated);
+        await putProjectedSupervisorTask(tx,key,updated);
         return updated;
       });
       return { ...this.supervisorTaskReceipt(committed, reused),
@@ -685,7 +686,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
             !await supervisorGrantStillOwned(tx, grant)) return fresh;
         const updated: SupervisorTask = { ...fresh, status: "unknown",
           error: detail, revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-        await tx.put(key, updated);
+        await putProjectedSupervisorTask(tx,key,updated);
         return updated;
       });
       return this.supervisorTaskReceipt(committed, reused);
@@ -703,10 +704,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
   /** Remote status must never enumerate all SDK session objects in the shared DO. */
   async remoteSupervisorStatus(): Promise<unknown> {
     this.assertStagingRemote();
-    const index = await this.ctx.storage.list<SupervisorTask>({
-      prefix: "supervisor:task:", limit: 101
-    });
-    const count = supervisorTaskCount(index, 100);
+    const projection=await projectedTaskDirectory(this.ctx.storage);
+    const count={supervisedSessions:projection.entries.length,countComplete:false,limited:projection.limited};
     const admissionCapacity = await inspectSupervisorAdmissionCapacity(this.ctx.storage);
     const freeze=this.r4FreezeManifest();
     return {
@@ -810,12 +809,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
    */
   async remoteSupervisorSessions(): Promise<unknown> {
     this.assertStagingRemote();
-    const index = await this.ctx.storage.list<SupervisorTask>({
-      prefix: "supervisor:task:", limit: 101
-    });
-    const result = await collectSupervisorDirectory(index,
-      session => this.harness.session(session).busy(), 100, 4);
-    return { environment: "staging", ...result };
+    const result=await projectedTaskDirectory(this.ctx.storage);
+    return {environment:"staging",sessions:result.entries.map(p=>({session:p.session,taskId:p.key.slice("supervisor:task:".length),status:p.status,busy:true,busyVerified:false})),limited:result.limited,countComplete:false,scope:"NORMAL_PROJECTED_TASKS_ONLY",historicalCoverage:false,nativeOperationsMeasured:false};
   }
 
   async remoteSupervisorInspectSession(id: string): Promise<unknown> {
@@ -854,7 +849,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (!fresh || fresh.session !== task.session || fresh.revision !== task.revision ||
           fresh.status !== task.status || fresh.operationId !== task.operationId || fresh.pendingTurn)
         throw Error("SUPERVISOR_MODEL_CHANGE_RECONCILIATION_REQUIRED");
-      await tx.put(supervisorTaskKey(id), { ...fresh, model: selected.selection,
+      await putProjectedSupervisorTask(tx,supervisorTaskKey(id), { ...fresh, model: selected.selection,
         revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() });
     });
     return { environment: "staging", taskId: id, session: task.session,
@@ -1155,6 +1150,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const saved = await this.ctx.storage.get<SupervisorToolCounts>(metricsKey);
       if (saved && !validSupervisorToolCounts(saved)) throw new Error("SUPERVISOR_METRICS_INVALID");
       const prior = saved ?? EMPTY_SUPERVISOR_TOOL_COUNTS;
+      if(job.githubSource)throw Error("SUPERVISOR_NATIVE_EVENT_COVERAGE_UNAVAILABLE");
       const scan = await trace.run("status", "logFold", () =>
         foldSupervisorToolLog(handle.log({after: prior.cursor, follow: false}), prior, 256));
       const committed = await this.ctx.storage.transaction(async tx => {
@@ -1219,7 +1215,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (!settlePending && status === state.status && nextError === state.error) return fresh;
       const next: SupervisorTask = { ...state, status, error: nextError,
         revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-      await tx.put(supervisorTaskKey(id), next);
+      await putProjectedSupervisorTask(tx,supervisorTaskKey(id),next);
       return next;
     });
     return { ...base, operationId: reconciled.operationId, updatedAt: reconciled.updatedAt,
@@ -1234,6 +1230,24 @@ export class OpenCodeAgent extends DurableObject<Env> {
       passed: false, verified: false };
   }
 
+  private projectionPrincipal(){
+    this.assertStagingRemote();if(this.ctx.id.name!==SUPERVISOR_WORKSPACE)throw Error("REMOTE_SCOPE_FORBIDDEN");
+    const cfg=this.env as Env & {OPENCODE_REMOTE_OWNER_SHA256?:string};
+    if(typeof cfg.OPENCODE_REMOTE_OWNER_SHA256!=="string"||!/^[a-f0-9]{64}$/.test(cfg.OPENCODE_REMOTE_OWNER_SHA256))throw Error("REMOTE_OWNER_UNCONFIGURED");
+    return cfg.OPENCODE_REMOTE_OWNER_SHA256;
+  }
+  async remoteSupervisorStatusV1(id:string,afterRevision:number|null){
+    this.projectionPrincipal();const p=await readTaskProjection(this.ctx.storage,id);
+    return validateStatus({schema:REMOTE_SCHEMA,id,workspace:null,revision:p.revision,status:p.status},{id,workspace:null},afterRevision);
+  }
+  async remoteSupervisorProgressV1(id:string,cursor?:string){
+    const principal=this.projectionPrincipal(),workspace=SUPERVISOR_WORKSPACE;
+    const p=await readTaskProjection(this.ctx.storage,id);if(!p.session)throw Error("REMOTE_SESSION_NOT_BOUND");
+    const key=await importProjectionCursorKey((this.env as Env & {OPENCODE_REMOTE_CURSOR_KEY?:string}).OPENCODE_REMOTE_CURSOR_KEY);
+    const digest=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify([principal,id])))),b=>b.toString(16).padStart(2,"0")).join("");
+    return {...await projectRemoteProgress({id,workspace:null},cursor,async()=>({principal,workspace,session:p.session!,key,
+      source:logicalEventSource(this.ctx.storage,p,{principal:digest,workspace,session:p.session!,view:"progress"})})),source:"logical-supervisor-transitions"};
+  }
   async remoteSupervisorProgress(id: string, after = 0): Promise<unknown> {
     this.assertStagingRemote();
     if (!Number.isSafeInteger(after) || after < 0)
@@ -1265,7 +1279,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         const fresh=await tx.get<SupervisorTask>(supervisorTaskKey(id));
         if(!fresh||fresh.operationId)return false;
         if(!["failed","cancelled","finished","unanswered"].includes(fresh.status))
-          await tx.put(supervisorTaskKey(id),{...fresh,status:"cancel_requested",cancelAmbiguous:true,
+          await putProjectedSupervisorTask(tx,supervisorTaskKey(id),{...fresh,status:"cancel_requested",cancelAmbiguous:true,
             revision:(fresh.revision??0)+1,updatedAt:Date.now()});
         return true;
       });
@@ -1306,7 +1320,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
             // effects were cancelled or clear the unknown admission slot.
             const next: SupervisorTask = { ...fresh, status: "cancel_requested",
               cancelAmbiguous: true, revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-            await tx.put(key, next);
+            await putProjectedSupervisorTask(tx,key,next);
             return { kind: "uncertain" as const, task: next };
           }
           return { kind: "uncertain" as const, task: fresh };
@@ -1315,7 +1329,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           return { kind: "terminal" as const, task: fresh };
         }
         const stopped = { ...fresh, status: "cancelled" as const, updatedAt: Date.now() };
-        await tx.put(key, stopped);
+        await putProjectedSupervisorTask(tx,key,stopped);
         return { kind: "confirmed" as const, task: stopped };
       });
       if (outcome.kind === "confirmed") {
@@ -1341,7 +1355,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           ...(fresh.mode === "read_only" ? { cancelAmbiguous: true } : {}),
           error: "OpenCode operation id missing",
           revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-        await tx.put(supervisorTaskKey(id), uncertain);
+        await putProjectedSupervisorTask(tx,supervisorTaskKey(id),uncertain);
         return { kind: "uncertain" as const, task: uncertain };
       }
       if (fresh.status === "cancel_requested")
@@ -1349,7 +1363,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const next: SupervisorTask = { ...fresh, status: "cancel_requested",
         cancelAmbiguous: Boolean(fresh.cancelAmbiguous || fresh.pendingTurn),
         revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-      await tx.put(supervisorTaskKey(id), next);
+      await putProjectedSupervisorTask(tx,supervisorTaskKey(id),next);
       return { kind: "abort" as const, task: next };
     });
     if (intent.kind === "terminal") return { id, status: intent.task.status };

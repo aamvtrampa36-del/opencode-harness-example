@@ -5,6 +5,7 @@ import { auditLegacyCapacity, type AdmissionCapacityEvidence,
 import { r2TurnAdmission, r2SessionId, r2TurnJournalKey, r2TerminalNativeReceipt, type R2TurnJournal } from "./supervisor-r2";
 import { scopeStorageKey, type ProjectScope } from "./project-scope";
 import { sameGitHubSourcePin } from "./metralla-m05-source";
+import { putProjectedSupervisorTask } from "./metralla-m08-task-projection";
 import { CONSUMED_PILOT_ID, captureHistoricalSnapshot, historicalCertificate, retiredHistoricalTask, writeHistoricalCertificate, publicHistoricalCertificate, validNativeQuiescence, parseReconciliationManifest, type ReconciliationManifest, type NativeQuiescence } from "./supervisor-reconciliation";
 
 /**
@@ -160,7 +161,7 @@ export async function reserveSupervisorAdmission(
     const slot = newGrant(candidate.id, 1, now);
     ledger.slots[candidate.id] = slot;
     if(pilot)await tx.put(PILOT_CLAIM,pilot);
-    await tx.put(key, candidate);
+    await putProjectedSupervisorTask(tx,key,candidate);
     if (readOnlyPins) await tx.put(readOnlyJournalKey(candidate.id), {
       version: 1, pins: {commit:readOnlyPins.commit,tree:readOnlyPins.tree},
       repository:candidate.repository, project:candidate.project, fingerprint:candidate.fingerprint,
@@ -326,7 +327,7 @@ export async function reconcileSupervisorCreatedSession(
     const updated: SupervisorTask = { ...task, session: sessionId,
       status: "preparing", error: undefined,
       revision: (task.revision ?? 0) + 1, updatedAt: now };
-    await tx.put(supervisorTaskKey(id), updated);
+    await putProjectedSupervisorTask(tx,supervisorTaskKey(id),updated);
     await tx.put("supervisor:session:" + sessionId, id);
     await tx.put(LEDGER_KEY, ledger);
     return { kind: "recovered" as const, task: updated,
@@ -376,7 +377,7 @@ export async function supervisorCommitCreatedSession(
     slot.phase = "reserved";
     slot.effect = undefined;
     slot.expiresAt = now + LEASE_MS;
-    await tx.put(supervisorTaskKey(grant.id), next);
+    await putProjectedSupervisorTask(tx,supervisorTaskKey(grant.id),next);
     await tx.put("supervisor:session:" + sessionId, grant.id);
     await tx.put(LEDGER_KEY, ledger);
     return next;
@@ -467,7 +468,7 @@ export async function reserveSupervisorContinuation(
       pendingTurn: { turnId, operationId }, operationId, status:"running",
       revision:journal.revision, updatedAt:now };
     await tx.put(key,journal);
-    await tx.put(taskKey,next);
+    await putProjectedSupervisorTask(tx,taskKey,next);
     return {kind:"submit" as const, task:next, journal};
   });
 }
@@ -510,7 +511,7 @@ export async function recordSupervisorContinuationReceipt(
     const next: SupervisorTask = { ...task, status:accepted ? "running" : "unknown",
       ...(accepted ? {error:undefined} : {error:result.error ?? "TURN_RECEIPT_UNCONFIRMED"}),
       revision:(task.revision ?? 0)+1,updatedAt:now };
-    await tx.put(taskKey,next);
+    await putProjectedSupervisorTask(tx,taskKey,next);
     return next;
   });
 }
@@ -578,7 +579,7 @@ export async function beginSupervisorCancellation(
   const next:SupervisorTask={...task,status:safePreStart?"cancelled":"cancel_requested",
    cancelAmbiguous:safePreStart?false:Boolean(!canAbort||!slot||task.cancelAmbiguous||task.pendingTurn||slot.phase==="effect_unknown"),
    revision:(task.revision??0)+1,updatedAt:now};
-  await tx.put(key,next);
+  await putProjectedSupervisorTask(tx,key,next);
   return {kind:safePreStart?"confirmed":canAbort?"abort":"uncertain",task:next};
  });
 }
@@ -615,7 +616,7 @@ export async function settleSupervisorCancelledTurn(
  slot.phase="running";slot.effect=undefined;
  const next:SupervisorTask={...task,status:"cancelled",pendingTurn:undefined,cancelAmbiguous:false,
   error:"interrupted",revision:(task.revision??0)+1,updatedAt:now};
- await tx.put(LEDGER_KEY,ledger);await tx.put(key,next);
+ await tx.put(LEDGER_KEY,ledger);await putProjectedSupervisorTask(tx,key,next);
  return next;
 }
 
@@ -770,7 +771,7 @@ export async function supervisorVerifyReadOnlySource(storage:DurableObjectStorag
     const updated = {...task,baseCommit:j.pins.commit,sourceTree:j.pins.tree,
       revision:(task.revision ?? 0)+1,updatedAt:now};
     slot.expiresAt = now + LEASE_MS;
-    await tx.put(supervisorTaskKey(grant.id),updated);
+    await putProjectedSupervisorTask(tx,supervisorTaskKey(grant.id),updated);
     await tx.put(readOnlyJournalKey(grant.id),j);
     await tx.put(LEDGER_KEY,ledger);
     return updated;
@@ -805,7 +806,7 @@ export async function supervisorBeginReadOnlyEffect(storage:DurableObjectStorage
       updated.operationId = supervisorStartOperationId(task.id);
       updated.status = "running";
     }
-    await tx.put(supervisorTaskKey(grant.id),updated);
+    await putProjectedSupervisorTask(tx,supervisorTaskKey(grant.id),updated);
     await tx.put(readOnlyJournalKey(grant.id),j);
     await tx.put(LEDGER_KEY,ledger);
     return updated;
@@ -853,7 +854,7 @@ export async function supervisorConfirmReadOnlyEffect(storage:DurableObjectStora
       updated.cancelAmbiguous = true;
     }
     finishReadOnlyReceipt(j,slot,evidence,task,now);
-    await tx.put(supervisorTaskKey(grant.id),updated);
+    await putProjectedSupervisorTask(tx,supervisorTaskKey(grant.id),updated);
     await tx.put(readOnlyJournalKey(grant.id),j);
     await tx.put(LEDGER_KEY,ledger);
     return updated;
@@ -888,7 +889,7 @@ export async function reconcileSupervisorReadOnlyPreparation(storage:DurableObje
     ledger.slots[id] = next;
     const updated:SupervisorTask = {...task,status:"preparing",error:undefined,
       revision:(task.revision ?? 0)+1,updatedAt:now};
-    await tx.put(supervisorTaskKey(id),updated);
+    await putProjectedSupervisorTask(tx,supervisorTaskKey(id),updated);
     await tx.put(readOnlyJournalKey(id),j);
     await tx.put(LEDGER_KEY,ledger);
     return {task:updated,grant:{id,token:next.token,generation:next.generation}};
@@ -916,7 +917,7 @@ export async function supervisorRecordReadOnlyFailure(storage:DurableObjectStora
     const updated:SupervisorTask = {...task,status:slot.phase === "effect_unknown" ? "unknown" : "failed",
       error:slot.phase === "effect_unknown" ? "READ_ONLY_EFFECT_UNCONFIRMED" : "READ_ONLY_PREFLIGHT_FAILED",
       revision:(task.revision ?? 0)+1,updatedAt:now};
-    await tx.put(supervisorTaskKey(grant.id),updated);
+    await putProjectedSupervisorTask(tx,supervisorTaskKey(grant.id),updated);
     return updated;
   });
 }
