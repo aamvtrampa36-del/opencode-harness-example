@@ -34,7 +34,9 @@ jobs:
           no-cache: true
       - run: bun install --frozen-lockfile
       - name: Checked-in upload-only launcher syntax (no live execution)
-        run: bash -n scripts/f0-c10/m09-upload-mcp.sh
+        run: |
+          bash -n scripts/f0-c10/m09-upload-mcp.sh
+          bash -n scripts/f0-c10/m09-upload-principal.sh
       - name: Integrated Node specialist contracts
         env:
           TSC_BIN: ./node_modules/.bin/tsc
