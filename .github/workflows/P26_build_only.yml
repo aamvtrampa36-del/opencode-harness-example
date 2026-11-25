@@ -1,0 +1,146 @@
+name: Metralla P26 exact C1 artifact export (offline)
+on:
+  push:
+    branches: [metralla/m09-build]
+permissions:
+  contents: read
+concurrency:
+  group: metralla-m09-build
+  cancel-in-progress: false
+jobs:
+  export:
+    if: github.repository == 'aamvtrampa36-del/opencode-harness-example' && github.ref == 'refs/heads/metralla/m09-build' && github.event.repository.private == false && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: 'true'
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a3a75b25b673ac30989a2cc21f1fe96deb667f47
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+          no-cache: true
+      - name: Rebuild certified source only (no deployment)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GITHUB_SHA=a3a75b25b673ac30989a2cc21f1fe96deb667f47
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD^{tree})" = b506a0324c1eaafed647aee5273d64df477524d9
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          bun install --frozen-lockfile
+          rm -rf dist .wrangler/tmp
+          CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH=wrangler.g1.jsonc bun run build
+          M08_PACKAGE_INVENTORY_SLOT=b node scripts/f0-c10/pilot-staging-package.mjs | tee /tmp/m09-active.log
+          M08_PACKAGE_INVENTORY_SLOT=b node scripts/f0-c10/m08-recovery-package.mjs
+          git diff --exit-code
+          git diff --cached --exit-code
+      - name: Verify payload bytes and config before export
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'JS'
+          import {readdirSync,readFileSync,writeFileSync,mkdirSync,cpSync,lstatSync} from 'node:fs';
+          import {join,relative,dirname} from 'node:path';
+          import {tmpdir} from 'node:os';
+          import {createHash} from 'node:crypto';
+          import ts from 'typescript';
+          const hash=b=>createHash('sha256').update(b).digest('hex');
+          const expect=(actual,want,label)=>{if(actual!==want)throw Error(label+' mismatch: '+actual);};
+          const files=root=>readdirSync(root,{recursive:true,withFileTypes:true}).map(x=>{
+            const p=join(x.parentPath??x.path,x.name);if(x.isSymbolicLink()||(!x.isDirectory()&&!x.isFile()))throw Error('unsafe entry '+p);return p;
+          }).filter(p=>lstatSync(p).isFile()).sort();
+          const tree=(root,excludeReadme=false)=>{const rows=files(root).map(p=>[relative(root,p),hash(readFileSync(p))]).filter(([p])=>!excludeReadme||p!=='README.md');return {rows,files:rows.length,sha256:hash(JSON.stringify(rows))};};
+          const checkTree=(root,count,digest,exclude=false)=>{const x=tree(root,exclude);expect(x.files,count,root+' count');expect(x.sha256,digest,root);return x;};
+          const normal=join(tmpdir(),'metralla-m08-repro');const recovery=join(tmpdir(),'m08-recovery-repro');
+          const variants=[
+            ['active-principal',join(normal,'principal'),230,'932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770'],
+            ['active-mcp',join(normal,'mcp'),2,'8492fd574ad42c19f157a63c0bc13c83bbb7251738eecf88b7910ee4841e004a'],
+            ['recovery-principal',join(recovery,'principal'),230,'932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770'],
+            ['recovery-mcp',join(recovery,'mcp'),2,'62b94e192f2199122a39a95d6a83da6177f8389161b7b3ec659a5b4deaa3195f']
+          ];
+          const parse=p=>{const r=ts.parseConfigFileTextToJson(p,readFileSync(p,'utf8'));if(r.error)throw Error('config parse '+p);return r.config;};
+          const configs=files('dist').filter(p=>p.endsWith('/wrangler.json')&&parse(p).name==='opencode-g1-staging');expect(configs.length,1,'principal config count');
+          const specs=[['principal',configs[0],'482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f','f00c940fe173731d5caf94eca2d496af8797156d7566f852a555d44e461d3a5b','c3a0a8ce141238c30f67a1450ec6c1059ad4f09a36ad2564eb7254dd5c3ce48f'],['mcp','wrangler.mcp-staging.jsonc','31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54','af4bb4a628421d9cd235bbadb21b0a2f49142e2969e71d13b68f822b21a5258b','ff3147fd580df8c05743ae0c27ebc73b9c4209151a6850ad372e03eee11d6dee']];
+          const checks={};for(const [label,root,count,digest] of variants)checks[label]=checkTree(root,count,digest,true);
+          checks.assets=checkTree('dist/client',308,'e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085');
+          checks.build=checkTree('dist',540,'5018f80735649b1b3bd591b4b7347b78a74f77eec9a5d739bf739f4b10ba4c6a');
+          const bindingKeys=['durable_objects','migrations','workflows','containers','r2_buckets','services','ai','worker_loaders'];
+          const recoveryConfigs={};
+          for(const [name,path,activeHash,recoveryHash,bindingHash] of specs){
+            expect(hash(readFileSync(path)),activeHash,name+' config');const c=parse(path);
+            expect(c.name,name==='principal'?'opencode-g1-staging':'opencode-staging-control-mcp','worker name');
+            expect(hash(JSON.stringify(Object.fromEntries(bindingKeys.map(k=>[k,c[k]??null])))),bindingHash,name+' bindings');
+            c.vars={...c.vars,OPENCODE_M08_RECOVERY_MODE:'true'};if(c.assets)c.assets.run_worker_first=true;
+            const bytes=JSON.stringify(c);expect(hash(bytes),recoveryHash,name+' recovery config');recoveryConfigs[name]={path,bytes,activeHash,recoveryHash,bindingHash};
+          }
+          const receipt={schema:'metralla-p26-offline-export-v1',source:'a3a75b25b673ac30989a2cc21f1fe96deb667f47',tree:'b506a0324c1eaafed647aee5273d64df477524d9',originalCI:45576692735,artifactRun:process.env.GITHUB_RUN_ID,deployed:false,checks,configs:Object.fromEntries(Object.entries(recoveryConfigs).map(([k,v])=>[k,{path:v.path,activeHash:v.activeHash,recoveryHash:v.recoveryHash,bindingHash:v.bindingHash}]))};
+          const out=join(tmpdir(),'p26-c1-export');mkdirSync(out,{recursive:false});
+          for(const [label,root] of variants){const dest=join(out,'payloads',label);mkdirSync(dest,{recursive:true});for(const [p] of checks[label].rows){const target=join(dest,p);mkdirSync(dirname(target),{recursive:true});cpSync(join(root,p),target);}}
+          cpSync('dist',join(out,'dist'),{recursive:true});
+          cpSync('wrangler.mcp-staging.jsonc',join(out,'wrangler.mcp-staging.jsonc'));
+          for(const [name,v] of Object.entries(recoveryConfigs))writeFileSync(join(out,dirname(v.path),'.m08-recovery-'+name+'.json'),v.bytes,{flag:'wx'});
+          writeFileSync(join(out,'receipt.json'),JSON.stringify(receipt,null,2));
+          console.log('P26_EXPORT_VERIFIED '+JSON.stringify({source:receipt.source,counts:variants.map(([k])=>[k,checks[k].files,checks[k].sha256]),deployed:false}));
+          JS
+      - name: Screen public export and bound its size before upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - /tmp/p26-c1-export <<'PY'
+          from pathlib import Path
+          import re, sys
+          root = Path(sys.argv[1])
+          if not root.is_dir() or root.is_symlink():
+              raise SystemExit('P26_EXPORT_ROOT_INVALID')
+          # No output of file contents or matched values. Public, deterministic build only.
+          patterns = [
+              rb'-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----',
+              rb'\bgh[pousr]_[A-Za-z0-9]{36,}\b',
+              rb'\bgithub_pat_[A-Za-z0-9_]{50,}\b',
+              rb'\bsk-(?:proj-|or-v1-)?[A-Za-z0-9_-]{48,}\b',
+              rb'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b',
+              rb'\bxox[baprs]-[A-Za-z0-9-]{20,}\b',
+              rb'\bAIza[A-Za-z0-9_-]{35}\b',
+              rb'\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{25,}\b',
+          ]
+          blocked = {'.git','.env','.npmrc','.netrc','.dev.vars','credentials.json','secrets.json','id_rsa','id_ed25519'}
+          total = 0
+          count = 0
+          limit = 100 * 1024 * 1024
+          for p in root.rglob('*'):
+              rel = p.relative_to(root)
+              if p.is_symlink() or any(x.lower() in blocked or x.lower().startswith(('.env.', '.dev.vars.')) or x.lower().endswith(('.pem','.p12','.pfx','.key')) for x in rel.parts):
+                  raise SystemExit('P26_EXPORT_DISALLOWED_ENTRY')
+              if p.is_dir():
+                  continue
+              if not p.is_file():
+                  raise SystemExit('P26_EXPORT_NONREGULAR')
+              if rel.parts[0] not in {'payloads','dist','wrangler.mcp-staging.jsonc','.m08-recovery-mcp.json','receipt.json'}:
+                  raise SystemExit('P26_EXPORT_UNEXPECTED_TOPLEVEL')
+              total += p.stat().st_size
+              if total > limit:
+                  raise SystemExit('P26_EXPORT_SIZE_LIMIT')
+              data = p.read_bytes()
+              if any(re.search(pattern, data) for pattern in patterns):
+                  raise SystemExit('P26_EXPORT_CREDENTIAL_PATTERN')
+              count += 1
+          if not count:
+              raise SystemExit('P26_EXPORT_EMPTY')
+          print(f'P26_EXPORT_SCREEN_PASS files={count} bytes={total} cap={limit}; pattern screen only')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metralla-p26-c1-exact-offline
+          path: /tmp/p26-c1-export/
+          if-no-files-found: error
+          retention-days: 1
+          include-hidden-files: true
