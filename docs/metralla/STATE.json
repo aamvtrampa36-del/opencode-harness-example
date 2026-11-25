@@ -1,11 +1,11 @@
 {
   "planVersion": "1.0",
   "promptRevision": "R2",
-  "revision": 1,
-  "expectedPreviousRevision": 0,
-  "expectedParentCommit": "837dce9b283f6b4b0b2ba939407883ec95be726a",
+  "revision": 2,
+  "expectedPreviousRevision": 1,
+  "expectedParentCommit": "c5dbdf7e6fff668917e452304de6bfe0c75793b0",
   "date": "2026-11-24",
-  "actor": "ChatGPT via GitHub, Cloudflare Admin and OpenCode Remote (reads only)",
+  "actor": "ChatGPT coordinator P25 via GitHub (offline only)",
   "repository": "aamvtrampa36-del/opencode-harness-example",
   "B0": {
     "sha": "837dce9b283f6b4b0b2ba939407883ec95be726a",
@@ -18,7 +18,7 @@
     "level": "offline"
   },
   "C1": null,
-  "activeWave": "B",
+  "activeWave": "C",
   "packages": {
     "M00": {
       "status": "COMPLETE PASS",
@@ -29,77 +29,116 @@
       "owner": "ChatGPT coordinator P01"
     },
     "M01": {
-      "status": "READY",
+      "status": "COMPLETE PASS",
       "dependsOn": [
         "M00"
       ],
       "branch": "metralla/m01",
-      "authorization": "L-B_PER_PROMPT_REQUIRED",
-      "receipt": null,
-      "owner": "admisión y recuperación"
+      "authorization": "L-B_COMPLETED",
+      "receipt": "docs/metralla/receipts/M01.md",
+      "owner": "admisión y recuperación",
+      "level": "offline",
+      "head": "5d002e2e876f4b1b5681369679c5d3d4bb78a461",
+      "ci": [
+        45518724785
+      ]
     },
     "M02": {
-      "status": "READY",
+      "status": "COMPLETE PASS",
       "dependsOn": [
         "M00"
       ],
       "branch": "metralla/m02",
-      "authorization": "L-B_PER_PROMPT_REQUIRED",
-      "receipt": null,
-      "owner": "memoria, telemetría y Remote"
+      "authorization": "L-B_COMPLETED",
+      "receipt": "docs/metralla/receipts/M02.md",
+      "owner": "memoria, telemetría y Remote",
+      "level": "offline",
+      "head": "d5e40c8ccda6db1380ecd39189d71bba40e10516",
+      "ci": [
+        45521116888,
+        45521116917
+      ],
+      "testedSource": "02a39a5c96997a2e0b83b9fc89c15d0eb9774896"
     },
     "M03": {
-      "status": "READY",
+      "status": "COMPLETE PASS",
       "dependsOn": [
         "M00"
       ],
       "branch": "metralla/m03",
-      "authorization": "L-B_PER_PROMPT_REQUIRED",
-      "receipt": null,
-      "owner": "Linux y recuperación física"
+      "authorization": "L-B_COMPLETED",
+      "receipt": "docs/metralla/receipts/M03.md",
+      "owner": "Linux y recuperación física",
+      "level": "offline",
+      "head": "136002adc59e62b9783cf69e9cf47ba0317dd707",
+      "ci": [
+        45519512459
+      ]
     },
     "M04": {
-      "status": "READY",
+      "status": "COMPLETE PASS",
       "dependsOn": [
         "M00"
       ],
       "branch": "metralla/m04",
-      "authorization": "L-B_PER_PROMPT_REQUIRED",
-      "receipt": null,
-      "owner": "inferencia y costes"
+      "authorization": "L-B_COMPLETED",
+      "receipt": "docs/metralla/receipts/M04.md",
+      "owner": "inferencia y costes",
+      "level": "offline",
+      "head": "820bcd1cba2fbec7ab70717d53695272373bd73b",
+      "ci": [
+        45523829580
+      ],
+      "receiptCondition": "Exact HEAD CI verified externally, conditional receipt retained"
     },
     "M05": {
-      "status": "READY",
+      "status": "COMPLETE PASS",
       "dependsOn": [
         "M00"
       ],
       "branch": "metralla/m05",
-      "authorization": "L-B_PER_PROMPT_REQUIRED",
-      "receipt": null,
-      "owner": "GitHub"
+      "authorization": "L-B_COMPLETED",
+      "receipt": "docs/metralla/receipts/M05.md",
+      "owner": "GitHub",
+      "level": "offline",
+      "head": "510cf80698a616290c16b364911ae5d5b4b274e6",
+      "ci": [
+        45524032791
+      ]
     },
     "M06": {
-      "status": "READY",
+      "status": "COMPLETE PASS",
       "dependsOn": [
         "M00"
       ],
       "branch": "metralla/m06",
-      "authorization": "L-B_PER_PROMPT_REQUIRED",
-      "receipt": null,
-      "owner": "resultados y artefactos"
+      "authorization": "L-B_COMPLETED",
+      "receipt": "docs/metralla/receipts/M06.md",
+      "owner": "resultados y artefactos",
+      "level": "offline",
+      "head": "8a621ae83c8f8ee8a592fea36d57409e676bac87",
+      "ci": [
+        45524591317
+      ]
     },
     "M07": {
-      "status": "READY",
+      "status": "COMPLETE PASS",
       "dependsOn": [
         "M00"
       ],
       "branch": "metralla/m07",
-      "authorization": "L-B_PER_PROMPT_REQUIRED",
-      "receipt": null,
-      "owner": "evaluación y harness"
+      "authorization": "L-B_COMPLETED",
+      "receipt": "docs/metralla/receipts/M07.md",
+      "owner": "evaluación y harness",
+      "level": "offline",
+      "head": "a6d696d7c05a4e8c6048f640df382485e12fa431",
+      "ci": [
+        45523976791
+      ],
+      "receiptCondition": "Exact HEAD CI verified externally, conditional receipt retained"
     },
     "M08": {
-      "status": "WAITING",
+      "status": "PARTIAL",
       "dependsOn": [
         "M01",
         "M02",
@@ -110,9 +149,17 @@
         "M07"
       ],
       "branch": "metralla/integracion-01",
-      "authorization": "L-C_REQUIRED",
-      "receipt": null,
-      "owner": null
+      "authorization": "L-C_GRANTED",
+      "receipt": "docs/metralla/receipts/M08.md",
+      "owner": "ChatGPT coordinator P25",
+      "head": "75ea7348967fbccff8460b5dc19ac72a0a521857",
+      "tree": "d12499c41558514221d222c63e9f5f6ff9a5a608",
+      "pr": 172,
+      "ci": [
+        45534019987
+      ],
+      "ciStatus": "in_progress at observation; not certified",
+      "level": "offline candidate only"
     },
     "M09": {
       "status": "WAITING",
@@ -176,184 +223,207 @@
       "dependsOn": [
         "P01"
       ],
-      "status": "READY",
-      "branch": "metralla/m01"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m01",
+      "level": "offline"
     },
     "P03": {
       "package": "M01",
       "dependsOn": [
         "P02"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m01"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m01",
+      "level": "offline"
     },
     "P04": {
       "package": "M01",
       "dependsOn": [
         "P03"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m01"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m01",
+      "level": "offline"
     },
     "P05": {
       "package": "M01",
       "dependsOn": [
         "P04"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m01"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m01",
+      "level": "offline"
     },
     "P06": {
       "package": "M02",
       "dependsOn": [
         "P01"
       ],
-      "status": "READY",
-      "branch": "metralla/m02"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m02",
+      "level": "offline"
     },
     "P07": {
       "package": "M02",
       "dependsOn": [
         "P06"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m02"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m02",
+      "level": "offline"
     },
     "P08": {
       "package": "M02",
       "dependsOn": [
         "P07"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m02"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m02",
+      "level": "offline"
     },
     "P09": {
       "package": "M02",
       "dependsOn": [
         "P08"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m02"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m02",
+      "level": "offline"
     },
     "P10": {
       "package": "M03",
       "dependsOn": [
         "P01"
       ],
-      "status": "READY",
-      "branch": "metralla/m03"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m03",
+      "level": "offline"
     },
     "P11": {
       "package": "M03",
       "dependsOn": [
         "P10"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m03"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m03",
+      "level": "offline"
     },
     "P12": {
       "package": "M03",
       "dependsOn": [
         "P11"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m03"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m03",
+      "level": "offline"
     },
     "P13": {
       "package": "M04",
       "dependsOn": [
         "P01"
       ],
-      "status": "READY",
-      "branch": "metralla/m04"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m04",
+      "level": "offline"
     },
     "P14": {
       "package": "M04",
       "dependsOn": [
         "P13"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m04"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m04",
+      "level": "offline"
     },
     "P15": {
       "package": "M04",
       "dependsOn": [
         "P14"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m04"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m04",
+      "level": "offline"
     },
     "P16": {
       "package": "M05",
       "dependsOn": [
         "P01"
       ],
-      "status": "READY",
-      "branch": "metralla/m05"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m05",
+      "level": "offline"
     },
     "P17": {
       "package": "M05",
       "dependsOn": [
         "P16"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m05"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m05",
+      "level": "offline"
     },
     "P18": {
       "package": "M05",
       "dependsOn": [
         "P17"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m05"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m05",
+      "level": "offline"
     },
     "P19": {
       "package": "M06",
       "dependsOn": [
         "P01"
       ],
-      "status": "READY",
-      "branch": "metralla/m06"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m06",
+      "level": "offline"
     },
     "P20": {
       "package": "M06",
       "dependsOn": [
         "P19"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m06"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m06",
+      "level": "offline"
     },
     "P21": {
       "package": "M06",
       "dependsOn": [
         "P20"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m06"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m06",
+      "level": "offline"
     },
     "P22": {
       "package": "M07",
       "dependsOn": [
         "P01"
       ],
-      "status": "READY",
-      "branch": "metralla/m07"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m07",
+      "level": "offline"
     },
     "P23": {
       "package": "M07",
       "dependsOn": [
         "P22"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m07"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m07",
+      "level": "offline"
     },
     "P24": {
       "package": "M07",
       "dependsOn": [
         "P23"
       ],
-      "status": "WAITING",
-      "branch": "metralla/m07"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/m07",
+      "level": "offline"
     },
     "P25": {
       "package": "M08",
@@ -366,7 +436,8 @@
         "P21",
         "P24"
       ],
-      "status": "WAITING"
+      "status": "PARTIAL",
+      "branch": "metralla/integracion-01"
     },
     "P26": {
       "package": "M09",
@@ -407,7 +478,7 @@
   "authorization": {
     "L-A": "GRANTED by owner P01; zero inference",
     "L-B": "REQUIRED per specialist prompt; no implicit transfer",
-    "L-C": "REQUIRED exact integration branch",
+    "L-C": "GRANTED P25 exact integration branch, offline CI, coordination STATE and issue index; no live",
     "L-D": "PENDING C1/readback/rollback/repair scope",
     "L-E": "PENDING G0 exact task",
     "L-F": "PENDING 2/4 + negatives",
@@ -460,19 +531,14 @@
     "liveGate": "STOP"
   },
   "blockers": [
+    "M08 partial: combined deltas and 12 shared hunks; authoritative M02/M03/M04/M05/M06/M07 wiring, integrated CI, package identity and compatible rollback outstanding; C1 remains null",
     "Live STOP: consumed pilot github_branch effect_unknown; indexed active slot 1; native physical activity not measured",
     "C1 and immutable image/pilot reference not certified for live",
     "Budget, operator exclusion, future lot approvals pending",
     "Historical 17 outcomes unresolved and preserved"
   ],
   "next": [
-    "P02",
-    "P06",
-    "P10",
-    "P13",
-    "P16",
-    "P19",
-    "P22"
+    "P25"
   ],
   "receiptPath": "docs/metralla/receipts/M00.md",
   "receiptHashPolicy": "use Git blob SHA and published commit externally, no self hash",
