@@ -1,6 +1,7 @@
 import {test,expect} from "bun:test";
 import {readFileSync} from "node:fs";
 import * as guards from "./metralla-m03-execution-identity";
+import {beginLinuxReceipt,advanceLinuxReceipt} from "./metralla-m08-native-receipts";
 import {CLOSE_KEY} from "./metralla-m03-close";
 import {captureBoundedOutput} from "./bounded-process-output";
 import {assertLinuxExecutionScope,validateCommand,linuxProjectCwdSource,MAX_SHELL_OUTPUT} from "./dev-guard";
@@ -13,8 +14,10 @@ function section(start:string,end:string){
 const methods=section("  private async ensureRunning()","  /** Read-only pre-admission gate.")+
  section("  async run(project:","  /** Debian's minimal managed image");
 const js=new Bun.Transpiler({loader:"ts"}).transformSync("class Projected {\n"+methods+"\n}");
-const Projected=new Function("CLOSE_KEY","assertRuntime","assertSourceReceipt","assertImagePolicy","assertLease","assertExecutionIdentity","assertLinuxExecutionScope","validateCommand","linuxProjectCwdSource","MAX_SHELL_OUTPUT","captureBoundedOutput","commandRequiresBun","LINUX_RUNNER_SOURCE",js+"\nreturn Projected;")(
- CLOSE_KEY,guards.assertRuntime,guards.assertSourceReceipt,guards.assertImagePolicy,guards.assertLease,guards.assertExecutionIdentity,assertLinuxExecutionScope,validateCommand,linuxProjectCwdSource,MAX_SHELL_OUTPUT,captureBoundedOutput,()=>false,"// fixture runner");
+const releaseSha="e".repeat(40),callId="12345678-1234-1234-1234-123456789abc";
+const sha256Hex=async(bytes:Uint8Array)=>Buffer.from(await crypto.subtle.digest("SHA-256",bytes as Uint8Array<ArrayBuffer>)).toString("hex");
+const Projected=new Function("CLOSE_KEY","assertRuntime","assertSourceReceipt","assertImagePolicy","assertLease","assertExecutionIdentity","assertLinuxExecutionScope","validateCommand","linuxProjectCwdSource","MAX_SHELL_OUTPUT","captureBoundedOutput","commandRequiresBun","LINUX_RUNNER_SOURCE","__OPENCODE_RELEASE_SHA__","sha256Hex","beginLinuxReceipt","advanceLinuxReceipt",js+"\nreturn Projected;")(
+ CLOSE_KEY,guards.assertRuntime,guards.assertSourceReceipt,guards.assertImagePolicy,guards.assertLease,guards.assertExecutionIdentity,assertLinuxExecutionScope,validateCommand,linuxProjectCwdSource,MAX_SHELL_OUTPUT,captureBoundedOutput,()=>false,"// fixture runner",releaseSha,sha256Hex,beginLinuxReceipt,advanceLinuxReceipt);
 const project="supervised-0123456789abcdef",objectId="a".repeat(64),bootLabel="12345678-1234-1234-1234-123456789abc",bootId="23456789-1234-1234-1234-123456789abc";
 const ref="cloudflare/debian-trixie";
 const source={project,repository:"aamvtrampa36-del/opencode-harness-example",commit:"b".repeat(40),tree:"c".repeat(40)};
@@ -31,7 +34,8 @@ function fixture(){
    return {stdout:stream(probe?kernel:"output"),stderr:stream(""),exitCode:Promise.resolve(0)};
   }};
  const p=new Projected();
- Object.assign(p,{ctx:{id:{name:"project-v1:"+project,toString:()=>objectId},container,storage:{get:async(k:string)=>data.get(k),put:async(k:string,v:unknown)=>{data.set(k,v)}}},env:{},busy:0,commandQueue:Promise.resolve(),
+ const storage={get:async(k:string)=>data.get(k),put:async(k:string,v:unknown)=>{data.set(k,v)},transaction:async(fn:any)=>fn(storage)};
+ Object.assign(p,{ctx:{id:{name:"project-v1:"+project,toString:()=>objectId},container,storage},env:{},busy:0,commandQueue:Promise.resolve(),
  checkPilotWork:async()=>undefined,recordProject:async()=>{},scheduleCheck:async()=>{},startOrRecover:async()=>{starts++;throw Error("unexpected restart")},ensureGitAvailable:async()=>{throw Error("unexpected bootstrap")},ensureBunAvailable:async()=>{throw Error("unexpected bootstrap")}});
  const lease={requestId:"0123456789abcdef",project,generation:1,token:"fixture-only",expiresAt:Date.now()+60000};
  const scope={source,boot,lease};
@@ -40,19 +44,20 @@ function fixture(){
 test("actual DevContainer fenced methods: live observation, source and lease before payload",async()=>{
  const f=fixture();
  const b=await f.p.executionBoot(source);expect(b).toEqual(boot);
- const r=await f.p.runFenced(f.scope,f.lease,"echo fixture");expect(r.exitCode).toBe(0);expect(r.stdout).toBe("output");
+ const r=await f.p.runFenced(f.scope,f.lease,"echo fixture",callId,releaseSha);expect(r.exitCode).toBe(0);expect(r.stdout).toBe("output");
  expect(f.counts().payloads).toBe(1);expect(f.counts().starts).toBe(0);expect(f.counts().probes).toBeGreaterThan(1);expect(f.counts().signal).toBeDefined();
+ expect(f.data.get("m08-linux-receipt-v1:000001")).toMatchObject({callId,releaseSha,state:"exited",exitCode:0});
 });
 test("actual DevContainer fenced methods deny replaced/missing VM, foreign source and stale lease, without payload or restart",async()=>{
  for(const v of [{running:false},{label:"other"},{kernel:"34567890-1234-1234-1234-123456789abc"},{image:"other/image"}]){
-  const f=fixture();f.set(v);await expect(f.p.runFenced(f.scope,f.lease,"echo denied")).rejects.toThrow();expect(f.counts().payloads).toBe(0);expect(f.counts().starts).toBe(0);
+  const f=fixture();f.set(v);await expect(f.p.runFenced(f.scope,f.lease,"echo denied",callId,releaseSha)).rejects.toThrow();expect(f.counts().payloads).toBe(0);expect(f.counts().starts).toBe(0);
  }
  for(const variant of ["source","lease","boot"]){
   const f=fixture();
   if(variant==="source")f.data.set("isolated-repository-v1",{...receipt,tree:"0".repeat(40)});
   if(variant==="lease")f.lease.expiresAt=Date.now()-1;
   if(variant==="boot")f.data.delete("m03-execution-boot-v1");
-  await expect(f.p.runFenced(f.scope,f.lease,"echo denied")).rejects.toThrow();expect(f.counts().payloads).toBe(0);expect(f.counts().starts).toBe(0);
+  await expect(f.p.runFenced(f.scope,f.lease,"echo denied",callId,releaseSha)).rejects.toThrow();expect(f.counts().payloads).toBe(0);expect(f.counts().starts).toBe(0);
  }
 });
 test("certified binding cannot be bypassed via legacy run or automatic restart",async()=>{
