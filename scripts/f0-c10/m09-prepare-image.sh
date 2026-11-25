@@ -10,14 +10,19 @@ test "$(date +%s)" -lt "$expiry"
 git diff --exit-code
 git diff --cached --exit-code
 export WRANGLER_SEND_METRICS=false
-tag="opencode-g1-staging-m09-linux:p26-20261125-v1"
+tag="opencode-g1-staging-m09-linux:p26-20261125-v2"
 tmp=/tmp/p26-image
 if [ "$mode" = build ]; then
   command -v docker
   mkdir -p "$tmp"
   timeout -k 5s 3m bun install --frozen-lockfile
   test "$(node -p 'require("./node_modules/wrangler/package.json").version')" = 4.158.0
-  timeout -k 5s 6m docker build --platform linux/amd64 -t "$tag" - < scripts/f0-c10/m09-linux.Dockerfile
+  # Reuse the pinned build-runner Bun; no apt/npm download inside the image.
+  test "$(bun --version)" = 1.4.4
+  install -m 0755 "$(readlink -f "$(command -v bun)")" "$tmp/bun"
+  sha256sum "$tmp/bun"
+  cp scripts/f0-c10/m09-linux.Dockerfile "$tmp/Dockerfile"
+  timeout -k 5s 6m docker build --network none --platform linux/amd64 -t "$tag" "$tmp"
   docker image inspect --format '{{.Id}}' "$tag" > "$tmp/id"
   exit 0
 fi
