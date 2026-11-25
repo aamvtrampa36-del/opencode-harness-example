@@ -133,6 +133,7 @@ async function assertT03(tx: DurableObjectTransaction, grant: StartGrant, intent
       /^rc-turn-[a-f0-9]{16}-[a-f0-9]{16}$/.test(intent.operationId)) &&
     (policy.hybrid ? task.model === PILOT_BACKUP : intent.selection === (task.model ?? "economy")),
     "T03_FENCE_OR_MODEL_INVALID");
+  if(policy.normal)requireValue(!task.pilotInstance,"NORMAL_PILOT_TASK_FORBIDDEN");
   if (policy.hybrid) {
     const h = policy.hybrid;
     requireValue(grant.id === policy.experimentId && task.session === h.session &&
@@ -198,7 +199,7 @@ export async function reserveInference(storage: DurableObjectStorage, grant: Sta
     if (old) {
       requireValue(old.identity === identity, "INFERENCE_FINGERPRINT_CONFLICT");
       if (old.attemptId === intent.attemptId) return {kind:"existing" as const,state:old.state};
-      requireValue(old.state === "rejected" && old.reason !== "402" && old.reason !== "cancelled_before_dispatch", "UPSTREAM_EFFECT_UNCERTAIN");
+      requireValue(old.state === "rejected" && old.reason !== "402" && old.reason !== "403" && old.reason !== "cancelled_before_dispatch", "UPSTREAM_EFFECT_UNCERTAIN");
       requireValue(old.attempts < policy.maxAttempts && !old.attemptIds.includes(intent.attemptId),
       "INFERENCE_RETRY_DENIED");
     }
@@ -387,9 +388,9 @@ export async function markInferenceUnknown(storage:DurableObjectStorage,intent:I
 }
 /** Proof is required from a private trusted adapter; HTTP status alone is not proof. */
 export async function rejectInferenceBeforeGeneration(storage:DurableObjectStorage,intent:InferenceIntent,
-  receipt:{origin:"trusted-provider-adapter"; beforeGeneration:true; code:"429"|"3040"|"402"; preGenerationSource?:"openrouter_free_tier_per_minute"|"openrouter_free_tier_per_day"}) {
+  receipt:{origin:"trusted-provider-adapter"; beforeGeneration:true; code:"429"|"3040"|"402"|"403"; preGenerationSource?:"openrouter_free_tier_per_minute"|"openrouter_free_tier_per_day"}) {
   requireValue(receipt.origin==="trusted-provider-adapter" && receipt.beforeGeneration===true &&
-    ["429","3040","402"].includes(receipt.code),"PREGEN_PROOF_REQUIRED");
+    ["429","3040","402","403"].includes(receipt.code),"PREGEN_PROOF_REQUIRED");
   return storage.transaction(async tx=>{
     const key=CALL(intent.requestId,intent.callId),row=await tx.get<Row>(key);
     requireValue(row && row.attemptId===intent.attemptId && row.identity===intentFingerprint(intent),"INFERENCE_ATTEMPT_MISMATCH");
@@ -406,7 +407,7 @@ export async function rejectInferenceBeforeGeneration(storage:DurableObjectStora
       global.hybrid.selection=PILOT_BACKUP;delete global.hybrid.pending;
     }
     moveNormal(global,intent,"reserved","released",row.exposure);
-    if(receipt.code==="402")global.paymentBlocked=true;
+    if(receipt.code==="402"||receipt.code==="403")global.paymentBlocked=true;
     row.state="rejected";row.reason=receipt.code;
     await tx.put(key,row);await tx.put(GLOBAL,global);await tx.put(TASK(intent.requestId),task);
     return {reused:false};
@@ -436,6 +437,7 @@ export async function settleInference(storage:DurableObjectStorage,intent:Infere
     requireValue(!previous || previous===key,"PROVIDER_RECEIPT_REUSED_OTHER_CALL");
     const global=await tx.get<Global>(GLOBAL),task=await tx.get<Counter>(TASK(intent.requestId));
     requireValue(global && task,"INFERENCE_LEDGER_MISSING");
+    if(global.normal)requireValue(receipt.actualModel===row.modelID,"NORMAL_MODEL_RECEIPT_MISMATCH");
     if(global.hybrid) {
       requireValue(global.hybrid.pending===intent.callId && row.state==="sent" &&
         receipt.inputTokens<=PILOT_INPUT_TOKENS && receipt.outputTokens<=PILOT_OUTPUT_TOKENS &&
@@ -486,4 +488,21 @@ export async function normalInferenceStatus(storage:Pick<DurableObjectStorage,"g
   return {calls:g.normal.calls,active:g.normal.active,rounds:g.normal.rounds,
     confirmed:g.confirmed,reserved:g.reserved,unknown:g.unknown,
     canCloseAccounting:g.normal.active===0&&g.reserved===0&&g.unknown===0,paymentBlocked:g.paymentBlocked};
+}
+
+/** Proposal only: no provider selection mutation or dispatch. T03 must authorize
+ * the model change and a new callId. A generic 429 or any unknown is not a receipt. */
+export async function normalFallbackAllowed(storage:DurableObjectStorage,grant:StartGrant,intent:InferenceIntent,policy:BudgetPolicy,target:string){
+  requireValue(policy.normal&&!policy.hybrid,"NORMAL_POLICY_REQUIRED");
+  const snapshot=policySnapshot(policy);
+  return storage.transaction(async tx=>{
+    await assertT03(tx,grant,intent,policy);
+    const global=await readGlobal(tx,snapshot,policy),row=await tx.get<Row>(CALL(intent.requestId,intent.callId));
+    const route=Object.hasOwn(policy.normal!.routes,target)?policy.normal!.routes[target]:undefined;
+    requireValue(!global.paymentBlocked&&row&&row.identity===intentFingerprint(intent)&&row.attemptId===intent.attemptId&&
+      row.state==="rejected"&&["429","3040"].includes(row.reason??"")&&
+      Object.hasOwn(policy.normal!.fallbacks??{},intent.selection)&&policy.normal!.fallbacks![intent.selection].includes(target)&&
+      route&&Date.now()<route.validUntil&&Date.now()<policy.normal!.validUntil,"NORMAL_FALLBACK_NOT_AUTHORIZED");
+    return {selection:target,requiresNewAuthorizedT03Selection:true};
+  });
 }

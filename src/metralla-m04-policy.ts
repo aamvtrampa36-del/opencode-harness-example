@@ -2,9 +2,9 @@
 export type NormalRound = { taskIds: string[]; maxMicroUsd: number; maxCalls: number; maxInflight: number };
 export type NormalRoute = { providerID: string; modelID: string; tools: true; registered: true;
   evidenceId: string; validUntil: number; maxInputTokens: number; maxOutputTokens: number;
-  maxWireBytes: number; requestsPerMinute: number };
+  maxWireBytes: number; maxResponseBytes:number; timeoutMs:number; requestsPerMinute: number };
 export type NormalPolicy = { validUntil: number; maxCalls: number; maxCallsPerTask: number;
-  maxInflight: number; rounds: Record<string, NormalRound>; routes: Record<string,NormalRoute> };
+  maxInflight: number; rounds: Record<string, NormalRound>; routes: Record<string,NormalRoute>; fallbacks?:Record<string,string[]> };
 type Money = { confirmed: number; reserved: number; unknown: number };
 type RoundState = Money & { calls:number; active:number };
 export type NormalState = { calls:number; active:number; rounds:Record<string,RoundState>;
@@ -31,9 +31,13 @@ export function validateNormalPolicy(p:NormalPolicy,total:number,models:Record<s
       typeof r.evidenceId==="string"&&/^[a-f0-9]{64}$/.test(r.evidenceId)&&
       integer(r.validUntil,1,p.validUntil)&&integer(r.maxInputTokens,1,1048576)&&
       integer(r.maxOutputTokens,1,1048576)&&integer(r.maxWireBytes,1,4*1024*1024)&&
-      integer(r.requestsPerMinute,1,1000),"NORMAL_ROUTE_UNVERIFIED");
+      integer(r.maxResponseBytes,1,4*1024*1024)&&integer(r.timeoutMs,1,120000)&&integer(r.requestsPerMinute,1,1000),"NORMAL_ROUTE_UNVERIFIED");
     const upstreamId=r.providerID+":"+r.modelID;
     check(!upstream.has(upstreamId),"NORMAL_ROUTE_ALIAS_DENIED");upstream.add(upstreamId);
+  }
+  for(const [from,targets] of Object.entries(p.fallbacks??{})){
+    check(Object.hasOwn(p.routes,from)&&Array.isArray(targets)&&targets.length<=3&&new Set(targets).size===targets.length&&
+      targets.every(to=>to!==from&&Object.hasOwn(p.routes,to)&&!p.fallbacks?.[to]?.length),"NORMAL_FALLBACK_POLICY_INVALID");
   }
 }
 export function newNormalState(p:NormalPolicy):NormalState{
@@ -67,14 +71,9 @@ export function normalDispatch(p:NormalPolicy,s:NormalState,i:Intent,now:number)
   stamps.push(now);s.dispatches[k]=stamps;
 }
 /** unknown retains its active slot; terminal evidence alone frees it. */
-export function normalMove(s:NormalState,requestId:string,from:"reserved"|"unknown",to:"unknown"|"confirmed"|"released",exposure:number,charge=0){
-  const task=s.tasks[requestId];check(task,"NORMAL_LEDGER_CORRUPT");
-  // Persisted membership is recorded at reservation; the caller supplies the immutable round key separately below.
-  return {task,from,to,exposure,charge};
-}
 export function normalRoundMove(p:NormalPolicy,s:NormalState,i:Intent,from:"reserved"|"unknown",to:"unknown"|"confirmed"|"released",exposure:number,charge=0){
-  const [name]=roundFor(p,i),r=s.rounds[name],{task}=normalMove(s,i.requestId,from,to,exposure,charge);
-  check(r&&r[from]>=exposure&&s.active>0&&r.active>0&&task.active===1,"NORMAL_LEDGER_CORRUPT");
+  const [name]=roundFor(p,i),r=s.rounds[name],task=s.tasks[i.requestId];
+  check(task&&r&&r[from]>=exposure&&s.active>0&&r.active>0&&task.active===1,"NORMAL_LEDGER_CORRUPT");
   r[from]-=exposure;
   if(to==="unknown"){r.unknown+=exposure;return;}
   if(to==="confirmed")r.confirmed+=charge;

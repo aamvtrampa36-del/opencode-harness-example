@@ -18,14 +18,14 @@ const setup=async(n,overrides={},roundOverrides={})=>{
     selections:{economy:{providerID:'cloudflare',modelID:'fixture/model',price:{inputMicroUsdPerMillion:100000,outputMicroUsdPerMillion:100000,revision:'synthetic'}}},
     normal:{validUntil:now+600000,maxCalls:30,maxCallsPerTask:3,maxInflight:n,
       rounds:{r1:{taskIds:Array.from({length:n},(_,i)=>id(i+1)),maxMicroUsd:10000,maxCalls:30,maxInflight:n,...roundOverrides}},
-      routes:{economy:{providerID:'cloudflare',modelID:'fixture/model',tools:true,registered:true,evidenceId:'a'.repeat(64),validUntil:now+600000,maxInputTokens:1000,maxOutputTokens:1000,maxWireBytes:1000,requestsPerMinute:30}},...overrides}};
+      routes:{economy:{providerID:'cloudflare',modelID:'fixture/model',tools:true,registered:true,evidenceId:'a'.repeat(64),validUntil:now+600000,maxInputTokens:1000,maxOutputTokens:1000,maxWireBytes:1000,maxResponseBytes:10000,timeoutMs:1000,requestsPerMinute:30}},...overrides}};
   return {s,p};
 };
 const proof=()=>{const now=Date.now();return {now,exclusiveLeaseVerified:true,actualSdkInterceptorVerified:true,noUncontrolledRoutesVerified:true,disposabilityVerified:true,
   services:Object.fromEntries(['workers_ai','openrouter','workers','durable_objects','containers','github_actions'].map(k=>[k,{active:true,routeBound:true,hardStopProven:true,exclusiveAccount:true,measuredAt:now-100,validUntil:now+60000,remainingMicroUsd:10000,worstInFlightMicroUsd:1000}]))};};
 const reserve=(s,p,n,v=intent(n))=>reserveInference(s,grant(n),v,p);
 const send=(s,p,n,v=intent(n))=>beginInferenceDispatch(s,grant(n),v,p,proof());
-const receipt=n=>({origin:'trusted-provider-adapter',receiptId:'receipt_'+n,inputTokens:500,outputTokens:500});
+const receipt=n=>({origin:'trusted-provider-adapter',receiptId:'receipt_'+n,inputTokens:500,outputTokens:500,actualModel:'fixture/model'});
 for(const n of [1,2,4,10])test('atomic scale '+n,async()=>{const {s,p}=await setup(n);await Promise.all(Array.from({length:n},(_,i)=>reserve(s,p,i+1)));assert.equal((await normalInferenceStatus(s)).reserved,n*200);
   await Promise.all(Array.from({length:n},(_,i)=>send(s,p,i+1)));await Promise.all(Array.from({length:n},(_,i)=>settleInference(s,intent(i+1),receipt(i+1))));
   assert.equal((await normalInferenceStatus(s)).confirmed,n*100);assert.equal((await normalInferenceStatus(s)).canCloseAccounting,true);});
