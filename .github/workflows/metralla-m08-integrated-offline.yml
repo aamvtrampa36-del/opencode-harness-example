@@ -37,7 +37,7 @@ jobs:
         env:
           TSC_BIN: ./node_modules/.bin/tsc
         run: |
-          node --experimental-strip-types --test scripts/f0-c10/m08-artifact-collector.test.mjs scripts/f0-c10/metralla-m02/*.test.mjs scripts/f0-c10/metralla-m03/*.test.mjs scripts/f0-c10/metralla-m04/*.test.mjs scripts/f0-c10/metralla-m05/*.test.cjs src/metralla-m06-*.test.mjs src/task-artifact-source.test.mjs src/task-output-artifacts.test.mjs src/task-artifact-http.test.mjs scripts/f0-c10/metralla-m07/*.test.mjs src/staging-control-mcp/p08-remote.test.mjs
+          node --experimental-strip-types --test scripts/f0-c10/m08-github-collector.test.mjs scripts/f0-c10/m08-artifact-collector.test.mjs scripts/f0-c10/metralla-m02/*.test.mjs scripts/f0-c10/metralla-m03/*.test.mjs scripts/f0-c10/metralla-m04/*.test.mjs scripts/f0-c10/metralla-m05/*.test.cjs src/metralla-m06-*.test.mjs src/task-artifact-source.test.mjs src/task-output-artifacts.test.mjs src/task-artifact-http.test.mjs scripts/f0-c10/metralla-m07/*.test.mjs src/staging-control-mcp/p08-remote.test.mjs
       - name: Historical admission and release STOP contracts
         if: ${{ !cancelled() }}
         run: |
