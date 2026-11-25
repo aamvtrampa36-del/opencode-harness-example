@@ -1,0 +1,51 @@
+name: Metralla P07 projections and memory (OFFLINE ONLY)
+on:
+  push:
+    branches: [metralla/m02]
+    paths:
+      - '.github/workflows/metralla-p07-offline.yml'
+      - 'src/metralla-m02-projection.ts'
+      - 'src/supervisor-directory*.ts'
+      - 'src/supervisor-metrics*.ts'
+      - 'scripts/f0-c10/metralla-m02/projection.test.mjs'
+permissions:
+  contents: read
+concurrency:
+  group: metralla-p07-offline
+  cancel-in-progress: false
+jobs:
+  offline:
+    if: github.event.repository.private == false && github.ref == 'refs/heads/metralla/m02'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Exact SHA and predecessor ancestry
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor adb4f1e62d13b90649c7bbfcedcf6fa57fa164f5 HEAD
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+          no-cache: true
+      - name: P07 real local SQLite and synthetic 1-2-4-10
+        run: node --experimental-strip-types --test scripts/f0-c10/metralla-m02/projection.test.mjs
+      - name: Frozen dependencies
+        run: bun install --frozen-lockfile
+      - name: Directory metrics progress and transcript containment regressions
+        run: bun test src/supervisor-directory.test.ts src/supervisor-metrics.test.ts src/supervisor-progress.test.ts src/supervisor-transcript-containment.test.ts
+      - name: Full source typecheck
+        run: bun run typecheck
+      - name: Source invariants
+        run: bun scripts/check-invariants.mjs
+      - name: Exact tested SHA
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"

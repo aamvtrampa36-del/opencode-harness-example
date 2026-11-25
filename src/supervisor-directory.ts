@@ -97,3 +97,6 @@ export async function collectSupervisorDirectory(
   }
   return {sessions:result,limited,countComplete:!limited,scope:"SUPERVISED_INDEX_ONLY"};
 }
+
+// P07: bounded storage-source API. Recorded status is not verified native busy.
+export { projectedDirectory as collectProjectedSupervisorDirectory, sqliteProjectionSource } from './metralla-m02-projection.ts';

@@ -49,3 +49,9 @@ describe("bounded supervisor status event log accounting", () => {
       .rejects.toThrow("SUPERVISOR_EVENT_BUDGET_INVALID");
   });
 });
+
+test('P07 projected counts preserve legacy checkpoint shape',async()=>{
+ const {foldProjectedSupervisorToolCounts}=await import('./supervisor-metrics');
+ const result=foldProjectedSupervisorToolCounts(EMPTY_SUPERVISOR_TOOL_COUNTS,{from:'',rows:[{seq:1,type:'session.tool.called'}],complete:false});
+ expect(result.metrics).toEqual({cursor:1,toolCalls:1,completedTools:0,failedTools:0});expect(result.complete).toBe(false);
+});
