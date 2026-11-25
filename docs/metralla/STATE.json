@@ -1,9 +1,9 @@
 {
   "planVersion": "1.0",
   "promptRevision": "R2",
-  "revision": 2,
-  "expectedPreviousRevision": 1,
-  "expectedParentCommit": "c5dbdf7e6fff668917e452304de6bfe0c75793b0",
+  "revision": 3,
+  "expectedPreviousRevision": 2,
+  "expectedParentCommit": "dd325b64fb844cc2de1b623e68d96335eb6ad3d9",
   "date": "2026-11-24",
   "actor": "ChatGPT coordinator P25 via GitHub (offline only)",
   "repository": "aamvtrampa36-del/opencode-harness-example",
@@ -152,14 +152,16 @@
       "authorization": "L-C_GRANTED",
       "receipt": "docs/metralla/receipts/M08.md",
       "owner": "ChatGPT coordinator P25",
-      "head": "75ea7348967fbccff8460b5dc19ac72a0a521857",
-      "tree": "d12499c41558514221d222c63e9f5f6ff9a5a608",
+      "head": "64e8ab6e1579c38ca6cdf3e4061c2cadadddfc45",
+      "tree": "6325fbd809b85fde4803e6abd2fce6e4e984d483",
       "pr": 172,
       "ci": [
-        45534019987
+        45534019987,
+        45534318316
       ],
-      "ciStatus": "in_progress at observation; not certified",
-      "level": "offline candidate only"
+      "ciStatus": "first failure (diagnosed), corrected HEAD in_progress at observation",
+      "level": "offline candidate only",
+      "ciJob": 138937053947
     },
     "M09": {
       "status": "WAITING",
@@ -531,7 +533,7 @@
     "liveGate": "STOP"
   },
   "blockers": [
-    "M08 partial: combined deltas and 12 shared hunks; authoritative M02/M03/M04/M05/M06/M07 wiring, integrated CI, package identity and compatible rollback outstanding; C1 remains null",
+    "M08 partial: seven lane deltas and 12 shared hunks; CI 45534019987 RED corrected in 64e8ab6e; CI 45534318316 in_progress at observation. Authoritative SDK budget, projection coverage, pinned publication, authenticated mobile bytes and independent closure/evidence collectors remain incomplete; C1 null.",
     "Live STOP: consumed pilot github_branch effect_unknown; indexed active slot 1; native physical activity not measured",
     "C1 and immutable image/pilot reference not certified for live",
     "Budget, operator exclusion, future lot approvals pending",
