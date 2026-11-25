@@ -1,0 +1,34 @@
+name: Metralla M07 offline
+on:
+  push:
+    branches: ['metralla/m07']
+permissions:
+  contents: read
+concurrency:
+  group: metralla-m07-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  offline:
+    if: github.ref == 'refs/heads/metralla/m07'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Exact HEAD
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: M07 fixture suite (no runtime credentials)
+        run: node --test scripts/f0-c10/metralla-m07/*.test.mjs
+      - name: Existing T10 evaluator and signed evidence regression
+        run: node --test scripts/f0-c10/evaluate.test.mjs scripts/f0-c10/live-evidence.test.mjs
+      - name: Existing offline matrix
+        run: node scripts/f0-c10/run-offline.mjs --suite --out /tmp/m07-t10.json
+      - name: Verify offline only
+        run: node -e "const x=require('/tmp/m07-t10.json'); if (!x.pass || x.realStagingTested) process.exit(1)"
