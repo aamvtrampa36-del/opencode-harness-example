@@ -37,7 +37,7 @@ jobs:
         env:
           TSC_BIN: ./node_modules/.bin/tsc
         run: |
-          node --experimental-strip-types --test scripts/f0-c10/metralla-m02/*.test.mjs scripts/f0-c10/metralla-m03/*.test.mjs scripts/f0-c10/metralla-m04/*.test.mjs scripts/f0-c10/metralla-m05/*.test.cjs src/metralla-m06-*.test.mjs src/task-artifact-source.test.mjs src/task-output-artifacts.test.mjs src/task-artifact-http.test.mjs scripts/f0-c10/metralla-m07/*.test.mjs src/staging-control-mcp/p08-remote.test.mjs
+          node --experimental-strip-types --test scripts/f0-c10/m08-artifact-collector.test.mjs scripts/f0-c10/metralla-m02/*.test.mjs scripts/f0-c10/metralla-m03/*.test.mjs scripts/f0-c10/metralla-m04/*.test.mjs scripts/f0-c10/metralla-m05/*.test.cjs src/metralla-m06-*.test.mjs src/task-artifact-source.test.mjs src/task-output-artifacts.test.mjs src/task-artifact-http.test.mjs scripts/f0-c10/metralla-m07/*.test.mjs src/staging-control-mcp/p08-remote.test.mjs
       - name: Historical admission and release STOP contracts
         if: ${{ !cancelled() }}
         run: |
@@ -67,7 +67,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH=wrangler.g1.jsonc bun run build
-          node scripts/f0-c10/pilot-staging-package.mjs
+          set -o pipefail
+          node scripts/f0-c10/pilot-staging-package.mjs | tee /tmp/m08-package-a.log
+          rm -rf dist
+          CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH=wrangler.g1.jsonc bun run build
+          node scripts/f0-c10/pilot-staging-package.mjs | tee /tmp/m08-package-b.log
+          node --input-type=module -e 'import {readFileSync} from "node:fs";const read=p=>{const l=readFileSync(p,"utf8").split("\n").filter(x=>x.startsWith("PILOT_STAGING_PACKAGE "));if(l.length!==1)throw Error("missing package receipt");return JSON.parse(l[0].slice("PILOT_STAGING_PACKAGE ".length));};const a=read("/tmp/m08-package-a.log"),b=read("/tmp/m08-package-b.log");if(a.source!==process.env.GITHUB_SHA||b.source!==a.source||a.deployed!==false||b.deployed!==false||JSON.stringify(a)!==JSON.stringify(b))throw Error("M08_PACKAGE_REBUILD_MISMATCH");console.log("M08_CLEAN_REBUILD_MATCH "+JSON.stringify(a));'
       - name: Exact source and clean tracked files
         if: ${{ !cancelled() }}
         run: |
