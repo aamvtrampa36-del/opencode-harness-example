@@ -1,6 +1,7 @@
 import {test,expect} from "bun:test";
 import {readFileSync} from "node:fs";
 import * as guards from "./metralla-m03-execution-identity";
+import {assertRecoveryWorkAllowed} from "./metralla-m08-recovery-mode";
 import {assertContainerLease} from "./metralla-m08-container-authority";
 import {beginLinuxReceipt,advanceLinuxReceipt} from "./metralla-m08-native-receipts";
 import {CLOSE_KEY} from "./metralla-m03-close";
@@ -17,8 +18,8 @@ const methods=section("  private async ensureRunning()","  /** Read-only pre-adm
 const js=new Bun.Transpiler({loader:"ts"}).transformSync("class Projected {\n"+methods+"\n}");
 const releaseSha="e".repeat(40),callId="12345678-1234-1234-1234-123456789abc";
 const sha256Hex=async(bytes:Uint8Array)=>Buffer.from(await crypto.subtle.digest("SHA-256",bytes as Uint8Array<ArrayBuffer>)).toString("hex");
-const Projected=new Function("CLOSE_KEY","assertRuntime","assertSourceReceipt","assertImagePolicy","assertLease","assertExecutionIdentity","assertLinuxExecutionScope","validateCommand","linuxProjectCwdSource","MAX_SHELL_OUTPUT","captureBoundedOutput","commandRequiresBun","LINUX_RUNNER_SOURCE","__OPENCODE_RELEASE_SHA__","sha256Hex","beginLinuxReceipt","advanceLinuxReceipt","assertContainerLease",js+"\nreturn Projected;")(
- CLOSE_KEY,guards.assertRuntime,guards.assertSourceReceipt,guards.assertImagePolicy,guards.assertLease,guards.assertExecutionIdentity,assertLinuxExecutionScope,validateCommand,linuxProjectCwdSource,MAX_SHELL_OUTPUT,captureBoundedOutput,()=>false,"// fixture runner",releaseSha,sha256Hex,beginLinuxReceipt,advanceLinuxReceipt,assertContainerLease);
+const Projected=new Function("CLOSE_KEY","assertRuntime","assertSourceReceipt","assertImagePolicy","assertLease","assertExecutionIdentity","assertLinuxExecutionScope","validateCommand","linuxProjectCwdSource","MAX_SHELL_OUTPUT","captureBoundedOutput","commandRequiresBun","LINUX_RUNNER_SOURCE","__OPENCODE_RELEASE_SHA__","sha256Hex","beginLinuxReceipt","advanceLinuxReceipt","assertContainerLease","assertRecoveryWorkAllowed",js+"\nreturn Projected;")(
+ CLOSE_KEY,guards.assertRuntime,guards.assertSourceReceipt,guards.assertImagePolicy,guards.assertLease,guards.assertExecutionIdentity,assertLinuxExecutionScope,validateCommand,linuxProjectCwdSource,MAX_SHELL_OUTPUT,captureBoundedOutput,()=>false,"// fixture runner",releaseSha,sha256Hex,beginLinuxReceipt,advanceLinuxReceipt,assertContainerLease,assertRecoveryWorkAllowed);
 const project="supervised-0123456789abcdef",objectId="a".repeat(64),bootLabel="12345678-1234-1234-1234-123456789abc",bootId="23456789-1234-1234-1234-123456789abc";
 const ref="cloudflare/debian-trixie";
 const source={project,repository:"aamvtrampa36-del/opencode-harness-example",commit:"b".repeat(40),tree:"c".repeat(40)};
@@ -70,4 +71,11 @@ test("certified binding cannot be bypassed via legacy run or automatic restart",
 test("normal lane does not permit a request ID different from its supervised project",()=>{
  const f=fixture(),bad={...f.lease,requestId:"f".repeat(16)};
  expect(()=>guards.assertLease(bad,bad,project,Date.now())).toThrow("M03_LEASE_FENCED");
+});
+
+test("recovery incarnation denies real fenced dispatch and implicit boot before touching durable state",async()=>{
+ const f=fixture(),before=structuredClone([...f.data]);f.p.env.OPENCODE_M08_RECOVERY_MODE="true";
+ await expect(f.p.runFenced(f.scope,f.lease,"echo denied",callId,releaseSha)).rejects.toThrow("M08_RECOVERY_NEW_EFFECT_FORBIDDEN");
+ await expect(f.p.ensureRunning()).rejects.toThrow("M08_RECOVERY_NEW_EFFECT_FORBIDDEN");
+ expect([...f.data]).toEqual(before);expect(f.counts().payloads).toBe(0);expect(f.counts().starts).toBe(0);expect(f.counts().probes).toBe(0);
 });
