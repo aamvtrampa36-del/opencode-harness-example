@@ -306,6 +306,17 @@ export class DevContainer extends DurableObject<Env> {
 
   /** Read-only pre-admission gate. Merely inspect the existing version image
    * map; never start a VM, create a deadline or consume a pilot claim here. */
+  /** M09 read-only observation of the named image map. No VM boot or task creation. */
+  async preflightM09Image(releaseSha:string,imageDigest:string){
+    assertRecoveryWorkAllowed(this.env);
+    const cfg=this.env as Env & {OPENCODE_SUPERVISOR_ENABLED?:string;OPENCODE_NORMAL_AUTHORIZATION?:string;OPENCODE_PILOT_AUTHORIZATION?:string;OPENCODE_PILOT_HYBRID_REQUEST_ID?:string};
+    if(cfg.OPENCODE_SUPERVISOR_ENABLED!=="true"||cfg.OPENCODE_NORMAL_AUTHORIZATION!==undefined||cfg.OPENCODE_PILOT_AUTHORIZATION!==undefined||cfg.OPENCODE_PILOT_HYBRID_REQUEST_ID!==undefined||
+      this.ctx.id.name!=="project-v1:supervised-42574cb3f5ee0cbf"||releaseSha!==__OPENCODE_RELEASE_SHA__||
+      !/^sha256:[a-f0-9]{64}$/.test(imageDigest)||!this.ctx.container||this.ctx.container.running)
+      throw Error("M09_IMAGE_PREFLIGHT_SCOPE");
+    const image=pilotPinnedImage((this.ctx.container as unknown as {images?:Record<string,string>}).images,imageDigest);
+    return {image,imageDigest,running:false,booted:false};
+  }
   async preflightPilotImage(project:string,imageDigest:string):Promise<{imageDigest:string}>{
     const lane=(this.env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
     if(!lane||project!=="supervised-"+lane||this.ctx.id.name!=="project-v1:"+project||

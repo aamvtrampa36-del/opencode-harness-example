@@ -577,6 +577,21 @@ async function assertConsumedBudgetSettled(tx:Pick<DurableObjectTransaction,"get
 export async function inspectConsumedBudget(storage:DurableObjectStorage){
   return storage.transaction(async tx=>assertConsumedBudgetSettled(tx,await tx.get<Global>(GLOBAL)));
 }
+/** No pending exposure or policy materialization. A future authorized reserve initializes the ledger. */
+export async function inspectUninitializedNormalBudget(storage:DurableObjectStorage){
+  return storage.transaction(async tx=>{
+    const ledger=await tx.get<{version:number;slots:Record<string,unknown>}>("supervisor:admission:v1");
+    requireValue(ledger?.version===1&&ledger.slots&&typeof ledger.slots==="object"&&!Array.isArray(ledger.slots)&&Object.keys(ledger.slots).length===0&&await consumedArchiveExempts(tx,ledger.slots),"BUDGET_TRANSITION_NOT_DRAINED");
+    requireValue(await tx.get<Global>(GLOBAL)===undefined,"NORMAL_LEDGER_ALREADY_PRESENT");
+    const budget=await assertConsumedBudgetSettled(tx,undefined);
+    for(const prefix of ["supervisor:inference:call:","supervisor:inference:task:","supervisor:inference:receipt:"])
+      requireValue((await tx.list({prefix,limit:1})).size===0,"NORMAL_ORPHAN_HISTORY");
+    const archive=await tx.get<{digest:string}>("supervisor:consumed-pilot:archive:v1:"+CONSUMED_PILOT_ID);
+    requireValue(archive,"NORMAL_LEDGER_NOT_READY");
+    return {...budget,schema:"metralla-normal-budget-uninitialized-v1",archiveDigest:archive.digest,accountingReady:true,
+      dispatchAuthorized:false,providerPreflightVerified:false,initialization:"first-authorized-reserve"};
+  });
+}
 /** Both private readbacks require a real, settled ledger. Neither initializes it. */
 async function readSettledNormalBudget(storage:DurableObjectStorage,policy:BudgetPolicy,checkPaid?:()=>void){
   const snap=policySnapshot(policy);

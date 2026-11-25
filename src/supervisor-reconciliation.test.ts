@@ -201,7 +201,7 @@ test("P02 concurrent identical archival is idempotent and does not disturb histo
  expect(await f.db.get("supervisor:turn:"+pid+":"+id(4))).toEqual({phase:"settled"});
 });
 
-import {inspectNormalBudgetReady,inspectPreparedNormalBudget,prepareConsumedBudget,normalBudgetTransitionSnapshot,transitionConsumedBudget,pilotBudgetPolicy,PILOT_FREE,PILOT_GLM,type BudgetPolicy,type PaidPreflight,type BudgetTransition} from "./supervisor-inference-budget";
+import {inspectUninitializedNormalBudget,inspectNormalBudgetReady,inspectPreparedNormalBudget,prepareConsumedBudget,normalBudgetTransitionSnapshot,transitionConsumedBudget,pilotBudgetPolicy,PILOT_FREE,PILOT_GLM,type BudgetPolicy,type PaidPreflight,type BudgetTransition} from "./supervisor-inference-budget";
 const globalKey="supervisor:inference:budget:v1",newId=id(800);
 function nextPolicy():BudgetPolicy{
  return {experimentId:newId,totalMicroUsd:10000,taskMicroUsd:10000,maxAttempts:1,
@@ -302,4 +302,42 @@ test("M09 accounting preparation preserves unknown spend and rejects stale snaps
  const g=await migrationFixture("settled"),old=structuredClone([...g.db.rows]);
  await expect(prepareConsumedBudget(g.db.asDO(),g.next,{...g.a,previousDigest:"0".repeat(64)},async()=>true,()=>now)).rejects.toThrow("BUDGET_TRANSITION_SNAPSHOT_CHANGED");
  expect([...g.db.rows]).toEqual(old);
+});
+
+import {operatorAttestationMessage,operatorConsumedVerifier,type OperatorAttestation} from "./metralla-m09-operator-attestation";
+import type {FreezeManifest} from "./supervisor-reconciliation";
+test("M09 administrator attestation exercises real archive transaction and preserves all other records",async()=>{
+ const f=await consumedFixture(),{c,a}=await f.proof(f.absent);
+ const freeze:FreezeManifest={schema:"r4-freeze-v1",environment:"staging",releaseSha:release,requestId:pid,approvalRef:a.approvalRef,notBefore:now-100,expiresAt:now+1000};
+ const body:Omit<OperatorAttestation,"signature">={schema:"metralla-m09-operator-attestation-v1",environment:"staging",releaseSha:release,requestId:pid,approvalRef:a.approvalRef,expiresAt:now+1000,digests:{effect:await reconciliationDigest(f.absent),closure:await reconciliationDigest(c),authorization:await reconciliationDigest(a)}};
+ const pair=await crypto.subtle.generateKey("Ed25519",true,["sign","verify"]) as CryptoKeyPair;
+ const toHex=(b:ArrayBuffer)=>Array.from(new Uint8Array(b),x=>x.toString(16).padStart(2,"0")).join("");
+ const root=toHex(await crypto.subtle.exportKey("raw",pair.publicKey));
+ const attestation={...body,signature:toHex(await crypto.subtle.sign("Ed25519",pair.privateKey,await operatorAttestationMessage(body)))};
+ const verify=await operatorConsumedVerifier(root,freeze,attestation,()=>now);
+ const before=new Map(structuredClone([...f.db.rows]));
+ await expect(archiveConsumedPilot(f.db.asDO(),f.absent,{...c,closureReceipt:"0".repeat(64)},a,verify,()=>now)).rejects.toThrow();
+ expect([...f.db.rows]).toEqual([...before]);
+ const receipt=await archiveConsumedPilot(f.db.asDO(),f.absent,c,a,verify,()=>now);
+ expect(receipt).toMatchObject({outcome:"not_materialized",replayAllowed:false});
+ expect(await f.db.get(ck)).toEqual(f.claim);expect(await f.db.get(tk)).toEqual(f.job);
+ const l=await f.db.get<{slots:Record<string,unknown>}>(lk);
+ expect(Object.keys(l!.slots)).toEqual([id(9)]);
+ expect((await archiveConsumedPilot(f.db.asDO(),f.absent,c,a,verify,()=>now)).digest).toBe(receipt.digest);
+});
+test("M09 idle normal budget does not materialize policy, grant or task",async()=>{
+ const {db,a}=await migrationFixture("none"),before=structuredClone([...db.rows]);
+ const r=await inspectUninitializedNormalBudget(db.asDO());
+ expect(r).toMatchObject({archiveDigest:a.archiveDigest,ledgerPresent:false,accountingReady:true,confirmedMicroUsd:0,reservedMicroUsd:0,unknownMicroUsd:0,dispatchAuthorized:false,providerPreflightVerified:false});
+ expect(await db.get(globalKey)).toBeUndefined();
+ expect([...db.rows]).toEqual(before);
+ for(const prefix of ["supervisor:inference:call:","supervisor:inference:task:","supervisor:inference:receipt:"]){
+  const k=prefix+newId;await db.put(k,{unexpected:true});
+  await expect(inspectUninitializedNormalBudget(db.asDO())).rejects.toThrow("NORMAL_ORPHAN_HISTORY");
+  await db.delete(k);
+ }
+ await db.put(lk,{version:1,slots:{[newId]:{phase:"running"}}});
+ await expect(inspectUninitializedNormalBudget(db.asDO())).rejects.toThrow("BUDGET_TRANSITION_NOT_DRAINED");
+ const settled=await migrationFixture("settled");
+ await expect(inspectUninitializedNormalBudget(settled.db.asDO())).rejects.toThrow("NORMAL_LEDGER_ALREADY_PRESENT");
 });

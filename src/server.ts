@@ -57,8 +57,9 @@ import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import { GitHubBridge, type GitHubAction } from "./github";
 import { parseNormalApproval, parseNormalBudgetPreparation, approvedNormalTask, assertNormalTaskPin, assertNormalGitHubFence } from "./metralla-m08-normal-approval";
 import { makeNormalMeteredBinding, normalMeteredPlugin, type NormalContext } from "./metralla-m08-normal-binding";
-import { assertNormalBudgetReady, inspectConsumedBudget, inspectNormalBudgetReady, inspectPreparedNormalBudget, prepareConsumedBudget, normalBudgetTransitionSnapshot, transitionConsumedBudget, readProviderReceipts, type BudgetTransition } from "./supervisor-inference-budget";
+import { assertNormalBudgetReady, inspectConsumedBudget, inspectUninitializedNormalBudget, inspectNormalBudgetReady, inspectPreparedNormalBudget, prepareConsumedBudget, normalBudgetTransitionSnapshot, transitionConsumedBudget, readProviderReceipts, type BudgetTransition } from "./supervisor-inference-budget";
 import { signedConsumedVerifier, verifyNormalClose, verifyBudgetTransitionSignature, type NormalCloseEvidence } from "./metralla-m08-signed-evidence";
+import { operatorConsumedVerifier } from "./metralla-m09-operator-attestation";
 import { releasePhysicallyClosedNormal } from "./supervisor-admission";
 import { type GitHubSourcePin, assertPinnedGitHubAction } from "./metralla-m05-source";
 import { DurableGitHubPublicationGate, assertSupervisedPublicationScope } from "./github-publication-durable";
@@ -768,7 +769,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   async workflowConsumedPilot(raw:unknown):Promise<unknown>{
     this.assertStagingRemote();
     const freeze=this.r4FreezeManifest();if(!freeze)throw Error("HISTORICAL_FREEZE_REQUIRED");
-    const args=raw as {action:string;approvalRef:string;evidence:ConsumedEvidence;closure:ConsumedClosure;authorization:ConsumedAuthorization;signatures:unknown};
+    const args=raw as {action:string;approvalRef:string;evidence:ConsumedEvidence;closure:ConsumedClosure;authorization:ConsumedAuthorization;signatures?:unknown;operatorAttestation?:unknown};
     if(!args||args.approvalRef!==freeze.approvalRef||JSON.stringify(args).length>12000)throw Error("CONSUMED_WORKFLOW_SCOPE");
     if(args.action==="metralla_inspect_consumed"){
       const identity=await inspectConsumedPilot(this.ctx.storage);
@@ -779,12 +780,35 @@ export class OpenCodeAgent extends DurableObject<Env> {
     }
     if(args.action!=="metralla_archive_consumed"||args.authorization?.approvalRef!==freeze.approvalRef||
       args.authorization?.expiresAt>freeze.expiresAt)throw Error("CONSUMED_WORKFLOW_SCOPE");
-    const root=(this.env as Env & {OPENCODE_M08_CONSUMED_ROOTS?:string}).OPENCODE_M08_CONSUMED_ROOTS;
-    const verifier=await signedConsumedVerifier(root,freeze.releaseSha,args.signatures);
+    const cfg=this.env as Env & {OPENCODE_M08_CONSUMED_ROOTS?:string;OPENCODE_M09_OPERATOR_ARCHIVE_KEY?:string};
+    const operator=cfg.OPENCODE_M09_OPERATOR_ARCHIVE_KEY;
+    if(operator!==undefined&&(cfg.OPENCODE_M08_CONSUMED_ROOTS!==undefined||args.signatures!==undefined||!recoveryMode(this.env)))
+      throw Error("M09_OPERATOR_AUTHORITY_CONFLICT");
+    if(operator===undefined&&args.operatorAttestation!==undefined)throw Error("M09_OPERATOR_AUTHORITY_UNCONFIGURED");
+    const verifier=operator!==undefined
+      ?await operatorConsumedVerifier(operator,freeze,args.operatorAttestation)
+      :await signedConsumedVerifier(cfg.OPENCODE_M08_CONSUMED_ROOTS,freeze.releaseSha,args.signatures);
     return archiveConsumedPilot(this.ctx.storage,args.evidence,args.closure,args.authorization,verifier);
   }
   /** Only account Workflow, frozen pilot lane, exact pre-authorized normal policy.
    * No billing action, no clear of outstanding or unknown exposure. */
+  async workflowM09Preflight(raw:unknown):Promise<unknown>{
+    this.assertStagingRemote();assertRecoveryWorkAllowed(this.env);
+    const cfg=this.env as Env & {OPENCODE_NORMAL_AUTHORIZATION?:string;OPENCODE_PILOT_AUTHORIZATION?:string};
+    const q=raw as {action:string;releaseSha:string;imageDigest:string};
+    if(this.ctx.id.name!==SUPERVISOR_WORKSPACE||this.pilotLaneId()||cfg.OPENCODE_NORMAL_AUTHORIZATION!==undefined||cfg.OPENCODE_PILOT_AUTHORIZATION!==undefined||
+      !q||Object.keys(q).sort().join(",")!=="action,imageDigest,releaseSha"||q.action!=="metralla_preflight_idle"||
+      q.releaseSha!==__OPENCODE_RELEASE_SHA__||!/^sha256:[a-f0-9]{64}$/.test(q.imageDigest))throw Error("M09_IDLE_PREFLIGHT_SCOPE");
+    const capacity=await inspectSupervisorAdmissionCapacity(this.ctx.storage);
+    if(capacity.activeSlots!==0||!capacity.inventoryComplete||capacity.stopReason)throw Error("M09_IDLE_PREFLIGHT_CAPACITY");
+    const budget=await inspectUninitializedNormalBudget(this.ctx.storage);
+    const image=await this.env.DEV.getByName(projectContainerName("supervised-42574cb3f5ee0cbf")).preflightM09Image(q.releaseSha,q.imageDigest);
+    const after=await inspectSupervisorAdmissionCapacity(this.ctx.storage);
+    if(after.activeSlots!==0||!after.inventoryComplete||after.stopReason)throw Error("M09_IDLE_PREFLIGHT_CAPACITY");
+    const finalBudget=await inspectUninitializedNormalBudget(this.ctx.storage);
+    if(JSON.stringify(budget)!==JSON.stringify(finalBudget))throw Error("M09_IDLE_PREFLIGHT_CHANGED");
+    return {schema:"metralla-m09-idle-preflight-v1",releaseSha:q.releaseSha,capacity:after,budget:finalBudget,image,dispatchPerformed:false,dispatchAuthorized:false};
+  }
   async workflowBudgetTransition(raw:unknown):Promise<unknown>{
     this.assertStagingRemote();const freeze=this.r4FreezeManifest();
     const preparationCfg=this.env as Env & {OPENCODE_M09_NORMAL_PREPARATION?:string;OPENCODE_NORMAL_AUTHORIZATION?:string;OPENCODE_M08_BUDGET_TRANSITION_KEY?:string};
