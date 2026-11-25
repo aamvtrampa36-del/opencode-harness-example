@@ -6,7 +6,7 @@ import {
   supervisorAdmissionAllowsContinuation, hasSupervisorAdmissionSlot,
   reconcileSupervisorCreatedSession, supervisorCommitCreatedSession, supervisorGrantStillOwned,
   reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
-  reconcileSupervisorTurnEffect
+  reconcileSupervisorTurnEffect, beginSupervisorCancellation, settleSupervisorCancelledTurn
 } from "./supervisor-admission";
 import {
   r2SessionId, r2TurnAdmission, r2CancelledByReceipt,
@@ -338,4 +338,89 @@ describe("F0-C10/R2-T11 T03 admission + T04 recovery contract (OFFLINE)", () => 
       expect(r3IsNativeSessionNotFound(input)).toBe(false);
   });
 
+});
+
+/** P04 same-lane journal/cancellation fixtures; no native SDK or provider effects. */
+async function activeM01Turn(n=201){
+ const db=new FakeDO(),g=await grant(db,n),taskId=id(n),turnId=id(n+1),session=r2SessionId(taskId);
+ await supervisorBeginExternalEffect(db.asDO(),g,"submit",1101);
+ await supervisorConfirmExternalEffect(db.asDO(),g,"submit",{confirmed:true},1102);
+ const key="supervisor:task:"+taskId,job=await db.get<SupervisorTask>(key);
+ await db.put(key,{...job!,session,status:"finished",operationId:"rc-start-"+taskId});
+ const operationId="rc-turn-"+taskId+"-"+turnId,hash="e".repeat(64),journalKey=r2TurnJournalKey(taskId,turnId);
+ expect((await reserveSupervisorContinuation(db.asDO(),taskId,turnId,hash,operationId,1103)).kind).toBe("submit");
+ return {db,g,taskId,turnId,session,key,operationId,hash,journalKey};
+}
+describe("Metralla P04 exact journal and cancellation",()=>{
+ for(const change of ["operation","turn","missing","session"] as const){
+  test("stale continuation receipt "+change+" never acknowledges another slot",async()=>{
+   const f=await activeM01Turn(),task=(await f.db.get<SupervisorTask>(f.key))!;
+   const next=change==="operation"?{...task,operationId:"rc-turn-"+f.taskId+"-"+id(999)}:
+    change==="turn"?{...task,pendingTurn:{turnId:id(999),operationId:f.operationId}}:
+    change==="missing"?{...task,pendingTurn:undefined}:{...task,session:"ses_other"};
+   await f.db.put(f.key,next);
+   const before=await Promise.all([f.db.get(f.key),f.db.get(f.journalKey),f.db.get("supervisor:admission:v1")]);
+   await expect(recordSupervisorContinuationReceipt(f.db.asDO(),f.taskId,f.turnId,f.operationId,{accepted:true},1104)).rejects.toThrow();
+   expect(await Promise.all([f.db.get(f.key),f.db.get(f.journalKey),f.db.get("supervisor:admission:v1")])).toEqual(before);
+  });
+ }
+ test("terminal receipt needs matching current journal; missing/crossed never releases",async()=>{
+  const f=await activeM01Turn(),j=(await f.db.get<Record<string,unknown>>(f.journalKey))!;
+  for(const bad of [undefined,{...j,session:"ses_other"},{...j,operationId:"other"},{...j,phase:"settled"}]){
+   await f.db.put(f.journalKey,bad);
+   expect(await f.db.transaction(tx=>reconcileSupervisorTurnEffect(tx as any,f.taskId,f.operationId,{status:"done"}))).toBe(false);
+   expect((await supervisorAdmissionSlot(f.db.asDO(),f.taskId))?.phase).toBe("effect_unknown");
+  }
+  await f.db.put(f.journalKey,j);
+  expect(await f.db.transaction(tx=>reconcileSupervisorTurnEffect(tx as any,f.taskId,f.operationId,{status:"done",reason:"not_found"}))).toBe(false);
+  expect(await f.db.transaction(tx=>reconcileSupervisorTurnEffect(tx as any,f.taskId,f.operationId,{status:"done"}))).toBe(true);
+ });
+ test("pre-effect cancellation fences owner; uncertain branch holds reservation and duplicate cancel is inert",async()=>{
+  const db=new FakeDO(),g=await grant(db,210);
+  expect((await beginSupervisorCancellation(db.asDO(),g.id,1101)).kind).toBe("confirmed");
+  await expect(supervisorBeginExternalEffect(db.asDO(),g,"github_branch",1102)).rejects.toThrow("ADMISSION_FENCE_REJECTED");
+  await grant(db,211);
+  expect(await supervisorAdmissionSlot(db.asDO(),g.id)).toBeUndefined();
+  const h=await grant(db,212);await supervisorBeginExternalEffect(db.asDO(),h,"github_branch",1103);
+  expect((await beginSupervisorCancellation(db.asDO(),h.id,1104)).kind).toBe("uncertain");
+  expect((await beginSupervisorCancellation(db.asDO(),h.id,1105)).kind).toBe("existing");
+  expect((await supervisorAdmissionSlot(db.asDO(),h.id))?.phase).toBe("effect_unknown");
+  await expect(supervisorBeginExternalEffect(db.asDO(),h,"session_create",1106)).rejects.toThrow();
+ });
+ test("same-turn cancel survives restart; only exact interrupted idle settles; late ACK inert",async()=>{
+  const f=await activeM01Turn(220);
+  expect((await beginSupervisorCancellation(f.db.asDO(),f.taskId,1104)).kind).toBe("abort");
+  expect((await beginSupervisorCancellation(f.db.asDO(),f.taskId,1105)).kind).toBe("existing");
+  const db=new FakeDO();
+  for(const k of [f.key,f.journalKey,"supervisor:admission:v1"])await db.put(k,await f.db.get(k));
+  const settle=(sid:string,op:string,receipt:{status:"done"|"unanswered";reason?:string},busy:boolean)=>
+   db.transaction(tx=>settleSupervisorCancelledTurn(tx as any,f.taskId,sid,op,receipt,busy,1106));
+  const good={status:"unanswered",reason:"interrupted"} as const;
+  for(const [sid,op,receipt,busy] of [
+   [f.session,f.operationId,good,true],["ses_other",f.operationId,good,false],
+   [f.session,"rc-turn-"+f.taskId+"-"+id(999),good,false],
+   [f.session,f.operationId,{status:"unanswered",reason:"not_found"},false],
+   [f.session,f.operationId,{status:"done"},false]
+  ] as const){
+   expect(await settle(sid,op,receipt,busy)).toBeUndefined();
+   expect((await supervisorAdmissionSlot(db.asDO(),f.taskId))?.phase).toBe("effect_unknown");
+  }
+  expect(await settle(f.session,f.operationId,good,false)).toMatchObject({status:"cancelled",cancelAmbiguous:false});
+  expect(await db.get(f.journalKey)).toMatchObject({phase:"settled",receiptStatus:"unanswered",receiptReason:"interrupted"});
+  expect((await db.get<SupervisorTask>(f.key))?.pendingTurn).toBeUndefined();
+  const before=await Promise.all([db.get(f.key),db.get(f.journalKey),db.get("supervisor:admission:v1")]);
+  await recordSupervisorContinuationReceipt(db.asDO(),f.taskId,f.turnId,f.operationId,{accepted:true},1107);
+  expect(await Promise.all([db.get(f.key),db.get(f.journalKey),db.get("supervisor:admission:v1")])).toEqual(before);
+  await grant(db,223);expect(await supervisorAdmissionSlot(db.asDO(),f.taskId)).toBeUndefined();
+  await expect(reserveSupervisorContinuation(db.asDO(),f.taskId,id(224),f.hash,"rc-turn-"+f.taskId+"-"+id(224),1108)).rejects.toThrow();
+ });
+ test("normal session recovery cannot override ambiguous cancellation",async()=>{
+  const db=new FakeDO(),g=await grant(db,230),key="supervisor:task:"+g.id;
+  await supervisorBeginExternalEffect(db.asDO(),g,"session_create",1101);
+  const task=(await db.get<SupervisorTask>(key))!;
+  await db.put(key,{...task,sessionCreationAttempted:true,status:"unknown",cancelAmbiguous:true});
+  const slot=(await supervisorAdmissionSlot(db.asDO(),g.id))!;
+  expect((await reconcileSupervisorCreatedSession(db.asDO(),g.id,r2SessionId(g.id),slot,1102)).kind).toBe("stale");
+  expect(await supervisorAdmissionSlot(db.asDO(),g.id)).toEqual(slot);
+ });
 });
