@@ -84,7 +84,8 @@
   "containers": [
     {
       "class_name": "DevContainer",
-      "scheduling_policy": "durable_object"
+      "scheduling_policy": "durable_object",
+      "images": { "pilot": { "image": "registry.cloudflare.com/83ac825cf01b6ef0c2244007406d83ab/opencode-g1-staging-m09-linux@sha256:049156e4dd236c8b00f4c3319ffbe4d16bde8d3da3904e4376e11aca6a48c9a8" } }
     }
   ],
   // Staging-only private R2 bucket for the external backup drill (pendiente B).
