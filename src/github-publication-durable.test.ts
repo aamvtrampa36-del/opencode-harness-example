@@ -316,3 +316,98 @@ test("M05 revocation during prepare prevents ref publication",async()=>{
     async()=>{active=false;return headSha;},async()=>{writes++;},async()=>baseSha)).rejects.toThrow("denied");
   expect(writes).toBe(0);
 });
+
+describe("M05 P18 integrated pinned bridge REST fixtures (offline)",()=>{
+  const sourceTree="d".repeat(40),oldBlob="e".repeat(40),newBlob="f".repeat(40),newTree="1".repeat(40),foreign="c".repeat(40);
+  const pin={repo,base:OPENCODE_STAGING_BASE,branch:branch(1),commit:baseSha,tree:sourceTree,paths:["note.md"]};
+  function fixture(mode:"ok"|"stale"|"cas"|"lost"|"branch-lost"|"foreign-diff"|"wrong-commit"="ok"){
+    let ref:string|null=mode==="branch-lost"?null:mode==="stale"?foreign:baseSha;
+    let mutations=0,patches=0,created=0,failedRead=false,posts=0;
+    const calls:{method:string;route:string;body:any}[]=[];
+    const http=(async(url:unknown,init:RequestInit={})=>{
+      const u=new URL(String(url)),route=u.pathname+u.search,method=init.method??"GET";
+      const body=init.body?JSON.parse(String(init.body)):null;
+      calls.push({method,route,body});
+      expect(init.redirect).toBe("manual");
+      if(method==="GET"&&route===api)return Response.json({full_name:repo,default_branch:"main"});
+      if(method==="GET"&&route===api+"/git/ref/heads/"+encodeURIComponent(pin.base))return Response.json({object:{sha:baseSha}});
+      if(method==="GET"&&route===api+"/commits/"+baseSha)return Response.json({sha:baseSha,commit:{tree:{sha:sourceTree}}});
+      if(method==="GET"&&route===api+"/git/ref/heads/"+encodeURIComponent(pin.branch)){
+        if(mode==="branch-lost"&&posts&&!failedRead){failedRead=true;throw Error("lost readback")}
+        return ref?Response.json({object:{sha:ref}}):new Response("{}",{status:404});
+      }
+      if(method==="POST"&&route===api+"/git/refs"){posts++;ref=baseSha;throw Error("lost branch response")}
+      if(method==="GET"&&route===api+"/git/commits/"+baseSha)return Response.json({sha:baseSha,tree:{sha:sourceTree}});
+      if(method==="GET"&&route===api+"/git/trees/"+sourceTree)return Response.json({sha:sourceTree,tree:[{path:"note.md",type:"blob",mode:"100755",sha:oldBlob}]});
+      if(method==="POST"&&route===api+"/git/blobs"){mutations++;expect(body.content).toBe("new text");return Response.json({sha:newBlob});}
+      if(method==="POST"&&route===api+"/git/trees"){mutations++;expect(body).toEqual({base_tree:sourceTree,tree:[{path:"note.md",type:"blob",mode:"100755",sha:newBlob}]});return Response.json({sha:newTree});}
+      if(method==="POST"&&route===api+"/git/commits"){mutations++;created++;expect(body.parents).toEqual([baseSha]);expect(body.tree).toBe(newTree);return Response.json({sha:headSha});}
+      if(method==="GET"&&route===api+"/git/commits/"+headSha)return Response.json({sha:headSha,tree:{sha:mode==="wrong-commit"?foreign:newTree},parents:[{sha:baseSha}]});
+      if(method==="GET"&&route===api+"/contents/note.md?ref="+headSha)return Response.json({type:"file",sha:newBlob,encoding:"base64",content:btoa("new text"),size:8});
+      if(method==="PATCH"&&route===api+"/git/refs/heads/"+encodeURIComponent(pin.branch)){
+        patches++;expect(body).toEqual({sha:headSha,force:false});
+        if(mode==="cas"){ref=foreign;return Response.json({message:"not fast-forward"},{status:422});}
+        ref=headSha;
+        if(mode==="lost")throw Error("lost PATCH response");
+        return Response.json({object:{sha:ref}});
+      }
+      if(method==="GET"&&route===api+"/compare/"+baseSha+"..."+baseSha)
+        return Response.json({merge_base_commit:{sha:baseSha},behind_by:0,ahead_by:1,total_commits:1,files:[{filename:"foreign.md",status:"modified"}]});
+      throw Error("Unexpected fixture route "+method+" "+route);
+    }) as typeof fetch;
+    const storage=new FakeStorage();
+    const open=(s=storage)=>new GitHubBridge("synthetic",http,[repo],new DurableGitHubPublicationGate(s.asDO()),undefined,pin);
+    const input={action:"write" as const,repo,branch:pin.branch,path:"note.md",content:"new text",expectedHead:baseSha};
+    return {storage,open,input,calls,counts:()=>({mutations,patches,created,posts})};
+  }
+  test("pinned complete write verifies parent/tree/content, preserves mode and uses non-force ref CAS",async()=>{
+    const f=fixture();
+    expect(await f.open().execute(f.input)).toMatchObject({commitSha:headSha,fileSha:newBlob,expectedHead:baseSha,mode:"content"});
+    expect(f.counts()).toEqual({mutations:3,patches:1,created:1,posts:0});
+    expect(f.calls.some(c=>c.method==="PUT")).toBe(false);
+  });
+  test("lost applied PATCH is confirmed, restart never rebuilds commit or repeats ref effect",async()=>{
+    const f=fixture("lost");
+    expect(await f.open().execute(f.input)).toMatchObject({commitSha:headSha});
+    const restarted=new FakeStorage();restarted.restore(f.storage.snapshot());
+    expect(await f.open(restarted).execute(f.input)).toMatchObject({commitSha:headSha,reconciled:true});
+    expect(f.counts().patches).toBe(1);expect(f.counts().created).toBe(1);
+  });
+  test("stale expected HEAD and bad commit proof prevent ref mutation",async()=>{
+    for(const mode of ["stale","wrong-commit"] as const){
+      const f=fixture(mode);
+      await expect(f.open().execute(f.input)).rejects.toThrow(mode==="stale"?"GITHUB_REF_CAS_CONFLICT":"GITHUB_COMMIT_PROOF_INVALID");
+      expect(f.counts().patches).toBe(0);
+      if(mode==="stale")expect(f.counts().mutations).toBe(0);
+    }
+  });
+  test("native non-fast-forward never force pushes, replay never emits a second PATCH",async()=>{
+    const f=fixture("cas");
+    await expect(f.open().execute(f.input)).rejects.toThrow("GITHUB_REF_EFFECT_UNKNOWN");
+    await expect(f.open().execute(f.input)).rejects.toThrow("GITHUB_REF_EFFECT_UNKNOWN");
+    expect(f.counts().patches).toBe(1);expect(f.counts().created).toBe(1);
+  });
+  test("lost branch POST and failed readback reconcile existing ref through the durable journal",async()=>{
+    const f=fixture("branch-lost"),input={action:"branch" as const,repo,branch:pin.branch};
+    await expect(f.open().execute(input)).rejects.toThrow("GITHUB_REF_EFFECT_UNKNOWN");
+    const restarted=new FakeStorage();restarted.restore(f.storage.snapshot());
+    expect(await f.open(restarted).execute(input)).toMatchObject({sha:baseSha,reused:true});
+    expect(f.counts().posts).toBe(1);
+    expect(restarted.snapshot().some(([key,v])=>key.startsWith("github:pr-publisher:v1:")&&(v as any)?.active)).toBe(false);
+  });
+  test("pinned PR validates actual diff and rejects foreign changed paths before POST",async()=>{
+    const f=fixture("foreign-diff");
+    await expect(f.open().execute({action:"pr",repo,branch:pin.branch,title:"Fixture"})).rejects.toThrow("GITHUB_SOURCE_SCOPE_PATH");
+    expect(f.calls.some(c=>c.method==="POST")).toBe(false);
+  });
+  test("scope denies foreign path, branch, repo and unsupported merge/force before REST",async()=>{
+    const f=fixture();
+    for(const input of [{...f.input,path:"foreign.md"},{...f.input,branch:"main"},{...f.input,repo:"aamvtrampa36-del/cdf-cloud-engine"},
+      {action:"merge",repo,branch:pin.branch},{action:"force",repo,branch:pin.branch}]){
+      await expect(f.open().execute(input as any)).rejects.toThrow();
+    }
+    expect(f.calls).toHaveLength(0);
+    await expect(f.open().execute({...f.input,expectedHead:undefined})).rejects.toThrow("GITHUB_PINNED_WRITE_EXPECTED_HEAD_REQUIRED");
+    expect(f.counts().mutations).toBe(0);
+  });
+});
