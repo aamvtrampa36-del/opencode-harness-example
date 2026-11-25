@@ -1,0 +1,474 @@
+{
+  "schema": "metralla-c1-v1",
+  "status": "COMPLETE PASS",
+  "level": "offline",
+  "repository": "aamvtrampa36-del/opencode-harness-example",
+  "branch": "metralla/integracion-01",
+  "sha": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+  "tree": "b506a0324c1eaafed647aee5273d64df477524d9",
+  "B0": {
+    "sha": "837dce9b283f6b4b0b2ba939407883ec95be726a",
+    "tree": "79a5fb65f0f0cd825e2f2dd37defca692317da8c",
+    "branch": "f0-c10/r4-preparation-42574cb3",
+    "ci": [
+      45435628191,
+      45435628291
+    ],
+    "level": "offline"
+  },
+  "pr": 172,
+  "draft": true,
+  "actor": "ChatGPT coordinator P25; GitHub Actions",
+  "date": "2026-11-25",
+  "packages": {
+    "M01": {
+      "head": "5d002e2e876f4b1b5681369679c5d3d4bb78a461",
+      "ci": [
+        45518724785
+      ],
+      "receipt": "docs/metralla/receipts/M01.md",
+      "status": "COMPLETE PASS"
+    },
+    "M02": {
+      "head": "d5e40c8ccda6db1380ecd39189d71bba40e10516",
+      "ci": [
+        45521116888,
+        45521116917
+      ],
+      "receipt": "docs/metralla/receipts/M02.md",
+      "status": "COMPLETE PASS"
+    },
+    "M03": {
+      "head": "136002adc59e62b9783cf69e9cf47ba0317dd707",
+      "ci": [
+        45519512459
+      ],
+      "receipt": "docs/metralla/receipts/M03.md",
+      "status": "COMPLETE PASS"
+    },
+    "M04": {
+      "head": "820bcd1cba2fbec7ab70717d53695272373bd73b",
+      "ci": [
+        45523829580
+      ],
+      "receipt": "docs/metralla/receipts/M04.md",
+      "status": "COMPLETE PASS"
+    },
+    "M05": {
+      "head": "510cf80698a616290c16b364911ae5d5b4b274e6",
+      "ci": [
+        45524032791
+      ],
+      "receipt": "docs/metralla/receipts/M05.md",
+      "status": "COMPLETE PASS"
+    },
+    "M06": {
+      "head": "8a621ae83c8f8ee8a592fea36d57409e676bac87",
+      "ci": [
+        45524591317
+      ],
+      "receipt": "docs/metralla/receipts/M06.md",
+      "status": "COMPLETE PASS"
+    },
+    "M07": {
+      "head": "a6d696d7c05a4e8c6048f640df382485e12fa431",
+      "ci": [
+        45523976791
+      ],
+      "receipt": "docs/metralla/receipts/M07.md",
+      "status": "COMPLETE PASS"
+    }
+  },
+  "ci": {
+    "run": 45576692735,
+    "job": 139076282349,
+    "head": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+    "conclusion": "success",
+    "regression": {
+      "node": 321,
+      "nodeGroups": [
+        196,
+        39,
+        86
+      ],
+      "bun": 1211,
+      "failed": 0
+    },
+    "steps": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Run actions/checkout@v4",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 2
+      },
+      {
+        "name": "Exact integrated source",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 3
+      },
+      {
+        "name": "Run actions/setup-node@v4",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 4
+      },
+      {
+        "name": "Run oven-sh/setup-bun@v2",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 5
+      },
+      {
+        "name": "Run bun install --frozen-lockfile",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 6
+      },
+      {
+        "name": "Integrated Node specialist contracts",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 7
+      },
+      {
+        "name": "Historical admission and release STOP contracts",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 8
+      },
+      {
+        "name": "Full Bun unit suite",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 9
+      },
+      {
+        "name": "Typecheck",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 10
+      },
+      {
+        "name": "Security invariants",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 11
+      },
+      {
+        "name": "Offline evaluator matrix",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 12
+      },
+      {
+        "name": "Build and static preview",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 13
+      },
+      {
+        "name": "Two existing Staging Worker dry-run packages",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Exact source and clean tracked files",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 15
+      },
+      {
+        "name": "Post Run oven-sh/setup-bun@v2",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 28
+      },
+      {
+        "name": "Post Run actions/setup-node@v4",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 29
+      },
+      {
+        "name": "Post Run actions/checkout@v4",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 30
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 31
+      }
+    ]
+  },
+  "artifacts": {
+    "active": {
+      "source": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+      "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
+      "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
+      "assets": {
+        "files": 308,
+        "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
+      },
+      "build": {
+        "files": 540,
+        "sha256": "5018f80735649b1b3bd591b4b7347b78a74f77eec9a5d739bf739f4b10ba4c6a"
+      },
+      "bindings": [
+        "DEV",
+        "OpenCodeAgent",
+        "SESSION_BK",
+        "SETTINGS"
+      ],
+      "migration": "v4",
+      "principal": {
+        "files": 231,
+        "deployable": {
+          "files": 230,
+          "sha256": "932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770"
+        }
+      },
+      "mcp": {
+        "files": 3,
+        "deployable": {
+          "files": 2,
+          "sha256": "8492fd574ad42c19f157a63c0bc13c83bbb7251738eecf88b7910ee4841e004a"
+        }
+      },
+      "deployed": false
+    },
+    "recovery": {
+      "source": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+      "mode": "same-source-recovery",
+      "deployed": false,
+      "restored": false,
+      "principal": {
+        "configSha256": "f00c940fe173731d5caf94eca2d496af8797156d7566f852a555d44e461d3a5b",
+        "activeConfigSha256": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
+        "bindingsSha256": "c3a0a8ce141238c30f67a1450ec6c1059ad4f09a36ad2564eb7254dd5c3ce48f",
+        "files": 230,
+        "sha256": "932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770",
+        "sameSchema": true
+      },
+      "mcp": {
+        "configSha256": "af4bb4a628421d9cd235bbadb21b0a2f49142e2969e71d13b68f822b21a5258b",
+        "activeConfigSha256": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
+        "bindingsSha256": "ff3147fd580df8c05743ae0c27ebc73b9c4209151a6850ad372e03eee11d6dee",
+        "files": 2,
+        "sha256": "62b94e192f2199122a39a95d6a83da6177f8389161b7b3ec659a5b4deaa3195f",
+        "sameSchema": true
+      }
+    },
+    "rawRebuildEvidence": {
+      "payload": {
+        "source": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+        "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
+        "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
+        "assets": {
+          "files": 308,
+          "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
+        },
+        "build": {
+          "files": 540,
+          "sha256": "5018f80735649b1b3bd591b4b7347b78a74f77eec9a5d739bf739f4b10ba4c6a"
+        },
+        "bindings": [
+          "DEV",
+          "OpenCodeAgent",
+          "SESSION_BK",
+          "SETTINGS"
+        ],
+        "migration": "v4",
+        "principal": {
+          "files": 231,
+          "deployable": {
+            "files": 230,
+            "sha256": "932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770"
+          }
+        },
+        "mcp": {
+          "files": 3,
+          "deployable": {
+            "files": 2,
+            "sha256": "8492fd574ad42c19f157a63c0bc13c83bbb7251738eecf88b7910ee4841e004a"
+          }
+        },
+        "deployed": false
+      },
+      "rawA": {
+        "source": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+        "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
+        "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
+        "assets": {
+          "files": 308,
+          "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
+        },
+        "build": {
+          "files": 540,
+          "sha256": "5018f80735649b1b3bd591b4b7347b78a74f77eec9a5d739bf739f4b10ba4c6a"
+        },
+        "bindings": [
+          "DEV",
+          "OpenCodeAgent",
+          "SESSION_BK",
+          "SETTINGS"
+        ],
+        "migration": "v4",
+        "principal": {
+          "files": 231,
+          "sha256": "20f6d02f0c40f8af8c3435470a0273a7b37d3e809816256da7301e9aa1a2bfcd",
+          "generatedReadmeSha256": "c4b7562a9d987f29fbdf0fce548fb132ec856bb6633e4f6141c7284b661ac10f",
+          "deployable": {
+            "files": 230,
+            "sha256": "932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770"
+          }
+        },
+        "mcp": {
+          "files": 3,
+          "sha256": "23f7a63da2051320bd8692b7754016f62608ebe4b657cad044a3824f57206696",
+          "generatedReadmeSha256": "eb5026729e1989b91855e3aef909d94b87df571376ab75776e9d44efb8ef33e0",
+          "deployable": {
+            "files": 2,
+            "sha256": "8492fd574ad42c19f157a63c0bc13c83bbb7251738eecf88b7910ee4841e004a"
+          }
+        },
+        "deployed": false
+      },
+      "rawB": {
+        "source": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+        "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
+        "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
+        "assets": {
+          "files": 308,
+          "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
+        },
+        "build": {
+          "files": 540,
+          "sha256": "5018f80735649b1b3bd591b4b7347b78a74f77eec9a5d739bf739f4b10ba4c6a"
+        },
+        "bindings": [
+          "DEV",
+          "OpenCodeAgent",
+          "SESSION_BK",
+          "SETTINGS"
+        ],
+        "migration": "v4",
+        "principal": {
+          "files": 231,
+          "sha256": "516e2f61c67ccbed00b44593d1141ac4ee19fd199c24dfcde17432b9f570a2fa",
+          "generatedReadmeSha256": "df2c1caaa299e0ce957a3433d6c4e808fd7517f285f484d1d7f8e8f24d516dbb",
+          "deployable": {
+            "files": 230,
+            "sha256": "932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770"
+          }
+        },
+        "mcp": {
+          "files": 3,
+          "sha256": "7bc3f976fd5d3124cff065b801a6caf83838f627bc4d610c537f8cd6b7f44d3f",
+          "generatedReadmeSha256": "f57a1aa301a9a0e9898a127e7a98a5eccdd5e348bee65cf41b30999819651224",
+          "deployable": {
+            "files": 2,
+            "sha256": "8492fd574ad42c19f157a63c0bc13c83bbb7251738eecf88b7910ee4841e004a"
+          }
+        },
+        "deployed": false
+      },
+      "excludedFromPayloadComparison": "Wrangler-generated top-level README.md only",
+      "fullArchiveByteIdentical": false
+    }
+  },
+  "rollback": {
+    "mode": "same-source-recovery",
+    "sameDurableSchema": true,
+    "previousRuntime": "335cfd81abcc43c202605b035a3f3ca78ef31051",
+    "previousVersionCompatibleAfterDurableWrites": false,
+    "recoverySource": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+    "versionIds": null,
+    "versionIdsAssignedOnlyUnderLD": true,
+    "configuration": {
+      "OPENCODE_M08_RECOVERY_MODE": "true",
+      "principalAssetsRunWorkerFirst": true
+    },
+    "evidence": [
+      "same compiled principal payload",
+      "same binding/migration/class/image/workflow configuration except recovery flag and asset routing",
+      "real method projection tests deny new start, fenced Linux and implicit boot before effects",
+      "restarted alarm preserves prior snapshot and destroy_requested",
+      "durable reservation/effect_unknown retained across fake storage incarnation; positive receipt only",
+      "existing signed consumed archive and budget transition negatives remain green"
+    ],
+    "limits": "Offline compatibility, not live recovery or proof of physical closure; independent observation and authorized reconciliation required for unknown outcomes. Never replay or release solely on timeout. No restoration of real data or downgrade to old code."
+  },
+  "runtimeBefore": {
+    "source": "335cfd81abcc43c202605b035a3f3ca78ef31051",
+    "tree": "e29075d995d3c345e4a807abf79c5491bff32bd8",
+    "principal": {
+      "worker": "opencode-g1-staging",
+      "version": "425eb97e-e040-4200-83f3-780119e79831",
+      "deployment": "9b84a9d7-bd6d-417c-85d9-0b9525479b7d",
+      "percentage": 100
+    },
+    "mcp": {
+      "worker": "opencode-staging-control-mcp",
+      "version": "10f22ddc-8c9c-4eb3-9c09-4e616e89d787",
+      "deployment": "f34203b0-0315-44a0-8d81-0f17e79da7d3",
+      "percentage": 100
+    },
+    "sourceEvidence": "R4_ACTIVATION_SEQUENCE.md and CF deployment GET; source not inferred from new candidate",
+    "readyHttp": true,
+    "activeSlots": 1,
+    "capacityIndexed": 10,
+    "nativeOperationsMeasured": false,
+    "r4Freeze": null,
+    "pilot": {
+      "id": "42574cb3f5ee0cbf",
+      "consumed": true,
+      "status": "unknown",
+      "recordedStatus": "cancel_requested",
+      "admissionState": "effect_unknown",
+      "effect": "github_branch",
+      "nativeReconciled": false,
+      "cancelAmbiguous": true,
+      "passed": false,
+      "verified": false
+    },
+    "historical": {
+      "digest": "74c19c0c3685dad24e1b1969b47342f23a8e830ba6d32f3e31fbcc0e7937b60e",
+      "tasks": 131,
+      "nativeSessions": 140,
+      "rows": 588,
+      "unknownHistoricalOutcomes": 17,
+      "historyPreserved": true,
+      "archivedSlots": 0,
+      "historicalOutcomesResolved": false
+    },
+    "liveGate": "STOP"
+  },
+  "deployed": false,
+  "inferenceCalls": 0,
+  "liveContainerCalls": 0,
+  "liveGates": {
+    "A": "PREPARED; live readback in M09",
+    "B": "PASS offline",
+    "C": "not run",
+    "D": "not run",
+    "E": "not run"
+  },
+  "authorization": {
+    "LC": "completed offline",
+    "LD": "pending exact owner manifest",
+    "LE": "pending",
+    "LF": "pending",
+    "LG": "pending"
+  }
+}

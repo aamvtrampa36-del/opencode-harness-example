@@ -1,11 +1,11 @@
 {
   "planVersion": "1.0",
   "promptRevision": "R2",
-  "revision": 8,
-  "expectedPreviousRevision": 7,
-  "expectedParentCommit": "6d5a539fd0676c2188325d99c77fb212dcf8451a",
+  "revision": 9,
+  "expectedPreviousRevision": 8,
+  "expectedParentCommit": "f827bf9b8e39fee22b6d387e9c3b3a55278d9088",
   "date": "2026-11-25",
-  "actor": "ChatGPT coordinator P25 (owner-confirmed exclusive L-C)",
+  "actor": "ChatGPT coordinator P25 exclusive L-C",
   "repository": "aamvtrampa36-del/opencode-harness-example",
   "B0": {
     "sha": "837dce9b283f6b4b0b2ba939407883ec95be726a",
@@ -17,8 +17,25 @@
     ],
     "level": "offline"
   },
-  "C1": null,
-  "activeWave": "C",
+  "C1": {
+    "sha": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+    "tree": "b506a0324c1eaafed647aee5273d64df477524d9",
+    "branch": "metralla/integracion-01",
+    "pr": 172,
+    "ci": [
+      45576692735
+    ],
+    "ciJob": 139076282349,
+    "level": "offline",
+    "status": "COMPLETE PASS",
+    "manifest": {
+      "path": "docs/metralla/packets/M08/C1_MANIFEST.json",
+      "blob": "8a68f32ea8d229cbf7a1fe838277ee0463a76c4e"
+    },
+    "rollbackMode": "same-source-recovery",
+    "deployed": false
+  },
+  "activeWave": "D",
   "packages": {
     "M00": {
       "status": "COMPLETE PASS",
@@ -138,7 +155,7 @@
       "receiptCondition": "Exact HEAD CI verified externally, conditional receipt retained"
     },
     "M08": {
-      "status": "PARTIAL",
+      "status": "COMPLETE PASS",
       "dependsOn": [
         "M01",
         "M02",
@@ -152,8 +169,8 @@
       "authorization": "L-C_GRANTED",
       "receipt": "docs/metralla/receipts/M08.md",
       "owner": "ChatGPT coordinator P25",
-      "head": "ac973064cab755272ffaafa19a0fa41fe011a65f",
-      "tree": "8d82e604f3943fe061e3e36b21f3341cae64adfb",
+      "head": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+      "tree": "b506a0324c1eaafed647aee5273d64df477524d9",
       "pr": 172,
       "ci": [
         45534019987,
@@ -166,11 +183,13 @@
         45541145349,
         45541460577,
         45563114313,
-        45573650131
+        45573650131,
+        45575815790,
+        45576692735
       ],
-      "ciStatus": "success exact HEAD; offline candidate only; rollback limitation STOP; not C1",
-      "level": "offline candidate only",
-      "ciJob": 139066125656,
+      "ciStatus": "success exact HEAD; COMPLETE PASS offline",
+      "level": "offline",
+      "ciJob": 139076282349,
       "integratedThisHandoff": [
         "M06 owner-only mobile read route and exact scoped download; requires verified server-side Access pins, no live activation",
         "M06 explicit recapture generation and bounded orphan-index repair primitive; no historical mutation",
@@ -183,146 +202,30 @@
         "M03 fenced Linux path and signed physical closure requirement; terminal status does not free pinned slots; account Workflow-only signed consumed reconciliation and close release; no live root or observer installed",
         "M02 intermediate CI failure (three projected test harness missing real import) repaired; final exact CI success",
         "Reconciled nine additional commits 2f88d9d..0ef6454: signed M07 round/campaign, M06 layout, bounded native journal pages, native Linux receipts and deadline fencing, private budget transition, authenticated MCP fixture, same-binding freeze builds",
-        "Recovery fixture RED 45563114313: unexpected export; corrected one line in test only, ac973064; exact CI 45573650131 GREEN"
+        "Recovery fixture RED 45563114313: unexpected export; corrected one line in test only, ac973064; exact CI 45573650131 GREEN",
+        "fc0d8843: same-source recovery mode (no new effects, preserve records, signed recovery remains available); RED CI 45575815790 projected imports missing; a3a75b25 actual fixture binding correction plus three integration negatives, full GREEN CI 45576692735"
       ],
       "lastCertifiedCandidate": {
-        "head": "2f88d9dfc846ab4abd6e23bffd467d0a836f3416",
-        "tree": "21f59e4bc4563e8bb36b8f8d8eefc744e1d3b5fe",
-        "ci": 45541460577,
-        "job": 138960729887,
+        "head": "ac973064cab755272ffaafa19a0fa41fe011a65f",
+        "tree": "8d82e604f3943fe061e3e36b21f3341cae64adfb",
+        "ci": 45573650131,
+        "job": 139066125656,
         "regression": {
-          "node": 312,
+          "node": 321,
           "nodeGroups": [
             196,
             39,
-            77
+            86
           ],
-          "bun": 1189,
+          "bun": 1206,
           "failed": 0
-        },
-        "dryRunPackages": {
-          "payload": {
-            "source": "2f88d9dfc846ab4abd6e23bffd467d0a836f3416",
-            "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
-            "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
-            "assets": {
-              "files": 308,
-              "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
-            },
-            "build": {
-              "files": 539,
-              "sha256": "9b7533c977de89d027bd78c5bf2ee27c61ca439e73c619151c35838db09b0ddb"
-            },
-            "bindings": [
-              "DEV",
-              "OpenCodeAgent",
-              "SESSION_BK",
-              "SETTINGS"
-            ],
-            "migration": "v4",
-            "principal": {
-              "files": 230,
-              "deployable": {
-                "files": 229,
-                "sha256": "c224cd0771f6615c2a11db516d58e60d2dea86da5513fc16504a415a347de171"
-              }
-            },
-            "mcp": {
-              "files": 3,
-              "deployable": {
-                "files": 2,
-                "sha256": "3925e7aa4839468a827d27341ad343eec850f8c5d20fe9504d3fbf09e3f028e3"
-              }
-            },
-            "deployed": false
-          },
-          "rawA": {
-            "source": "2f88d9dfc846ab4abd6e23bffd467d0a836f3416",
-            "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
-            "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
-            "assets": {
-              "files": 308,
-              "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
-            },
-            "build": {
-              "files": 539,
-              "sha256": "9b7533c977de89d027bd78c5bf2ee27c61ca439e73c619151c35838db09b0ddb"
-            },
-            "bindings": [
-              "DEV",
-              "OpenCodeAgent",
-              "SESSION_BK",
-              "SETTINGS"
-            ],
-            "migration": "v4",
-            "principal": {
-              "files": 230,
-              "sha256": "c65afcb918c28502cc4d26ff1500874b5567220e7a85c257293ea6efafdc9ee9",
-              "generatedReadmeSha256": "ee57f0e1765afd32cf7ac8eee7ebbf9b1dbfd63f5fcd19c8ac6a7b92fc93def8",
-              "deployable": {
-                "files": 229,
-                "sha256": "c224cd0771f6615c2a11db516d58e60d2dea86da5513fc16504a415a347de171"
-              }
-            },
-            "mcp": {
-              "files": 3,
-              "sha256": "420c8b8f526c48f12de2d9bc3aca0b404437cdeb3e169330c02b417bf876b85a",
-              "generatedReadmeSha256": "bc103e155aa78fada6f4cef2ec4695edc5cced61f2cb6fc8e852817ecf938c8c",
-              "deployable": {
-                "files": 2,
-                "sha256": "3925e7aa4839468a827d27341ad343eec850f8c5d20fe9504d3fbf09e3f028e3"
-              }
-            },
-            "deployed": false
-          },
-          "rawB": {
-            "source": "2f88d9dfc846ab4abd6e23bffd467d0a836f3416",
-            "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
-            "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
-            "assets": {
-              "files": 308,
-              "sha256": "e787e30207b09cfd60bcef48ce67925dd534669b0781930dba089920d8ba3085"
-            },
-            "build": {
-              "files": 539,
-              "sha256": "9b7533c977de89d027bd78c5bf2ee27c61ca439e73c619151c35838db09b0ddb"
-            },
-            "bindings": [
-              "DEV",
-              "OpenCodeAgent",
-              "SESSION_BK",
-              "SETTINGS"
-            ],
-            "migration": "v4",
-            "principal": {
-              "files": 230,
-              "sha256": "ccb4b06394a4a890b5f69eaf64c53ea063a699d98d125492dc59e32ba3c2d292",
-              "generatedReadmeSha256": "ca432902a38d6738a1994586d7bbef89e02ac63f3d163e3819adc1902905e032",
-              "deployable": {
-                "files": 229,
-                "sha256": "c224cd0771f6615c2a11db516d58e60d2dea86da5513fc16504a415a347de171"
-              }
-            },
-            "mcp": {
-              "files": 3,
-              "sha256": "7b0be74db438775da900223ed2a9be2bb523fe82a7b1d468112d02bc79c42e7c",
-              "generatedReadmeSha256": "2597e3f7064449cd1bfa3c3f502f97303e3422e990eb8f5d83308ca2948d467e",
-              "deployable": {
-                "files": 2,
-                "sha256": "3925e7aa4839468a827d27341ad343eec850f8c5d20fe9504d3fbf09e3f028e3"
-              }
-            },
-            "deployed": false
-          },
-          "excludedFromPayloadComparison": "Wrangler-generated top-level README.md only",
-          "fullArchiveByteIdentical": false
         }
       },
       "candidateEvidence": {
-        "run": 45573650131,
-        "job": 139066125656,
-        "head": "ac973064cab755272ffaafa19a0fa41fe011a65f",
-        "tree": "8d82e604f3943fe061e3e36b21f3341cae64adfb",
+        "run": 45576692735,
+        "job": 139076282349,
+        "head": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+        "tree": "b506a0324c1eaafed647aee5273d64df477524d9",
         "status": "completed",
         "conclusion": "success",
         "steps": [
@@ -448,12 +351,12 @@
             39,
             86
           ],
-          "bun": 1206,
+          "bun": 1211,
           "failed": 0
         },
         "rebuild": {
           "payload": {
-            "source": "ac973064cab755272ffaafa19a0fa41fe011a65f",
+            "source": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
             "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
             "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
             "assets": {
@@ -462,7 +365,7 @@
             },
             "build": {
               "files": 540,
-              "sha256": "a231ab5fac3a4ba654e4a4ddd75d89d56d440878acabf945dc2af26e27412aa2"
+              "sha256": "5018f80735649b1b3bd591b4b7347b78a74f77eec9a5d739bf739f4b10ba4c6a"
             },
             "bindings": [
               "DEV",
@@ -475,20 +378,20 @@
               "files": 231,
               "deployable": {
                 "files": 230,
-                "sha256": "2f19f72c7c1f073419cee26110ce85785b8fea04e902a3e6285641c5445023e2"
+                "sha256": "932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770"
               }
             },
             "mcp": {
               "files": 3,
               "deployable": {
                 "files": 2,
-                "sha256": "3a9c1cb09537604e0d337452d13754156f91af65c134551ee2ae83b47fdd3774"
+                "sha256": "8492fd574ad42c19f157a63c0bc13c83bbb7251738eecf88b7910ee4841e004a"
               }
             },
             "deployed": false
           },
           "rawA": {
-            "source": "ac973064cab755272ffaafa19a0fa41fe011a65f",
+            "source": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
             "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
             "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
             "assets": {
@@ -497,7 +400,7 @@
             },
             "build": {
               "files": 540,
-              "sha256": "a231ab5fac3a4ba654e4a4ddd75d89d56d440878acabf945dc2af26e27412aa2"
+              "sha256": "5018f80735649b1b3bd591b4b7347b78a74f77eec9a5d739bf739f4b10ba4c6a"
             },
             "bindings": [
               "DEV",
@@ -508,26 +411,26 @@
             "migration": "v4",
             "principal": {
               "files": 231,
-              "sha256": "6ac08724553860ddb13760076b532a224d775f527a38ac90575f0c809ca07e06",
-              "generatedReadmeSha256": "8799051f6bf5cd04e8847ed0771309414ed6eeae966506b098a1309e83b9eebb",
+              "sha256": "20f6d02f0c40f8af8c3435470a0273a7b37d3e809816256da7301e9aa1a2bfcd",
+              "generatedReadmeSha256": "c4b7562a9d987f29fbdf0fce548fb132ec856bb6633e4f6141c7284b661ac10f",
               "deployable": {
                 "files": 230,
-                "sha256": "2f19f72c7c1f073419cee26110ce85785b8fea04e902a3e6285641c5445023e2"
+                "sha256": "932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770"
               }
             },
             "mcp": {
               "files": 3,
-              "sha256": "a48b8f829004d89141a053b3c8ec85368ceae4e7fdb464f9d3c329ad7ee6a25a",
-              "generatedReadmeSha256": "a1dbdf464136d21a2be8d0ea78654af246e484d8701dfc733a2adc6191747dfb",
+              "sha256": "23f7a63da2051320bd8692b7754016f62608ebe4b657cad044a3824f57206696",
+              "generatedReadmeSha256": "eb5026729e1989b91855e3aef909d94b87df571376ab75776e9d44efb8ef33e0",
               "deployable": {
                 "files": 2,
-                "sha256": "3a9c1cb09537604e0d337452d13754156f91af65c134551ee2ae83b47fdd3774"
+                "sha256": "8492fd574ad42c19f157a63c0bc13c83bbb7251738eecf88b7910ee4841e004a"
               }
             },
             "deployed": false
           },
           "rawB": {
-            "source": "ac973064cab755272ffaafa19a0fa41fe011a65f",
+            "source": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
             "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
             "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
             "assets": {
@@ -536,7 +439,7 @@
             },
             "build": {
               "files": 540,
-              "sha256": "a231ab5fac3a4ba654e4a4ddd75d89d56d440878acabf945dc2af26e27412aa2"
+              "sha256": "5018f80735649b1b3bd591b4b7347b78a74f77eec9a5d739bf739f4b10ba4c6a"
             },
             "bindings": [
               "DEV",
@@ -547,20 +450,20 @@
             "migration": "v4",
             "principal": {
               "files": 231,
-              "sha256": "3aa2cca10295b568e0f5b26463cd9654e7360a6f8639d195a8dde849772e6936",
-              "generatedReadmeSha256": "5c4df27cbf4a567a51cb37dc11f94e4474cc595983c6ed34e9377065badae329",
+              "sha256": "516e2f61c67ccbed00b44593d1141ac4ee19fd199c24dfcde17432b9f570a2fa",
+              "generatedReadmeSha256": "df2c1caaa299e0ce957a3433d6c4e808fd7517f285f484d1d7f8e8f24d516dbb",
               "deployable": {
                 "files": 230,
-                "sha256": "2f19f72c7c1f073419cee26110ce85785b8fea04e902a3e6285641c5445023e2"
+                "sha256": "932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770"
               }
             },
             "mcp": {
               "files": 3,
-              "sha256": "523982a827c4c448e03424e6290cfcc8a1408ab638dbf5742853b3f2110e6ae3",
-              "generatedReadmeSha256": "e8e391cab6b77487307d22e869059e18be4434c99d8a66d46fa49e4a76d7745c",
+              "sha256": "7bc3f976fd5d3124cff065b801a6caf83838f627bc4d610c537f8cd6b7f44d3f",
+              "generatedReadmeSha256": "f57a1aa301a9a0e9898a127e7a98a5eccdd5e348bee65cf41b30999819651224",
               "deployable": {
                 "files": 2,
-                "sha256": "3a9c1cb09537604e0d337452d13754156f91af65c134551ee2ae83b47fdd3774"
+                "sha256": "8492fd574ad42c19f157a63c0bc13c83bbb7251738eecf88b7910ee4841e004a"
               }
             },
             "deployed": false
@@ -569,21 +472,25 @@
           "fullArchiveByteIdentical": false
         },
         "recovery": {
-          "source": "ac973064cab755272ffaafa19a0fa41fe011a65f",
-          "mode": "drained-emergency-freeze",
+          "source": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+          "mode": "same-source-recovery",
           "deployed": false,
           "restored": false,
           "principal": {
-            "configSha256": "eb75a87dbf4969961213266a8e68ba58618b2162814a0383090407762497cfc4",
-            "bindingsSha256": "8ad4e6d4416b51f3dcbb321d6b85bd0a7680a7e43243d4d4a08cadb02d5d3644",
-            "files": 2,
-            "sha256": "48e997dde66e96c7073cdd0af61ea35489d2f88fcb93ff6cdb6d741c4adfda73"
+            "configSha256": "f00c940fe173731d5caf94eca2d496af8797156d7566f852a555d44e461d3a5b",
+            "activeConfigSha256": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
+            "bindingsSha256": "c3a0a8ce141238c30f67a1450ec6c1059ad4f09a36ad2564eb7254dd5c3ce48f",
+            "files": 230,
+            "sha256": "932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770",
+            "sameSchema": true
           },
           "mcp": {
-            "configSha256": "35889f13ede786464e248a4c0bb602bc44d0e2144dc4235dff222716cac005cb",
-            "bindingsSha256": "ef5092d6a0b45c3bdad68a3bf66774a850311c368dfbfe28c86e773b90c8104f",
+            "configSha256": "af4bb4a628421d9cd235bbadb21b0a2f49142e2969e71d13b68f822b21a5258b",
+            "activeConfigSha256": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
+            "bindingsSha256": "ff3147fd580df8c05743ae0c27ebc73b9c4209151a6850ad372e03eee11d6dee",
             "files": 2,
-            "sha256": "3f0d570b0f9fa3b93b16f396f238caec55539b25e8fe1d9841b6650c1acaed71"
+            "sha256": "62b94e192f2199122a39a95d6a83da6177f8389161b7b3ec659a5b4deaa3195f",
+            "sameSchema": true
           }
         }
       },
@@ -594,12 +501,12 @@
           39,
           86
         ],
-        "bun": 1206,
+        "bun": 1211,
         "failed": 0
       },
       "dryRunPackages": {
         "payload": {
-          "source": "ac973064cab755272ffaafa19a0fa41fe011a65f",
+          "source": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
           "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
           "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
           "assets": {
@@ -608,7 +515,7 @@
           },
           "build": {
             "files": 540,
-            "sha256": "a231ab5fac3a4ba654e4a4ddd75d89d56d440878acabf945dc2af26e27412aa2"
+            "sha256": "5018f80735649b1b3bd591b4b7347b78a74f77eec9a5d739bf739f4b10ba4c6a"
           },
           "bindings": [
             "DEV",
@@ -621,20 +528,20 @@
             "files": 231,
             "deployable": {
               "files": 230,
-              "sha256": "2f19f72c7c1f073419cee26110ce85785b8fea04e902a3e6285641c5445023e2"
+              "sha256": "932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770"
             }
           },
           "mcp": {
             "files": 3,
             "deployable": {
               "files": 2,
-              "sha256": "3a9c1cb09537604e0d337452d13754156f91af65c134551ee2ae83b47fdd3774"
+              "sha256": "8492fd574ad42c19f157a63c0bc13c83bbb7251738eecf88b7910ee4841e004a"
             }
           },
           "deployed": false
         },
         "rawA": {
-          "source": "ac973064cab755272ffaafa19a0fa41fe011a65f",
+          "source": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
           "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
           "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
           "assets": {
@@ -643,7 +550,7 @@
           },
           "build": {
             "files": 540,
-            "sha256": "a231ab5fac3a4ba654e4a4ddd75d89d56d440878acabf945dc2af26e27412aa2"
+            "sha256": "5018f80735649b1b3bd591b4b7347b78a74f77eec9a5d739bf739f4b10ba4c6a"
           },
           "bindings": [
             "DEV",
@@ -654,26 +561,26 @@
           "migration": "v4",
           "principal": {
             "files": 231,
-            "sha256": "6ac08724553860ddb13760076b532a224d775f527a38ac90575f0c809ca07e06",
-            "generatedReadmeSha256": "8799051f6bf5cd04e8847ed0771309414ed6eeae966506b098a1309e83b9eebb",
+            "sha256": "20f6d02f0c40f8af8c3435470a0273a7b37d3e809816256da7301e9aa1a2bfcd",
+            "generatedReadmeSha256": "c4b7562a9d987f29fbdf0fce548fb132ec856bb6633e4f6141c7284b661ac10f",
             "deployable": {
               "files": 230,
-              "sha256": "2f19f72c7c1f073419cee26110ce85785b8fea04e902a3e6285641c5445023e2"
+              "sha256": "932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770"
             }
           },
           "mcp": {
             "files": 3,
-            "sha256": "a48b8f829004d89141a053b3c8ec85368ceae4e7fdb464f9d3c329ad7ee6a25a",
-            "generatedReadmeSha256": "a1dbdf464136d21a2be8d0ea78654af246e484d8701dfc733a2adc6191747dfb",
+            "sha256": "23f7a63da2051320bd8692b7754016f62608ebe4b657cad044a3824f57206696",
+            "generatedReadmeSha256": "eb5026729e1989b91855e3aef909d94b87df571376ab75776e9d44efb8ef33e0",
             "deployable": {
               "files": 2,
-              "sha256": "3a9c1cb09537604e0d337452d13754156f91af65c134551ee2ae83b47fdd3774"
+              "sha256": "8492fd574ad42c19f157a63c0bc13c83bbb7251738eecf88b7910ee4841e004a"
             }
           },
           "deployed": false
         },
         "rawB": {
-          "source": "ac973064cab755272ffaafa19a0fa41fe011a65f",
+          "source": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
           "principalConfig": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
           "mcpConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
           "assets": {
@@ -682,7 +589,7 @@
           },
           "build": {
             "files": 540,
-            "sha256": "a231ab5fac3a4ba654e4a4ddd75d89d56d440878acabf945dc2af26e27412aa2"
+            "sha256": "5018f80735649b1b3bd591b4b7347b78a74f77eec9a5d739bf739f4b10ba4c6a"
           },
           "bindings": [
             "DEV",
@@ -693,20 +600,20 @@
           "migration": "v4",
           "principal": {
             "files": 231,
-            "sha256": "3aa2cca10295b568e0f5b26463cd9654e7360a6f8639d195a8dde849772e6936",
-            "generatedReadmeSha256": "5c4df27cbf4a567a51cb37dc11f94e4474cc595983c6ed34e9377065badae329",
+            "sha256": "516e2f61c67ccbed00b44593d1141ac4ee19fd199c24dfcde17432b9f570a2fa",
+            "generatedReadmeSha256": "df2c1caaa299e0ce957a3433d6c4e808fd7517f285f484d1d7f8e8f24d516dbb",
             "deployable": {
               "files": 230,
-              "sha256": "2f19f72c7c1f073419cee26110ce85785b8fea04e902a3e6285641c5445023e2"
+              "sha256": "932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770"
             }
           },
           "mcp": {
             "files": 3,
-            "sha256": "523982a827c4c448e03424e6290cfcc8a1408ab638dbf5742853b3f2110e6ae3",
-            "generatedReadmeSha256": "e8e391cab6b77487307d22e869059e18be4434c99d8a66d46fa49e4a76d7745c",
+            "sha256": "7bc3f976fd5d3124cff065b801a6caf83838f627bc4d610c537f8cd6b7f44d3f",
+            "generatedReadmeSha256": "f57a1aa301a9a0e9898a127e7a98a5eccdd5e348bee65cf41b30999819651224",
             "deployable": {
               "files": 2,
-              "sha256": "3a9c1cb09537604e0d337452d13754156f91af65c134551ee2ae83b47fdd3774"
+              "sha256": "8492fd574ad42c19f157a63c0bc13c83bbb7251738eecf88b7910ee4841e004a"
             }
           },
           "deployed": false
@@ -715,26 +622,34 @@
         "fullArchiveByteIdentical": false
       },
       "recoveryPackages": {
-        "source": "ac973064cab755272ffaafa19a0fa41fe011a65f",
-        "mode": "drained-emergency-freeze",
+        "source": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+        "mode": "same-source-recovery",
         "deployed": false,
         "restored": false,
         "principal": {
-          "configSha256": "eb75a87dbf4969961213266a8e68ba58618b2162814a0383090407762497cfc4",
-          "bindingsSha256": "8ad4e6d4416b51f3dcbb321d6b85bd0a7680a7e43243d4d4a08cadb02d5d3644",
-          "files": 2,
-          "sha256": "48e997dde66e96c7073cdd0af61ea35489d2f88fcb93ff6cdb6d741c4adfda73"
+          "configSha256": "f00c940fe173731d5caf94eca2d496af8797156d7566f852a555d44e461d3a5b",
+          "activeConfigSha256": "482d0de2134f6ca9ca31a1197fc2f4835fc844b070b7a2f93caf27560f010e5f",
+          "bindingsSha256": "c3a0a8ce141238c30f67a1450ec6c1059ad4f09a36ad2564eb7254dd5c3ce48f",
+          "files": 230,
+          "sha256": "932a71c8045b8aae444bf7245d1f9345b9f527badb895b9faa1c114308027770",
+          "sameSchema": true
         },
         "mcp": {
-          "configSha256": "35889f13ede786464e248a4c0bb602bc44d0e2144dc4235dff222716cac005cb",
-          "bindingsSha256": "ef5092d6a0b45c3bdad68a3bf66774a850311c368dfbfe28c86e773b90c8104f",
+          "configSha256": "af4bb4a628421d9cd235bbadb21b0a2f49142e2969e71d13b68f822b21a5258b",
+          "activeConfigSha256": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
+          "bindingsSha256": "ff3147fd580df8c05743ae0c27ebc73b9c4209151a6850ad372e03eee11d6dee",
           "files": 2,
-          "sha256": "3f0d570b0f9fa3b93b16f396f238caec55539b25e8fe1d9841b6650c1acaed71"
+          "sha256": "62b94e192f2199122a39a95d6a83da6177f8389161b7b3ec659a5b4deaa3195f",
+          "sameSchema": true
         }
+      },
+      "manifest": {
+        "path": "docs/metralla/packets/M08/C1_MANIFEST.json",
+        "blob": "8a68f32ea8d229cbf7a1fe838277ee0463a76c4e"
       }
     },
     "M09": {
-      "status": "WAITING",
+      "status": "READY",
       "dependsOn": [
         "M08"
       ],
@@ -1008,15 +923,19 @@
         "P21",
         "P24"
       ],
-      "status": "PARTIAL",
-      "branch": "metralla/integracion-01"
+      "status": "COMPLETE PASS",
+      "branch": "metralla/integracion-01",
+      "level": "offline",
+      "head": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+      "ci": 45576692735
     },
     "P26": {
       "package": "M09",
       "dependsOn": [
         "P25"
       ],
-      "status": "WAITING"
+      "status": "READY",
+      "authorization": "L-D_PENDING"
     },
     "P27": {
       "package": "M10",
@@ -1050,8 +969,8 @@
   "authorization": {
     "L-A": "GRANTED by owner P01; zero inference",
     "L-B": "REQUIRED per specialist prompt; no implicit transfer",
-    "L-C": "GRANTED P25 exact integration branch, offline CI, coordination STATE and issue index; no live",
-    "L-D": "PENDING C1/readback/rollback/repair scope",
+    "L-C": "COMPLETED offline P25; no live",
+    "L-D": "PENDING exact C1 manifest, operator, upload/promote/rollback and repair scope",
     "L-E": "PENDING G0 exact task",
     "L-F": "PENDING 2/4 + negatives",
     "L-G": "PENDING 3x10",
@@ -1103,16 +1022,15 @@
     "liveGate": "STOP"
   },
   "blockers": [
-    "M08 PARTIAL / STOP: exact integrated HEAD CI green, same-binding emergency freeze built and unit-tested, but freeze requires independently verified drain and is not a restored operational release. Previous deployed source 335cfd81abcc43c202605b035a3f3ca78ef31051 is not compatible with new durable admission/close/archive records; rollback for failure during unresolved operations or after new durable mutations not demonstrated. Independent observer/trust roots and paid-context caps must be configured/verified under separately authorized live manifests, not inferred from signed fixtures. No C1 or L-D.",
-    "Live STOP: consumed pilot github_branch effect_unknown; indexed active slot 1; native physical activity not measured",
-    "C1 and immutable image/pilot reference not certified for live",
-    "Budget, operator exclusion, future lot approvals pending",
+    "L-D pending exact approval; C1 certified offline, recovery versions not uploaded and runtime not promoted",
+    "Live STOP: consumed pilot github_branch effect_unknown; indexed active slot 1 at last Remote read; native physical activity not measured",
+    "Independent live observer/trust roots, image and paid-context/overhead bounds require M09 and subsequent exact authorization",
     "Historical 17 outcomes unresolved and preserved"
   ],
   "next": [
-    "P25"
+    "P26"
   ],
-  "receiptPath": "docs/metralla/receipts/M00.md",
+  "receiptPath": "docs/metralla/receipts/M08.md",
   "receiptHashPolicy": "use Git blob SHA and published commit externally, no self hash",
   "lockPolicy": "STATE is not a runtime lease. Expected parent/revision, non-force ref CAS; one writer per lane; handoff verified from predecessor receipt. M08 coordinator updates STATE after reading all seven package receipts."
 }
