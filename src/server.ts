@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { recoveryMode, assertRecoveryWorkAllowed, recoveryHttpAllowed } from "./metralla-m08-recovery-mode";
 import { PersonalSettings } from "./personal-settings";
 export { PersonalSettings };
 export { OpenCodeSupervisorWorkflow } from "./supervisor-workflow";
@@ -136,6 +137,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
   /** Remote supervisor tasks use a single dedicated DO, never arbitrary user workspaces. */
   async startSupervisedTask(raw: unknown): Promise<unknown> {
+    assertRecoveryWorkAllowed(this.env);
     this.assertStagingRemote();
     const trace = this.phaseProbe();
     const start = await trace.run("admission", "validate", async () =>
@@ -711,7 +713,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const admissionCapacity = await inspectSupervisorAdmissionCapacity(this.ctx.storage);
     const freeze=this.r4FreezeManifest();
     return {
-      environment: "staging", worker: "opencode-g1-staging", ready: true,
+      environment: "staging", worker: "opencode-g1-staging", ready: !recoveryMode(this.env), recoveryMode:recoveryMode(this.env),
       admissionCapacity,
       r4Freeze:freeze?{schema:"r4-freeze-v1",releaseSha:freeze.releaseSha,
         requestId:freeze.requestId,approvalRef:freeze.approvalRef,
@@ -904,6 +906,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async remoteSupervisorSelectModel(id: string, model: string): Promise<unknown> {
+    assertRecoveryWorkAllowed(this.env);
     if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     this.assertStagingRemote();
     const task = await this.supervisedRecord(id);
@@ -929,6 +932,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async remoteSupervisorContinue(raw: unknown): Promise<unknown> {
+    assertRecoveryWorkAllowed(this.env);
     if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     this.assertStagingRemote();
     const trace = this.phaseProbe();
@@ -1034,6 +1038,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async remoteSupervisorMcpCall(input: { server: string; name: string; arguments?: Record<string, unknown> }): Promise<unknown> {
+    assertRecoveryWorkAllowed(this.env);
     if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     this.assertStagingRemote();
     const host = createDynamicMcpHost(() => this.personalConfig.getRemoteMcps());
@@ -1053,6 +1058,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async remoteSupervisorAgentCheckStatus(scope?: "openrouter"): Promise<unknown> {
+    assertRecoveryWorkAllowed(this.env);
     this.assertStagingRemote();
     if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     return scope === "openrouter" ? this.openRouterAgentCheckStatus() : this.agentCheckStatus();
@@ -1088,6 +1094,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
    * This never accepts data/file/https URLs, binary blobs, or arbitrary /bundle.
    */
   async supervisedArtifactCapture(id: string, raw: unknown): Promise<unknown> {
+    assertRecoveryWorkAllowed(this.env);
     const trace = this.phaseProbe();
     const task = await this.scopedArtifactTask(id);
     const request = validateCaptureRequest(raw);
@@ -1480,12 +1487,14 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async refreshMcps(): Promise<{ refreshed: boolean }> {
+    assertRecoveryWorkAllowed(this.env);
     if (!this.mcpLifecycle.reload) return { refreshed: false };
     await this.mcpLifecycle.reload();
     return { refreshed: true };
   }
 
   async installTokenEconomizer(): Promise<{ installed: true; commit: string }> {
+    assertRecoveryWorkAllowed(this.env);
     return this.env.DEV.getByName("connector-host-v1").installTokenEconomizer();
   }
 
@@ -1582,6 +1591,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   private async startSubagent(parentSession: string, task: string, kind: "analysis" | "decision"): Promise<{ session: string }> {
+    assertRecoveryWorkAllowed(this.env);
     if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     // Delegation must not bypass the source pin or admission accounting.
     // T04 may replace this fail-closed guard with an audited inherited scope.
@@ -1711,6 +1721,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   private async denyReadOnlySessionEffect(sessionID: string): Promise<void> {
+    assertRecoveryWorkAllowed(this.env);
     if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
     if (this.ctx.id?.name === SUPERVISOR_WORKSPACE && !scope) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
@@ -1718,6 +1729,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async enforceSessionScope(sessionID: string, action: ScopedToolAction): Promise<void> {
+    assertRecoveryWorkAllowed(this.env);
     if(this.pilotLaneId())await this.pilotContext(sessionID);
     const retiredOwner=await this.ctx.storage.get<string>("supervisor:session:"+sessionID);
     if(retiredOwner&&await retiredHistoricalTask(this.ctx.storage,retiredOwner))throw Error("HISTORICAL_TASK_QUARANTINED");
@@ -2048,6 +2060,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   private normalApproval(){
+    assertRecoveryWorkAllowed(this.env);
     this.assertStagingRemote();if(this.ctx.id.name!==SUPERVISOR_WORKSPACE||this.pilotLaneId())throw Error("NORMAL_WRONG_AUTHORITY");
     return parseNormalApproval((this.env as Env & {OPENCODE_NORMAL_AUTHORIZATION?:string}).OPENCODE_NORMAL_AUTHORIZATION,
       typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"");
@@ -2161,6 +2174,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return Boolean(envKey || await this.personalConfig.getOpenRouterKey());
   }
   async refreshOpenRouter(): Promise<{ active: boolean }> {
+    assertRecoveryWorkAllowed(this.env);
     if(this.pilotLaneId()||this.ctx.id.name===SUPERVISOR_WORKSPACE)throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     const key = (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
       || await this.personalConfig.getOpenRouterKey();
@@ -2382,6 +2396,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   // The deployment owner supplies independently reviewed receipt digests
   // only in a separately authorized Staging version. No binding in source.
   private pilotApproval(now=Date.now()){
+    assertRecoveryWorkAllowed(this.env);
     const id=this.pilotLaneId();
     if(!id)return undefined;
     this.assertStagingRemote();
@@ -2671,6 +2686,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   /** Host startup, after the harness has opened OpenCode. */
   async onStart(): Promise<void> {
+    if(recoveryMode(this.env))return;
     await this.sockets.reattach();
   }
 }
@@ -2679,6 +2695,8 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
+      if(recoveryMode(env)&&!recoveryHttpAllowed(request.method,url.pathname))
+        return Response.json({error:"M08_RECOVERY_NEW_EFFECT_FORBIDDEN"},{status:503,headers:{"Cache-Control":"no-store"}});
       const pilot=(env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
       if(pilot&&!url.pathname.startsWith(SUPERVISOR_API_PREFIX+"/")&&!(url.pathname==="/api/health"&&request.method==="GET"))
         return Response.json({error:"PILOT_EXCLUSIVE_WORKSPACE"},{status:503});

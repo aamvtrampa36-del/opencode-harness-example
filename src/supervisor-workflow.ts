@@ -1,4 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { assertRecoveryWorkflowAllowed } from "./metralla-m08-recovery-mode";
 import { SUPERVISOR_WORKSPACE, supervisorTaskKey } from "./supervisor-control";
 import { parseFreezeManifest, reconciliationFromFrozenWorkflow, type DrainCommand } from "./supervisor-reconciliation";
 import { workflowStartInput } from "./staging-control-mcp/start-contract";
@@ -51,6 +52,7 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
       throw new Error("INVALID_SUPERVISOR_COMMAND");
     }
     const args = command as Record<string, unknown>;
+    assertRecoveryWorkflowAllowed(this.env,args.action);
     const env=this.env as Env & {OPENCODE_SUPERVISOR_ENABLED?:string;OPENCODE_PILOT_HYBRID_REQUEST_ID?:string;
       OPENCODE_R4_RECONCILIATION?:string;OPENCODE_PILOT_AUTHORIZATION?:string};
     if(args.action==="r4_reconcile"){

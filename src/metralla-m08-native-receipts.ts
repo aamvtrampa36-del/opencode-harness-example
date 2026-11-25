@@ -15,6 +15,7 @@ async function head(s:Reader){
  const h=await s.get<{count:number;open:number|null}>(INDEX)??{count:0,open:null};
  check(integer(h.count)&&h.count<=MAX&&(h.open===null||integer(h.open)&&h.open===h.count),"LINUX_RECEIPT_INDEX");return h;
 }
+export async function hasOpenLinuxReceipt(storage:Reader):Promise<boolean>{return (await head(storage)).open!==null;}
 export async function beginLinuxReceipt(tx:Writer,scope:ExecutionScope,callId:string,releaseSha:string,commandSha256:string,now=Date.now()){
  const {lease,source,boot}=scope;
  check(ID.test(callId)&&/^[a-f0-9]{40}$/.test(releaseSha)&&SHA.test(commandSha256)&&integer(now)&&now<lease.expiresAt&&

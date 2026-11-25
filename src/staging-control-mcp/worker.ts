@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { recoveryMode } from "../metralla-m08-recovery-mode";
 import { createMcpHandler } from "agents/mcp/server";
 import { dispatchBoundedMcp } from "./p08-remote";
 import {remoteOwnerPrincipal,type RemoteOwnerEnv} from "../metralla-m08-mobile-auth";
@@ -41,6 +42,7 @@ const legacyHandler=makeHandler();
 export default {
   fetch(request: Request, _env: ControlEnv, ctx: ExecutionContext): Promise<Response> | Response {
     if (new URL(request.url).pathname !== "/mcp") return new Response("Not found", { status: 404 });
+    if (recoveryMode(controlEnv)) return Response.json({error:"M08_RECOVERY_MCP_PAUSED"},{status:503,headers:{"Cache-Control":"no-store"}});
     if (controlEnv.MCP_ENABLED !== "true") return new Response("Staging MCP is not enabled", { status: 503 });
     return dispatchBoundedMcp(request, async bounded => {
       const principal=await remoteOwnerPrincipal(bounded,controlEnv);

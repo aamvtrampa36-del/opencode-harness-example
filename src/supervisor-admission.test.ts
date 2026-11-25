@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { assertRecoveryWorkAllowed, recoveryMode, recoveryHttpAllowed, assertRecoveryWorkflowAllowed, recoveryCloseAllowed } from "./metralla-m08-recovery-mode";
 import { reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot, hasSupervisorAdmissionSlot,
   reconcileSupervisorSubmittedEffect, supervisorGrantStillOwned, reserveSupervisorContinuation, inspectSupervisorAdmissionCapacity, type StartGrant } from "./supervisor-admission";
@@ -360,4 +361,35 @@ test("pilot authorization is single-use, exact-release, fingerprint and process 
   expect(evidenceFromClaim(claim,approval,crypto.randomUUID(),objectId,candidate,now+100)).toBeUndefined();
   expect(evidenceFromClaim(claim,approval,instance,objectId,candidate,now+900000)).toBeUndefined();
   await expect(at(s,51,now+10)).rejects.toThrow("PILOT_EXCLUSIVE_LANE");
+});
+
+describe("M08 recovery variant preserves durable effects across release switch",()=>{
+  const env={OPENCODE_M08_RECOVERY_MODE:"true"};
+  test("reserved and effect-unknown slots survive incarnation; new and repeated starts denied before transaction",async()=>{
+    const first=new DurableFake();
+    const a=granted(await at(first,1));granted(await at(first,2));
+    await begin(first,a,"github_branch");
+    const original=first.snapshot(),next=new DurableFake();next.restore(original);
+    for(const n of [1,2,3])await expect((async()=>{assertRecoveryWorkAllowed(env);return at(next,n,1000000);})()).rejects.toThrow("M08_RECOVERY_NEW_EFFECT_FORBIDDEN");
+    expect(next.snapshot()).toEqual(original);
+    expect((await supervisorAdmissionSlot(next.asDO(),id(1)))?.phase).toBe("effect_unknown");
+    expect((await supervisorAdmissionSlot(next.asDO(),id(2)))?.phase).toBe("reserved");
+    expect(await next.get("supervisor:task:"+id(3))).toBeUndefined();
+    // Positive receipt still uses the identical durable transaction and grant.
+    await ack(next,a,"github_branch",1000001);
+    expect((await supervisorAdmissionSlot(next.asDO(),id(1)))?.effect).toBeUndefined();
+    expect((await supervisorAdmissionSlot(next.asDO(),id(2)))?.phase).toBe("reserved");
+  });
+  test("fail-closed ingress, retained authorized reconciliation and no automatic close",()=>{
+    expect(recoveryMode({})).toBe(false);expect(recoveryMode({OPENCODE_M08_RECOVERY_MODE:"false"})).toBe(false);
+    expect(recoveryMode({OPENCODE_M08_RECOVERY_MODE:"typo"})).toBe(true);
+    expect(()=>assertRecoveryWorkAllowed({})).not.toThrow();
+    for(const action of ["start","recovery_drill","joint_cleanup","external_backup_drill","session_backup_drill",null])expect(()=>assertRecoveryWorkflowAllowed(env,action)).toThrow();
+    for(const action of ["status","cancel","metralla_native_evidence","metralla_inspect_consumed","metralla_archive_consumed","metralla_normal_close","metralla_request_close"])expect(()=>assertRecoveryWorkflowAllowed(env,action)).not.toThrow();
+    const path="/api/supervisor/v1/tasks/"+id(1);
+    expect(recoveryHttpAllowed("GET",path)).toBe(true);expect(recoveryHttpAllowed("POST",path+"/cancel")).toBe(true);
+    for(const [method,p] of [["POST","/api/supervisor/v1/tasks"],["GET","/api/dev/download/foo"],["POST","/agents/x"],["GET",path+"/cancel"],["POST",path+"/other"],["POST",path+"/cancel/"]])expect(recoveryHttpAllowed(method,p)).toBe(false);
+    expect(recoveryCloseAllowed(env,false,false)).toBe(false);expect(recoveryCloseAllowed(env,true,true)).toBe(false);
+    expect(recoveryCloseAllowed(env,true,false)).toBe(true);expect(recoveryCloseAllowed({},false,true)).toBe(true);
+  });
 });

@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { recoveryMode, assertRecoveryWorkAllowed, recoveryCloseAllowed } from "./metralla-m08-recovery-mode";
 import { makePreparationReceipt, preparationReceiptValid, pilotRuntimeMatches, pilotBootDisposition, pilotPinnedImage, validPreparationInput, type PilotPreparationInput, type PilotPreparationReceipt } from "./pilot-preparation";
 import { assertSourceScope, assertSourceReceipt, assertImagePolicy, assertLease, assertRuntime, assertExecutionIdentity, type SourceScope, type SourceReceipt, type ImagePolicy, type BootReceipt, type RuntimeObservation, type ExecutionScope, type Lease } from "./metralla-m03-execution-identity";
 import {assertContainerAuthority,assertContainerLease,type NormalContainerAuthority} from "./metralla-m08-container-authority";
@@ -29,7 +30,7 @@ import { validateIsolatedRegistration, type IsolatedProject } from "./project-co
 import { assertRecoverableContainer, checkpointSnapshot, SNAPSHOT_TTL_MS } from "./snapshot-policy";
 import { CLOSE_KEY, assertCloseRecord, assertRecoveryCheckpoint, type IdleCloseRecord } from "./metralla-m03-close";
 import { BUN_RUNTIME_VERSION, commandRequiresBun } from "./dev-runtime";
-import { beginLinuxReceipt, advanceLinuxReceipt, linuxReceiptPage } from "./metralla-m08-native-receipts";
+import { beginLinuxReceipt, advanceLinuxReceipt, linuxReceiptPage, hasOpenLinuxReceipt } from "./metralla-m08-native-receipts";
 declare const __OPENCODE_RELEASE_SHA__:string;
 
 /**
@@ -268,6 +269,7 @@ export class DevContainer extends DurableObject<Env> {
   /** Exact normal-lane authority, immutable for the lifetime of this project.
    * No automatic generation takeover, restart, or rebind after a lost effect. */
   async bindNormalExecution(input:NormalContainerAuthority){
+    assertRecoveryWorkAllowed(this.env);
     assertContainerAuthority(input,this.ctx.id.name,__OPENCODE_RELEASE_SHA__,Date.now());
     const image=pilotPinnedImage((this.ctx.container as unknown as {images?:Record<string,string>})?.images,input.imageDigest);
     await this.ctx.storage.transaction(async tx=>{
@@ -279,6 +281,7 @@ export class DevContainer extends DurableObject<Env> {
     return {imageDigest:input.imageDigest,image};
   }
   private async ensureRunning() {
+    assertRecoveryWorkAllowed(this.env);
     if(this.closing)throw Error("M03_CLOSE_IN_PROGRESS");
     const pilot=await this.checkPilotWork();
     const normal=await this.ctx.storage.get<NormalContainerAuthority>("m08-normal-container-v1");
@@ -531,6 +534,7 @@ export class DevContainer extends DurableObject<Env> {
 
   /** Registry lives in the existing personal DO; its old data is untouched. */
   async reserveIsolatedProject(project: string, repository?: string): Promise<IsolatedProject> {
+    assertRecoveryWorkAllowed(this.env);
     const id = validateProject(project);
     return await this.ctx.storage.transaction(async tx => {
       const key = "isolated-project-v1:" + id;
@@ -750,6 +754,7 @@ export class DevContainer extends DurableObject<Env> {
   }
 
   async run(project: string, command: string): Promise<LinuxResult> {
+    assertRecoveryWorkAllowed(this.env);
     const id = assertLinuxExecutionScope(this.ctx.id.name, project);
     const cmd = validateCommand(command);
     // Serialize shell commands so snapshotting cannot race two build steps.
@@ -820,6 +825,7 @@ export class DevContainer extends DurableObject<Env> {
   /** Explicit fenced normal-lane command path. Existing unscoped legacy Linux
    * is not upgraded by guessing identity. No implicit start or bootstrap here. */
   async runFenced(scope:ExecutionScope,currentLease:Lease,command:string,callId?:string,releaseSha?:string):Promise<LinuxResult>{
+    assertRecoveryWorkAllowed(this.env);
     if(this.closing||await this.ctx.storage.get(CLOSE_KEY))throw Error("M03_CLOSE_IN_PROGRESS");
     const id=assertLinuxExecutionScope(this.ctx.id.name,scope.source.project);
     const cmd=validateCommand(command);
@@ -947,6 +953,7 @@ export class DevContainer extends DurableObject<Env> {
 
   /** Only the supervisor's typed RPC uses this path. No SDK/model calls. */
   async preparePilotProject(input:PilotPreparationInput):Promise<PilotPreparationReceipt>{
+    assertRecoveryWorkAllowed(this.env);
     const lane=(this.env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
     if(!validPreparationInput(input)||lane!==input.requestId||this.ctx.id.name!=="project-v1:"+input.project||
         Date.now()>=input.workUntil)throw Error("PILOT_PREPARATION_SCOPE");
@@ -1030,8 +1037,9 @@ export class DevContainer extends DurableObject<Env> {
   async requestNormalClose(project:string,generation:number,releaseSha:string){
     const normal=await this.ctx.storage.get<NormalContainerAuthority>("m08-normal-container-v1");
     if(!normal||normal.source.project!==project||this.ctx.id.name!=="project-v1:"+project||normal.generation!==generation||normal.releaseSha!==releaseSha||releaseSha!==__OPENCODE_RELEASE_SHA__||Date.now()>=normal.closeUntil)throw Error("NORMAL_CLOSE_SCOPE");
+    if(recoveryMode(this.env)&&!recoveryCloseAllowed(this.env,true,await hasOpenLinuxReceipt(this.ctx.storage)))throw Error("M08_RECOVERY_NATIVE_EFFECT_UNKNOWN");
     await this.ctx.storage.put("m08-normal-close-requested-v1",true);
-    await this.alarm();
+    await this.closeIdle(true);
     return {requested:true,physicalClosureVerified:false,receipt:await this.readCloseReceipt(project)};
   }
 
@@ -1048,7 +1056,9 @@ export class DevContainer extends DurableObject<Env> {
   /** Durable Object alarm: checkpoint then suspend the idle VM.
    * Single writer in the project DO. Durable intent precedes destruction;
    * restart/lost reply never automatically repeat the effect. */
-  async alarm() {
+  async alarm() { await this.closeIdle(false); }
+  private async closeIdle(explicit:boolean) {
+    if(recoveryMode(this.env)&&!recoveryCloseAllowed(this.env,explicit,await hasOpenLinuxReceipt(this.ctx.storage)))return;
     if(this.closing||this.busy>0||this.starting){await this.scheduleCheck();return;}
     this.closing=true;
     try {await this.checkpointAndClose();} finally {this.closing=false;}
