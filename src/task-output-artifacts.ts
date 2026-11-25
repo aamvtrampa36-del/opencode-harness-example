@@ -56,9 +56,12 @@ export function artifactIndexKey(requestId: string): string {
   assertTaskId(requestId);
   return `supervisor:output-index:v1:${requestId}`;
 }
-export function artifactDownloadPath(requestId: string, artifactId: string): string {
+export function artifactDownloadPath(requestId: string, artifactId: string, expiresAt?: number): string {
   assertTaskId(requestId); assertArtifactId(artifactId);
-  return `${TASK_ARTIFACT_PREFIX}/${requestId}/artifacts/${artifactId}`;
+  const path = `${TASK_ARTIFACT_PREFIX}/${requestId}/artifacts/${artifactId}`;
+  if (expiresAt === undefined) return path;
+  assert(Number.isSafeInteger(expiresAt) && expiresAt > 0, "INVALID_ARTIFACT_EXPIRY");
+  return path + "?expires=" + expiresAt;
 }
 
 /** Only an explicit relative dist/ file can be captured; never arbitrary /bundle. */
@@ -140,19 +143,22 @@ export function artifactView(artifact: StoredTaskArtifact): ArtifactView {
     name: artifact.name, mime: artifact.mime, byteSize: artifact.byteSize,
     sha256: artifact.sha256, createdAt: artifact.createdAt,
     delivery: {
-      kind: "authenticated-route", path: artifactDownloadPath(artifact.requestId, artifact.artifactId),
+      kind: "authenticated-route", path: artifactDownloadPath(artifact.requestId, artifact.artifactId, artifact.expiresAt),
       expiresAt: artifact.expiresAt
     }
   };
 }
 
-export function artifactIsOwnedBy(artifact: StoredTaskArtifact | undefined, task: {
+export function artifactMatchesScope(artifact: StoredTaskArtifact | undefined, task: {
   id: string; project: string; session: string; repository: string;
-}, now = Date.now()): boolean {
+}): boolean {
   return Boolean(artifact && artifact.requestId === task.id && artifact.ownerProject === task.project &&
     artifact.ownerSession === task.session && typeof artifact.repository === "string" &&
-    typeof task.repository === "string" && artifact.repository.toLowerCase() === task.repository.toLowerCase() &&
-    Number.isSafeInteger(artifact.expiresAt) && now < artifact.expiresAt);
+    typeof task.repository === "string" && artifact.repository.toLowerCase() === task.repository.toLowerCase());
+}
+
+export function artifactIsOwnedBy(artifact: StoredTaskArtifact | undefined, task: ArtifactTaskScope, now = Date.now()): boolean {
+  return Boolean(artifactMatchesScope(artifact, task) && artifact && Number.isSafeInteger(artifact.expiresAt) && now < artifact.expiresAt);
 }
 
 export function artifactErrorResponse(code: string, status: number): Response {
@@ -206,7 +212,8 @@ export async function verifiedArtifactDownload(artifact: StoredTaskArtifact, now
     "Content-Length": String(artifact.byteSize),
     "Content-Disposition": contentDisposition(artifact.name),
     "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store, private",
-    "Referrer-Policy": "no-referrer", "Cross-Origin-Resource-Policy": "same-origin"
+    "Referrer-Policy": "no-referrer", "Cross-Origin-Resource-Policy": "same-origin",
+    "Content-Security-Policy": "default-src 'none'; sandbox", "Accept-Ranges": "none", "X-Artifact-SHA256": artifact.sha256
   } });
 }
 
