@@ -21,7 +21,7 @@ import type { SessionBackupDrillAgent } from "./session-sql-backup-do";
 declare const __OPENCODE_RELEASE_SHA__: string;
 type SupervisorWorkflowCommand =
   | DrainCommand
-  | {action:"metralla_inspect_consumed"|"metralla_archive_consumed"|"metralla_normal_close"|"metralla_inspect_budget"|"metralla_transition_budget";[key:string]:unknown}
+  | {action:"metralla_inspect_consumed"|"metralla_archive_consumed"|"metralla_normal_close"|"metralla_inspect_budget"|"metralla_transition_budget"|"metralla_native_evidence";[key:string]:unknown}
   | ({ action: "start"; requestId: string; repository: string; prompt: string } &
       import("./staging-control-mcp/start-contract").ReadOnlyStartFields)
   | { action: "status" | "cancel" | "review" | "pilot_close"; id: string }
@@ -62,11 +62,11 @@ export class OpenCodeSupervisorWorkflow extends WorkflowEntrypoint<Env, Supervis
       return step.do("r4-reconcile-frozen-supervisor",{retries:{limit:0,delay:"1 second"}},async()=>
         this.env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE).workflowHistoricalReconcile(args));
     }
-    if(["metralla_inspect_consumed","metralla_archive_consumed","metralla_normal_close","metralla_inspect_budget","metralla_transition_budget"].includes(String(args.action))){
+    if(["metralla_inspect_consumed","metralla_archive_consumed","metralla_normal_close","metralla_inspect_budget","metralla_transition_budget","metralla_native_evidence"].includes(String(args.action))){
       if(env.OPENCODE_SUPERVISOR_ENABLED!=="true"||JSON.stringify(args).length>12000)throw Error("M08_WORKFLOW_SCOPE");
       return step.do("m08-signed-evidence",{retries:{limit:0,delay:"1 second"}},async()=>{
         const host=this.env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE);
-        return args.action==="metralla_normal_close"?host.workflowNormalClose(args):["metralla_inspect_budget","metralla_transition_budget"].includes(String(args.action))?host.workflowBudgetTransition(args):host.workflowConsumedPilot(args);
+        return args.action==="metralla_native_evidence"?host.workflowNativeEvidence(args):args.action==="metralla_normal_close"?host.workflowNormalClose(args):["metralla_inspect_budget","metralla_transition_budget"].includes(String(args.action))?host.workflowBudgetTransition(args):host.workflowConsumedPilot(args);
       });
     }
     // No backup/recovery drill, destructive cleanup or alternate workflow

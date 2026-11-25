@@ -38,7 +38,7 @@ export async function putProjectedSupervisorTask(tx:Write,taskKey:string,task:Su
  if(coverage){
   const event=eventProjection({seq,type:"supervisor.logical."+task.status});
   check(await tx.get(eventKey(task.id,seq))===undefined,"PROJECTION_EVENT_REPLAY");
-  await tx.put(eventKey(task.id,seq),event);
+  await tx.put(eventKey(task.id,seq),{...event,observedAt:Date.now(),session:task.session??null,operationId:task.operationId??null,revision:task.revision??0,releaseSha:task.normalReleaseSha??null});
  }
  await tx.put(key(task.id),row);await tx.put(taskKey,task);
 }
@@ -70,4 +70,21 @@ export function logicalEventSource(storage:Read,task:TaskProjection,expected:Sco
 export async function importProjectionCursorKey(raw:unknown){
  check(typeof raw==="string"&&/^[a-f0-9]{64}$/.test(raw)&&!/^0{64}$/.test(raw),"PROJECTION_CURSOR_KEY_UNAVAILABLE");
  return crypto.subtle.importKey("raw",Uint8Array.from(raw.match(/../g)!,v=>parseInt(v,16)),{name:"HMAC",hash:"SHA-256"},false,["sign","verify"]);
+}
+
+/** Read fixed logical metadata from the atomic projection. Old events without
+ * the release/operation/timestamp fields are explicitly incomplete. */
+export async function readLogicalReceiptPage(storage:Read,task:SupervisorTask,after:string|null){
+ const p=await readTaskProjection(storage,task.id);
+ check(task.normalReleaseSha&&task.session===p.session&&(after===null||/^[1-9][0-9]{0,5}$/.test(after)),"LOGICAL_RECEIPT_SCOPE");
+ const from=after===null?0:Number(after);
+ check(from<=p.seq,"LOGICAL_RECEIPT_CURSOR");
+ const rows=[];
+ for(let seq=from+1;seq<=Math.min(p.seq,from+16);seq++){
+  const x=await storage.get<EventRow&{observedAt:number;session:string|null;operationId:string|null;revision:number;releaseSha:string}>(eventKey(task.id,seq));
+  check(x&&x.seq===seq&&x.releaseSha===task.normalReleaseSha&&natural(x.observedAt)&&natural(x.revision)&&
+    (x.session===null||x.session===task.session)&&(x.operationId===null||x.operationId===task.operationId),"LOGICAL_RECEIPT_COVERAGE_UNKNOWN");
+  rows.push({seq:x.seq,type:eventProjection(x).type,observedAt:x.observedAt,session:x.session,operationId:x.operationId,revision:x.revision,releaseSha:x.releaseSha});
+ }
+ return {source:"supervisor-logical-ledger",requestId:task.id,rows,nextAfter:from+rows.length<p.seq?String(from+rows.length):null,nativeOperationsMeasured:false};
 }

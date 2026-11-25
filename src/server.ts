@@ -22,7 +22,7 @@ import { Lifecycle } from "agents/lifecycle";
 import { createAI } from "agents/models/opencode";
 import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
-import { putProjectedSupervisorTask, readTaskProjection, projectedTaskDirectory, logicalEventSource, importProjectionCursorKey } from "./metralla-m08-task-projection";
+import { putProjectedSupervisorTask, readTaskProjection, projectedTaskDirectory, logicalEventSource, importProjectionCursorKey, readLogicalReceiptPage } from "./metralla-m08-task-projection";
 import { REMOTE_SCHEMA, projectRemoteProgress, validateStatus } from "./staging-control-mcp/p08-remote";
 import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
 // Progress is read from the bounded supervisor ledger, never raw SDK log().
@@ -56,7 +56,7 @@ import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import { GitHubBridge, type GitHubAction } from "./github";
 import { parseNormalApproval, approvedNormalTask, assertNormalTaskPin, assertNormalGitHubFence } from "./metralla-m08-normal-approval";
 import { makeNormalMeteredBinding, normalMeteredPlugin, type NormalContext } from "./metralla-m08-normal-binding";
-import { assertNormalBudgetReady, normalBudgetTransitionSnapshot, transitionConsumedBudget, type BudgetTransition } from "./supervisor-inference-budget";
+import { assertNormalBudgetReady, normalBudgetTransitionSnapshot, transitionConsumedBudget, readProviderReceipts, type BudgetTransition } from "./supervisor-inference-budget";
 import { signedConsumedVerifier, verifyNormalClose, verifyBudgetTransitionSignature, type NormalCloseEvidence } from "./metralla-m08-signed-evidence";
 import { releasePhysicallyClosedNormal } from "./supervisor-admission";
 import { type GitHubSourcePin, assertPinnedGitHubAction } from "./metralla-m05-source";
@@ -197,7 +197,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
     if(!pilotLane&&!start.mode){
-      try{const approval=this.normalApproval();job.githubSource=approvedNormalTask(approval,job).pin;job.normalWorkUntil=approval.policy.normal!.validUntil;
+      try{const approval=this.normalApproval();job.githubSource=approvedNormalTask(approval,job).pin;job.normalWorkUntil=approval.policy.normal!.validUntil;job.normalReleaseSha=approval.releaseSha;
         await assertNormalBudgetReady(this.ctx.storage,approval.policy,approval.preflight);}
       catch{return {id:start.requestId,accepted:false,confirmed:false,stop:true,reason:"NORMAL_METERED_APPROVAL_OR_BUDGET_STOP"};}
     }
@@ -790,6 +790,20 @@ export class OpenCodeAgent extends DurableObject<Env> {
       throw Error("BUDGET_TRANSITION_SCOPE");
     return transitionConsumedBudget(this.ctx.storage,approval.policy,approval.preflight,args.authority,
       a=>verifyBudgetTransitionSignature(cfg.OPENCODE_M08_BUDGET_TRANSITION_KEY,release,args.signature,a));
+  }
+  /** Private account observer readback only; does not start a VM or sign
+   * observations. The reader must independently correlate platform evidence. */
+  async workflowNativeEvidence(raw:unknown):Promise<unknown>{
+    this.assertStagingRemote();
+    if(this.ctx.id.name!==SUPERVISOR_WORKSPACE)throw Error("NATIVE_RECEIPT_SCOPE");
+    const q=raw as {action:string;id:string;session:string;operation:string;releaseSha:string;source:string;after:string|null};
+    if(!q||q.action!=="metralla_native_evidence"||JSON.stringify(q).length>2000||!["do","container","provider"].includes(q.source)||typeof q.id!=="string"||!/^[a-f0-9]{16}$/.test(q.id))throw Error("NATIVE_RECEIPT_SCOPE");
+    const task=await this.supervisedRecord(q.id);
+    if(!task.githubSource||task.normalReleaseSha!==q.releaseSha||q.releaseSha!==__OPENCODE_RELEASE_SHA__||task.session!==q.session||task.operationId!==q.operation||
+      q.session!=="ses_r2_"+q.id||q.operation!=="rc-start-"+q.id)throw Error("NATIVE_RECEIPT_SCOPE");
+    if(q.source==="provider")return readProviderReceipts(this.ctx.storage,task,q.after);
+    if(q.source==="container")return this.env.DEV.getByName(projectContainerName(task.project)).readNativeLinuxReceipts(task.project,q.releaseSha,q.after);
+    return readLogicalReceiptPage(this.ctx.storage,task,q.after);
   }
   async workflowNormalClose(raw:unknown):Promise<unknown>{
     this.assertStagingRemote();
@@ -2520,7 +2534,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           const fresh=await this.supervisedRecord(task.id);
           assertNormalGitHubFence(fresh,slot,ctx.grant,pin,"mutation",sessionID);
           const lease={requestId:task.id,project,generation:slot!.generation,token:slot!.token,expiresAt:Math.min(fresh.normalWorkUntil!,this.normalApproval().expiresAt,Date.now()+180000)};
-          result=await dev.runFenced({source,boot,lease},lease,command);
+          result=await dev.runFenced({source,boot,lease},lease,command,crypto.randomUUID(),fresh.normalReleaseSha!);
         }else result=await (await this.isolatedProject(project, sessionID)).run(project, command);
         const incident = observeLinux(result);
         if (incident) await this.noteIncident(incident);

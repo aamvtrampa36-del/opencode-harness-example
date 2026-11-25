@@ -50,7 +50,8 @@ type Row = { identity: string; requestId: string; operationId: string; callId: s
   attemptId: string; attemptIds: string[]; attempts: number; selection: string;
   providerID: string; modelID: string; price: Price; inputTokenCeiling: number;
   outputTokenCeiling: number; exposure: number; state: "reserved" | "sent" | "unknown" | "rejected" | "settled";
-  reason?: string; receiptId?: string; inputTokens?: number; outputTokens?: number; charge?: number; actualModel?: string };
+  reason?: string; receiptId?: string; inputTokens?: number; outputTokens?: number; charge?: number; actualModel?: string;
+  generation?:number; releaseSha?:string; sessionId?:string; reservedAt?:number; dispatchAt?:number; terminalAt?:number };
 const GLOBAL = "supervisor:inference:budget:v1";
 const TASK = (id: string) => "supervisor:inference:task:" + id;
 const CALL = (id: string, call: string) => "supervisor:inference:call:" + id + ":" + call;
@@ -234,6 +235,8 @@ export async function reserveInference(storage: DurableObjectStorage, grant: Sta
       providerID:allowance.providerID,modelID:allowance.modelID,price:allowance.price,
       inputTokenCeiling:intent.inputTokenCeiling,outputTokenCeiling:intent.outputTokenCeiling,
       exposure:expectedExposure,state:"reserved"};
+    if(policy.normal){const owner=await tx.get<SupervisorTask>("supervisor:task:"+grant.id);
+      if(owner?.githubSource)Object.assign(row,{generation:grant.generation,releaseSha:owner.normalReleaseSha,sessionId:owner.session,reservedAt:Date.now()});}
     adjust(global,{reserved:expectedExposure});adjust(task,{reserved:expectedExposure});
     await tx.put(key,row);await tx.put(TASK(intent.requestId),task);await tx.put(GLOBAL,global);
     return {kind:"reserved" as const,exposureMicroUsd:expectedExposure};
@@ -372,7 +375,7 @@ export async function beginInferenceDispatch(storage: DurableObjectStorage,grant
     }
     if(policy.normal){requireValue(!("kind" in preflight)&&paidPreflight({...preflight,now:Date.now()}).decision==="GO","PAID_PREFLIGHT_STOP");
       normalDispatch(policy.normal,global.normal!,intent,Date.now());await tx.put(GLOBAL,global);}
-    row.state="sent";
+    row.state="sent";if(row.reservedAt!==undefined)row.dispatchAt=Date.now();
     await tx.put(CALL(intent.requestId,intent.callId),row);
     return {proceed:true,state:"sent" as const};
   });
@@ -391,7 +394,7 @@ export async function markInferenceUnknown(storage:DurableObjectStorage,intent:I
     moveNormal(global,intent,"reserved","unknown",row.exposure);
     // Even a zero-rated Free request with an invalid receipt is a stop.
     if(global.hybrid)global.paymentBlocked=true;
-    row.state="unknown";row.reason=reason;
+    row.state="unknown";row.reason=reason;if(row.reservedAt!==undefined)row.terminalAt=Date.now();
     await tx.put(key,row);await tx.put(GLOBAL,global);await tx.put(TASK(intent.requestId),task);
     return {reused:false};
   });
@@ -418,7 +421,7 @@ export async function rejectInferenceBeforeGeneration(storage:DurableObjectStora
     }
     moveNormal(global,intent,"reserved","released",row.exposure);
     if(receipt.code==="402"||receipt.code==="403")global.paymentBlocked=true;
-    row.state="rejected";row.reason=receipt.code;
+    row.state="rejected";row.reason=receipt.code;if(row.reservedAt!==undefined)row.terminalAt=Date.now();
     await tx.put(key,row);await tx.put(GLOBAL,global);await tx.put(TASK(intent.requestId),task);
     return {reused:false};
   });
@@ -460,7 +463,7 @@ export async function settleInference(storage:DurableObjectStorage,intent:Infere
     adjust(global,{[bucket]:-row.exposure,confirmed:charged});
     adjust(task,{[bucket]:-row.exposure,confirmed:charged});
     moveNormal(global,intent,bucket,"confirmed",row.exposure,charged);
-    row.state="settled";row.receiptId=receipt.receiptId;row.inputTokens=receipt.inputTokens;
+    row.state="settled";row.receiptId=receipt.receiptId;row.inputTokens=receipt.inputTokens;if(row.reservedAt!==undefined)row.terminalAt=Date.now();
     row.outputTokens=receipt.outputTokens;row.charge=charged;row.actualModel=receipt.actualModel;
     await tx.put(key,row);await tx.put(receiptKey,key);await tx.put(GLOBAL,global);
     await tx.put(TASK(intent.requestId),task);
@@ -487,7 +490,7 @@ export async function cancelReservedNormalInference(storage:DurableObjectStorage
     requireValue(task,"INFERENCE_LEDGER_MISSING");
     adjust(global,{reserved:-row.exposure});adjust(task,{reserved:-row.exposure});
     moveNormal(global,intent,"reserved","released",row.exposure);
-    row.state="rejected";row.reason="cancelled_before_dispatch";
+    row.state="rejected";row.reason="cancelled_before_dispatch";if(row.reservedAt!==undefined)row.terminalAt=Date.now();
     await tx.put(key,row);await tx.put(GLOBAL,global);await tx.put(TASK(intent.requestId),task);
     return {reused:false};
   });
@@ -576,8 +579,11 @@ export async function transitionConsumedBudget(storage:DurableObjectStorage,poli
       for(const [rowKey,row] of rows){
         requireValue(row.requestId===CONSUMED_PILOT_ID&&rowKey===CALL(row.requestId,row.callId)&&row.attempts===1&&
           ["settled","rejected"].includes(row.state)&&int(row.exposure,0,old.totalMicroUsd),"BUDGET_TRANSITION_CALL_UNSETTLED");
+        const allowed=Object.hasOwn(old.selections,row.selection)?old.selections[row.selection]:undefined;
+        requireValue(allowed&&allowed.providerID===row.providerID&&allowed.modelID===row.modelID&&await reconciliationDigest(row.price)===await reconciliationDigest(allowed.price),"BUDGET_TRANSITION_CALL_POLICY");
         if(row.state==="settled"){
-          requireValue(int(row.charge,0,row.exposure)&&typeof row.receiptId==="string"&&await tx.get(RECEIPT(row.providerID,row.receiptId))===rowKey,"BUDGET_TRANSITION_RECEIPT_INVALID");
+          requireValue(int(row.charge,0,row.exposure)&&int(row.inputTokens,0,row.inputTokenCeiling)&&int(row.outputTokens,0,row.outputTokenCeiling)&&
+            row.charge===Math.ceil((row.inputTokens!*allowed.price.inputMicroUsdPerMillion+row.outputTokens!*allowed.price.outputMicroUsdPerMillion)/1000000)&&typeof row.receiptId==="string"&&await tx.get(RECEIPT(row.providerID,row.receiptId))===rowKey,"BUDGET_TRANSITION_RECEIPT_INVALID");
           confirmed+=row.charge!;
         }
       }
@@ -594,4 +600,25 @@ export async function transitionConsumedBudget(storage:DurableObjectStorage,poli
     await tx.put(GLOBAL,{version:1,policy:snap,paymentBlocked:false,...zero(),normal:newNormalState(policy.normal!) } satisfies Global);
     return {digest,reused:false};
   });
+}
+
+/** Fixed metadata projection of the authoritative provider journal. No prompt,
+ * response text, credentials or reservation token. Lexical cursor is scoped
+ * by the private observer Workflow; not a provider-native start/end oracle. */
+export async function readProviderReceipts(storage:Pick<DurableObjectStorage,"list">,task:SupervisorTask,after:string|null,limit=16){
+  requireValue(task.githubSource&&typeof task.normalReleaseSha==="string"&&/^[a-f0-9]{40}$/.test(task.normalReleaseSha)&&task.session==="ses_r2_"+task.id&&task.operationId==="rc-start-"+task.id&&
+    (after===null||CALL_ID.test(after))&&int(limit,1,16),"PROVIDER_RECEIPT_SCOPE");
+  const prefix="supervisor:inference:call:"+task.id+":";
+  const rows=await storage.list<Row>({prefix,...(after?{startAfter:prefix+after}:{}),limit:limit+1});
+  requireValue(rows.size<=limit+1,"PROVIDER_RECEIPT_LIMIT");
+  const selected=[...rows].slice(0,limit).map(([key,row])=>{
+    requireValue(key===prefix+row.callId&&row.requestId===task.id&&row.sessionId===task.session&&row.operationId===task.operationId&&row.releaseSha===task.normalReleaseSha&&
+      int(row.generation,1,Number.MAX_SAFE_INTEGER)&&int(row.reservedAt,0,Number.MAX_SAFE_INTEGER)&&
+      (row.dispatchAt===undefined||int(row.dispatchAt,row.reservedAt!,Number.MAX_SAFE_INTEGER))&&
+      (row.terminalAt===undefined||int(row.terminalAt,row.dispatchAt??row.reservedAt!,Number.MAX_SAFE_INTEGER)),"PROVIDER_RECEIPT_COVERAGE_UNKNOWN");
+    return {requestId:row.requestId,sessionId:row.sessionId,operationId:row.operationId,releaseSha:row.releaseSha,generation:row.generation,
+      callId:row.callId,providerID:row.providerID,modelID:row.modelID,state:row.state,reservedAt:row.reservedAt,dispatchAt:row.dispatchAt??null,
+      terminalAt:row.terminalAt??null,providerReceiptHash:row.receiptId??null,inputTokens:row.inputTokens??null,outputTokens:row.outputTokens??null,chargedMicroUsd:row.charge??null};
+  });
+  return {source:"provider-dispatch-ledger",rows:selected,nextAfter:rows.size>limit?selected.at(-1)!.callId:null,nativeProviderTimingVerified:false};
 }

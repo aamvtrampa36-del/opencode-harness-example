@@ -28,6 +28,8 @@ import { validateIsolatedRegistration, type IsolatedProject } from "./project-co
 import { assertRecoverableContainer, checkpointSnapshot, SNAPSHOT_TTL_MS } from "./snapshot-policy";
 import { CLOSE_KEY, assertCloseRecord, assertRecoveryCheckpoint, type IdleCloseRecord } from "./metralla-m03-close";
 import { BUN_RUNTIME_VERSION, commandRequiresBun } from "./dev-runtime";
+import { beginLinuxReceipt, advanceLinuxReceipt, linuxReceiptPage } from "./metralla-m08-native-receipts";
+declare const __OPENCODE_RELEASE_SHA__:string;
 
 /**
  * Opt-in Linux computer. There is exactly ONE named instance ("personal")
@@ -779,7 +781,7 @@ export class DevContainer extends DurableObject<Env> {
 
   /** Explicit fenced normal-lane command path. Existing unscoped legacy Linux
    * is not upgraded by guessing identity. No implicit start or bootstrap here. */
-  async runFenced(scope:ExecutionScope,currentLease:Lease,command:string):Promise<LinuxResult>{
+  async runFenced(scope:ExecutionScope,currentLease:Lease,command:string,callId?:string,releaseSha?:string):Promise<LinuxResult>{
     if(this.closing||await this.ctx.storage.get(CLOSE_KEY))throw Error("M03_CLOSE_IN_PROGRESS");
     const id=assertLinuxExecutionScope(this.ctx.id.name,scope.source.project);
     const cmd=validateCommand(command);
@@ -802,16 +804,20 @@ export class DevContainer extends DurableObject<Env> {
       assertExecutionIdentity(scope,receipt,observed,currentLease,this.configuredNormalImages(),Date.now());
       const container=this.ctx.container;
       if(!container?.running)throw Error("M03_VM_IDENTITY_MISMATCH");
-      return await this.runExclusive(id,cmd,container,async()=>{
+      if(typeof releaseSha!=="string"||releaseSha!==__OPENCODE_RELEASE_SHA__||!callId)throw Error("LINUX_RECEIPT_SCOPE");
+      const commandHash=await sha256Hex(new TextEncoder().encode(cmd));
+      const seq=await this.ctx.storage.transaction(tx=>beginLinuxReceipt(tx,scope,callId,releaseSha,commandHash));
+      const observe=(event:Parameters<typeof advanceLinuxReceipt>[3])=>this.ctx.storage.transaction(tx=>advanceLinuxReceipt(tx,seq,callId,event));
+      try{return await this.runExclusive(id,cmd,container,async()=>{
         assertExecutionIdentity(scope,receipt,await this.observeNormalBoot(id),currentLease,this.configuredNormalImages(),Date.now());
         const remaining=currentLease.expiresAt-Date.now();
         if(remaining<=0)throw Error("M03_LEASE_FENCED");
         return AbortSignal.timeout(Math.min(remaining,180000));
-      });
+      },observe);}catch(e){await observe({kind:"unknown"}).catch(()=>{});throw e;}
     } finally {release();}
   }
 
-  private async runExclusive(project: string, command: string, existing?:NonNullable<DurableObjectState["container"]>, fencedSignal?:()=>Promise<AbortSignal>): Promise<LinuxResult> {
+  private async runExclusive(project: string, command: string, existing?:NonNullable<DurableObjectState["container"]>, fencedSignal?:()=>Promise<AbortSignal>,observe?:(event:Parameters<typeof advanceLinuxReceipt>[3])=>Promise<void>): Promise<LinuxResult> {
     const container = existing ?? await this.ensureRunning();
     if(this.closing)throw Error("M03_CLOSE_IN_PROGRESS");
     this.busy++;
@@ -827,6 +833,7 @@ export class DevContainer extends DurableObject<Env> {
       const process = await container.exec(["node", "-e",
         linuxProjectCwdSource() + "\n" + LINUX_RUNNER_SOURCE, command, project],
         fencedSignal?{signal:await fencedSignal()}:pilot?{signal:await this.pilotSignal(180_000)}:undefined);
+      if(observe)await observe({kind:"accepted"});
       // Drain both pipes while the process runs. output() accumulates unbounded
       // stdout/stderr *before* a later slice, which can exhaust the DO isolate.
       const [stdout, stderr, exitCode] = await Promise.all([
@@ -834,6 +841,7 @@ export class DevContainer extends DurableObject<Env> {
         captureBoundedOutput(process.stderr, MAX_SHELL_OUTPUT),
         process.exitCode
       ]);
+      if(observe)await observe({kind:"exited",exitCode,truncated:stdout.truncated||stderr.truncated});
       await this.recordProject(project);
       return {
         project,
@@ -959,6 +967,11 @@ export class DevContainer extends DurableObject<Env> {
       return r.bootId===receipt.bootId&&r.nodeVersion===receipt.nodeVersion&&
         !await this.ctx.storage.get("pilot-close-requested-v1");
     }finally{this.busy--;}
+  }
+
+  async readNativeLinuxReceipts(project:string,releaseSha:string,after:string|null){
+    if(this.ctx.id.name!=="project-v1:"+project||releaseSha!==__OPENCODE_RELEASE_SHA__)throw Error("LINUX_RECEIPT_SCOPE");
+    return linuxReceiptPage(this.ctx.storage,project,releaseSha,after);
   }
 
   /** Internal project-scoped readback for the supervisor; never a native closure attestation. */

@@ -62,6 +62,7 @@ export type SupervisorTask = {
   githubSource?: import("./metralla-m05-source").GitHubSourcePin;
   /** Exact server-approved work deadline, distinct from the pre-effect admission TTL. */
   normalWorkUntil?: number;
+  normalReleaseSha?: string;
   /** Immutable requested pins; baseCommit alone records the verified commit. */
   mode?: SupervisorMode;
   sourceCommit?: string;

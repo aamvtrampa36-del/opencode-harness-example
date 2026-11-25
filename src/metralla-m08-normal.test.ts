@@ -8,7 +8,7 @@ import type { AdmissionSlot } from "./supervisor-admission";
 const id="0123456789abcdef",session="ses_r2_"+id,repo="aamvtrampa36-del/opencode-harness-example",now=Date.now();
 const grant={id,token:"12345678-1234-1234-1234-123456789abc",generation:1};
 const pin={repo,base:"metralla/integracion-01",branch:"opencode/staging-"+id,commit:"a".repeat(40),tree:"b".repeat(40),paths:["src/client.tsx"]};
-const task:SupervisorTask={id,repository:repo,branch:pin.branch,project:"supervised-"+id,fingerprint:"c".repeat(64),status:"running",session,sessionIdPolicy:"deterministic-v1",createdAt:now,operationId:"rc-start-"+id,model:"cloudflare",githubSource:pin,baseCommit:pin.commit,sourceTree:pin.tree,normalWorkUntil:now+600000};
+const task:SupervisorTask={id,repository:repo,branch:pin.branch,project:"supervised-"+id,fingerprint:"c".repeat(64),status:"running",session,sessionIdPolicy:"deterministic-v1",createdAt:now,operationId:"rc-start-"+id,model:"cloudflare",githubSource:pin,baseCommit:pin.commit,sourceTree:pin.tree,normalWorkUntil:now+600000,normalReleaseSha:"e".repeat(40)};
 const slot:AdmissionSlot={token:grant.token,generation:1,expiresAt:now+60000,phase:"running"};
 const proof:PaidPreflight={now,exclusiveLeaseVerified:true,actualSdkInterceptorVerified:true,noUncontrolledRoutesVerified:true,disposabilityVerified:true,
  services:Object.fromEntries(["workers_ai","openrouter","workers","durable_objects","containers","github_actions"].map(k=>[k,{active:true,routeBound:true,hardStopProven:true,exclusiveAccount:true,measuredAt:now-100,validUntil:now+600000,remainingMicroUsd:100000,worstInFlightMicroUsd:1000}]))};

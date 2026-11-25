@@ -46,7 +46,7 @@ export function assertNormalTaskPin(a:NormalApproval,task:SupervisorTask){
   const x=approvedNormalTask(a,task);
   check(task.githubSource&&sameGitHubSourcePin(task.githubSource,x.pin)&&
     (!task.baseCommit||task.baseCommit===x.pin.commit)&&(!task.sourceTree||task.sourceTree===x.pin.tree)&&
-    task.normalWorkUntil===a.policy.normal!.validUntil,
+    task.normalWorkUntil===a.policy.normal!.validUntil&&task.normalReleaseSha===a.releaseSha,
     "NORMAL_DURABLE_PIN_MISMATCH");return x.pin;
 }
 export function assertNormalGitHubFence(task:SupervisorTask|undefined,slot:AdmissionSlot|undefined,grant:StartGrant,pin:GitHubSourcePin,

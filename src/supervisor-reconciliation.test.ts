@@ -220,9 +220,9 @@ async function migrationFixture(mode:"none"|"settled"|"unknown"|"paymentBlocked"
  const policy=pilotBudgetPolicy(pid,uuid,10);
  if(mode!=="none"){
   const call="fixture",key="supervisor:inference:call:"+pid+":"+call;
-  await db.put(key,{requestId:pid,callId:call,attempts:1,state:mode==="unknown"?"unknown":"settled",exposure:20,charge:12,providerID:"openrouter",receiptId:"fixture_receipt"});
+  await db.put(key,{requestId:pid,callId:call,attempts:1,state:mode==="unknown"?"unknown":"settled",exposure:0,charge:0,providerID:"openrouter",receiptId:"fixture_receipt",selection:PILOT_FREE,modelID:"openrouter/free",price:policy.selections[PILOT_FREE].price,inputTokenCeiling:100,outputTokenCeiling:100,inputTokens:10,outputTokens:2});
   await db.put("supervisor:inference:receipt:openrouter:fixture_receipt",key);
-  const counter={confirmed:mode==="unknown"?0:12,reserved:0,unknown:mode==="unknown"?20:0};
+  const counter={confirmed:0,reserved:0,unknown:mode==="unknown"?20:0};
   await db.put("supervisor:inference:task:"+pid,counter);
   // Match canonical snapshot ordering used by actual budget journal.
   const {selections,...rest}=policy;
