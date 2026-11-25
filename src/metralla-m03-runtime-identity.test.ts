@@ -1,6 +1,7 @@
 import {test,expect} from "bun:test";
 import {readFileSync} from "node:fs";
 import * as guards from "./metralla-m03-execution-identity";
+import {CLOSE_KEY} from "./metralla-m03-close";
 import {captureBoundedOutput} from "./bounded-process-output";
 import {assertLinuxExecutionScope,validateCommand,linuxProjectCwdSource,MAX_SHELL_OUTPUT} from "./dev-guard";
 const src=readFileSync(new URL("./dev-container.ts",import.meta.url),"utf8");
@@ -12,8 +13,8 @@ function section(start:string,end:string){
 const methods=section("  private async ensureRunning()","  /** Read-only pre-admission gate.")+
  section("  async run(project:","  /** Debian's minimal managed image");
 const js=new Bun.Transpiler({loader:"ts"}).transformSync("class Projected {\n"+methods+"\n}");
-const Projected=new Function("assertRuntime","assertSourceReceipt","assertImagePolicy","assertLease","assertExecutionIdentity","assertLinuxExecutionScope","validateCommand","linuxProjectCwdSource","MAX_SHELL_OUTPUT","captureBoundedOutput","commandRequiresBun","LINUX_RUNNER_SOURCE",js+"\nreturn Projected;")(
- guards.assertRuntime,guards.assertSourceReceipt,guards.assertImagePolicy,guards.assertLease,guards.assertExecutionIdentity,assertLinuxExecutionScope,validateCommand,linuxProjectCwdSource,MAX_SHELL_OUTPUT,captureBoundedOutput,()=>false,"// fixture runner");
+const Projected=new Function("CLOSE_KEY","assertRuntime","assertSourceReceipt","assertImagePolicy","assertLease","assertExecutionIdentity","assertLinuxExecutionScope","validateCommand","linuxProjectCwdSource","MAX_SHELL_OUTPUT","captureBoundedOutput","commandRequiresBun","LINUX_RUNNER_SOURCE",js+"\nreturn Projected;")(
+ CLOSE_KEY,guards.assertRuntime,guards.assertSourceReceipt,guards.assertImagePolicy,guards.assertLease,guards.assertExecutionIdentity,assertLinuxExecutionScope,validateCommand,linuxProjectCwdSource,MAX_SHELL_OUTPUT,captureBoundedOutput,()=>false,"// fixture runner");
 const project="supervised-0123456789abcdef",objectId="a".repeat(64),bootLabel="12345678-1234-1234-1234-123456789abc",bootId="23456789-1234-1234-1234-123456789abc";
 const ref="cloudflare/debian-trixie";
 const source={project,repository:"aamvtrampa36-del/opencode-harness-example",commit:"b".repeat(40),tree:"c".repeat(40)};
