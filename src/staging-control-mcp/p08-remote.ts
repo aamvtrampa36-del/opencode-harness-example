@@ -23,6 +23,21 @@ export function remoteScope(id:unknown,w:unknown):RemoteScope {
 export function validCursor(cursor:unknown):cursor is string {
   return typeof cursor==="string" && cursor.length<=MAX_CURSOR && /^[a-f0-9]+\.[a-f0-9]{64}$/.test(cursor);
 }
+// The HMAC is verified by the authoritative backend. At this boundary also
+// compare the claimed position and scope digest, preventing a valid-shaped
+// upstream page from silently skipping/replaying events.
+function cursorPosition(token:string):{digest:string;position:number} {
+  if(!validCursor(token)) return fail("REMOTE_CURSOR_INVALID");
+  try {
+    const body=token.split(".")[0];
+    if(body.length%2) throw Error();
+    const decoded=new TextDecoder("utf-8",{fatal:true}).decode(Uint8Array.from(body.match(/../g)!,v=>parseInt(v,16)));
+    const value=JSON.parse(decoded);
+    if(!Array.isArray(value)||value.length!==2||typeof value[0]!=="string"||!/^[a-f0-9]{64}$/.test(value[0])||
+      typeof value[1]!=="string"||!(/^[1-9][0-9]{0,15}$/.test(value[1]))||!natural(Number(value[1])))throw Error();
+    return {digest:value[0],position:Number(value[1])};
+  } catch {return fail("REMOTE_CURSOR_INVALID");}
+}
 function sameScope(raw:Record<string,unknown>,scope:RemoteScope) {
   if(raw.id!==scope.id||raw.workspace!==scope.workspace) fail("REMOTE_UPSTREAM_IDENTITY_MISMATCH");
 }
@@ -50,6 +65,8 @@ export function validateProgress(raw:unknown,scope:RemoteScope,requested:string|
   if(x.requestCursor!==(requested??null)||!natural(x.from)||(!requested&&x.from!==0)||
     !natural(x.nextAfter)||typeof x.complete!=="boolean"||!Array.isArray(x.events)||x.events.length>MAX_EVENTS)
     return fail("REMOTE_PAGE_INVALID");
+  const prior=requested===undefined?null:cursorPosition(requested);
+  if(prior&&x.from!==prior.position) return fail("REMOTE_CURSOR_POSITION_MISMATCH");
   let last=x.from;
   const events:{seq:number;type:string}[]=[];
   for(const rawEvent of x.events) {
@@ -59,6 +76,10 @@ export function validateProgress(raw:unknown,scope:RemoteScope,requested:string|
   }
   if(x.nextAfter!==last || (x.complete ? x.cursor!==null : !validCursor(x.cursor)||last===x.from||x.cursor===requested))
     return fail("REMOTE_CURSOR_NOT_ADVANCED");
+  if(!x.complete){
+    const next=cursorPosition(x.cursor as string);
+    if(next.position!==last||(prior&&prior.digest!==next.digest))return fail("REMOTE_CURSOR_POSITION_MISMATCH");
+  }
   return checked({schema:REMOTE_SCHEMA,...scope,requestCursor:requested??null,from:x.from,events,
     nextAfter:last,cursor:x.cursor,complete:x.complete,pageAvailable:true,passed:false,verified:false,nativeOperationsMeasured:false});
 }

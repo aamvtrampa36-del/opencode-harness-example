@@ -1,0 +1,48 @@
+name: Metralla P09 integrated M02 offline
+on:
+  push:
+    branches: [metralla/m02]
+    paths:
+      - '.github/workflows/metralla-p09-offline.yml'
+      - 'scripts/f0-c10/metralla-m02/**'
+      - 'src/staging-control-mcp/**'
+      - 'src/metralla-m02-*'
+permissions:
+  contents: read
+concurrency:
+  group: metralla-p09-offline
+  cancel-in-progress: false
+jobs:
+  offline:
+    if: github.event.repository.private == false && github.ref == 'refs/heads/metralla/m02'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Exact SHA and certified predecessors
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor 837dce9b283f6b4b0b2ba939407883ec95be726a HEAD
+          git merge-base --is-ancestor 2a34b3447f259a59c7a56d9d5883aa926c995582 HEAD
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+          no-cache: true
+      - run: bun install --frozen-lockfile
+      - name: Integrated Node suite and benchmark
+        run: node --experimental-strip-types --test src/metralla-m02-phase-evidence.test.ts src/metralla-m02-phase-journal.test.ts scripts/f0-c10/r3-memory-baseline.test.mjs scripts/f0-c10/phase-memory-profile.test.mjs scripts/f0-c10/metralla-m02/projection.test.mjs src/staging-control-mcp/p08-remote.test.mjs scripts/f0-c10/metralla-m02/p09-integration.test.mjs
+      - name: Bun regression
+        run: bun test src/supervisor-phase-telemetry.test.ts src/supervisor-metrics.test.ts src/supervisor-directory.test.ts src/supervisor-progress.test.ts src/supervisor-transcript-containment.test.ts src/staging-control-mcp/server.test.ts src/staging-control-mcp/p08-mcp.test.ts
+      - run: bun run typecheck
+      - run: bun scripts/check-invariants.mjs
+      - run: bun run build
+      - run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
