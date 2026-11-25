@@ -180,6 +180,12 @@ function intentFingerprint(intent:InferenceIntent){return JSON.stringify({reques
 function moveNormal(global:Global,intent:InferenceIntent,from:"reserved"|"unknown",to:"unknown"|"confirmed"|"released",exposure:number,charge=0){
   if(global.normal){const p=(JSON.parse(global.policy) as BudgetPolicy).normal;requireValue(p,"NORMAL_LEDGER_POLICY_MISMATCH");normalRoundMove(p,global.normal,intent,from,to,exposure,charge);}
 }
+/** Read-only preflight; never replaces/archives an incompatible historical ledger. */
+export async function assertNormalBudgetReady(storage:DurableObjectStorage,policy:BudgetPolicy,proof:PaidPreflight){
+  requireValue(policy.normal&&!policy.hybrid&&paidPreflight({...proof,now:Date.now()}).decision==="GO","PAID_PREFLIGHT_STOP");
+  const snap=policySnapshot(policy);
+  await storage.transaction(async tx=>{const g=await readGlobal(tx,snap,policy);requireValue(!g.paymentBlocked&&g.unknown===0,"NORMAL_UNRESOLVED_CHARGE");});
+}
 /** Same T03 Durable Object owner. No external RPC/await other than DO storage inside the tx. */
 export async function reserveInference(storage: DurableObjectStorage, grant: StartGrant,
   intent: InferenceIntent, policy: BudgetPolicy) {

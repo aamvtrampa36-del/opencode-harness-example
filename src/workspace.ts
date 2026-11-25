@@ -383,7 +383,7 @@ export function workspacePlugin(
                 path: { type: "string", description: "Repository-relative text file path; full-content writes are limited to 100KB, exact replacements to 128KB targets" },
                 ref: { type: "string", description: "Read-only branch, tag or commit" },
                 content: { type: "string", description: "Full text content for GitHub write (100000-byte maximum); do not pass together with replacement fields" },
-                expectedHead: { type: "string", description: "Current 40-character Git commit SHA for an exact replacement" },
+                expectedHead: { type: "string", description: "Current 40-character Git commit SHA; required for all supervised full or replacement writes" },
                 oldText: { type: "string", description: "Unique existing text to replace; non-empty and at most 8192 UTF-8 bytes" },
                 newText: { type: "string", description: "Replacement text; at most 8192 UTF-8 bytes" },
                 message: { type: "string", description: "Git commit message" },
@@ -400,6 +400,7 @@ export function workspacePlugin(
               if (scopeGuard) await scopeGuard(context.sessionID, {
                 kind: "github", repo: (input as { repo: string }).repo,
                 operation: action,
+                ...(["read","write"].includes(action ?? "") ? { path: (input as { path?: string }).path } : {}),
                 ...(action === "read" ? { ref: (input as { ref?: string }).ref } : {}),
                 ...(["write", "pr", "review", "branch"].includes(action ?? "") ?
                   { branch: (input as { branch?: string }).branch } : {})
@@ -420,7 +421,7 @@ export function workspacePlugin(
             context.sessionID, context.agent, action,
             getBoundRepository,
             async (sessionID, repo) => scopeGuard(sessionID, { kind: "github", repo, operation: action.action,
-              ...("branch" in action ? { branch: action.branch } : {}), ...("ref" in action ? { ref: action.ref } : {}) }),
+              ...("branch" in action ? { branch: action.branch } : {}), ...("ref" in action ? { ref: action.ref } : {}), ...("path" in action ? { path: action.path } : {}) }),
             (input) => github.execute(input, context.sessionID)
           );
           editor.add({

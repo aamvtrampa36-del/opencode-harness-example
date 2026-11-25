@@ -53,11 +53,15 @@ import { getOpenRouterCatalogue } from "./openrouter-catalog";
 import { assertOpenRouterImageModel, generateOpenRouterImage, getOpenRouterImageModels } from "./openrouter-images";
 import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import { GitHubBridge, type GitHubAction } from "./github";
+import { parseNormalApproval, approvedNormalTask, assertNormalTaskPin, assertNormalGitHubFence } from "./metralla-m08-normal-approval";
+import { makeNormalMeteredBinding, normalMeteredPlugin, type NormalContext } from "./metralla-m08-normal-binding";
+import { assertNormalBudgetReady } from "./supervisor-inference-budget";
+import { type GitHubSourcePin, assertPinnedGitHubAction } from "./metralla-m05-source";
 import { DurableGitHubPublicationGate, assertSupervisedPublicationScope } from "./github-publication-durable";
 import { verifyG8Proofs, G8_PROOFS } from "./g8-smoke";
 import { assessG8LiveHistory, g8LivePrompt, G8_LIVE_CHECK_VERSION, type G8LiveCheck } from "./g8-live-agent";
 import { G9_PROOF_VERSION, G9_REPO, G9_BRANCH, G9_PROJECT, G9_SOURCE, G9_TEST_PATH, G9_BROKEN, G9_FIXED, G9_TEST_SOURCE, assessG9History, g9AgentPrompt, assertG9BoundGitHubOperation, type G9ProofState } from "./g9-selfdev";
-import { assertScopedTool, requireSameScope, scopeStorageKey, validateProjectScope, type ProjectScope, type ScopedToolAction } from "./project-scope";
+import { assertScopedTool, requireSameScope, scopeStorageKey, validateProjectScope, bindPinnedGitHubScope, requirePinnedGitHubScope, type ProjectScope, type ScopedToolAction } from "./project-scope";
 import { remoteMcpPlugin } from "./mcp-plugin";
 import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST, agentCheckStorageKeys, DEFAULT_AGENT_CHECK_STORAGE_KEYS, OPENROUTER_BUN_CHECK_STORAGE_KEYS, type AgentCheckStorageKeys } from "./agent-check";
 import { inlinePreviewAssets } from "./preview-inline";
@@ -189,6 +193,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       sessionCreationAttempted: false, sessionIdPolicy: "deterministic-v1", revision: 0,
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
+    if(!pilotLane&&!start.mode){
+      try{const approval=this.normalApproval();job.githubSource=approvedNormalTask(approval,job).pin;
+        await assertNormalBudgetReady(this.ctx.storage,approval.policy,approval.preflight);}
+      catch{return {id:start.requestId,accepted:false,confirmed:false,stop:true,reason:"NORMAL_METERED_APPROVAL_OR_BUDGET_STOP"};}
+    }
     const pilotClaim = pilotApproval ? {approval:pilotApproval,instance:this.pilotInstance,
       objectId:this.ctx.id.toString(),startedAt:job.createdAt} : undefined;
     let nativeQuiescence:Awaited<ReturnType<OpenCodeAgent["observeHistoricalNative"]>>|undefined;
@@ -496,16 +505,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const key = supervisorTaskKey(job.id);
     try {
       if(this.pilotLaneId())await this.requirePilotTask(job);
+      else {const approval=this.normalApproval();assertNormalTaskPin(approval,job);await assertNormalBudgetReady(this.ctx.storage,approval.policy,approval.preflight);}
       if (!job.baseCommit) {
         // The deterministic branch reservation safely recovers after a lost GitHub response.
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "github_branch");
         const branchResult = await trace.run("github_branch", "ensure", () =>
-          this.githubRunner.ensureSupervisorBranch(job.repository, job.branch, job.pilotInstance?job:undefined));
-        const sha = supervisorBaseCommit(branchResult, job.repository);
+          this.githubRunner.ensureSupervisorBranch(job.repository, job.branch, job, grant));
+        const sha = job.githubSource ? branchResult.sha : supervisorBaseCommit(branchResult, job.repository);
+        if(job.githubSource&&(sha!==job.githubSource.commit||branchResult.source!==job.githubSource.base||branchResult.branch!==job.githubSource.branch))throw Error("NORMAL_BRANCH_RECEIPT_MISMATCH");
         await supervisorConfirmExternalEffect(this.ctx.storage, grant, "github_branch", { confirmed: true });
         job = await this.updatePreparingSupervisorTask(grant, fresh => {
           if (fresh.baseCommit && fresh.baseCommit !== sha) throw Error("SUPERVISOR_BASE_CHANGED");
-          return { ...fresh, baseCommit: sha };
+          return { ...fresh, baseCommit: sha, ...(fresh.githubSource?{sourceTree:fresh.githubSource.tree}:{}) };
         });
       }
       if(this.pilotLaneId())await this.requirePilotTask(job);
@@ -543,7 +554,17 @@ export class OpenCodeAgent extends DurableObject<Env> {
           project: job.project, repository: job.repository
         });
       }
-      await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
+      if(job.githubSource){const pin=assertNormalTaskPin(this.normalApproval(),job);await this.ctx.storage.transaction(async tx=>{
+        const fresh=await tx.get<SupervisorTask>(key);
+        if(!fresh||fresh.session!==job.session||!await supervisorGrantStillOwned(tx,grant))throw Error("ADMISSION_FENCE_REJECTED");
+        assertNormalTaskPin(this.normalApproval(),fresh);
+        const scope=await tx.get<ProjectScope>(scopeStorageKey(job.session!));
+        if(!scope||scope.project!==fresh.project)throw Error("NORMAL_SCOPE_MISSING");
+        const reverse=await tx.get<string>("supervisor:session:"+job.session);
+        if(reverse&&reverse!==job.id)throw Error("NORMAL_SCOPE_CONFLICT");
+        await tx.put(scopeStorageKey(job.session!),bindPinnedGitHubScope(scope,pin));
+        await tx.put("supervisor:session:"+job.session,job.id);
+      });}else await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
       if(this.pilotLaneId()){
         await this.requirePilotTask(job);
         if(job.pilotPreparation)throw Error("PILOT_PREPARATION_NO_REPLAY");
@@ -564,7 +585,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (!job.operationId) {
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "configure");
         await trace.run("configure", "setAgent", () => handle.setAgent("build"));
-        const model = resolveModelSelection(job.model ?? "economy");
+        const model = job.githubSource ? {providerID:"cloudflare",id:PILOT_GLM} : resolveModelSelection(job.model ?? "economy");
         await trace.run("configure", "setModel", () => handle.setModel(model));
         await supervisorConfirmExternalEffect(this.ctx.storage, grant, "configure", { confirmed: true });
         // Atomically retain any concurrent cancellation or turn cursor.
@@ -819,6 +840,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     this.assertStagingRemote();
     const task = await this.supervisedRecord(id);
+    if(task.githubSource)throw Error("NORMAL_MODEL_CHANGE_REQUIRES_NEW_APPROVAL");
     if (task.mode === "read_only") throw Error("SUPERVISOR_READ_ONLY_MODEL_CHANGE_FORBIDDEN");
     const selected = await this.supervisorModel(model);
     if (!task.session || ["cancelled", "cancel_requested", "failed"].includes(task.status)) {
@@ -858,6 +880,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const prompt = v.prompt.trim();
     const operationId = supervisorTurnOperationId(id, turnId);
     const initial = await this.supervisedRecord(id);
+    if(initial.githubSource)throw Error("NORMAL_CONTINUATION_REQUIRES_NEW_OPERATION_APPROVAL");
     if (initial.mode === "read_only") {
       await this.requireReadOnlyTaskScope(initial, initial.session!);
       return { taskId: id, accepted: false, confirmed: false, stop: true,
@@ -1613,6 +1636,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     if(retiredOwner&&await retiredHistoricalTask(this.ctx.storage,retiredOwner))throw Error("HISTORICAL_TASK_QUARANTINED");
     const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
     if (this.ctx.id?.name === SUPERVISOR_WORKSPACE && !scope) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
+    if(scope?.githubSource&&action.kind==="github"&&action.operation==="read"&&!action.ref)action={...action,ref:scope.githubSource.commit};
     assertScopedTool(scope, action);
     const readOnly = await this.readOnlyTaskForScope(scope, sessionID);
     if (readOnly) {
@@ -1918,6 +1942,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const match = /^opencode\/staging-([a-f0-9]{16})$/.exec(input.branch);
     const task = match
       ? await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(match[1])) : undefined;
+    if(!this.pilotLaneId())throw Error("NORMAL_PUBLICATION_REQUIRES_PINNED_ROUTE");
     if (task?.mode === "read_only") throw Error("SUPERVISOR_READ_ONLY_PUBLICATION_FORBIDDEN");
     assertSupervisedPublicationScope(input, sessionID, task);
     const pilot=this.pilotLaneId()?await this.pilotContext(sessionID):undefined;
@@ -1935,6 +1960,29 @@ export class OpenCodeAgent extends DurableObject<Env> {
       }),pilot?{branch:input.branch,sha:task!.baseCommit!,base:PILOT_BASE}:undefined).execute(input);
   }
 
+  private normalApproval(){
+    this.assertStagingRemote();if(this.ctx.id.name!==SUPERVISOR_WORKSPACE||this.pilotLaneId())throw Error("NORMAL_WRONG_AUTHORITY");
+    return parseNormalApproval((this.env as Env & {OPENCODE_NORMAL_AUTHORIZATION?:string}).OPENCODE_NORMAL_AUTHORIZATION,
+      typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"");
+  }
+  private async normalContext(session:string):Promise<NormalContext>{
+    const approval=this.normalApproval();const match=/^ses_r2_([a-f0-9]{16})$/.exec(session);if(!match)throw Error("NORMAL_SESSION_REQUIRED");
+    const id=match[1];const task=await this.supervisedRecord(id),pin=assertNormalTaskPin(approval,task);
+    const slot=await supervisorAdmissionSlot(this.ctx.storage,id);if(!slot)throw Error("NORMAL_ADMISSION_REQUIRED");
+    const grant={id,token:slot.token,generation:slot.generation};assertNormalGitHubFence(task,slot,grant,pin,"mutation",session);
+    const scope=await this.ctx.storage.get<ProjectScope>(scopeStorageKey(session));requirePinnedGitHubScope(scope,pin);
+    if(await this.ctx.storage.get<string>("supervisor:session:"+session)!==id)throw Error("NORMAL_SESSION_SCOPE");
+    const selection=task.model??"economy";return {storage:this.ctx.storage,grant,policy:approval.policy,preflight:approval.preflight,selection,operationId:task.operationId!,contextBoundEvidence:approval.contextBoundEvidence[selection]};
+  }
+  private normalPublicationGate(grant:StartGrant,pin:GitHubSourcePin,phase:"branch"|"mutation",session?:string){
+    return new DurableGitHubPublicationGate(this.ctx.storage,Date.now,async(tx,scope)=>{
+      const fresh=await tx.get<SupervisorTask>(supervisorTaskKey(grant.id));
+      if(!fresh||scope.repo.toLowerCase()!==pin.repo||scope.base!==pin.base||scope.branch!==pin.branch)throw Error("NORMAL_PUBLICATION_SCOPE");
+      assertNormalTaskPin(this.normalApproval(),fresh);
+      assertNormalGitHubFence(fresh,await supervisorAdmissionSlot(tx,grant.id),grant,pin,phase,session);
+      if(session){requirePinnedGitHubScope(await tx.get<ProjectScope>(scopeStorageKey(session)),pin);if(await tx.get<string>("supervisor:session:"+session)!==grant.id)throw Error("NORMAL_SESSION_SCOPE");}
+    });
+  }
   private readonly githubRunner = {
     execute: async (input: Parameters<GitHubBridge["execute"]>[0], sessionID?: string) => {
       const pilot=this.pilotLaneId()?await this.pilotContext(sessionID??""):undefined;
@@ -1950,6 +1998,17 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (sessionID) {
         const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
         const task = await this.readOnlyTaskForScope(scope, sessionID);
+        if(scope?.githubSource){
+          const pin=scope.githubSource;const ctx=await this.normalContext(sessionID);
+          if(input.action==="branch")throw Error("NORMAL_BRANCH_PRECREATED");
+          if(input.action==="read"&&!input.ref)input={...input,ref:pin.commit};
+          assertPinnedGitHubAction(pin,{...input,operation:input.action});
+          const key=(this.env as Env & {GITHUB_TOKEN?:string}).GITHUB_TOKEN||await this.personalConfig.getGitHubKey();
+          if(!key)throw Error("GITHUB_AUTH_REQUIRED");
+          return new GitHubBridge(key,(url,init)=>globalThis.fetch(url,init),await this.personalConfig.getAllowedRepositories(),
+            this.normalPublicationGate(ctx.grant,pin,"mutation",sessionID),undefined,pin).execute(input);
+        }
+        if(!this.pilotLaneId()&&this.ctx.id.name===SUPERVISOR_WORKSPACE&&scope?.project.startsWith("supervised-")&&!task)throw Error("NORMAL_PIN_REQUIRED");
         if (task) {
           await this.requireReadOnlySourceReceipt(task);
           assertSupervisorBoundGitHubOperation(input.action, "branch" in input ? input.branch : undefined, task.branch, task.mode);
@@ -1966,6 +2025,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
             ref: "ref" in input ? input.ref : undefined });
         }
       }
+      if(!this.pilotLaneId()&&["branch","write","pr"].includes(input.action)&&"branch" in input&&/^opencode\/(?:staging|supervised)-[a-f0-9]{16}$/.test(input.branch))throw Error("NORMAL_PIN_REQUIRED");
       // The shared supervisor DO is the only allowed publisher of its Staging
       // branches. A project DO cannot create an independent storage lock.
       if (input.action === "pr" &&
@@ -1991,9 +2051,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
       return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
         await this.personalConfig.getAllowedRepositories()).resolveReadOnlySource(repo, sourceCommit, sourceTree);
     },
-    ensureSupervisorBranch: async (repo: string, branch: string, pilotTask?:SupervisorTask) => {
-      const proof=pilotTask?await this.requirePilotTask(pilotTask):undefined;
-      const approval=pilotTask?this.pilotApproval(pilotTask.createdAt):undefined;
+    ensureSupervisorBranch: async (repo: string, branch: string, task:SupervisorTask, grant:StartGrant) => {
+      if(task.githubSource){const pin=assertNormalTaskPin(this.normalApproval(),task);
+        const key=(this.env as Env & {GITHUB_TOKEN?:string}).GITHUB_TOKEN||await this.personalConfig.getGitHubKey();if(!key)throw Error("GITHUB_AUTH_REQUIRED");
+        return new GitHubBridge(key,(url,init)=>globalThis.fetch(url,init),await this.personalConfig.getAllowedRepositories(),this.normalPublicationGate(grant,pin,"branch"),undefined,pin).ensureSupervisorBranch(repo,branch);
+      }
+      const pilotTask=task.pilotInstance?task:undefined;
+      if(!pilotTask)throw Error("NORMAL_PIN_REQUIRED");
+      const proof=await this.requirePilotTask(pilotTask);
+      const approval=this.pilotApproval(pilotTask.createdAt);
       if(this.pilotLaneId()&&(!proof||!approval))throw Error("PILOT_BRANCH_AUTHORIZATION");
       const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
         || await this.personalConfig.getGitHubKey();
@@ -2007,7 +2073,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return Boolean(envKey || await this.personalConfig.getOpenRouterKey());
   }
   async refreshOpenRouter(): Promise<{ active: boolean }> {
-    if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
+    if(this.pilotLaneId()||this.ctx.id.name===SUPERVISOR_WORKSPACE)throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     const key = (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
       || await this.personalConfig.getOpenRouterKey();
     if (!key || !this.providerConnection.connect) return { active: false };
@@ -2276,7 +2342,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
   readonly ai = createAI({ binding: this.pilotLaneId() ?
     makePilotHybridBinding(this.env.AI,session=>this.pilotContext(session),
       async()=> (this.env as Env & {OPENROUTER_API_KEY?:string}).OPENROUTER_API_KEY || await this.personalConfig.getOpenRouterKey())
-    : this.env.AI });
+    : this.ctx.id.name===SUPERVISOR_WORKSPACE ? makeNormalMeteredBinding(this.env.AI,id=>this.normalContext(id),
+      async()=> (this.env as Env & {OPENROUTER_API_KEY?:string}).OPENROUTER_API_KEY || await this.personalConfig.getOpenRouterKey()) : this.env.AI });
   // Register every native preset BEFORE the harness initializes. A plain
   // {providerID, id} selector does not add a model to OpenCode's provider.
   private readonly registeredWorkersModels = NATIVE_WORKERS_AI_MODELS.filter(id=>!this.pilotLaneId() || id===PILOT_GLM).map(id => this.ai(id));
@@ -2354,7 +2421,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         if (task.mode === "read_only") {
           await this.requireReadOnlySourceReceipt(task);
           sourceTree = task.sourceTree;
-        }
+        }else if(task.githubSource){const pin=assertNormalTaskPin(this.normalApproval(),task);requirePinnedGitHubScope(scope,pin);sourceTree=pin.tree;}
       }
     }
     const pilot=this.pilotLaneId()?await this.pilotContext(sessionID??""):undefined;
@@ -2406,7 +2473,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         config: { default_agent: "build" },
         // Native OpenRouter discovery is opt-in and only activated when
         // the private Cloudflare Secret is available.
-        models: { fetch: !this.pilotLaneId() },
+        models: { fetch: !this.pilotLaneId() && this.ctx.id.name!==SUPERVISOR_WORKSPACE },
         // OpenCode is silent unless given a log writer.
         log: {
           level: "warn",
@@ -2419,14 +2486,14 @@ export class OpenCodeAgent extends DurableObject<Env> {
         },
         plugins: [
           this.ai.plugin,
-          ...(this.pilotLaneId() ? [pilotHybridPlugin(r2SessionId(this.pilotLaneId()!),id=>this.pilotContext(id))] : []),
+          ...(this.pilotLaneId() ? [pilotHybridPlugin(r2SessionId(this.pilotLaneId()!),id=>this.pilotContext(id))] : this.ctx.id.name===SUPERVISOR_WORKSPACE?[normalMeteredPlugin(id=>this.normalContext(id))]:[]),
           tokenEconomizerAdapter(
-            async () => !this.pilotLaneId() && (await this.personalConfig.connectorSettings()).tokenEconomizerEnabled,
+            async () => !this.pilotLaneId() && this.ctx.id.name!==SUPERVISOR_WORKSPACE && (await this.personalConfig.connectorSettings()).tokenEconomizerEnabled,
             (connectorID, event) => this.runConnector(connectorID, event),
             sessionID => this.sessionProject(sessionID)
           ),
           openRouterCredentialPlugin(
-            async () => this.pilotLaneId() ? undefined : ((this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
+            async () => this.pilotLaneId() || this.ctx.id.name===SUPERVISOR_WORKSPACE ? undefined : ((this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
               || await this.personalConfig.getOpenRouterKey()),
             (connect) => { this.providerConnection.connect = connect; }
           ),
@@ -2456,7 +2523,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     // Low effort: with more, the model sometimes writes its whole answer
     // into its reasoning.
     defaults: {
-      model: this.ai(this.pilotLaneId()?PILOT_GLM:MODEL_ID),
+      model: this.ai(this.pilotLaneId()||this.ctx.id.name===SUPERVISOR_WORKSPACE?PILOT_GLM:MODEL_ID),
       agent: "build"
     }
   });

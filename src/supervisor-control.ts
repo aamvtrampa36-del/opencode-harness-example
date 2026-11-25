@@ -58,6 +58,8 @@ export type SupervisorTask = {
     "cancel_requested" | "cancelled" | "unknown";
   /** Immutable source commit used to seed this task's isolated Linux project. */
   baseCommit?: string;
+  /** Server-approved immutable normal-lane pin, committed with admission. */
+  githubSource?: import("./metralla-m05-source").GitHubSourcePin;
   /** Immutable requested pins; baseCommit alone records the verified commit. */
   mode?: SupervisorMode;
   sourceCommit?: string;

@@ -4,6 +4,7 @@ import { auditLegacyCapacity, type AdmissionCapacityEvidence,
   type LegacyCapacityStop } from "./supervisor-legacy-capacity";
 import { r2TurnAdmission, r2SessionId, r2TurnJournalKey, r2TerminalNativeReceipt, type R2TurnJournal } from "./supervisor-r2";
 import { scopeStorageKey, type ProjectScope } from "./project-scope";
+import { sameGitHubSourcePin } from "./metralla-m05-source";
 import { CONSUMED_PILOT_ID, captureHistoricalSnapshot, historicalCertificate, retiredHistoricalTask, writeHistoricalCertificate, publicHistoricalCertificate, validNativeQuiescence, parseReconciliationManifest, type ReconciliationManifest, type NativeQuiescence } from "./supervisor-reconciliation";
 
 /**
@@ -79,6 +80,7 @@ export async function reserveSupervisorAdmission(
     if (old && isReadOnlyTask(old) !== readOnly || journal && !old ||
         old && readOnly && (!journal || !samePins(journal.pins, readOnlyPins!)) ||
         journal && !readOnly) throw Error("READ_ONLY_ADMISSION_IDENTITY_CONFLICT");
+    if(old && (Boolean(old.githubSource)!==Boolean(candidate.githubSource)||old.githubSource&&candidate.githubSource&&!sameGitHubSourcePin(old.githubSource,candidate.githubSource)))throw Error("NORMAL_DURABLE_PIN_MISMATCH");
     if (old && old.fingerprint !== candidate.fingerprint)
       throw new Error("requestId usado con otra tarea");
     if (old && readOnly) await requireReadOnlyJournal(tx,old);
