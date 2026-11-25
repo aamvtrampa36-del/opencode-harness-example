@@ -1,0 +1,14 @@
+# M07 — evidence and operator handoff
+
+Node 22, from exact candidate checkout:
+```sh
+node --test scripts/f0-c10/metralla-m07/*.test.mjs
+node scripts/f0-c10/metralla-m07/run.mjs --dry-run --size 10
+node scripts/f0-c10/metralla-m07/run.mjs --suite > /tmp/metralla-m07-fixtures.json
+node scripts/f0-c10/metralla-m07/run.mjs --live --size 10 # intentional exit 2; template only
+```
+Fixture result: pass is only fixturePass; livePass is always false. Positive size matrix 1/2/4/10; controls are separate and never counted as positives. T10 baseline thresholds: 50 ms simulated overlap, 180000 ms duration, start/status p95 ceilings 10000/5000 ms, no OOM, no unverified close, zero inference and live cost. Limits digest frozen before round. In T10 live verifier overlap >=1000 ms plus clock uncertainty, independent signed runtime/artifact/telemetry/budget and observed journal. Do not transfer fixture costs or times to live.
+
+Evidence v1 fixture: manifest/limits digest, identity tuple fixtureId/requestId/sessionId/operationId/project/version on each event, per-stream sequence and clock, matched tool start/end and exit, independent readback bytes, applicable simulated-draft, meter and physical/logical close. Queue count != activity. Metrics include intersection, maximum simultaneous distinct requests, p50/p95, chronology, OOM/restart and closed counts. Cursor bound to digest and max 32 events. Local fixture outputs are retained in JSON and no credentials used. Synthetic source labels are NOT independent real-world attestations.
+
+M08: map M02 runtime events to T10 signed contract, M06 authenticated bytes to oracle, M05 independently observed authorized publication and M03 physical close/M01 released reservations; M04 measured costs and spend stop. Keep independently provisioned trust and signed T10 journal. The template is deliberately incomplete and has no live IDs. Do not launch live without separate authority, exact pinned version, externally verified preflight and collector integration. Missing evidence -> STOP. Historical RED is reconstructed T10 scenario, not recovered raw telemetry.
