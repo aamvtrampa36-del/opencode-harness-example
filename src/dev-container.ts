@@ -272,6 +272,7 @@ export class DevContainer extends DurableObject<Env> {
     if(bound){
       if(pilot)throw Error("M03_VM_IDENTITY_MISMATCH");
       assertRuntime(bound,await this.observeNormalBoot(bound.project),bound.project,this.configuredNormalImages());
+      if(this.closing)throw Error("M03_CLOSE_IN_PROGRESS");
       const container=this.ctx.container;
       if(!container?.running)throw Error("M03_VM_IDENTITY_MISMATCH");
       return container;
@@ -960,6 +961,16 @@ export class DevContainer extends DurableObject<Env> {
     }finally{this.busy--;}
   }
 
+  /** Internal project-scoped readback for the supervisor; never a native closure attestation. */
+  async readCloseReceipt(project:string):Promise<IdleCloseRecord|null>{
+    const id=validateProject(project);
+    if(this.ctx.id.name!=="project-v1:"+id)throw Error("M03_CLOSE_SCOPE_MISMATCH");
+    const r=await this.ctx.storage.get<IdleCloseRecord>(CLOSE_KEY);
+    if(!r)return null;
+    assertCloseRecord(r,this.ctx.id.toString());
+    return r;
+  }
+
   /** Stop admitting work, preserve files via normal snapshot, report state. */
   async closePilotProject(project:string){
     if(this.ctx.id.name!=="project-v1:"+project||!/^supervised-[a-f0-9]{16}$/.test(project))throw Error("PILOT_CONTAINER_SCOPE");
@@ -1010,9 +1021,21 @@ export class DevContainer extends DurableObject<Env> {
         return JSON.stringify({objectId:bound.objectId,boot:bound.bootId,label:bound.bootLabel,image:observation.imageReference});
       }
       if(pilot){
-        if(!pilotBoot||!pilotRuntimeMatches(await container.inspect(),pilotBoot.bootLabel,pilotBoot.imageDigest))
+        if(!pilotBoot||pilotBoot.containerObject!==this.ctx.id.toString()||
+           pilotBoot.input.project!==pilot.project||this.ctx.id.name!=="project-v1:"+pilot.project)
           throw Error("M03_CLOSE_IDENTITY_MISMATCH");
-        return JSON.stringify({objectId:pilotBoot.containerObject,boot:pilotBoot.bootId,label:pilotBoot.bootLabel,image:pilotBoot.imageDigest});
+        const pinned=pilotPinnedImage((container as unknown as {images?:Record<string,string>}).images,pilotBoot.imageDigest);
+        const matches=(info:unknown)=>pilotRuntimeMatches(info,pilotBoot.bootLabel,pilotBoot.imageDigest)&&
+          (info as {image?:unknown}|null)?.image===pinned;
+        if(!container.running||!matches(await container.inspect()))throw Error("M03_CLOSE_IDENTITY_MISMATCH");
+        const remaining=pilot.closeUntil-Date.now();
+        if(remaining<=0)throw Error("M03_CLOSE_FENCED");
+        const proc=await container.exec(["node","-e","process.stdout.write(require('node:fs').readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim())"],
+          {signal:AbortSignal.timeout(Math.min(remaining,15000))});
+        const [out,err,exit]=await Promise.all([captureBoundedOutput(proc.stdout,128),captureBoundedOutput(proc.stderr,128),proc.exitCode]);
+        if(exit!==0||out.truncated||err.truncated||out.text!==pilotBoot.bootId||!container.running||
+           !matches(await container.inspect()))throw Error("M03_CLOSE_IDENTITY_MISMATCH");
+        return JSON.stringify({objectId:pilotBoot.containerObject,boot:out.text,label:pilotBoot.bootLabel,image:pinned});
       }
       // Legacy workspace: never claim digest or boot attestation from a tag.
       const info=await container.inspect();
@@ -1025,7 +1048,13 @@ export class DevContainer extends DurableObject<Env> {
       const snapshot=await checkpointSnapshot({
         now:Date.now,
         snapshot:()=>container.snapshotContainer({name:"opencode-workspace"}),
-        persist:value=>this.ctx.storage.put(value),
+        persist:async value=>{
+          // Do not replace a known checkpoint with a snapshot of a changed VM.
+          if(!container.running||await identity()!==before||this.busy!==0||
+             ((await this.ctx.storage.get<number>("lastActivity"))??0)!==lastActivity)
+            throw Error("M03_SNAPSHOT_IDENTITY_CHANGED");
+          await this.ctx.storage.put(value);
+        },
         readback:async()=>({snapshotId:await this.ctx.storage.get("snapshotId"),savedAt:await this.ctx.storage.get("savedAt")})
       });
       if(idle&&this.busy===0&&!this.starting&&container.running&&
