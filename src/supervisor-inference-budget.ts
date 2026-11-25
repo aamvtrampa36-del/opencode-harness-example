@@ -577,10 +577,11 @@ async function assertConsumedBudgetSettled(tx:Pick<DurableObjectTransaction,"get
 export async function inspectConsumedBudget(storage:DurableObjectStorage){
   return storage.transaction(async tx=>assertConsumedBudgetSettled(tx,await tx.get<Global>(GLOBAL)));
 }
-/** Private readback of an actual, settled normal ledger. Never initializes a missing ledger. */
-export async function inspectNormalBudgetReady(storage:DurableObjectStorage,policy:BudgetPolicy,proof:PaidPreflight,clock=Date.now){
+/** Both private readbacks require a real, settled ledger. Neither initializes it. */
+async function readSettledNormalBudget(storage:DurableObjectStorage,policy:BudgetPolicy,checkPaid?:()=>void){
   const snap=policySnapshot(policy);
-  requireValue(policy.normal&&!policy.hybrid&&paidPreflight({...proof,now:clock()}).decision==="GO","PAID_PREFLIGHT_STOP");
+  requireValue(policy.normal&&!policy.hybrid,"NORMAL_POLICY_REQUIRED");
+  checkPaid?.();
   return storage.transaction(async tx=>{
     const g=await tx.get<Global>(GLOBAL);
     requireValue(g?.version===1&&g.policy===snap&&g.normal&&!g.hybrid&&!g.paymentBlocked&&
@@ -588,21 +589,44 @@ export async function inspectNormalBudgetReady(storage:DurableObjectStorage,poli
     const ledger=await tx.get<{version:number;slots:Record<string,unknown>}>("supervisor:admission:v1");
     requireValue(ledger?.version===1&&ledger.slots&&Object.keys(ledger.slots).length===0&&await consumedArchiveExempts(tx,ledger.slots),"BUDGET_TRANSITION_NOT_DRAINED");
     const archive=await tx.get<{digest:string}>("supervisor:consumed-pilot:archive:v1:"+CONSUMED_PILOT_ID);
-    requireValue(archive&&paidPreflight({...proof,now:clock()}).decision==="GO","NORMAL_LEDGER_NOT_READY");
-    return {schema:"metralla-normal-budget-readback-v1",policyDigest:await reconciliationDigest(snap),ledgerDigest:await reconciliationDigest(g),
+    requireValue(archive,"NORMAL_LEDGER_NOT_READY");
+    checkPaid?.();
+    return {policyDigest:await reconciliationDigest(snap),ledgerDigest:await reconciliationDigest(g),
       archiveDigest:archive.digest,confirmedMicroUsd:g.confirmed,reservedMicroUsd:0,unknownMicroUsd:0,active:0,accountingReady:true};
   });
 }
+export async function inspectNormalBudgetReady(storage:DurableObjectStorage,policy:BudgetPolicy,proof:PaidPreflight,clock=Date.now){
+  const check=()=>requireValue(paidPreflight({...proof,now:clock()}).decision==="GO","PAID_PREFLIGHT_STOP");
+  return {schema:"metralla-normal-budget-readback-v1",...await readSettledNormalBudget(storage,policy,check)};
+}
+/** A prepared ledger is not a paid preflight or a dispatch approval. */
+export async function inspectPreparedNormalBudget(storage:DurableObjectStorage,policy:BudgetPolicy){
+  return {schema:"metralla-normal-budget-accounting-v1",...await readSettledNormalBudget(storage,policy)};
+}
+type TransitionMode={kind:"paid";proof:PaidPreflight}|{kind:"prepare"};
 export async function transitionConsumedBudget(storage:DurableObjectStorage,policy:BudgetPolicy,proof:PaidPreflight,
   authority:BudgetTransition,verify:(a:BudgetTransition)=>Promise<boolean>,clock=Date.now){
+  return commitConsumedBudget(storage,policy,{kind:"paid",proof},authority,verify,clock);
+}
+/** Private, signed accounting-only transition; all CAS, archive, unknown-debt,
+ * historical-row and new-ID guards are shared with the paid transition.
+ * Does not create a task, reserve spend, grant GO or call any provider. */
+export async function prepareConsumedBudget(storage:DurableObjectStorage,policy:BudgetPolicy,
+  authority:BudgetTransition,verify:(a:BudgetTransition)=>Promise<boolean>,clock=Date.now){
+  return commitConsumedBudget(storage,policy,{kind:"prepare"},authority,verify,clock);
+}
+async function commitConsumedBudget(storage:DurableObjectStorage,policy:BudgetPolicy,mode:TransitionMode,
+  authority:BudgetTransition,verify:(a:BudgetTransition)=>Promise<boolean>,clock:()=>number){
   const a=structuredClone(authority),snap=policySnapshot(policy),nextPolicyDigest=await reconciliationDigest(snap);
+  const paidAllowed=(now:number)=>mode.kind==="prepare"||paidPreflight({...mode.proof,now}).decision==="GO";
   const now=clock(),valid=()=>a?.schema==="metralla-budget-transition-v1"&&/^[a-f0-9]{40}$/.test(a.releaseSha)&&
     typeof a.approvalRef==="string"&&a.approvalRef.length>=8&&a.approvalRef.length<=160&&
     [a.previousDigest,a.nextPolicyDigest,a.archiveDigest].every(x=>typeof x==="string"&&/^[a-f0-9]{64}$/.test(x))&&
-    int(a.notBefore,0,clock())&&int(a.expiresAt,clock()+1,now+3600000)&&a.nextPolicyDigest===nextPolicyDigest;
-  requireValue(policy.normal&&!policy.hybrid&&valid()&&paidPreflight({...proof,now}).decision==="GO"&&await verify(a),"BUDGET_TRANSITION_AUTHORIZATION");
+    int(a.notBefore,0,clock())&&int(a.expiresAt,clock()+1,now+3600000)&&a.nextPolicyDigest===nextPolicyDigest&&
+    (mode.kind!=="prepare"||!!policy.normal&&policy.normal.validUntil>clock());
+  requireValue(policy.normal&&!policy.hybrid&&valid()&&paidAllowed(now)&&await verify(a),"BUDGET_TRANSITION_AUTHORIZATION");
   return storage.transaction(async tx=>{
-    requireValue(valid()&&paidPreflight({...proof,now:clock()}).decision==="GO","BUDGET_TRANSITION_EXPIRED");
+    requireValue(valid()&&paidAllowed(clock()),"BUDGET_TRANSITION_EXPIRED");
     const key=BUDGET_TRANSITION+policy.experimentId;
     const previous=await tx.get<Global>(GLOBAL),prior=await tx.get<{authorization:BudgetTransition;previous:Global|null;nextPolicyDigest:string;digest:string}>(key);
     if(prior){

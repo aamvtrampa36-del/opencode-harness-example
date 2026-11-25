@@ -55,9 +55,9 @@ import { getOpenRouterCatalogue } from "./openrouter-catalog";
 import { assertOpenRouterImageModel, generateOpenRouterImage, getOpenRouterImageModels } from "./openrouter-images";
 import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import { GitHubBridge, type GitHubAction } from "./github";
-import { parseNormalApproval, approvedNormalTask, assertNormalTaskPin, assertNormalGitHubFence } from "./metralla-m08-normal-approval";
+import { parseNormalApproval, parseNormalBudgetPreparation, approvedNormalTask, assertNormalTaskPin, assertNormalGitHubFence } from "./metralla-m08-normal-approval";
 import { makeNormalMeteredBinding, normalMeteredPlugin, type NormalContext } from "./metralla-m08-normal-binding";
-import { assertNormalBudgetReady, inspectConsumedBudget, inspectNormalBudgetReady, normalBudgetTransitionSnapshot, transitionConsumedBudget, readProviderReceipts, type BudgetTransition } from "./supervisor-inference-budget";
+import { assertNormalBudgetReady, inspectConsumedBudget, inspectNormalBudgetReady, inspectPreparedNormalBudget, prepareConsumedBudget, normalBudgetTransitionSnapshot, transitionConsumedBudget, readProviderReceipts, type BudgetTransition } from "./supervisor-inference-budget";
 import { signedConsumedVerifier, verifyNormalClose, verifyBudgetTransitionSignature, type NormalCloseEvidence } from "./metralla-m08-signed-evidence";
 import { releasePhysicallyClosedNormal } from "./supervisor-admission";
 import { type GitHubSourcePin, assertPinnedGitHubAction } from "./metralla-m05-source";
@@ -787,6 +787,36 @@ export class OpenCodeAgent extends DurableObject<Env> {
    * No billing action, no clear of outstanding or unknown exposure. */
   async workflowBudgetTransition(raw:unknown):Promise<unknown>{
     this.assertStagingRemote();const freeze=this.r4FreezeManifest();
+    const preparationCfg=this.env as Env & {OPENCODE_M09_NORMAL_PREPARATION?:string;OPENCODE_NORMAL_AUTHORIZATION?:string;OPENCODE_M08_BUDGET_TRANSITION_KEY?:string};
+    if(preparationCfg.OPENCODE_M09_NORMAL_PREPARATION!==undefined){
+      // Separate non-generative authority. Reject mixed deployment configuration;
+      // no normalApproval() bypass and no new public/MCP entrypoint.
+      if(preparationCfg.OPENCODE_NORMAL_AUTHORIZATION!==undefined||this.ctx.id.name!==SUPERVISOR_WORKSPACE)
+        throw Error("NORMAL_PREPARATION_WRONG_AUTHORITY");
+      const release=typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"";
+      const prep=parseNormalBudgetPreparation(preparationCfg.OPENCODE_M09_NORMAL_PREPARATION,release);
+      const q=raw as {action:string;approvalRef:string;authority:BudgetTransition;signature:string};
+      if(!q||q.approvalRef!==prep.approvalRef||JSON.stringify(q).length>12000)
+        throw Error("NORMAL_PREPARATION_SCOPE");
+      if(freeze){
+        if(freeze.approvalRef!==prep.approvalRef)throw Error("NORMAL_PREPARATION_SCOPE");
+        if(q.action==="metralla_inspect_budget"&&Object.keys(q).length===2)
+          return normalBudgetTransitionSnapshot(this.ctx.storage,prep.policy);
+        if(q.action!=="metralla_transition_budget"||Object.keys(q).sort().join(",")!=="action,approvalRef,authority,signature"||
+          q.authority?.approvalRef!==prep.approvalRef||q.authority?.releaseSha!==release||
+          q.authority?.expiresAt>Math.min(freeze.expiresAt,prep.expiresAt,prep.policy.normal!.validUntil))
+          throw Error("NORMAL_PREPARATION_SCOPE");
+        return prepareConsumedBudget(this.ctx.storage,prep.policy,q.authority,
+          a=>verifyBudgetTransitionSignature(preparationCfg.OPENCODE_M08_BUDGET_TRANSITION_KEY,release,q.signature,a));
+      }
+      assertRecoveryWorkAllowed(this.env);
+      if(this.pilotLaneId()||q.action!=="metralla_inspect_budget"||Object.keys(q).sort().join(",")!=="action,approvalRef")
+        throw Error("NORMAL_PREPARATION_SCOPE");
+      const capacity=await inspectSupervisorAdmissionCapacity(this.ctx.storage);
+      if(capacity.activeSlots!==0||!capacity.inventoryComplete||capacity.stopReason)throw Error("BUDGET_TRANSITION_NOT_DRAINED");
+      return {releaseSha:release,approvalRef:prep.approvalRef,budget:await inspectPreparedNormalBudget(this.ctx.storage,prep.policy),
+        capacity,dispatchPerformed:false,dispatchAuthorized:false,providerPreflightVerified:false};
+    }
     // The existing private account Workflow can verify the live normal ledger
     // after promotion without dispatching, reserving or changing any data.
     if(!freeze){

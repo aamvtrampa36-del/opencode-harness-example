@@ -11,6 +11,22 @@ export type NormalApproval={schema:"metralla-normal-v1";releaseSha:string;notBef
   approvalRef:string;policy:BudgetPolicy;preflight:PaidPreflight;tasks:TaskApproval[];
   contextBoundEvidence:Record<string,string>;containerImageDigest:string;closeUntil:number};
 function check(ok:unknown,code:string):asserts ok {if(!ok)throw Error(code);}
+/** Bookkeeping-only authorization. Never accepted by task dispatch. */
+export type NormalBudgetPreparation={schema:"metralla-normal-prepare-v1";environment:"staging";releaseSha:string;
+  approvalRef:string;notBefore:number;expiresAt:number;policy:BudgetPolicy};
+export function parseNormalBudgetPreparation(raw:unknown,release:string,now=Date.now()):NormalBudgetPreparation{
+  check(typeof raw==="string"&&raw.length<=65536&&SHA.test(release),"NORMAL_PREPARATION_REQUIRED");
+  const a=JSON.parse(raw) as NormalBudgetPreparation;
+  check(a?.schema==="metralla-normal-prepare-v1"&&a.environment==="staging"&&a.releaseSha===release&&
+    Object.keys(a).sort().join(",")==="approvalRef,environment,expiresAt,notBefore,policy,releaseSha,schema"&&
+    typeof a.approvalRef==="string"&&a.approvalRef.length>=8&&a.approvalRef.length<=160&&
+    Number.isSafeInteger(a.notBefore)&&a.notBefore>=0&&a.notBefore<=now&&
+    Number.isSafeInteger(a.expiresAt)&&a.expiresAt>now&&a.expiresAt-now<=24*3600000&&
+    a.policy?.normal&&!a.policy.hybrid&&a.policy.maxAttempts===1&&
+    Number.isSafeInteger(a.policy.normal.validUntil)&&a.policy.normal.validUntil>now&&a.policy.normal.validUntil<=a.expiresAt,
+    "NORMAL_PREPARATION_INVALID");
+  return a;
+}
 export function parseNormalApproval(raw:unknown,release:string,now=Date.now()):NormalApproval{
   check(typeof raw==="string"&&raw.length<=65536&&SHA.test(release),"NORMAL_APPROVAL_REQUIRED");
   const a=JSON.parse(raw) as NormalApproval;

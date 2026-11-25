@@ -201,7 +201,7 @@ test("P02 concurrent identical archival is idempotent and does not disturb histo
  expect(await f.db.get("supervisor:turn:"+pid+":"+id(4))).toEqual({phase:"settled"});
 });
 
-import {inspectNormalBudgetReady,normalBudgetTransitionSnapshot,transitionConsumedBudget,pilotBudgetPolicy,PILOT_FREE,PILOT_GLM,type BudgetPolicy,type PaidPreflight,type BudgetTransition} from "./supervisor-inference-budget";
+import {inspectNormalBudgetReady,inspectPreparedNormalBudget,prepareConsumedBudget,normalBudgetTransitionSnapshot,transitionConsumedBudget,pilotBudgetPolicy,PILOT_FREE,PILOT_GLM,type BudgetPolicy,type PaidPreflight,type BudgetTransition} from "./supervisor-inference-budget";
 const globalKey="supervisor:inference:budget:v1",newId=id(800);
 function nextPolicy():BudgetPolicy{
  return {experimentId:newId,totalMicroUsd:10000,taskMicroUsd:10000,maxAttempts:1,
@@ -270,4 +270,36 @@ test("M08 budget transition refuses unknown charge, blocked payment, stale diges
   await expect(transitionConsumedBudget(db.asDO(),next,budgetProof,a,async()=>bad!=="signature",()=>now)).rejects.toThrow();
   expect([...db.rows]).toEqual(before);
  }
+});
+
+import {parseNormalApproval,parseNormalBudgetPreparation} from "./metralla-m08-normal-approval";
+test("M09 signed accounting preparation is not paid preflight or dispatch approval",async()=>{
+ const {db,next,a}=await migrationFixture("settled"),before=structuredClone([...db.rows]);
+ const stop={...budgetProof,exclusiveLeaseVerified:false};
+ await expect(transitionConsumedBudget(db.asDO(),next,stop,a,async()=>true,()=>now)).rejects.toThrow("BUDGET_TRANSITION_AUTHORIZATION");
+ expect([...db.rows]).toEqual(before);
+ await expect(prepareConsumedBudget(db.asDO(),next,a,async()=>false,()=>now)).rejects.toThrow("BUDGET_TRANSITION_AUTHORIZATION");
+ expect([...db.rows]).toEqual(before);
+ const prepared=await prepareConsumedBudget(db.asDO(),next,a,async()=>true,()=>now);
+ expect(prepared.reused).toBe(false);
+ expect((await prepareConsumedBudget(db.asDO(),next,a,async()=>true,()=>now)).reused).toBe(true);
+ const snapshot=structuredClone([...db.rows]);
+ const accounting=await inspectPreparedNormalBudget(db.asDO(),next);
+ expect(accounting.schema).toBe("metralla-normal-budget-accounting-v1");expect(accounting.policyDigest).toBe(a.nextPolicyDigest);
+ await expect(inspectNormalBudgetReady(db.asDO(),next,stop,()=>now)).rejects.toThrow("PAID_PREFLIGHT_STOP");
+ expect([...db.rows]).toEqual(snapshot);
+ const prep={schema:"metralla-normal-prepare-v1",environment:"staging",releaseSha:release,approvalRef:a.approvalRef,
+   notBefore:now-1,expiresAt:now+20000,policy:next};
+ expect(parseNormalBudgetPreparation(JSON.stringify(prep),release,now).policy).toEqual(next);
+ expect(()=>parseNormalApproval(JSON.stringify(prep),release,now)).toThrow("NORMAL_APPROVAL_INVALID");
+ expect(()=>parseNormalBudgetPreparation(JSON.stringify({...prep,tasks:[]}),release,now)).toThrow("NORMAL_PREPARATION_INVALID");
+ expect(()=>parseNormalBudgetPreparation(JSON.stringify(prep),"0".repeat(40),now)).toThrow("NORMAL_PREPARATION_INVALID");
+});
+test("M09 accounting preparation preserves unknown spend and rejects stale snapshot",async()=>{
+ const f=await migrationFixture("unknown"),before=structuredClone([...f.db.rows]);
+ await expect(prepareConsumedBudget(f.db.asDO(),f.next,f.a,async()=>true,()=>now)).rejects.toThrow("BUDGET_TRANSITION_OLD_UNSETTLED");
+ expect([...f.db.rows]).toEqual(before);
+ const g=await migrationFixture("settled"),old=structuredClone([...g.db.rows]);
+ await expect(prepareConsumedBudget(g.db.asDO(),g.next,{...g.a,previousDigest:"0".repeat(64)},async()=>true,()=>now)).rejects.toThrow("BUDGET_TRANSITION_SNAPSHOT_CHANGED");
+ expect([...g.db.rows]).toEqual(old);
 });
