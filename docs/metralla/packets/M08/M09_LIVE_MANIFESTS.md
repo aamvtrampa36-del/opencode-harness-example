@@ -1,5 +1,5 @@
 # P25/M08 — future L-D/E/F/G manifests (UNAPPROVED, NON-EXECUTABLE)
-Candidate cf911fa3d30d140a4e16b27e67bc7241da9e39e0, tree e0783de1b17c4a1f50e1932991aa43a625a693b7, PR #172; C1 = null. This is a schema/checklist, not approval. Prior recorded Worker versions are rollback candidates only; no durable compatibility claimed. Preserve historical claims and 17 unresolved outcomes.
+Candidate 2f88d9dfc846ab4abd6e23bffd467d0a836f3416, tree 21f59e4bc4563e8bb36b8f8d8eefc744e1d3b5fe, PR #172; C1 = null. This is a schema/checklist, not approval. Prior recorded Worker versions are rollback candidates only; no durable compatibility claimed. Preserve historical claims and 17 unresolved outcomes.
 ## Required common fields
 C1 SHA/tree and exact CI/build hashes; environment staging only; exclusive operator, fencing/lease, approval reference and validity; exact principal/MCP Worker versions, deployments, bindings, immutable image digest, source and rollback schema compatibility; resource allowlist; actions, fresh request/session/operation IDs where applicable, repo/base/commit/tree/branch/project/paths, model/provider/capability, fixture/oracle digest; max USD per task/round/lot, overhead and residual, durable reservations, token input/output/cache, wire bytes, calls, wall-clock, concurrency, independently verified rate/quota and meter receipts, real cutoff, STOP conditions and verified physical/logical close. Mark N/A only when not applicable. No IDs allocated here, no historical pilot reuse. No inference/Container allowance inherited.
 ## L-D / M09
@@ -12,3 +12,6 @@ Requires M10 PASS. Separate rounds 2 and 4 with new IDs and exact fixtures, conc
 Requires M11 PASS. Three distinct 10-task rounds, all 10 genuinely overlapping, individual evidence/oracle, independent signed collectors, bounded overhead, STOP on OOM/unknown/cost/unclosed effects. No approval.
 ## STOP
 Any missing C1, approval, exclusive lease, identity mismatch, ambiguous prior effect, unmeasured native operations, budget without effective cutoff, unverified signer/clock or incompatible rollback prevents live dispatch. Current C1 null; all L-D/E/F/G PENDING.
+
+## Revision 7 STOP
+Exact CI 45541460577 green. Prior principal source 335cfd81abcc43c202605b035a3f3ca78ef31051 ignores new pinned terminal slot/physical close and consumed archive semantics. Prior recorded Worker versions NOT certified rollback-compatible. Do not promote or rollback against new durable state. No C1. Private Workflow routes introduced: metralla_inspect_consumed, metralla_archive_consumed, metralla_normal_close; require account authority, server pinned trust roots and exact evidence, no actual invocation in L-C. No live permission.
