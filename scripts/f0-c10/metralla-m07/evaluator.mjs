@@ -30,10 +30,12 @@ export function evaluateFixture(m, trace) {
     fail('EVIDENCE_FORMAT','round'); return rejected();
   }
   const unique = Object.fromEntries(identityFields.filter(x=>x!=='version').map(x=>[x,new Set()]));
-  const byRequest=new Map(), intervals=[], starts=[], durations=[], statuses=[], chronology=[];
+  const byRequest=new Map(), intervals=[], starts=[], durations=[], statuses=[], chronology=[], taskResults=[];
   let oom=0,restarts=0,queued=0,verifiedOutputs=0,closed=0,totalCost=0;
   for(const [i,t] of trace.tasks.entries()){
-    const spec=m.tasks[i];
+    const spec=m.tasks[i], failureStart=failures.length;
+    const result={fixtureId:spec.fixtureId,pass:false,outputVerified:false,closed:false,activityIntervals:0};
+    taskResults.push(result);
     if(!t || t.fixtureId!==spec.fixtureId || t.project!==spec.scope.project || t.version!==trace.version ||
        !['requestId','sessionId','operationId'].every(k=>bounded(t[k])&&t[k].startsWith('fixture:'))) {
       fail('TASK_IDENTITY',spec.fixtureId); continue;
@@ -75,7 +77,7 @@ export function evaluateFixture(m, trace) {
       }
     }
     if(opened.size||!own.length)fail('NO_CLOSED_ACTIVITY',t.fixtureId);
-    intervals.push(...own);
+    intervals.push(...own);result.activityIntervals=own.length;
     const probes=one(stream,'status');
     if(!probes.length||!probes.some(e=>own.some(a=>a.start<=e.atMs&&e.atMs<a.end)))fail('NO_STATUS_DURING_ACTIVITY',t.fixtureId);
     for(const e of probes){
@@ -94,13 +96,14 @@ export function evaluateFixture(m, trace) {
       schema:'metralla.m07.output.v1',mode:'fixture',fixtureId:t.fixtureId,project:t.project,
       exitCode:output.exitCode,liveEffects:output.liveEffects,readback:{...readback.artifact,source:'fixture-readback'},
       github:github[0]?.receipt??null
-    }))fail('OUTPUT_OR_READBACK',t.fixtureId);else verifiedOutputs++;
+    }))fail('OUTPUT_OR_READBACK',t.fixtureId);else {verifiedOutputs++;result.outputVerified=true;}
     if(physical.openProcesses!==0||physical.openOperations!==0||logical.reservationReleased!==true||
-       logical.activeSlots!==0||physical.liveEffects!==0)fail('CLOSURE',t.fixtureId);else closed++;
+       logical.activeSlots!==0||physical.liveEffects!==0)fail('CLOSURE',t.fixtureId);else {closed++;result.closed=true;}
     if(cost.measuredUsd!==0||cost.inferenceCalls!==0||cost.liveEffects!==0)fail('COST_UNKNOWN_OR_OVER',t.fixtureId);
     else totalCost+=cost.measuredUsd;
     starts.push(reserve.atMs-received.atMs);durations.push(logical.atMs-received.atMs);
     if(logical.atMs-received.atMs>LIMITS.maxDurationMs)fail('DURATION',t.fixtureId);
+    result.pass=failures.length===failureStart&&result.outputVerified&&result.closed&&result.activityIntervals>0;
     chronology.push({fixtureId:t.fixtureId,receivedAtMs:received.atMs,queuedAtMs:queue.atMs,
       activity:own,logicalCloseAtMs:logical.atMs,physicalCloseAtMs:physical.atMs});
   }
@@ -112,7 +115,7 @@ export function evaluateFixture(m, trace) {
   const metrics={...overlap,oom,restarts,queued,verifiedOutputs,closed,totalCost,
     p50StartMs:pct(starts,.5),p95StartMs:pct(starts,.95),p50StatusMs:pct(statuses,.5),p95StatusMs:pct(statuses,.95),
     p50DurationMs:pct(durations,.5),p95DurationMs:pct(durations,.95),chronology};
-  return {pass:failures.length===0,fixturePass:failures.length===0,livePass:false,evidenceClass:'fixture',failures,metrics};
+  return {pass:failures.length===0,fixturePass:failures.length===0,livePass:false,evidenceClass:'fixture',failures,metrics,taskResults};
 }
 
 // Preserve the stronger pre-existing signed T10 live verifier. No fixture can enter it.

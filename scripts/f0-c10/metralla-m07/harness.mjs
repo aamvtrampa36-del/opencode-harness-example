@@ -145,7 +145,8 @@ export async function runFixtureRound(plan,{dry=false}={}){
         }finally{active--;}
       }
     };
-    await Promise.all(Array.from({length:plan.requestedConcurrency},()=>worker()));
+    const settled=await Promise.allSettled(Array.from({length:plan.requestedConcurrency},()=>worker()));
+    const failure=settled.find(x=>x.status==='rejected');if(failure)throw failure.reason;
     const rows=[];let cursor=null,pages=0;
     do{const page=collectPage(trace.events,cursor);rows.push(...page.rows);cursor=page.cursor;pages++;
       if(pages>LIMITS.maxEvents)throw Error('page loop');}while(cursor!==null);

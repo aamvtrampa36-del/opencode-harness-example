@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 import { planRound,dryRun,runFixtureRound,runControls,liveOperatorTemplate,livePreflight } from './harness.mjs';
 const args=process.argv.slice(2);
-const size=Number(args[args.indexOf('--size')+1]||10);
 try{
+  const i=args.indexOf('--size');
+  if(i>=0&&!/^(1|2|4|10)$/.test(args[i+1]||''))throw Error('invalid or missing --size');
+  const size=i<0?10:Number(args[i+1]);
+  const modes=args.filter(x=>['--live','--dry-run','--suite'].includes(x));
+  if(modes.length>1||args.some((a,j)=>!['--live','--dry-run','--suite','--size'].includes(a)&&!(i>=0&&j===i+1))||args.filter(x=>x==='--size').length>1)throw Error('invalid arguments');
   let result;
   if(args.includes('--live')){const template=liveOperatorTemplate(size);result={template,preflight:livePreflight(template),pass:false,livePass:false};process.exitCode=2;}
   else if(args.includes('--dry-run'))result=dryRun(size);

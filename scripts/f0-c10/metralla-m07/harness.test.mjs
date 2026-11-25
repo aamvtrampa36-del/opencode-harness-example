@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { planRound,preflight,dryRun,liveOperatorTemplate,livePreflight,runFixtureRound,collectPage,runControls } from './harness.mjs';
 import { fixtureTrace } from './fixture-trace.mjs';
 import { evaluateFixture } from './evaluator.mjs';
@@ -14,7 +16,7 @@ for(const size of [1,2,4,10]){
     assert.equal(x.report.fixturePass,true,JSON.stringify(x.report.failures));
     assert.equal(x.livePass,false);assert.equal(x.submissions,size);assert.equal(x.readbacks,size);
     assert.ok(x.peakLocalSubmissions<=size);assert.equal(x.report.metrics.verifiedOutputs,size);
-    assert.equal(x.report.metrics.closed,size);assert.equal(x.syntheticActivity,true);
+    assert.equal(x.report.metrics.closed,size);assert.equal(x.report.taskResults.length,size);assert.ok(x.report.taskResults.every(t=>t.pass&&t.outputVerified&&t.closed));assert.equal(x.syntheticActivity,true);
     assert.equal(x.report.metrics.maxActive,size);
     if(size===10){assert.ok(x.pages>1);assert.equal(x.evidence.events.filter(e=>e.type==='github').length,1);}
   });
@@ -43,4 +45,13 @@ test('live form cannot authorize effect or pass',()=>{
 test('negative evidence does not become positive via controls',()=>{
   const {m,trace}=fixtureTrace(10,{active:4});assert.equal(evaluateFixture(m,trace).pass,false);
   assert.ok(runControls().every(x=>x.ok));assert.equal(evaluateFixture(m,trace).livePass,false);
+});
+
+test('CLI dry-run, suite, live STOP and invalid flags',()=>{
+  const cli=fileURLToPath(new URL('./run.mjs',import.meta.url));
+  const run=(...args)=>spawnSync(process.execPath,[cli,...args],{encoding:'utf8',maxBuffer:4*1024*1024,timeout:10000});
+  const dry=run('--dry-run');assert.equal(dry.status,0,dry.stderr);assert.equal(JSON.parse(dry.stdout).plan.manifest.size,10);
+  const suite=run('--suite');assert.equal(suite.status,0,suite.stderr);const data=JSON.parse(suite.stdout);assert.equal(data.pass,true);assert.equal(data.realStagingTested,false);assert.deepEqual(data.rounds.map(r=>r.report.metrics.verifiedOutputs),[1,2,4,10]);
+  const live=run('--live','--size','10');assert.equal(live.status,2);assert.equal(JSON.parse(live.stdout).livePass,false);
+  assert.equal(run('--size').status,2);assert.equal(run('--unknown').status,2);
 });
