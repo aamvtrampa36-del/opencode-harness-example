@@ -34,9 +34,9 @@ export function liveOperatorTemplate(size){
   const fixture=manifest(size);
   return {schema:'metralla.m07.operator-preflight.v1',mode:'live-proposed',size,
     fixtureManifestDigest:fixture.digest,taskSpecs:fixture.tasks.map(t=>({kind:t.kind,input:t.input,
-      inputSha256:t.inputSha256,expectedSha256:t.expected.sha256,expectedBytes:t.expected.size,
+      inputSha256:t.inputSha256,expectedSha256:t.expected.sha256,expectedBytes:t.expected.size,physicalArtifactPath:'dist/'+t.kind+'.json',
       requestId:null,sessionId:null,operationId:null,projectId:null,artifactScope:null,
-      githubScope:t.scope.github?{repository:null,branch:null,baseSha:null,path:null,authorization:null}:null})),
+      githubScope:(t===fixture.tasks.at(-1))?{repository:null,branch:null,baseSha:null,path:null,authorization:null}:null})),
     environment:null,sourceSha:null,workerVersion:null,mcpVersion:null,modelCapabilityReceipt:null,
     modelAllowlist:null,providerPriceReceipt:null,roundCapUsd:null,campaignCapUsd:null,
     effectiveSpendStopReceipt:null,atomicReservationReceipt:null,priorClosureReceipt:null,

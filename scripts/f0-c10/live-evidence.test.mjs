@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPairSync, sign } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { runMock } from './mock.mjs';
 import { evaluateCampaign, evaluateTrace, LIVE_LIMITS } from './evaluate.mjs';
@@ -448,4 +448,83 @@ test('R3 RED: independently signed approval for a different SHA or deployment is
   reseal(trace);
   const result=evaluateTrace(trace,{mode:'live',trustedKeys:trust,limits});
   assert.ok(result.failures.some((f)=>f.code==='DEPLOYMENT_SCOPE_UNVERIFIED'||f.code==='OPERATOR_APPROVAL_SCOPE_MISMATCH'));
+});
+
+/** M07 integrated positive fixture: real crypto + T10 + exact M06 layout +
+ * signed GitHub and physical/logical closure, no real task or network. */
+import {assessLiveCandidate} from './metralla-m07/evaluator.mjs';
+import {artifactExpectation,roundApprovalBytes,supplementalBytes,journalSealBytes,collectObserverPages,collectRoundReadbacks} from './metralla-m07/integrated-round.mjs';
+import {canonicalOutput} from './tasks.mjs';
+const extraPairs=Object.fromEntries(['github','physical','logical'].map(k=>[k,generateKeyPairSync('ed25519')]));
+const extraTrust=Object.fromEntries(Object.entries(extraPairs).map(([k,v])=>[k,v.publicKey.export({format:'pem',type:'spki'})]));
+const keyFp=pem=>createHash('sha256').update(createPublicKey(pem).export({format:'der',type:'spki'})).digest('hex');
+async function integratedFixture(size=10){
+ const trace=await attestedFixture({size,round:500+size});
+ const t=structuredClone(trace),m=t.metadata;m.artifactLayout='m06-dist-v1';
+ for(const task of t.tasks){
+  task.sessionId='ses_r2_'+task.requestId;task.operationId='rc-start-'+task.requestId;task.projectId='supervised-'+task.requestId;
+  for(const e of t.events.filter(e=>e.requestId===task.requestId)){
+   e.sessionId=task.sessionId;e.operationId=task.operationId;e.projectId=task.projectId;
+   if(e.artifact){e.artifact.projectId=task.projectId;e.artifact.path='dist/'+task.kind+'.json';}
+  }
+ }
+ buildJournal(t);approveCollectorScope(t);reseal(t);
+ const keys={...trust,supplemental:extraTrust};
+ const identity=x=>Object.fromEntries(['requestId','sessionId','operationId','projectId','executorId','kind'].map(k=>[k,x[k]]));
+ const fields=['experimentId','sourceSha','gitBaseSha','workerVersion','mcpVersion','workerDeploymentId','mcpDeploymentId','leaseId','fencingToken','limitsSha256'];
+ const tasks=t.tasks.map((task,i)=>({...identity(task),artifact:artifactExpectation(task),github:i===size-1?{repo:'aamvtrampa36-del/opencode-harness-example',base:'fixture-base',baseSha:m.gitBaseSha,branch:'opencode/staging-'+task.requestId,path:'docs/opencode-agent-lab/fixture-report.json'}:null}));
+ const last=Math.max(...t.events.map(e=>e.atMs)),plan={schema:'metralla.m07.integrated-round.v1',mode:'fixture',environment:'staging',context:Object.fromEntries(fields.map(k=>[k,m[k]])),
+  notBefore:Math.min(...t.events.map(e=>e.atMs))-1,expiresAt:last+10000,approvalRef:'offline-test-only',tasks,
+  keyPins:Object.fromEntries([...EVIDENCE_ROLES.map(k=>[k,keyFp(keys[k])]),...['do','container','provider'].map(k=>['observer:'+k,keyFp(keys.observers[k].publicKeyPem)]),...Object.keys(extraTrust).map(k=>[k,keyFp(extraTrust[k])])])};
+ const approval={plan,signature:sign(null,roundApprovalBytes(plan),operatorKeyPair.privateKey).toString('base64')};
+ const pub=tasks.at(-1),g=pub.github,content=canonicalOutput(pub.kind);
+ const intent={repo:g.repo,requestId:pub.requestId,sessionId:pub.sessionId,operationId:pub.operationId,projectId:pub.projectId,sourceSha:m.sourceSha,base:g.base,baseSha:g.baseSha,branch:g.branch,headSha:'b'.repeat(40),headTree:'c'.repeat(40),pr:1,files:[{path:g.path,sha:createHash('sha1').update('blob '+Buffer.byteLength(content)+'\0').update(content).digest('hex'),status:'added'}]};
+ const rows={github:[{...identity(pub),observedAtMs:last+1,observation:{schema:'metralla.m08.github-readback.v1',evidenceClass:'unsigned-authenticated-http-observation',livePass:false,verified:true,intent,intentSha256:digest(intent)}}],
+ physical:tasks.map(task=>({...identity(task),observedAtMs:last+2,containerId:'offline-container-'+task.requestId,bootId:'offline-boot',closeOperation:'offline-close',snapshotDigest:'a'.repeat(64),taskDigest:'b'.repeat(64),nativeReceiptDigest:'c'.repeat(64),vmTerminated:true,descendants:0,nativeOperations:0,nativeSource:'independent-native'})),logical:[]};
+ rows.logical=rows.physical.map(a=>({...identity(a),observedAtMs:last+3,taskDigest:a.taskDigest,physicalReceiptSha256:digest(a),generation:1,slotReleased:true,reservedMicroUsd:0,unknownMicroUsd:0,outstandingEffects:0,releaseReceiptDigest:'d'.repeat(64)}));
+ const sealRole=(role,rows)=>({rows,signature:sign(null,supplementalBytes(role,plan,rows),extraPairs[role].privateKey).toString('base64')});
+ const supplement=Object.fromEntries(Object.entries(rows).map(([k,v])=>[k,sealRole(k,v)]));
+ const journalSeals=Object.fromEntries(['do','container','provider'].map(origin=>{
+  const records=t.observedJournal.records.filter(x=>x.claim.origin===origin),tail=records.at(-1)?.claim,seal={origin,count:records.length,head:tail?observedClaimHash(tail):'0'.repeat(64),complete:true,observedAtMs:last+4,collectorId:keys.observers[origin].collectorId,deploymentId:keys.observers[origin].deploymentId};
+  return [origin,{seal,signature:sign(null,journalSealBytes(plan,seal),observerKeys[origin].privateKey).toString('base64')}];
+ }));
+ return {t,options:{limits,trustedKeys:keys,approval,supplement,journalSeals},sealRole};
+}
+for(const n of [1,2,4,10])test('M07 integrated signed-format fixture '+n+'; no live PASS',async()=>{
+ const {t,options}=await integratedFixture(n),r=assessLiveCandidate(t,options);
+ assert.equal(r.contractPass,true,JSON.stringify(r));assert.equal(r.livePass,false);assert.equal(r.pass,false);assert.equal(r.t10.metrics.maxActive,n);
+});
+test('M07 rejects missing closure, tampered signature, fake physical release and foreign GitHub even if resealed',async()=>{
+ const {t,options,sealRole}=await integratedFixture(2);
+ const original=structuredClone(options.supplement);
+ for(const [role,mutate] of [['physical',v=>{v[0].descendants=1;}],['logical',v=>{v[0].unknownMicroUsd=1;}],['logical',v=>{v[0].physicalReceiptSha256='0'.repeat(64);}],['github',v=>{v[0].observation.intent.files[0].path='outside.json';v[0].observation.intentSha256=digest(v[0].observation.intent);}]]){
+  const rows=structuredClone(original[role].rows);mutate(rows);
+  assert.equal(assessLiveCandidate(t,{...options,supplement:{...original,[role]:sealRole(role,rows)}}).contractPass,false);
+ }
+ assert.equal(assessLiveCandidate(t,{...options,supplement:{...original,physical:undefined}}).contractPass,false);
+ const tampered=structuredClone(original);tampered.logical.rows[0].generation++;
+ assert.equal(assessLiveCandidate(t,{...options,supplement:tampered}).contractPass,false);
+});
+test('M07 denies changed signed plan, reused signer, source seal truncation, legacy artifact and fixture collection',async()=>{
+ const {t,options}=await integratedFixture(1);
+ const altered=structuredClone(options.approval);altered.plan.mode='live';
+ assert.equal(assessLiveCandidate(t,{...options,approval:altered}).livePass,false);
+ const other={...options.trustedKeys,supplemental:{...extraTrust,physical:trust.runtime}};
+ assert.equal(assessLiveCandidate(t,{...options,trustedKeys:other}).contractPass,false);
+ const seals=structuredClone(options.journalSeals);seals.do.seal.count--;
+ assert.equal(assessLiveCandidate(t,{...options,journalSeals:seals}).contractPass,false);
+ const changed=structuredClone(t);changed.metadata.artifactLayout='legacy-t10';buildJournal(changed);reseal(changed);
+ assert.equal(assessLiveCandidate(changed,options).contractPass,false);
+ await assert.rejects(collectRoundReadbacks({approval:options.approval,limits,trustedKeys:options.trustedKeys}),/NOT_AUTHORIZED/);
+});
+test('M07 bounded native journal page collection authenticates original records and terminal seals',async()=>{
+ const {t,options}=await integratedFixture(10);
+ const port=async({origin,planDigest,after,limit})=>{
+  const rows=t.observedJournal.records.filter(x=>x.claim.origin===origin),records=rows.slice(after,after+limit),complete=after+records.length===rows.length;
+  return {origin,planDigest,after,records,complete,...(complete?{seal:options.journalSeals[origin]}:{})};
+ };
+ const x=await collectObserverPages({approval:options.approval,limits,trustedKeys:options.trustedKeys,readPage:port});
+ const result=assessLiveCandidate({...t,observedJournal:x.observedJournal},{...options,journalSeals:x.journalSeals});
+ assert.equal(result.contractPass,true,JSON.stringify(result));assert.equal(result.livePass,false);
+ await assert.rejects(collectObserverPages({approval:options.approval,limits,trustedKeys:options.trustedKeys,readPage:async req=>({...await port(req),after:req.after+1})}),/PAGE_SCOPE/);
 });

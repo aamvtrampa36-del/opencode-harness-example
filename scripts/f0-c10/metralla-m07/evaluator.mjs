@@ -1,6 +1,7 @@
 import { manifest, validManifest, verifyFixtureOutput } from './manifest.mjs';
 import { measureOverlap, evaluateTrace, OFFLINE_LIMITS, LIVE_LIMITS } from '../evaluate.mjs';
 import { digest } from '../live-evidence.mjs';
+import { verifyIntegratedRound } from './integrated-round.mjs';
 
 // T10 thresholds were fixed before M07. Fixture cost and side effects are zero.
 export const LIMITS = Object.freeze({ minOverlapMs: OFFLINE_LIMITS.minOverlapMs,
@@ -118,14 +119,11 @@ export function evaluateFixture(m, trace) {
   return {pass:failures.length===0,fixturePass:failures.length===0,livePass:false,evidenceClass:'fixture',failures,metrics,taskResults};
 }
 
-// Preserve the stronger pre-existing signed T10 live verifier. No fixture can enter it.
-// M08/operator still must provide independently trusted GitHub and physical-close collectors
-// bound to the frozen live manifest. This adapter never returns live PASS.
-export function assessLiveCandidate(trace,{limits=LIVE_LIMITS,trustedKeys}={}){
-  if(!trace||trace.mode!=='live'||trace.metadata?.simulated===true||trace.evidenceClass==='fixture')
-    return {pass:false,livePass:false,code:'FIXTURE_OR_MISSING_LIVE'};
-  try {
-    const t10=evaluateTrace(trace,{mode:'live',limits,trustedKeys});
-    return {pass:false,livePass:false,code:'LIVE_COLLECTOR_INTEGRATION_REQUIRED',t10};
-  } catch {return {pass:false,livePass:false,code:'INVALID_LIVE_EVIDENCE'};}
+// Full M07 evidence validation uses the same signed T10 evaluator plus a frozen
+// operator plan, independent GitHub and physical/logical closure receipts.
+// This is verification of evidence, never permission to submit or spend.
+export function assessLiveCandidate(trace,{limits=LIVE_LIMITS,trustedKeys,approval,supplement,journalSeals}={}){
+ if(!trace||trace.mode!=='live'||trace.metadata?.simulated===true||trace.metadata?.fixture===true||trace.metadata?.synthetic===true||trace.evidenceClass==='fixture')
+   return {pass:false,livePass:false,code:'FIXTURE_OR_MISSING_LIVE'};
+ return verifyIntegratedRound(trace,{limits,trustedKeys,approval,supplement,journalSeals});
 }
