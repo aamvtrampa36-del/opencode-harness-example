@@ -1,9 +1,9 @@
 {
   "planVersion": "1.0",
   "promptRevision": "R2",
-  "revision": 11,
-  "expectedPreviousRevision": 10,
-  "expectedParentCommit": "b41d08dfb5abd5c79f20ff8bd4d3e74305cd55ae",
+  "revision": 12,
+  "expectedPreviousRevision": 11,
+  "expectedParentCommit": "08c1dbeac779af3e874b9adfeffbe30a0d8dbd6d",
   "date": "2026-11-25",
   "actor": "ChatGPT coordinator P26",
   "repository": "aamvtrampa36-del/opencode-harness-example",
@@ -673,7 +673,7 @@
         "M08"
       ],
       "branch": "metralla/control",
-      "authorization": "L-D_CONDITIONAL_STOP",
+      "authorization": "L-D_AUTHORIZED_CONDITIONAL_STOP",
       "receipt": "docs/metralla/receipts/P26.md",
       "owner": "ChatGPT coordinator P26",
       "candidate": {
@@ -709,6 +709,35 @@
         "artifactCount": 0,
         "level": "offline",
         "failure": "principal bindings mismatch; export skipped"
+      },
+      "preflight": {
+        "authorizedAdditionalUsd": 0.25,
+        "independentOfPriorBalance": true,
+        "paidServiceEligibility": "UNVERIFIED: Workers Paid Expired; invoice OPEN USD 8.91 dated 2026-11-24; no proof of overdue status",
+        "effectiveOverheadBound": "UNVERIFIED",
+        "rollback": "C1R recovery package certified offline; exact live principal recovery/normal versions absent",
+        "pilotAccounting": {
+          "workflow": "p26-inspect-6dad7850-42574cb3",
+          "workflowVersion": "0981a430-a751-437b-8daf-3663750f8007",
+          "status": "complete",
+          "requestId": "42574cb3f5ee0cbf",
+          "snapshotDigest": "d562ce9b93db6c97b108abb46ca509c65a8e28a13a5981f01e242ba2fb679ffe",
+          "sourceCommit": "42574cb3f5ee0cbfab2ce54176145c089edc41df",
+          "sourceTree": "cf94d0552c2450bb5f71c6888c10554553aff528",
+          "accounting": {
+            "schema": "metralla-consumed-budget-readback-v1",
+            "previousDigest": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+            "calls": 0,
+            "confirmedMicroUsd": 0,
+            "reservedMicroUsd": 0,
+            "unknownMicroUsd": 0,
+            "ledgerPresent": false,
+            "accountingSettled": true
+          },
+          "scope": "historical snapshot, not fresh archive authorization or infrastructure accounting"
+        },
+        "liveEffectsExecuted": 0,
+        "readOnlyCost": "not independently metered"
       }
     },
     "M10": {
@@ -988,7 +1017,7 @@
         "P25"
       ],
       "status": "PARTIAL",
-      "authorization": "L-D_CONDITIONAL_STOP",
+      "authorization": "L-D_AUTHORIZED_CONDITIONAL_STOP",
       "receipt": "docs/metralla/receipts/P26.md",
       "offlineCandidateCertified": true
     },
@@ -1025,7 +1054,7 @@
     "L-A": "GRANTED by owner P01; zero inference",
     "L-B": "REQUIRED per specialist prompt; no implicit transfer",
     "L-C": "P25 offline historical C1; P26 owner continuation integrated and certified exact successor C1R offline; no live",
-    "L-D": "Owner P26 continuation recovery scope retained; prior live balance and attributable costs unresolved; conditional USD 0.25 not activated; Workers Paid reported Expired; exact manifest/fence required; STOP",
+    "L-D": "Owner grants independent additional USD 0.25 for exact C1R non-generative recovery, conditional on verified service availability, effective consumption bounds and compatible rollback; conditions not established; no billing, Production, secret or permission changes; no P27.",
     "L-E": "PENDING G0 exact task",
     "L-F": "PENDING 2/4 + negatives",
     "L-G": "PENDING 3x10",
@@ -1071,7 +1100,27 @@
         "verified": false,
         "cancellationConfirmed": false
       },
-      "sourceFailureAnalysis": "historical redirect:error on initial GET suggests local rejection before POST; not independent positive effect proof"
+      "sourceFailureAnalysis": "historical redirect:error on initial GET suggests local rejection before POST; not independent positive effect proof",
+      "historicalInspection": {
+        "workflow": "p26-inspect-6dad7850-42574cb3",
+        "workflowVersion": "0981a430-a751-437b-8daf-3663750f8007",
+        "status": "complete",
+        "requestId": "42574cb3f5ee0cbf",
+        "snapshotDigest": "d562ce9b93db6c97b108abb46ca509c65a8e28a13a5981f01e242ba2fb679ffe",
+        "sourceCommit": "42574cb3f5ee0cbfab2ce54176145c089edc41df",
+        "sourceTree": "cf94d0552c2450bb5f71c6888c10554553aff528",
+        "accounting": {
+          "schema": "metralla-consumed-budget-readback-v1",
+          "previousDigest": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+          "calls": 0,
+          "confirmedMicroUsd": 0,
+          "reservedMicroUsd": 0,
+          "unknownMicroUsd": 0,
+          "ledgerPresent": false,
+          "accountingSettled": true
+        },
+        "scope": "historical snapshot, not fresh archive authorization or infrastructure accounting"
+      }
     },
     "historical": {
       "digest": "74c19c0c3685dad24e1b1969b47342f23a8e830ba6d32f3e31fbcc0e7937b60e",
@@ -1086,10 +1135,10 @@
     "liveGate": "STOP"
   },
   "blockers": [
-    "C1R certified offline and integrated; live candidate versions/compatible rollback not established",
-    "Pilot effect_unknown github_branch: exact close workflow reports never-started but cancellation unconfirmed and verified=false; independent effect absence and drained writer still required; do not replay or release",
-    "Prior live balance/attributable cost unresolved; conditional USD 0.25 not activated; Workers Paid subscription reports Expired, spend policies empty; reconcile service eligibility and cost ceiling before effects",
-    "Exact L-D manifest/operator fence required; 17 historical unknown outcomes remain preserved"
+    "Cloudflare Workers Paid subscription still Expired; account billing history has OPEN invoice USD 8.91; bad-debt and unpaid-invoice endpoints return 404 no route. Existing HTTP availability does not establish paid-service eligibility.",
+    "Independent USD 0.25 authorized conditionally; no existing spend policies, builds limits empty, infrastructure maximum incremental cost/STOP not demonstrated; no billing changes authorized.",
+    "C1R certified and integrated; principal exact live recovery/normal versions missing; existing MCP version bindings checked, byte identity/reuse must be verified; rollback same source not yet live.",
+    "Historical PILOTO-01 accounting reconciled at zero, but github_branch effect still unknown and drained writer/native closure not proven; preserve reservation/claim and 17 historical unknown outcomes."
   ],
   "next": [
     "P26"
