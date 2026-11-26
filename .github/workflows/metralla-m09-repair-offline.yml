@@ -119,7 +119,7 @@ jobs:
           ];
           const parse=p=>{const r=ts.parseConfigFileTextToJson(p,readFileSync(p,'utf8'));if(r.error)throw Error('config parse '+p);return r.config;};
           const configs=files('dist').filter(p=>p.endsWith('/wrangler.json')&&parse(p).name==='opencode-g1-staging');expect(configs.length,1,'principal config count');
-          const specs=[['principal',configs[0],rec.principal.activeConfigSha256,rec.principal.configSha256,'c3a0a8ce141238c30f67a1450ec6c1059ad4f09a36ad2564eb7254dd5c3ce48f'],['mcp','wrangler.mcp-staging.jsonc',rec.mcp.activeConfigSha256,rec.mcp.configSha256,'ff3147fd580df8c05743ae0c27ebc73b9c4209151a6850ad372e03eee11d6dee']];
+          const specs=[['principal',configs[0],rec.principal.activeConfigSha256,rec.principal.configSha256,'fcceccd1b93f1116587c13569369f57bf52f61fa7b997bf08aff566206664258'],['mcp','wrangler.mcp-staging.jsonc',rec.mcp.activeConfigSha256,rec.mcp.configSha256,'ff3147fd580df8c05743ae0c27ebc73b9c4209151a6850ad372e03eee11d6dee']];
           const checks={};for(const [label,root,count,digest] of variants)checks[label]=checkTree(root,count,digest,true);
           checks.assets=checkTree('dist/client',active.assets.files,active.assets.sha256);
           checks.build=checkTree('dist',active.build.files,active.build.sha256);
@@ -128,6 +128,13 @@ jobs:
           for(const [name,path,activeHash,recoveryHash,bindingHash] of specs){
             expect(hash(readFileSync(path)),activeHash,name+' config');const c=parse(path);
             expect(c.name,name==='principal'?'opencode-g1-staging':'opencode-staging-control-mcp','worker name');
+            // M09 image-only binding delta; pin independently observed in build 087c80b5-a759-4318-b37a-93b3e9a7d228.
+            if(name==='principal'){
+              expect(c.containers?.length,1,'principal container count');
+              expect(c.containers[0].class_name,'DevContainer','principal container class');
+              expect(c.containers[0].scheduling_policy,'durable_object','principal container scheduling');
+              expect(JSON.stringify(c.containers[0].images),JSON.stringify({pilot:{image:'registry.cloudflare.com/83ac825cf01b6ef0c2244007406d83ab/opencode-g1-staging-m09-linux@sha256:049156e4dd236c8b00f4c3319ffbe4d16bde8d3da3904e4376e11aca6a48c9a8'}}),'principal immutable image');
+            }
             expect(hash(JSON.stringify(Object.fromEntries(bindingKeys.map(k=>[k,c[k]??null])))),bindingHash,name+' bindings');
             c.vars={...c.vars,OPENCODE_M08_RECOVERY_MODE:'true'};if(c.assets)c.assets.run_worker_first=true;
             const bytes=JSON.stringify(c);expect(hash(bytes),recoveryHash,name+' recovery config');recoveryConfigs[name]={path,bytes,activeHash,recoveryHash,bindingHash};
