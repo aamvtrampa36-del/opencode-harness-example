@@ -1,11 +1,11 @@
 {
   "planVersion": "1.0",
   "promptRevision": "R2",
-  "revision": 9,
-  "expectedPreviousRevision": 8,
-  "expectedParentCommit": "f827bf9b8e39fee22b6d387e9c3b3a55278d9088",
+  "revision": 10,
+  "expectedPreviousRevision": 9,
+  "expectedParentCommit": "8a0fce3030f835e2ba6985b319792e5ee02c94dc",
   "date": "2026-11-25",
-  "actor": "ChatGPT coordinator P25 exclusive L-C",
+  "actor": "ChatGPT coordinator P26 L-C/L-D continuation",
   "repository": "aamvtrampa36-del/opencode-harness-example",
   "B0": {
     "sha": "837dce9b283f6b4b0b2ba939407883ec95be726a",
@@ -649,14 +649,26 @@
       }
     },
     "M09": {
-      "status": "READY",
+      "status": "PARTIAL",
       "dependsOn": [
         "M08"
       ],
       "branch": "metralla/control",
-      "authorization": "L-D_PENDING",
-      "receipt": null,
-      "owner": null
+      "authorization": "L-D_CONDITIONAL_STOP",
+      "receipt": "docs/metralla/receipts/P26.md",
+      "owner": "ChatGPT coordinator P26",
+      "candidate": {
+        "sha": "0a36ea55fefd3c9de52f52fecb0f7d6b85a76c40",
+        "tree": "5bbc2ab2450a46d0d9fca861c7f279918ce6362e",
+        "branch": "metralla/m09-repair",
+        "ci": 45727122220,
+        "job": 139599669204,
+        "conclusion": "failure",
+        "artifactCount": 0,
+        "level": "offline",
+        "failure": "principal bindings mismatch; export skipped"
+      },
+      "liveEffectsThisSession": 0
     },
     "M10": {
       "status": "WAITING",
@@ -934,8 +946,9 @@
       "dependsOn": [
         "P25"
       ],
-      "status": "READY",
-      "authorization": "L-D_PENDING"
+      "status": "PARTIAL",
+      "authorization": "L-D_CONDITIONAL_STOP",
+      "receipt": "docs/metralla/receipts/P26.md"
     },
     "P27": {
       "package": "M10",
@@ -970,7 +983,7 @@
     "L-A": "GRANTED by owner P01; zero inference",
     "L-B": "REQUIRED per specialist prompt; no implicit transfer",
     "L-C": "COMPLETED offline P25; no live",
-    "L-D": "PENDING exact C1 manifest, operator, upload/promote/rollback and repair scope",
+    "L-D": "P26 owner continuation: one additional CI on exact candidate consumed; live USD 0.25 conditional on reconciled prior balance, not activated; STOP",
     "L-E": "PENDING G0 exact task",
     "L-F": "PENDING 2/4 + negatives",
     "L-G": "PENDING 3x10",
@@ -982,16 +995,16 @@
     "principal": {
       "worker": "opencode-g1-staging",
       "version": "425eb97e-e040-4200-83f3-780119e79831",
-      "deployment": "9b84a9d7-bd6d-417c-85d9-0b9525479b7d",
+      "deployment": "92442054-4ce3-419c-8061-ed986fe12501",
       "percentage": 100
     },
     "mcp": {
       "worker": "opencode-staging-control-mcp",
       "version": "10f22ddc-8c9c-4eb3-9c09-4e616e89d787",
-      "deployment": "f34203b0-0315-44a0-8d81-0f17e79da7d3",
+      "deployment": "06efb26f-0069-43d0-8c38-df8f88e006e3",
       "percentage": 100
     },
-    "sourceEvidence": "R4_ACTIVATION_SEQUENCE.md and CF deployment GET; source not inferred from new candidate",
+    "sourceEvidence": "R4 baseline source and current Cloudflare GET after prior switch/return; new candidate not deployed",
     "readyHttp": true,
     "activeSlots": 1,
     "capacityIndexed": 10,
@@ -1022,9 +1035,9 @@
     "liveGate": "STOP"
   },
   "blockers": [
-    "L-D pending exact approval; C1 certified offline, recovery versions not uploaded and runtime not promoted",
-    "Live STOP: consumed pilot github_branch effect_unknown; indexed active slot 1 at last Remote read; native physical activity not measured",
-    "Independent live observer/trust roots, image and paid-context/overhead bounds require M09 and subsequent exact authorization",
+    "P26 exact candidate CI failed final principal bindings pin verification; no export artifact; one additional CI consumed",
+    "Pilot effect_unknown github_branch; ref GET 404 and account zero current Containers insufficient to prove independent historical absence/drain/closure",
+    "Prior live budget and attributable overhead unresolved; conditional additional USD 0.25 not activated; exact operator fence and compatible rollback remain required",
     "Historical 17 outcomes unresolved and preserved"
   ],
   "next": [
