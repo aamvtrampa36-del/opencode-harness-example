@@ -1,11 +1,11 @@
 {
   "planVersion": "1.0",
   "promptRevision": "R2",
-  "revision": 10,
-  "expectedPreviousRevision": 9,
-  "expectedParentCommit": "8a0fce3030f835e2ba6985b319792e5ee02c94dc",
+  "revision": 11,
+  "expectedPreviousRevision": 10,
+  "expectedParentCommit": "b41d08dfb5abd5c79f20ff8bd4d3e74305cd55ae",
   "date": "2026-11-25",
-  "actor": "ChatGPT coordinator P26 L-C/L-D continuation",
+  "actor": "ChatGPT coordinator P26",
   "repository": "aamvtrampa36-del/opencode-harness-example",
   "B0": {
     "sha": "837dce9b283f6b4b0b2ba939407883ec95be726a",
@@ -18,22 +18,41 @@
     "level": "offline"
   },
   "C1": {
-    "sha": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
-    "tree": "b506a0324c1eaafed647aee5273d64df477524d9",
+    "sha": "8cd2431c8ffc3f07a4117576e93c3eea3f2c4c6f",
+    "tree": "f5ffef16bf1954be4989037ade190cd8c80da761",
     "branch": "metralla/integracion-01",
     "pr": 172,
     "ci": [
-      45576692735
+      45729603889,
+      45729910805
     ],
-    "ciJob": 139076282349,
+    "ciJob": 139608020466,
     "level": "offline",
     "status": "COMPLETE PASS",
     "manifest": {
-      "path": "docs/metralla/packets/M08/C1_MANIFEST.json",
-      "blob": "8a68f32ea8d229cbf7a1fe838277ee0463a76c4e"
+      "path": "docs/metralla/packets/M09/C1R_MANIFEST.json",
+      "blob": "7d612b554fb785f1d8f59245fa7174b65ca5bc83"
     },
     "rollbackMode": "same-source-recovery",
-    "deployed": false
+    "deployed": false,
+    "previousCertified": {
+      "sha": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+      "tree": "b506a0324c1eaafed647aee5273d64df477524d9",
+      "branch": "metralla/integracion-01",
+      "pr": 172,
+      "ci": [
+        45576692735
+      ],
+      "ciJob": 139076282349,
+      "level": "offline",
+      "status": "COMPLETE PASS",
+      "manifest": {
+        "path": "docs/metralla/packets/M08/C1_MANIFEST.json",
+        "blob": "8a68f32ea8d229cbf7a1fe838277ee0463a76c4e"
+      },
+      "rollbackMode": "same-source-recovery",
+      "deployed": false
+    }
   },
   "activeWave": "D",
   "packages": {
@@ -658,6 +677,29 @@
       "receipt": "docs/metralla/receipts/P26.md",
       "owner": "ChatGPT coordinator P26",
       "candidate": {
+        "sha": "8cd2431c8ffc3f07a4117576e93c3eea3f2c4c6f",
+        "tree": "f5ffef16bf1954be4989037ade190cd8c80da761",
+        "branch": "metralla/integracion-01",
+        "repairBranch": "metralla/m09-repair",
+        "pr": 172,
+        "ci": 45729603889,
+        "job": 139608020466,
+        "conclusion": "success",
+        "automaticCanonicalCI": {
+          "run": 45729910805,
+          "status": "completed",
+          "conclusion": "success"
+        },
+        "artifactCount": 1,
+        "artifactId": 15075403531,
+        "level": "offline",
+        "manifest": {
+          "path": "docs/metralla/packets/M09/C1R_MANIFEST.json",
+          "blob": "7d612b554fb785f1d8f59245fa7174b65ca5bc83"
+        }
+      },
+      "liveEffectsThisSession": 0,
+      "priorCandidate": {
         "sha": "0a36ea55fefd3c9de52f52fecb0f7d6b85a76c40",
         "tree": "5bbc2ab2450a46d0d9fca861c7f279918ce6362e",
         "branch": "metralla/m09-repair",
@@ -667,8 +709,7 @@
         "artifactCount": 0,
         "level": "offline",
         "failure": "principal bindings mismatch; export skipped"
-      },
-      "liveEffectsThisSession": 0
+      }
     },
     "M10": {
       "status": "WAITING",
@@ -948,7 +989,8 @@
       ],
       "status": "PARTIAL",
       "authorization": "L-D_CONDITIONAL_STOP",
-      "receipt": "docs/metralla/receipts/P26.md"
+      "receipt": "docs/metralla/receipts/P26.md",
+      "offlineCandidateCertified": true
     },
     "P27": {
       "package": "M10",
@@ -982,8 +1024,8 @@
   "authorization": {
     "L-A": "GRANTED by owner P01; zero inference",
     "L-B": "REQUIRED per specialist prompt; no implicit transfer",
-    "L-C": "COMPLETED offline P25; no live",
-    "L-D": "P26 owner continuation: one additional CI on exact candidate consumed; live USD 0.25 conditional on reconciled prior balance, not activated; STOP",
+    "L-C": "P25 offline historical C1; P26 owner continuation integrated and certified exact successor C1R offline; no live",
+    "L-D": "Owner P26 continuation recovery scope retained; prior live balance and attributable costs unresolved; conditional USD 0.25 not activated; Workers Paid reported Expired; exact manifest/fence required; STOP",
     "L-E": "PENDING G0 exact task",
     "L-F": "PENDING 2/4 + negatives",
     "L-G": "PENDING 3x10",
@@ -1004,7 +1046,7 @@
       "deployment": "06efb26f-0069-43d0-8c38-df8f88e006e3",
       "percentage": 100
     },
-    "sourceEvidence": "R4 baseline source and current Cloudflare GET after prior switch/return; new candidate not deployed",
+    "sourceEvidence": "R4 baseline source; current Cloudflare GET confirms unchanged 100% deployments; C1R not deployed",
     "readyHttp": true,
     "activeSlots": 1,
     "capacityIndexed": 10,
@@ -1020,7 +1062,16 @@
       "nativeReconciled": false,
       "cancelAmbiguous": true,
       "passed": false,
-      "verified": false
+      "verified": false,
+      "closeObservation": {
+        "workflow": "r4-close-335cfd81abcc43c2-42574cb3f5ee0cbf",
+        "status": "complete",
+        "containerRunning": false,
+        "containerClose": "never-started",
+        "verified": false,
+        "cancellationConfirmed": false
+      },
+      "sourceFailureAnalysis": "historical redirect:error on initial GET suggests local rejection before POST; not independent positive effect proof"
     },
     "historical": {
       "digest": "74c19c0c3685dad24e1b1969b47342f23a8e830ba6d32f3e31fbcc0e7937b60e",
@@ -1035,10 +1086,10 @@
     "liveGate": "STOP"
   },
   "blockers": [
-    "P26 exact candidate CI failed final principal bindings pin verification; no export artifact; one additional CI consumed",
-    "Pilot effect_unknown github_branch; ref GET 404 and account zero current Containers insufficient to prove independent historical absence/drain/closure",
-    "Prior live budget and attributable overhead unresolved; conditional additional USD 0.25 not activated; exact operator fence and compatible rollback remain required",
-    "Historical 17 outcomes unresolved and preserved"
+    "C1R certified offline and integrated; live candidate versions/compatible rollback not established",
+    "Pilot effect_unknown github_branch: exact close workflow reports never-started but cancellation unconfirmed and verified=false; independent effect absence and drained writer still required; do not replay or release",
+    "Prior live balance/attributable cost unresolved; conditional USD 0.25 not activated; Workers Paid subscription reports Expired, spend policies empty; reconcile service eligibility and cost ceiling before effects",
+    "Exact L-D manifest/operator fence required; 17 historical unknown outcomes remain preserved"
   ],
   "next": [
     "P26"

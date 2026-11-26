@@ -1,0 +1,49 @@
+{
+  "schema": "metralla-m09-c1r-offline-v1",
+  "source": "8cd2431c8ffc3f07a4117576e93c3eea3f2c4c6f",
+  "tree": "f5ffef16bf1954be4989037ade190cd8c80da761",
+  "baseC1": "a3a75b25b673ac30989a2cc21f1fe96deb667f47",
+  "branch": "metralla/integracion-01",
+  "pr": 172,
+  "ci": {
+    "run": 45729603889,
+    "job": 139608020466,
+    "conclusion": "success",
+    "node": 321,
+    "bun": 1224,
+    "failures": 0,
+    "canonicalAutomaticRun": 45729910805
+  },
+  "artifact": {
+    "id": 15075403531,
+    "bytes": 16845323,
+    "sha256": "cd3edeaf4114335b72bc37767b4f13a6bac8ad3275e5e1129f0cc2d7ad192c89",
+    "receiptSha256": "ea79acc4098e110f57f11a5b5060b4b119d99f7d99a6317b13f425172f3f65d5",
+    "expiresAt": "2026-11-27T00:35:47Z",
+    "independentByteVerification": true
+  },
+  "principal": {
+    "activeRecoveryPayload": "a7457387936ff87fdfae3c924ecb90a6e7f8101d3fd29c831a94015cb92d35b5",
+    "files": 230,
+    "activeConfig": "02031c7f7318be124e62a6f748ec736192cd9328f4858df23f97c46d121c74a0",
+    "recoveryConfig": "cd6d22a533e713a6b1a8549003da7749ff46ac00e2410852eff766ce312011bb",
+    "bindings": "fcceccd1b93f1116587c13569369f57bf52f61fa7b997bf08aff566206664258",
+    "bindingsWithoutImage": "c3a0a8ce141238c30f67a1450ec6c1059ad4f09a36ad2564eb7254dd5c3ce48f",
+    "imageDigest": "sha256:049156e4dd236c8b00f4c3319ffbe4d16bde8d3da3904e4376e11aca6a48c9a8",
+    "imageBuild": "087c80b5-a759-4318-b37a-93b3e9a7d228",
+    "derivedReleasePin": "ed8f855a0596af346cf43ce3c40cce51012a165664e5bf2ada1b2611b7f55b14",
+    "derivedInventorySha256": "794af3cf42632b9349d52ba38f1fb27095df022f590bdf98fae3a7abf32f3641",
+    "pinStatus": "derived offline from exported bytes plus normalized generated README; executor must rederive and match; not authorization"
+  },
+  "mcp": {
+    "activePayload": "8492fd574ad42c19f157a63c0bc13c83bbb7251738eecf88b7910ee4841e004a",
+    "recoveryPayload": "62b94e192f2199122a39a95d6a83da6177f8389161b7b3ec659a5b4deaa3195f",
+    "activeConfig": "31907fc438748600c198eaef9d85d204838f63e47a0134bc0dfe8f1559878e54",
+    "recoveryConfig": "af4bb4a628421d9cd235bbadb21b0a2f49142e2969e71d13b68f822b21a5258b",
+    "bindings": "ff3147fd580df8c05743ae0c27ebc73b9c4209151a6850ad372e03eee11d6dee"
+  },
+  "rollbackMode": "same-source-recovery",
+  "deployed": false,
+  "liveAuthorized": false,
+  "level": "offline"
+}
