@@ -96,7 +96,7 @@ async function loadServerClass(fakeFetch: typeof fetch) {
   };
   // Load the real pure modules that implement the server's relevant contracts.
   // An unbound future import is an explicit integration failure, never a mock.
-  const safe = /^\.\/(?:supervisor-[\w-]+|github(?:-[\w-]+)?|project-scope|project-container|model-presets|g9-selfdev|openrouter-catalog|repository-import-scope|read-only-policy|read-only-[\w-]+)$/;
+  const safe = /^\.\/(?:supervisor-[\w-]+|github(?:-[\w-]+)?|project-scope|project-container|model-presets|g9-selfdev|openrouter-catalog|repository-import-scope|read-only-policy|read-only-[\w-]+|metralla-m08-task-projection|metralla-m08-recovery-mode)$/;
   for (const statement of ast.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
     const name = statement.moduleSpecifier.text;
@@ -428,4 +428,10 @@ describe("C05/T07 real server method contract (offline; RED until combined)", ()
     expect(f.calls("http").every(args=>args[0]==="GET")).toBe(true);
     expect(await f.storage.get("g8-scope:"+child)).toBeUndefined();
   });
+});
+
+test("recovery-mode real start rejects before reserve or any native/external call",async()=>{
+ const f=await fixture();const a=f.newAgent();a.agent.env.OPENCODE_M08_RECOVERY_MODE="true";
+ await expect(a.agent.startSupervisedTask(request)).rejects.toThrow("M08_RECOVERY_NEW_EFFECT_FORBIDDEN");
+ expect(f.events).toEqual([]);expect(await f.record()).toBeUndefined();
 });

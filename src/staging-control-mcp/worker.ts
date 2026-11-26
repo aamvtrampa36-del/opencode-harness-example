@@ -1,5 +1,8 @@
 import { env } from "cloudflare:workers";
+import { recoveryMode } from "../metralla-m08-recovery-mode";
 import { createMcpHandler } from "agents/mcp/server";
+import { dispatchBoundedMcp } from "./p08-remote";
+import {remoteOwnerPrincipal,type RemoteOwnerEnv} from "../metralla-m08-mobile-auth";
 import {
   createStagingControlServer,
   SUPERVISOR_OBJECT,
@@ -7,7 +10,7 @@ import {
   type StagingSupervisor
 } from "./server";
 
-type ControlEnv = {
+type ControlEnv = RemoteOwnerEnv & {
   MCP_ENABLED?: string;
   OPENCODE_SUPERVISOR_PHASE_TELEMETRY?: string;
   STAGING_HEALTH: Fetcher;
@@ -15,8 +18,9 @@ type ControlEnv = {
 };
 
 const controlEnv = env as unknown as ControlEnv;
-const handler = createMcpHandler(() => {
+const makeHandler = (verifiedPrincipal?:string) => createMcpHandler(() => {
   const bindings: StagingControlBindings = {
+    verifiedPrincipal,
     phaseTelemetryEnabled: controlEnv.OPENCODE_SUPERVISOR_PHASE_TELEMETRY === "true",
     readHealth: () => controlEnv.STAGING_HEALTH.fetch(new Request("https://staging.internal/api/health", {
       method: "GET",
@@ -33,11 +37,16 @@ const handler = createMcpHandler(() => {
   };
   return createStagingControlServer(bindings);
 }, { route: "/mcp" });
+const legacyHandler=makeHandler();
 
 export default {
   fetch(request: Request, _env: ControlEnv, ctx: ExecutionContext): Promise<Response> | Response {
     if (new URL(request.url).pathname !== "/mcp") return new Response("Not found", { status: 404 });
+    if (recoveryMode(controlEnv)) return Response.json({error:"M08_RECOVERY_MCP_PAUSED"},{status:503,headers:{"Cache-Control":"no-store"}});
     if (controlEnv.MCP_ENABLED !== "true") return new Response("Staging MCP is not enabled", { status: 503 });
-    return handler(request, controlEnv, ctx);
+    return dispatchBoundedMcp(request, async bounded => {
+      const principal=await remoteOwnerPrincipal(bounded,controlEnv);
+      return (principal?makeHandler(principal):legacyHandler)(bounded,controlEnv,ctx);
+    });
   }
 } satisfies ExportedHandler<ControlEnv>;

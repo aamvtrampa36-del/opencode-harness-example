@@ -4,10 +4,12 @@
  * Existing strict preflight and ordinary policies are preserved. The pilot
  * requires separately attested, risk-bounded server-side dispatch evidence.
  */
+import { validateNormalPolicy, newNormalState, normalReserve, normalDispatch, normalRoundMove, type NormalPolicy, type NormalState } from "./metralla-m04-policy.ts";
 import type { StartGrant } from "./supervisor-admission";
 import type { SupervisorTask } from "./supervisor-control";
 import type { PilotClaim } from "./pilot-authorization";
 import { durablePreparationValid } from "./pilot-preparation.ts";
+import { CONSUMED_PILOT_ID, consumedArchiveExempts, reconciliationDigest } from "./supervisor-reconciliation.ts";
 
 export type Price = { inputMicroUsdPerMillion: number; outputMicroUsdPerMillion: number; revision: string };
 export type ModelAllowance = { providerID: string; modelID: string; price: Price };
@@ -36,19 +38,20 @@ export type HybridPolicy = { session: string; instance: string; workUntil: numbe
 type HybridState = { calls: number; paidCalls: number; selection: typeof PILOT_FREE | typeof PILOT_BACKUP; pending?: string };
 export type BudgetPolicy = {
   experimentId: string; totalMicroUsd: number; taskMicroUsd: number;
-  maxAttempts: number; selections: Record<string, ModelAllowance>; hybrid?: HybridPolicy;
+  maxAttempts: number; selections: Record<string, ModelAllowance>; hybrid?: HybridPolicy; normal?: NormalPolicy;
 };
 export type InferenceIntent = {
   requestId: string; operationId: string; callId: string; attemptId: string;
-  selection: string; inputTokenCeiling: number; outputTokenCeiling: number;
+  selection: string; inputTokenCeiling: number; outputTokenCeiling: number; wireBytes?: number; payloadSha256?:string;
 };
 type Counter = { confirmed: number; reserved: number; unknown: number };
-type Global = Counter & { version: 1; policy: string; paymentBlocked: boolean; hybrid?: HybridState };
+type Global = Counter & { version: 1; policy: string; paymentBlocked: boolean; hybrid?: HybridState; normal?: NormalState };
 type Row = { identity: string; requestId: string; operationId: string; callId: string;
   attemptId: string; attemptIds: string[]; attempts: number; selection: string;
   providerID: string; modelID: string; price: Price; inputTokenCeiling: number;
   outputTokenCeiling: number; exposure: number; state: "reserved" | "sent" | "unknown" | "rejected" | "settled";
-  reason?: string; receiptId?: string; inputTokens?: number; outputTokens?: number; charge?: number; actualModel?: string };
+  reason?: string; receiptId?: string; inputTokens?: number; outputTokens?: number; charge?: number; actualModel?: string;
+  generation?:number; releaseSha?:string; sessionId?:string; reservedAt?:number; dispatchAt?:number; terminalAt?:number };
 const GLOBAL = "supervisor:inference:budget:v1";
 const TASK = (id: string) => "supervisor:inference:task:" + id;
 const CALL = (id: string, call: string) => "supervisor:inference:call:" + id + ":" + call;
@@ -79,6 +82,8 @@ function policySnapshot(policy: BudgetPolicy): string {
       PILOT_MAX_PAID_CALLS * PILOT_GLM_RESERVE_MICRO_USD <= PILOT_INFERENCE_MICRO_USD,
       "PILOT_POLICY_INVALID");
   }
+  requireValue(!policy.normal || !policy.hybrid,"NORMAL_AND_PILOT_MUTUALLY_EXCLUSIVE");
+  if(policy.normal)validateNormalPolicy(policy.normal,policy.totalMicroUsd,policy.selections);
   const selections = Object.keys(policy.selections ?? {}).sort();
   requireValue(selections.length > 0 && selections.length <= 16, "BUDGET_POLICY_INVALID");
   const canonical: Record<string, ModelAllowance> = Object.create(null);
@@ -95,7 +100,7 @@ function policySnapshot(policy: BudgetPolicy): string {
   }
   return JSON.stringify({ experimentId:policy.experimentId, totalMicroUsd:policy.totalMicroUsd,
     taskMicroUsd:policy.taskMicroUsd, maxAttempts:policy.maxAttempts, selections:canonical,
-    ...(policy.hybrid ? {hybrid:policy.hybrid} : {}) });
+    ...(policy.hybrid ? {hybrid:policy.hybrid} : {}), ...(policy.normal?{normal:policy.normal}:{}) });
 }
 function reserveCost(intent: InferenceIntent, price: Price): number {
   requireValue(int(intent.inputTokenCeiling, 1, TOKENS_LIMIT) &&
@@ -130,6 +135,9 @@ async function assertT03(tx: DurableObjectTransaction, grant: StartGrant, intent
       /^rc-turn-[a-f0-9]{16}-[a-f0-9]{16}$/.test(intent.operationId)) &&
     (policy.hybrid ? task.model === PILOT_BACKUP : intent.selection === (task.model ?? "economy")),
     "T03_FENCE_OR_MODEL_INVALID");
+  if(policy.normal){requireValue(!task.pilotInstance,"NORMAL_PILOT_TASK_FORBIDDEN");
+    if(task.githubSource)requireValue(int(task.normalWorkUntil,Date.now()+1,policy.normal.validUntil),"NORMAL_WORK_DEADLINE");
+  }
   if (policy.hybrid) {
     const h = policy.hybrid;
     requireValue(grant.id === policy.experimentId && task.session === h.session &&
@@ -153,7 +161,8 @@ function assertIntent(intent: InferenceIntent) {
 async function readGlobal(tx: DurableObjectTransaction, snapshot: string, policy: BudgetPolicy): Promise<Global> {
   const previous = await tx.get<Global>(GLOBAL);
   if (!previous) return {version:1,policy:snapshot,paymentBlocked:false,...zero(),
-    ...(policy.hybrid ? {hybrid:{calls:0,paidCalls:0,selection:PILOT_FREE}} : {})};
+    ...(policy.hybrid ? {hybrid:{calls:0,paidCalls:0,selection:PILOT_FREE}} : {}),
+    ...(policy.normal?{normal:newNormalState(policy.normal)}:{})};
   requireValue(previous.version === 1 && previous.policy === snapshot &&
     [previous.confirmed,previous.reserved,previous.unknown].every(x => int(x,0,CASH_LIMIT)),
   "BUDGET_POLICY_CHANGED_OR_CORRUPT");
@@ -165,13 +174,27 @@ async function readGlobal(tx: DurableObjectTransaction, snapshot: string, policy
     (previous.hybrid.pending === undefined || CALL_ID.test(previous.hybrid.pending)),
     "PILOT_LEDGER_CORRUPT");
   else requireValue(!previous.hybrid, "PILOT_LEDGER_POLICY_MISMATCH");
+  requireValue(Boolean(previous.normal)===Boolean(policy.normal),"NORMAL_LEDGER_POLICY_MISMATCH");
   return previous;
+}
+function intentFingerprint(intent:InferenceIntent){return JSON.stringify({requestId:intent.requestId,operationId:intent.operationId,
+  callId:intent.callId,selection:intent.selection,inputTokenCeiling:intent.inputTokenCeiling,
+  outputTokenCeiling:intent.outputTokenCeiling,...(intent.wireBytes===undefined?{}:{wireBytes:intent.wireBytes}),
+  ...(intent.payloadSha256===undefined?{}:{payloadSha256:intent.payloadSha256})});}
+function moveNormal(global:Global,intent:InferenceIntent,from:"reserved"|"unknown",to:"unknown"|"confirmed"|"released",exposure:number,charge=0){
+  if(global.normal){const p=(JSON.parse(global.policy) as BudgetPolicy).normal;requireValue(p,"NORMAL_LEDGER_POLICY_MISMATCH");normalRoundMove(p,global.normal,intent,from,to,exposure,charge);}
+}
+/** Read-only preflight; never replaces/archives an incompatible historical ledger. */
+export async function assertNormalBudgetReady(storage:DurableObjectStorage,policy:BudgetPolicy,proof:PaidPreflight){
+  requireValue(policy.normal&&!policy.hybrid&&paidPreflight({...proof,now:Date.now()}).decision==="GO","PAID_PREFLIGHT_STOP");
+  const snap=policySnapshot(policy);
+  await storage.transaction(async tx=>{const g=await readGlobal(tx,snap,policy);requireValue(!g.paymentBlocked&&g.unknown===0,"NORMAL_UNRESOLVED_CHARGE");});
 }
 /** Same T03 Durable Object owner. No external RPC/await other than DO storage inside the tx. */
 export async function reserveInference(storage: DurableObjectStorage, grant: StartGrant,
   intent: InferenceIntent, policy: BudgetPolicy) {
   assertIntent(intent);
-  const snap = policySnapshot(policy), allowance = policy.selections[intent.selection];
+  const snap = policySnapshot(policy), allowance = Object.prototype.hasOwnProperty.call(policy.selections,intent.selection)?policy.selections[intent.selection]:undefined;
   requireValue(allowance, "MODEL_NOT_ALLOWED");
   const ratedExposure = reserveCost(intent, allowance.price);
   const paidPilot = Boolean(policy.hybrid && intent.selection===PILOT_BACKUP);
@@ -183,13 +206,11 @@ export async function reserveInference(storage: DurableObjectStorage, grant: Sta
     requireValue(!global.paymentBlocked, "PAYMENT_BLOCKED");
     const key = CALL(intent.requestId,intent.callId);
     const old = await tx.get<Row>(key);
-    const identity = JSON.stringify({requestId:intent.requestId,operationId:intent.operationId,
-      callId:intent.callId,selection:intent.selection,inputTokenCeiling:intent.inputTokenCeiling,
-      outputTokenCeiling:intent.outputTokenCeiling});
+    const identity = intentFingerprint(intent);
     if (old) {
       requireValue(old.identity === identity, "INFERENCE_FINGERPRINT_CONFLICT");
       if (old.attemptId === intent.attemptId) return {kind:"existing" as const,state:old.state};
-      requireValue(old.state === "rejected" && old.reason !== "402", "UPSTREAM_EFFECT_UNCERTAIN");
+      requireValue(old.state === "rejected" && old.reason !== "402" && old.reason !== "403" && old.reason !== "cancelled_before_dispatch", "UPSTREAM_EFFECT_UNCERTAIN");
       requireValue(old.attempts < policy.maxAttempts && !old.attemptIds.includes(intent.attemptId),
       "INFERENCE_RETRY_DENIED");
     }
@@ -207,12 +228,15 @@ export async function reserveInference(storage: DurableObjectStorage, grant: Sta
     const task = await tx.get<Counter>(TASK(intent.requestId)) ?? zero();
     requireValue(total(global) + expectedExposure <= policy.totalMicroUsd &&
       total(task) + expectedExposure <= policy.taskMicroUsd, "INFERENCE_BUDGET_EXHAUSTED");
+    if(policy.normal){requireValue(task.unknown===0,"NORMAL_UNRESOLVED_CHARGE");normalReserve(policy.normal,global.normal!,intent,expectedExposure,Date.now());}
     const row: Row = {identity,requestId:intent.requestId,operationId:intent.operationId,
       callId:intent.callId,attemptId:intent.attemptId,attemptIds:[...(old?.attemptIds ?? []),intent.attemptId],
       attempts:(old?.attempts ?? 0)+1,selection:intent.selection,
       providerID:allowance.providerID,modelID:allowance.modelID,price:allowance.price,
       inputTokenCeiling:intent.inputTokenCeiling,outputTokenCeiling:intent.outputTokenCeiling,
       exposure:expectedExposure,state:"reserved"};
+    if(policy.normal){const owner=await tx.get<SupervisorTask>("supervisor:task:"+grant.id);
+      if(owner?.githubSource)Object.assign(row,{generation:grant.generation,releaseSha:owner.normalReleaseSha,sessionId:owner.session,reservedAt:Date.now()});}
     adjust(global,{reserved:expectedExposure});adjust(task,{reserved:expectedExposure});
     await tx.put(key,row);await tx.put(TASK(intent.requestId),task);await tx.put(GLOBAL,global);
     return {kind:"reserved" as const,exposureMicroUsd:expectedExposure};
@@ -342,14 +366,16 @@ export async function beginInferenceDispatch(storage: DurableObjectStorage,grant
     const global=await readGlobal(tx,snap,policy);
     requireValue(!global.paymentBlocked,"PAYMENT_BLOCKED");
     const row=await tx.get<Row>(CALL(intent.requestId,intent.callId));
-    requireValue(row && row.attemptId===intent.attemptId,"INFERENCE_RESERVATION_MISSING");
+    requireValue(row && row.attemptId===intent.attemptId && row.identity===intentFingerprint(intent),"INFERENCE_RESERVATION_MISSING");
     if(row.state!=="reserved")return {proceed:false,state:row.state};
     if(policy.hybrid) {
       const task=await tx.get<SupervisorTask>("supervisor:task:"+grant.id);
       requireValue(global.hybrid?.pending===intent.callId && pilotDispatchEvidenceValid(policy,preflight) &&
         "preparationDigest" in preflight && task?.pilotPreparation?.digest===preflight.preparationDigest, "PILOT_DISPATCH_FENCED");
     }
-    row.state="sent";
+    if(policy.normal){requireValue(!("kind" in preflight)&&paidPreflight({...preflight,now:Date.now()}).decision==="GO","PAID_PREFLIGHT_STOP");
+      normalDispatch(policy.normal,global.normal!,intent,Date.now());await tx.put(GLOBAL,global);}
+    row.state="sent";if(row.reservedAt!==undefined)row.dispatchAt=Date.now();
     await tx.put(CALL(intent.requestId,intent.callId),row);
     return {proceed:true,state:"sent" as const};
   });
@@ -358,28 +384,29 @@ export async function markInferenceUnknown(storage:DurableObjectStorage,intent:I
   requireValue(reason.length>0 && reason.length<128,"INVALID_UNKNOWN_REASON");
   return storage.transaction(async tx=>{
     const key=CALL(intent.requestId,intent.callId),row=await tx.get<Row>(key);
-    requireValue(row && row.attemptId===intent.attemptId,"INFERENCE_ATTEMPT_MISMATCH");
+    requireValue(row && row.attemptId===intent.attemptId && row.identity===intentFingerprint(intent),"INFERENCE_ATTEMPT_MISMATCH");
     if(row.state==="unknown")return {reused:true};
     requireValue(row.state==="sent","INFERENCE_NOT_SENT");
     const global=await tx.get<Global>(GLOBAL),task=await tx.get<Counter>(TASK(intent.requestId));
     requireValue(global && task,"INFERENCE_LEDGER_MISSING");
     adjust(global,{reserved:-row.exposure,unknown:row.exposure});
     adjust(task,{reserved:-row.exposure,unknown:row.exposure});
+    moveNormal(global,intent,"reserved","unknown",row.exposure);
     // Even a zero-rated Free request with an invalid receipt is a stop.
     if(global.hybrid)global.paymentBlocked=true;
-    row.state="unknown";row.reason=reason;
+    row.state="unknown";row.reason=reason;if(row.reservedAt!==undefined)row.terminalAt=Date.now();
     await tx.put(key,row);await tx.put(GLOBAL,global);await tx.put(TASK(intent.requestId),task);
     return {reused:false};
   });
 }
 /** Proof is required from a private trusted adapter; HTTP status alone is not proof. */
 export async function rejectInferenceBeforeGeneration(storage:DurableObjectStorage,intent:InferenceIntent,
-  receipt:{origin:"trusted-provider-adapter"; beforeGeneration:true; code:"429"|"3040"|"402"; preGenerationSource?:"openrouter_free_tier_per_minute"|"openrouter_free_tier_per_day"}) {
+  receipt:{origin:"trusted-provider-adapter"; beforeGeneration:true; code:"429"|"3040"|"402"|"403"; preGenerationSource?:"openrouter_free_tier_per_minute"|"openrouter_free_tier_per_day"}) {
   requireValue(receipt.origin==="trusted-provider-adapter" && receipt.beforeGeneration===true &&
-    ["429","3040","402"].includes(receipt.code),"PREGEN_PROOF_REQUIRED");
+    ["429","3040","402","403"].includes(receipt.code),"PREGEN_PROOF_REQUIRED");
   return storage.transaction(async tx=>{
     const key=CALL(intent.requestId,intent.callId),row=await tx.get<Row>(key);
-    requireValue(row && row.attemptId===intent.attemptId,"INFERENCE_ATTEMPT_MISMATCH");
+    requireValue(row && row.attemptId===intent.attemptId && row.identity===intentFingerprint(intent),"INFERENCE_ATTEMPT_MISMATCH");
     if(row.state==="rejected"&&row.reason===receipt.code)return {reused:true};
     requireValue(row.state==="sent","UNKNOWN_EFFECT_MUST_NOT_RELEASE");
     const global=await tx.get<Global>(GLOBAL),task=await tx.get<Counter>(TASK(intent.requestId));
@@ -392,8 +419,9 @@ export async function rejectInferenceBeforeGeneration(storage:DurableObjectStora
         "PILOT_FALLBACK_REQUIRES_ROUTER_PREGEN_PROOF");
       global.hybrid.selection=PILOT_BACKUP;delete global.hybrid.pending;
     }
-    if(receipt.code==="402")global.paymentBlocked=true;
-    row.state="rejected";row.reason=receipt.code;
+    moveNormal(global,intent,"reserved","released",row.exposure);
+    if(receipt.code==="402"||receipt.code==="403")global.paymentBlocked=true;
+    row.state="rejected";row.reason=receipt.code;if(row.reservedAt!==undefined)row.terminalAt=Date.now();
     await tx.put(key,row);await tx.put(GLOBAL,global);await tx.put(TASK(intent.requestId),task);
     return {reused:false};
   });
@@ -405,7 +433,7 @@ export async function settleInference(storage:DurableObjectStorage,intent:Infere
     int(receipt.inputTokens,0,TOKENS_LIMIT) && int(receipt.outputTokens,0,TOKENS_LIMIT),"USAGE_RECEIPT_REQUIRED");
   return storage.transaction(async tx=>{
     const key=CALL(intent.requestId,intent.callId),row=await tx.get<Row>(key);
-    requireValue(row && row.attemptId===intent.attemptId,"INFERENCE_ATTEMPT_MISMATCH");
+    requireValue(row && row.attemptId===intent.attemptId && row.identity===intentFingerprint(intent),"INFERENCE_ATTEMPT_MISMATCH");
     if(row.state==="settled") {
       requireValue(row.receiptId===receipt.receiptId && row.inputTokens===receipt.inputTokens &&
         row.outputTokens===receipt.outputTokens && row.actualModel===receipt.actualModel,"DUPLICATE_SETTLEMENT_CONFLICT");
@@ -422,6 +450,7 @@ export async function settleInference(storage:DurableObjectStorage,intent:Infere
     requireValue(!previous || previous===key,"PROVIDER_RECEIPT_REUSED_OTHER_CALL");
     const global=await tx.get<Global>(GLOBAL),task=await tx.get<Counter>(TASK(intent.requestId));
     requireValue(global && task,"INFERENCE_LEDGER_MISSING");
+    if(global.normal)requireValue(receipt.actualModel===row.modelID,"NORMAL_MODEL_RECEIPT_MISMATCH");
     if(global.hybrid) {
       requireValue(global.hybrid.pending===intent.callId && row.state==="sent" &&
         receipt.inputTokens<=PILOT_INPUT_TOKENS && receipt.outputTokens<=PILOT_OUTPUT_TOKENS &&
@@ -433,7 +462,8 @@ export async function settleInference(storage:DurableObjectStorage,intent:Infere
     const bucket=row.state==="unknown"?"unknown":"reserved";
     adjust(global,{[bucket]:-row.exposure,confirmed:charged});
     adjust(task,{[bucket]:-row.exposure,confirmed:charged});
-    row.state="settled";row.receiptId=receipt.receiptId;row.inputTokens=receipt.inputTokens;
+    moveNormal(global,intent,bucket,"confirmed",row.exposure,charged);
+    row.state="settled";row.receiptId=receipt.receiptId;row.inputTokens=receipt.inputTokens;if(row.reservedAt!==undefined)row.terminalAt=Date.now();
     row.outputTokens=receipt.outputTokens;row.charge=charged;row.actualModel=receipt.actualModel;
     await tx.put(key,row);await tx.put(receiptKey,key);await tx.put(GLOBAL,global);
     await tx.put(TASK(intent.requestId),task);
@@ -445,4 +475,216 @@ export async function inferenceBudgetTotals(storage:Pick<DurableObjectStorage,"g
   return global ? {confirmed:global.confirmed,reserved:global.reserved,unknown:global.unknown,
     exposureMicroUsd:total(global),paymentBlocked:global.paymentBlocked,
     ...(global.hybrid ? {pilot:{...global.hybrid}} : {})} : null;
+}
+/** Cancellation before the dispatch flag is durable is the only local release proof. Never clears sent/unknown. */
+export async function cancelReservedNormalInference(storage:DurableObjectStorage,grant:StartGrant,intent:InferenceIntent,policy:BudgetPolicy){
+  requireValue(policy.normal&&!policy.hybrid,"NORMAL_POLICY_REQUIRED");
+  const snapshot=policySnapshot(policy);
+  return storage.transaction(async tx=>{
+    await assertT03(tx,grant,intent,policy);
+    const key=CALL(intent.requestId,intent.callId),row=await tx.get<Row>(key);
+    requireValue(row&&row.attemptId===intent.attemptId&&row.identity===intentFingerprint(intent),"INFERENCE_ATTEMPT_MISMATCH");
+    if(row.state==="rejected"&&row.reason==="cancelled_before_dispatch")return {reused:true};
+    requireValue(row.state==="reserved","UNKNOWN_EFFECT_MUST_NOT_RELEASE");
+    const global=await readGlobal(tx,snapshot,policy),task=await tx.get<Counter>(TASK(intent.requestId));
+    requireValue(task,"INFERENCE_LEDGER_MISSING");
+    adjust(global,{reserved:-row.exposure});adjust(task,{reserved:-row.exposure});
+    moveNormal(global,intent,"reserved","released",row.exposure);
+    row.state="rejected";row.reason="cancelled_before_dispatch";if(row.reservedAt!==undefined)row.terminalAt=Date.now();
+    await tx.put(key,row);await tx.put(GLOBAL,global);await tx.put(TASK(intent.requestId),task);
+    return {reused:false};
+  });
+}
+export async function normalInferenceStatus(storage:Pick<DurableObjectStorage,"get">){
+  const g=await storage.get<Global>(GLOBAL);
+  if(!g?.normal)return null;
+  return {calls:g.normal.calls,active:g.normal.active,rounds:g.normal.rounds,
+    confirmed:g.confirmed,reserved:g.reserved,unknown:g.unknown,
+    canCloseAccounting:g.normal.active===0&&g.reserved===0&&g.unknown===0,paymentBlocked:g.paymentBlocked};
+}
+
+/** Proposal only: no provider selection mutation or dispatch. T03 must authorize
+ * the model change and a new callId. A generic 429 or any unknown is not a receipt. */
+export async function normalFallbackAllowed(storage:DurableObjectStorage,grant:StartGrant,intent:InferenceIntent,policy:BudgetPolicy,target:string){
+  requireValue(policy.normal&&!policy.hybrid,"NORMAL_POLICY_REQUIRED");
+  const snapshot=policySnapshot(policy);
+  return storage.transaction(async tx=>{
+    await assertT03(tx,grant,intent,policy);
+    const global=await readGlobal(tx,snapshot,policy),row=await tx.get<Row>(CALL(intent.requestId,intent.callId));
+    const route=Object.hasOwn(policy.normal!.routes,target)?policy.normal!.routes[target]:undefined;
+    requireValue(!global.paymentBlocked&&row&&row.identity===intentFingerprint(intent)&&row.attemptId===intent.attemptId&&
+      row.state==="rejected"&&["429","3040"].includes(row.reason??"")&&
+      Object.hasOwn(policy.normal!.fallbacks??{},intent.selection)&&policy.normal!.fallbacks![intent.selection].includes(target)&&
+      route&&Date.now()<route.validUntil&&Date.now()<policy.normal!.validUntil,"NORMAL_FALLBACK_NOT_AUTHORIZED");
+    return {selection:target,requiresNewAuthorizedT03Selection:true};
+  });
+}
+
+/** Unknown provider effect is never physical-close accounting evidence. */
+export async function normalTaskAccountingClosed(tx:Pick<DurableObjectTransaction,"get">,id:string){
+  const global=await tx.get<Global>(GLOBAL),task=await tx.get<Counter>(TASK(id));
+  if(!global?.normal||global.hybrid||global.version!==1)return false;
+  const state=global.normal.tasks[id];
+  return Boolean(state&&state.active===0&&task&&task.reserved===0&&task.unknown===0&&
+    int(task.confirmed,0,CASH_LIMIT)&&int(state.calls,0,10000));
+}
+
+/** Replace only a completely settled consumed pilot policy. All old task/call/
+ * provider-receipt keys remain immutable and globally unique. No zeroing debt.
+ * Account Workflow verifies the independent authorization outside this transaction;
+ * exact prior/new digests and expiry are rechecked inside it. */
+export type BudgetTransition={schema:"metralla-budget-transition-v1";releaseSha:string;approvalRef:string;
+ previousDigest:string;nextPolicyDigest:string;archiveDigest:string;notBefore:number;expiresAt:number};
+const BUDGET_TRANSITION="supervisor:inference:transition:v1:";
+export async function normalBudgetTransitionSnapshot(storage:DurableObjectStorage,policy:BudgetPolicy){
+  requireValue(policy.normal&&!policy.hybrid,"NORMAL_POLICY_REQUIRED");
+  const nextPolicy=policySnapshot(policy);
+  return storage.transaction(async tx=>{
+    const previous=await tx.get<Global>(GLOBAL),archive=await tx.get<{digest:string}>("supervisor:consumed-pilot:archive:v1:"+CONSUMED_PILOT_ID);
+    return {previousDigest:await reconciliationDigest(previous??null),nextPolicyDigest:await reconciliationDigest(nextPolicy),archiveDigest:archive?.digest??null};
+  });
+}
+/** Read-only accounting evidence for the fixed consumed pilot. Not external closure or authorization. */
+async function assertConsumedBudgetSettled(tx:Pick<DurableObjectTransaction,"get"|"list">,previous:Global|undefined){
+  // Scan only the consumed pilot's bounded history, not the complete historical database.
+  const rows=await tx.list<Row>({prefix:"supervisor:inference:call:"+CONSUMED_PILOT_ID+":",limit:PILOT_MAX_CALLS+1});
+  requireValue(rows.size<=PILOT_MAX_CALLS,"BUDGET_TRANSITION_HISTORY_LIMIT");
+  const task=await tx.get<Counter>(TASK(CONSUMED_PILOT_ID));
+  if(previous){
+    let old:BudgetPolicy;try{old=JSON.parse(previous.policy);}catch{throw Error("BUDGET_TRANSITION_OLD_POLICY");}
+    requireValue(old.experimentId===CONSUMED_PILOT_ID&&old.hybrid&&!old.normal&&policySnapshot(old)===previous.policy&&previous.version===1&&
+      previous.hybrid&&!previous.normal&&!previous.paymentBlocked&&!previous.hybrid.pending&&previous.reserved===0&&previous.unknown===0&&
+      int(previous.confirmed,0,old.totalMicroUsd)&&previous.hybrid.calls===rows.size,"BUDGET_TRANSITION_OLD_UNSETTLED");
+    let confirmed=0;
+    for(const [rowKey,row] of rows){
+      requireValue(row.requestId===CONSUMED_PILOT_ID&&rowKey===CALL(row.requestId,row.callId)&&row.attempts===1&&
+        ["settled","rejected"].includes(row.state)&&int(row.exposure,0,old.totalMicroUsd),"BUDGET_TRANSITION_CALL_UNSETTLED");
+      const allowed=Object.hasOwn(old.selections,row.selection)?old.selections[row.selection]:undefined;
+      requireValue(allowed&&allowed.providerID===row.providerID&&allowed.modelID===row.modelID&&await reconciliationDigest(row.price)===await reconciliationDigest(allowed.price),"BUDGET_TRANSITION_CALL_POLICY");
+      if(row.state==="settled"){
+        requireValue(int(row.charge,0,row.exposure)&&int(row.inputTokens,0,row.inputTokenCeiling)&&int(row.outputTokens,0,row.outputTokenCeiling)&&
+          row.charge===Math.ceil((row.inputTokens!*allowed.price.inputMicroUsdPerMillion+row.outputTokens!*allowed.price.outputMicroUsdPerMillion)/1000000)&&typeof row.receiptId==="string"&&await tx.get(RECEIPT(row.providerID,row.receiptId))===rowKey,"BUDGET_TRANSITION_RECEIPT_INVALID");
+        confirmed+=row.charge!;
+      }
+    }
+    requireValue(confirmed===previous.confirmed&&(!rows.size&&!task&&confirmed===0||task&&task.confirmed===confirmed&&task.reserved===0&&task.unknown===0),"BUDGET_TRANSITION_COUNTER_MISMATCH");
+  }else requireValue(rows.size===0&&!task,"BUDGET_TRANSITION_ORPHAN_HISTORY");
+  return {schema:"metralla-consumed-budget-readback-v1" as const,requestId:CONSUMED_PILOT_ID,
+    previousDigest:await reconciliationDigest(previous??null),calls:rows.size,
+    confirmedMicroUsd:previous?.confirmed??0,reservedMicroUsd:0,unknownMicroUsd:0,
+    ledgerPresent:previous!==undefined,accountingSettled:true as const};
+}
+export async function inspectConsumedBudget(storage:DurableObjectStorage){
+  return storage.transaction(async tx=>assertConsumedBudgetSettled(tx,await tx.get<Global>(GLOBAL)));
+}
+/** No pending exposure or policy materialization. A future authorized reserve initializes the ledger. */
+export async function inspectUninitializedNormalBudget(storage:DurableObjectStorage){
+  return storage.transaction(async tx=>{
+    const ledger=await tx.get<{version:number;slots:Record<string,unknown>}>("supervisor:admission:v1");
+    requireValue(ledger?.version===1&&ledger.slots&&typeof ledger.slots==="object"&&!Array.isArray(ledger.slots)&&Object.keys(ledger.slots).length===0&&await consumedArchiveExempts(tx,ledger.slots),"BUDGET_TRANSITION_NOT_DRAINED");
+    requireValue(await tx.get<Global>(GLOBAL)===undefined,"NORMAL_LEDGER_ALREADY_PRESENT");
+    const budget=await assertConsumedBudgetSettled(tx,undefined);
+    for(const prefix of ["supervisor:inference:call:","supervisor:inference:task:","supervisor:inference:receipt:"])
+      requireValue((await tx.list({prefix,limit:1})).size===0,"NORMAL_ORPHAN_HISTORY");
+    const archive=await tx.get<{digest:string}>("supervisor:consumed-pilot:archive:v1:"+CONSUMED_PILOT_ID);
+    requireValue(archive,"NORMAL_LEDGER_NOT_READY");
+    return {...budget,schema:"metralla-normal-budget-uninitialized-v1",archiveDigest:archive.digest,accountingReady:true,
+      dispatchAuthorized:false,providerPreflightVerified:false,initialization:"first-authorized-reserve"};
+  });
+}
+/** Both private readbacks require a real, settled ledger. Neither initializes it. */
+async function readSettledNormalBudget(storage:DurableObjectStorage,policy:BudgetPolicy,checkPaid?:()=>void){
+  const snap=policySnapshot(policy);
+  requireValue(policy.normal&&!policy.hybrid,"NORMAL_POLICY_REQUIRED");
+  checkPaid?.();
+  return storage.transaction(async tx=>{
+    const g=await tx.get<Global>(GLOBAL);
+    requireValue(g?.version===1&&g.policy===snap&&g.normal&&!g.hybrid&&!g.paymentBlocked&&
+      int(g.confirmed,0,policy.totalMicroUsd)&&g.reserved===0&&g.unknown===0&&g.normal.active===0,"NORMAL_LEDGER_NOT_READY");
+    const ledger=await tx.get<{version:number;slots:Record<string,unknown>}>("supervisor:admission:v1");
+    requireValue(ledger?.version===1&&ledger.slots&&Object.keys(ledger.slots).length===0&&await consumedArchiveExempts(tx,ledger.slots),"BUDGET_TRANSITION_NOT_DRAINED");
+    const archive=await tx.get<{digest:string}>("supervisor:consumed-pilot:archive:v1:"+CONSUMED_PILOT_ID);
+    requireValue(archive,"NORMAL_LEDGER_NOT_READY");
+    checkPaid?.();
+    return {policyDigest:await reconciliationDigest(snap),ledgerDigest:await reconciliationDigest(g),
+      archiveDigest:archive.digest,confirmedMicroUsd:g.confirmed,reservedMicroUsd:0,unknownMicroUsd:0,active:0,accountingReady:true};
+  });
+}
+export async function inspectNormalBudgetReady(storage:DurableObjectStorage,policy:BudgetPolicy,proof:PaidPreflight,clock=Date.now){
+  const check=()=>requireValue(paidPreflight({...proof,now:clock()}).decision==="GO","PAID_PREFLIGHT_STOP");
+  return {schema:"metralla-normal-budget-readback-v1",...await readSettledNormalBudget(storage,policy,check)};
+}
+/** A prepared ledger is not a paid preflight or a dispatch approval. */
+export async function inspectPreparedNormalBudget(storage:DurableObjectStorage,policy:BudgetPolicy){
+  return {schema:"metralla-normal-budget-accounting-v1",...await readSettledNormalBudget(storage,policy)};
+}
+type TransitionMode={kind:"paid";proof:PaidPreflight}|{kind:"prepare"};
+export async function transitionConsumedBudget(storage:DurableObjectStorage,policy:BudgetPolicy,proof:PaidPreflight,
+  authority:BudgetTransition,verify:(a:BudgetTransition)=>Promise<boolean>,clock=Date.now){
+  return commitConsumedBudget(storage,policy,{kind:"paid",proof},authority,verify,clock);
+}
+/** Private, signed accounting-only transition; all CAS, archive, unknown-debt,
+ * historical-row and new-ID guards are shared with the paid transition.
+ * Does not create a task, reserve spend, grant GO or call any provider. */
+export async function prepareConsumedBudget(storage:DurableObjectStorage,policy:BudgetPolicy,
+  authority:BudgetTransition,verify:(a:BudgetTransition)=>Promise<boolean>,clock=Date.now){
+  return commitConsumedBudget(storage,policy,{kind:"prepare"},authority,verify,clock);
+}
+async function commitConsumedBudget(storage:DurableObjectStorage,policy:BudgetPolicy,mode:TransitionMode,
+  authority:BudgetTransition,verify:(a:BudgetTransition)=>Promise<boolean>,clock:()=>number){
+  const a=structuredClone(authority),snap=policySnapshot(policy),nextPolicyDigest=await reconciliationDigest(snap);
+  const paidAllowed=(now:number)=>mode.kind==="prepare"||paidPreflight({...mode.proof,now}).decision==="GO";
+  const now=clock(),valid=()=>a?.schema==="metralla-budget-transition-v1"&&/^[a-f0-9]{40}$/.test(a.releaseSha)&&
+    typeof a.approvalRef==="string"&&a.approvalRef.length>=8&&a.approvalRef.length<=160&&
+    [a.previousDigest,a.nextPolicyDigest,a.archiveDigest].every(x=>typeof x==="string"&&/^[a-f0-9]{64}$/.test(x))&&
+    int(a.notBefore,0,clock())&&int(a.expiresAt,clock()+1,now+3600000)&&a.nextPolicyDigest===nextPolicyDigest&&
+    (mode.kind!=="prepare"||!!policy.normal&&policy.normal.validUntil>clock());
+  requireValue(policy.normal&&!policy.hybrid&&valid()&&paidAllowed(now)&&await verify(a),"BUDGET_TRANSITION_AUTHORIZATION");
+  return storage.transaction(async tx=>{
+    requireValue(valid()&&paidAllowed(clock()),"BUDGET_TRANSITION_EXPIRED");
+    const key=BUDGET_TRANSITION+policy.experimentId;
+    const previous=await tx.get<Global>(GLOBAL),prior=await tx.get<{authorization:BudgetTransition;previous:Global|null;nextPolicyDigest:string;digest:string}>(key);
+    if(prior){
+      const {digest,...body}=prior;
+      requireValue(digest===await reconciliationDigest(body)&&await reconciliationDigest(prior.authorization)===await reconciliationDigest(a)&&previous?.policy===snap,"BUDGET_TRANSITION_CONFLICT");
+      return {digest,reused:true};
+    }
+    requireValue(await reconciliationDigest(previous??null)===a.previousDigest,"BUDGET_TRANSITION_SNAPSHOT_CHANGED");
+    const ledger=await tx.get<{version:number;slots:Record<string,unknown>}>("supervisor:admission:v1");
+    requireValue(ledger?.version===1&&ledger.slots&&Object.keys(ledger.slots).length===0&&await consumedArchiveExempts(tx,ledger.slots),"BUDGET_TRANSITION_NOT_DRAINED");
+    const archive=await tx.get<{digest:string}>("supervisor:consumed-pilot:archive:v1:"+CONSUMED_PILOT_ID);
+    requireValue(archive?.digest===a.archiveDigest,"BUDGET_TRANSITION_ARCHIVE_CHANGED");
+    await assertConsumedBudgetSettled(tx,previous);
+    requireValue(policy.experimentId!==CONSUMED_PILOT_ID,"BUDGET_TRANSITION_ID_REUSED");
+    for(const id of Object.values(policy.normal!.rounds).flatMap(x=>x.taskIds)){
+      requireValue(id!==CONSUMED_PILOT_ID&&!await tx.get("supervisor:task:"+id)&&!await tx.get(TASK(id))&&
+        (await tx.list({prefix:"supervisor:inference:call:"+id+":",limit:1})).size===0,"BUDGET_TRANSITION_ID_REUSED");
+    }
+    const body={authorization:a,previous:previous??null,nextPolicyDigest};
+    const digest=await reconciliationDigest(body);
+    await tx.put(key,{...body,digest});
+    await tx.put(GLOBAL,{version:1,policy:snap,paymentBlocked:false,...zero(),normal:newNormalState(policy.normal!) } satisfies Global);
+    return {digest,reused:false};
+  });
+}
+
+/** Fixed metadata projection of the authoritative provider journal. No prompt,
+ * response text, credentials or reservation token. Lexical cursor is scoped
+ * by the private observer Workflow; not a provider-native start/end oracle. */
+export async function readProviderReceipts(storage:Pick<DurableObjectStorage,"list">,task:SupervisorTask,after:string|null,limit=16){
+  requireValue(task.githubSource&&typeof task.normalReleaseSha==="string"&&/^[a-f0-9]{40}$/.test(task.normalReleaseSha)&&task.session==="ses_r2_"+task.id&&task.operationId==="rc-start-"+task.id&&
+    (after===null||CALL_ID.test(after))&&int(limit,1,16),"PROVIDER_RECEIPT_SCOPE");
+  const prefix="supervisor:inference:call:"+task.id+":";
+  const rows=await storage.list<Row>({prefix,...(after?{startAfter:prefix+after}:{}),limit:limit+1});
+  requireValue(rows.size<=limit+1,"PROVIDER_RECEIPT_LIMIT");
+  const selected=[...rows].slice(0,limit).map(([key,row])=>{
+    requireValue(key===prefix+row.callId&&row.requestId===task.id&&row.sessionId===task.session&&row.operationId===task.operationId&&row.releaseSha===task.normalReleaseSha&&
+      int(row.generation,1,Number.MAX_SAFE_INTEGER)&&int(row.reservedAt,0,Number.MAX_SAFE_INTEGER)&&
+      (row.dispatchAt===undefined||int(row.dispatchAt,row.reservedAt!,Number.MAX_SAFE_INTEGER))&&
+      (row.terminalAt===undefined||int(row.terminalAt,row.dispatchAt??row.reservedAt!,Number.MAX_SAFE_INTEGER)),"PROVIDER_RECEIPT_COVERAGE_UNKNOWN");
+    return {requestId:row.requestId,sessionId:row.sessionId,operationId:row.operationId,releaseSha:row.releaseSha,generation:row.generation,
+      callId:row.callId,providerID:row.providerID,modelID:row.modelID,state:row.state,reservedAt:row.reservedAt,dispatchAt:row.dispatchAt??null,
+      terminalAt:row.terminalAt??null,providerReceiptHash:row.receiptId??null,inputTokens:row.inputTokens??null,outputTokens:row.outputTokens??null,chargedMicroUsd:row.charge??null};
+  });
+  return {source:"provider-dispatch-ledger",rows:selected,nextAfter:rows.size>limit?selected.at(-1)!.callId:null,nativeProviderTimingVerified:false};
 }

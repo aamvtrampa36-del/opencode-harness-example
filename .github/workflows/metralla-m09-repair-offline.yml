@@ -1,0 +1,247 @@
+name: Metralla M09 corrective candidate offline
+on:
+  push:
+    branches: [metralla/m09-repair]
+permissions:
+  contents: read
+concurrency:
+  group: metralla-m09-repair-offline
+  cancel-in-progress: false
+jobs:
+  offline:
+    if: github.repository == 'aamvtrampa36-del/opencode-harness-example' && github.ref == 'refs/heads/metralla/m09-repair' && github.event.repository.private == false && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Exact integrated source
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor a3a75b25b673ac30989a2cc21f1fe96deb667f47 HEAD
+          git rev-parse HEAD^{tree}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+          no-cache: true
+      - run: bun install --frozen-lockfile
+      - name: Checked-in upload-only launcher syntax (no live execution)
+        run: |
+          bash -n scripts/f0-c10/m09-upload-mcp.sh
+          bash -n scripts/f0-c10/m09-upload-principal.sh
+      - name: Integrated Node specialist contracts
+        env:
+          TSC_BIN: ./node_modules/.bin/tsc
+        run: |
+          node --experimental-strip-types --test scripts/f0-c10/m08-github-collector.test.mjs scripts/f0-c10/m08-artifact-collector.test.mjs scripts/f0-c10/metralla-m02/*.test.mjs scripts/f0-c10/metralla-m03/*.test.mjs scripts/f0-c10/metralla-m04/*.test.mjs scripts/f0-c10/metralla-m05/*.test.cjs src/metralla-m06-*.test.mjs src/task-artifact-source.test.mjs src/task-output-artifacts.test.mjs src/task-artifact-http.test.mjs scripts/f0-c10/metralla-m07/*.test.mjs src/staging-control-mcp/p08-remote.test.mjs
+      - name: Historical admission and release STOP contracts
+        if: ${{ !cancelled() }}
+        run: |
+          node --experimental-strip-types --test scripts/f0-c10-r2-t04-fault.test.mjs scripts/f0-c10/c05-t03-server.test.mjs scripts/f0-c10/c05-t04-read-only.test.mjs scripts/f0-c10/c05-t09-safety.test.mjs scripts/f0-c10/inference-durable.test.mjs
+          node --test scripts/f0-c10/r4-release-guard.test.mjs scripts/f0-c10/r4-promote.test.mjs scripts/f0-c10/r4-reconcile-plan.test.mjs scripts/f0-c10/evaluate.test.mjs scripts/f0-c10/live-evidence.test.mjs
+      - name: Full Bun unit suite
+        if: ${{ !cancelled() }}
+        run: bun test
+      - name: Typecheck
+        if: ${{ !cancelled() }}
+        run: bun run typecheck
+      - name: Security invariants
+        if: ${{ !cancelled() }}
+        run: bun scripts/check-invariants.mjs
+      - name: Offline evaluator matrix
+        if: ${{ !cancelled() }}
+        run: |
+          node scripts/f0-c10/metralla-m07/run.mjs --suite > /tmp/m08-fixtures.json
+          node scripts/f0-c10/run-offline.mjs --suite --out /tmp/m08-t10.json
+          node -e "const x=require('/tmp/m08-t10.json');if(!x.pass||x.realStagingTested)process.exit(1)"
+      - name: Build and static preview
+        if: ${{ !cancelled() }}
+        run: |
+          bun run build
+          bun scripts/test-preview.mjs
+      - name: Two existing Staging Worker dry-run packages
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          rm -rf dist .wrangler/tmp
+          CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH=wrangler.g1.jsonc bun run build
+          M08_PACKAGE_INVENTORY_SLOT=a node scripts/f0-c10/pilot-staging-package.mjs | tee /tmp/m08-package-a.log
+          M08_PACKAGE_INVENTORY_SLOT=a node scripts/f0-c10/m08-recovery-package.mjs
+          rm -rf dist .wrangler/tmp
+          CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH=wrangler.g1.jsonc bun run build
+          M08_PACKAGE_INVENTORY_SLOT=b node scripts/f0-c10/pilot-staging-package.mjs | tee /tmp/m08-package-b.log
+          M08_PACKAGE_INVENTORY_SLOT=b node scripts/f0-c10/m08-recovery-package.mjs
+          cmp /tmp/m08-recovery-a.json /tmp/m08-recovery-b.json
+          echo "M08_RECOVERY_REBUILD_MATCH $(cat /tmp/m08-recovery-b.json)"
+          node --input-type=module -e 'import {readFileSync} from "node:fs";const read=p=>{const l=readFileSync(p,"utf8").split("\n").filter(x=>x.startsWith("PILOT_STAGING_PACKAGE "));if(l.length!==1)throw Error("missing package receipt");return JSON.parse(l[0].slice("PILOT_STAGING_PACKAGE ".length));};const a=read("/tmp/m08-package-a.log"),b=read("/tmp/m08-package-b.log");const ia=JSON.parse(readFileSync("/tmp/m08-inventory-a.json")),ib=JSON.parse(readFileSync("/tmp/m08-inventory-b.json"));if(a.source!==process.env.GITHUB_SHA||b.source!==a.source||a.deployed!==false||b.deployed!==false)throw Error("M08_PACKAGE_IDENTITY_MISMATCH");for(const k of ["assets","build","principal","mcp"]){const am=new Map(ia[k]),bm=new Map(ib[k]);const diff=[...new Set([...am.keys(),...bm.keys()])].filter(p=>am.get(p)!==bm.get(p));console.log("M08_REBUILD_DIFF "+k+" "+JSON.stringify({count:diff.length,paths:diff.slice(0,40)}));if(am.size!==bm.size||diff.some(p=>!(["principal","mcp"].includes(k)&&p==="README.md"&&am.has(p)&&bm.has(p))))throw Error("M08_PACKAGE_REBUILD_MISMATCH");}const payload=x=>({...x,principal:{files:x.principal.files,deployable:x.principal.deployable},mcp:{files:x.mcp.files,deployable:x.mcp.deployable}});if(JSON.stringify(payload(a))!==JSON.stringify(payload(b)))throw Error("M08_DEPLOYABLE_REBUILD_MISMATCH");console.log("M08_DEPLOYABLE_REBUILD_MATCH "+JSON.stringify({payload:payload(a),rawA:a,rawB:b,excludedFromPayloadComparison:"Wrangler-generated top-level README.md only",fullArchiveByteIdentical:JSON.stringify(a)===JSON.stringify(b)}));'
+      - name: Exact source and clean tracked files
+        if: ${{ !cancelled() }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+      - name: Verify payload bytes and config before export
+        shell: bash
+        run: |
+          set -euo pipefail
+          export P26_TREE="$(git rev-parse HEAD^{tree})"
+          node --input-type=module <<'JS'
+          import {readdirSync,readFileSync,writeFileSync,mkdirSync,cpSync,lstatSync} from 'node:fs';
+          import {join,relative,dirname} from 'node:path';
+          import {tmpdir} from 'node:os';
+          import {createHash} from 'node:crypto';
+          import ts from 'typescript';
+          const hash=b=>createHash('sha256').update(b).digest('hex');
+          const expect=(actual,want,label)=>{if(actual!==want)throw Error(label+' mismatch: '+actual);};
+          const files=root=>readdirSync(root,{recursive:true,withFileTypes:true}).map(x=>{
+            const p=join(x.parentPath??x.path,x.name);if(x.isSymbolicLink()||(!x.isDirectory()&&!x.isFile()))throw Error('unsafe entry '+p);return p;
+          }).filter(p=>lstatSync(p).isFile()).sort();
+          const tree=(root,excludeReadme=false)=>{const rows=files(root).map(p=>[relative(root,p),hash(readFileSync(p))]).filter(([p])=>!excludeReadme||p!=='README.md');return {rows,files:rows.length,sha256:hash(JSON.stringify(rows))};};
+          const checkTree=(root,count,digest,exclude=false)=>{const x=tree(root,exclude);expect(x.files,count,root+' count');expect(x.sha256,digest,root);return x;};
+          const normal=join(tmpdir(),'metralla-m08-repro');const recovery=join(tmpdir(),'m08-recovery-repro');
+          const active=JSON.parse(readFileSync('/tmp/m08-package-b.log','utf8').split('\n').find(l=>l.startsWith('PILOT_STAGING_PACKAGE ')).slice('PILOT_STAGING_PACKAGE '.length));
+          const rec=JSON.parse(readFileSync('/tmp/m08-recovery-b.json','utf8'));
+          expect(active.source,process.env.GITHUB_SHA,'active source');expect(rec.source,active.source,'recovery source');expect(active.deployed,false,'active deployed');expect(rec.deployed,false,'recovery deployed');
+          const variants=[
+            ['active-principal',join(normal,'principal'),active.principal.deployable.files,active.principal.deployable.sha256],
+            ['active-mcp',join(normal,'mcp'),active.mcp.deployable.files,active.mcp.deployable.sha256],
+            ['recovery-principal',join(recovery,'principal'),rec.principal.files,rec.principal.sha256],
+            ['recovery-mcp',join(recovery,'mcp'),rec.mcp.files,rec.mcp.sha256]
+          ];
+          const parse=p=>{const r=ts.parseConfigFileTextToJson(p,readFileSync(p,'utf8'));if(r.error)throw Error('config parse '+p);return r.config;};
+          const configs=files('dist').filter(p=>p.endsWith('/wrangler.json')&&parse(p).name==='opencode-g1-staging');expect(configs.length,1,'principal config count');
+          const specs=[['principal',configs[0],rec.principal.activeConfigSha256,rec.principal.configSha256,'fcceccd1b93f1116587c13569369f57bf52f61fa7b997bf08aff566206664258'],['mcp','wrangler.mcp-staging.jsonc',rec.mcp.activeConfigSha256,rec.mcp.configSha256,'ff3147fd580df8c05743ae0c27ebc73b9c4209151a6850ad372e03eee11d6dee']];
+          const checks={};for(const [label,root,count,digest] of variants)checks[label]=checkTree(root,count,digest,true);
+          checks.assets=checkTree('dist/client',active.assets.files,active.assets.sha256);
+          checks.build=checkTree('dist',active.build.files,active.build.sha256);
+          const bindingKeys=['durable_objects','migrations','workflows','containers','r2_buckets','services','ai','worker_loaders'];
+          const recoveryConfigs={};
+          for(const [name,path,activeHash,recoveryHash,bindingHash] of specs){
+            expect(hash(readFileSync(path)),activeHash,name+' config');const c=parse(path);
+            expect(c.name,name==='principal'?'opencode-g1-staging':'opencode-staging-control-mcp','worker name');
+            // M09 image-only binding delta; pin independently observed in build 087c80b5-a759-4318-b37a-93b3e9a7d228.
+            if(name==='principal'){
+              expect(c.containers?.length,1,'principal container count');
+              expect(c.containers[0].class_name,'DevContainer','principal container class');
+              expect(c.containers[0].scheduling_policy,'durable_object','principal container scheduling');
+              expect(JSON.stringify(c.containers[0].images),JSON.stringify({pilot:{image:'registry.cloudflare.com/83ac825cf01b6ef0c2244007406d83ab/opencode-g1-staging-m09-linux@sha256:049156e4dd236c8b00f4c3319ffbe4d16bde8d3da3904e4376e11aca6a48c9a8'}}),'principal immutable image');
+            }
+            expect(hash(JSON.stringify(Object.fromEntries(bindingKeys.map(k=>[k,c[k]??null])))),bindingHash,name+' bindings');
+            c.vars={...c.vars,OPENCODE_M08_RECOVERY_MODE:'true'};if(c.assets)c.assets.run_worker_first=true;
+            const bytes=JSON.stringify(c);expect(hash(bytes),recoveryHash,name+' recovery config');recoveryConfigs[name]={path,bytes,activeHash,recoveryHash,bindingHash};
+          }
+          const receipt={schema:'metralla-p26-offline-export-v1',source:process.env.GITHUB_SHA,tree:process.env.P26_TREE,baseC1:'a3a75b25b673ac30989a2cc21f1fe96deb667f47',originalCI:45576692735,artifactRun:process.env.GITHUB_RUN_ID,deployed:false,checks,configs:Object.fromEntries(Object.entries(recoveryConfigs).map(([k,v])=>[k,{path:v.path,activeHash:v.activeHash,recoveryHash:v.recoveryHash,bindingHash:v.bindingHash}]))};
+          const out=join(tmpdir(),'p26-c1-export');mkdirSync(out,{recursive:false});
+          for(const [label,root] of variants){const dest=join(out,'payloads',label);mkdirSync(dest,{recursive:true});for(const [p] of checks[label].rows){const target=join(dest,p);mkdirSync(dirname(target),{recursive:true});cpSync(join(root,p),target);}}
+          cpSync('dist',join(out,'dist'),{recursive:true});
+          cpSync('wrangler.mcp-staging.jsonc',join(out,'wrangler.mcp-staging.jsonc'));
+          for(const [name,v] of Object.entries(recoveryConfigs))writeFileSync(join(out,dirname(v.path),'.m08-recovery-'+name+'.json'),v.bytes,{flag:'wx'});
+          writeFileSync(join(out,'receipt.json'),JSON.stringify(receipt,null,2));
+          console.log('P26_EXPORT_VERIFIED '+JSON.stringify({source:receipt.source,counts:variants.map(([k])=>[k,checks[k].files,checks[k].sha256]),deployed:false}));
+          JS
+      - name: Screen public export and bound its size before upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - /tmp/p26-c1-export <<'PY'
+          from pathlib import Path
+          import hashlib,json,os,re,subprocess,sys
+          root=Path(sys.argv[1]); marker=b'-----BEGIN PRIVATE KEY-----'
+          if not root.is_dir() or root.is_symlink():raise SystemExit('P26_EXPORT_ROOT_INVALID')
+          # Original rules preserved. The PEM finding can pass only via exact source evidence.
+          patterns=[rb'-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----',rb'\bgh[pousr]_[A-Za-z0-9]{36,}\b',rb'\bgithub_pat_[A-Za-z0-9_]{50,}\b',rb'\bsk-(?:proj-|or-v1-)?[A-Za-z0-9_-]{48,}\b',rb'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b',rb'\bxox[baprs]-[A-Za-z0-9-]{20,}\b',rb'\bAIza[A-Za-z0-9_-]{35}\b',rb'\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{25,}\b']
+          blocked={'.git','.env','.npmrc','.netrc','.dev.vars','credentials.json','secrets.json','id_rsa','id_ed25519'}
+          cap=100*1024*1024
+          ast=r'''
+          const fs=require('fs'),ts=require('typescript');const b=fs.readFileSync(process.argv[1]),s=b.toString('utf8');if(!Buffer.from(s).equals(b))process.exit(2);const sf=ts.createSourceFile('compiled.js',s,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);if(sf.parseDiagnostics.length)process.exit(3);const out=[];function walk(n){if((ts.isStringLiteral(n)||ts.isNoSubstitutionTemplateLiteral(n))&&n.text.includes('-----BEGIN PRIVATE KEY-----')){const raw=n.getText(sf);out.push({offset:Buffer.byteLength(s.slice(0,n.getStart(sf))),raw:raw.slice(1,-1),cooked:n.text,property:ts.isPropertyAssignment(n.parent)});}ts.forEachChild(n,walk);}walk(sf);process.stdout.write(JSON.stringify(out));
+          '''
+          placeholder=re.compile(r'(?:\.{3}|…|<(?:(?:YOUR|your)[ _-]?)?(?:PRIVATE|private)[ _-]?(?:KEY|key)(?:[ _-]?(?:HERE|here))?>|\[(?:(?:YOUR|your)[ _-]?)?(?:PRIVATE|private)[ _-]?(?:KEY|key)(?:[ _-]?(?:HERE|here))?\]|YOUR_PRIVATE_KEY(?:_HERE)?|REPLACE_WITH_YOUR_PRIVATE_KEY)')
+          lock=Path('bun.lock').read_text(); cache={}
+          def sha(b):return hashlib.sha256(b).hexdigest()
+          def source_match(token):
+              # Exact whole literal, not merely an occurrence of the header.
+              forms={token['raw'].encode(),token['cooked'].encode(),json.dumps(token['cooked'],ensure_ascii=False)[1:-1].encode()}
+              forms={b for b in forms if len(b)>len(marker)}
+              exact=[];candidates=[]
+              for base in (Path('src'),Path('node_modules')):
+                  for dp,dirs,files in os.walk(base,followlinks=False):
+                      dirs[:]=[d for d in dirs if d not in {'.git','.cache'}]
+                      for name in files:
+                          f=Path(dp)/name
+                          if f.suffix not in {'.js','.mjs','.cjs','.ts','.tsx','.json','.md','.map','.txt','.yaml','.yml'} or f.is_symlink():continue
+                          try:
+                              if f.stat().st_size>32*1024*1024:continue
+                              data=f.read_bytes()
+                          except OSError:continue
+                          if marker not in data:continue
+                          if not re.fullmatch(r'[A-Za-z0-9_./@+\-]+',str(f)):continue
+                          if len(candidates)<30:candidates.append(str(f))
+                          if not any(form in data for form in forms):continue
+                          package=None
+                          if base.name=='src':package='C1 tracked source'
+                          else:
+                              for parent in f.parents:
+                                  if parent==base:break
+                                  pkg=parent/'package.json'
+                                  if not pkg.is_file():continue
+                                  try:
+                                      p=json.loads(pkg.read_text());n=p['name'];v=p['version']
+                                  except (OSError,ValueError,KeyError,TypeError):continue
+                                  if isinstance(n,str) and isinstance(v,str) and re.fullmatch(r'[A-Za-z0-9@_./+\-]+',n+'@'+v) and ('"'+n+'@'+v+'"') in lock:package=n+'@'+v
+                                  break
+                          if package and len(exact)<10:exact.append({'path':str(f),'package':package,'sourceSha256':sha(data)})
+              return exact,candidates
+
+          def prove(p,data):
+              digest=sha(data)
+              if digest in cache:return cache[digest]
+              try:
+                  pr=subprocess.run(['node','-e',ast,str(p)],capture_output=True,check=True,timeout=60)
+                  tokens=json.loads(pr.stdout)
+              except (OSError,ValueError,subprocess.SubprocessError):tokens=[]
+              verified=set()
+              for t in tokens:
+                  raw=t['raw']; cooked=t['cooked']; normalized=cooked.replace('\\r\\n','\n').replace('\\n','\n').replace('\r\n','\n')
+                  # Only explicit placeholder text between exactly one matching pair of PEM delimiters.
+                  blocks=re.findall(r'-----BEGIN PRIVATE KEY-----\s*(.*?)\s*-----END PRIVATE KEY-----',normalized,re.S)
+                  exact,candidates=source_match(t)
+                  # Only the independently verified public npm documentation example.
+                  benign=(t['property'] and normalized.count(marker.decode())==1 and normalized.count('-----END PRIVATE KEY-----')==1 and len(blocks)==1 and blocks[0].strip()=='XXXX\nXXXX' and sha(cooked.encode())=='6cb1f9bd8c1cd5c5de345631a3001c2160e664cc5c982dcad287c7c0d09d43e4' and any(x['package']=='@npmcli/config@10.8.1' and x['path']=='node_modules/@npmcli/config/lib/definitions/definitions.js' and x['sourceSha256']=='6d1a21868e9f46538c1e4999c73987325a516f03e3b7fe8f986df932325e3b83' for x in exact))
+                  print('P26_SOURCE_EVIDENCE '+json.dumps({'compiledSha256':digest,'literalLength':len(cooked),'literalSha256':sha(cooked.encode()),'property':t['property'],'explicitPlaceholder':benign,'exactSources':exact,'markerCandidates':candidates},separators=(',',':')))
+                  if benign and exact and raw.count(marker.decode())==1:verified.add(t['offset']+1+len(raw.split(marker.decode(),1)[0].encode()))
+              cache[digest]=verified;return verified
+          count=total=unresolved=0
+          for p in sorted(root.rglob('*')):
+              rel=p.relative_to(root)
+              if p.is_symlink() or any(x.lower() in blocked or x.lower().startswith(('.env.','.dev.vars.')) or x.lower().endswith(('.pem','.p12','.pfx','.key')) for x in rel.parts):raise SystemExit('P26_EXPORT_DISALLOWED_ENTRY')
+              if p.is_dir():continue
+              if not p.is_file():raise SystemExit('P26_EXPORT_NONREGULAR')
+              if rel.parts[0] not in {'payloads','dist','wrangler.mcp-staging.jsonc','.m08-recovery-mcp.json','receipt.json'}:raise SystemExit('P26_EXPORT_UNEXPECTED_TOPLEVEL')
+              total+=p.stat().st_size
+              if total>cap:raise SystemExit('P26_EXPORT_SIZE_LIMIT')
+              data=p.read_bytes(); allowed=prove(p,data) if marker in data and p.suffix in {'.js','.mjs','.cjs'} else set()
+              for i,rx in enumerate(patterns):
+                  for m in re.finditer(rx,data):
+                      if i==0 and m.group()==marker and m.start() in allowed:continue
+                      unresolved+=1
+                      print('P26_EXPORT_UNRESOLVED '+json.dumps({'sha256':sha(data),'rule':i,'offset':m.start(),'length':m.end()-m.start()}))
+              count+=1
+          if not count or unresolved:raise SystemExit('P26_EXPORT_STOP')
+          print(f'P26_EXPORT_SCREEN_PASS files={count} bytes={total} cap={cap}')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metralla-p26-repair-exact-offline
+          path: /tmp/p26-c1-export/
+          if-no-files-found: error
+          retention-days: 1
+          include-hidden-files: true

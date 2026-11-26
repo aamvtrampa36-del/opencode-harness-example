@@ -26,7 +26,7 @@ test('auth-bound GET returns actual UTF-8 bytes, sha, headers, not a path claim'
   const bytes=new Uint8Array(await r.arrayBuffer());
   assert.equal(Buffer.from(bytes).toString('utf8'),'olá 🌎');
   assert.equal(createHash('sha256').update(bytes).digest('hex'),a.sha256);
-  assert.equal(artifactView(a).delivery.path,artifactDownloadPath(T1,a.artifactId));
+  assert.equal(artifactView(a).delivery.path,artifactDownloadPath(T1,a.artifactId,a.expiresAt));
   assert.equal(artifactView(a).delivery.expiresAt,1000+TASK_ARTIFACT_TTL_MS);
 });
 

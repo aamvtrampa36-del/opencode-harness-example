@@ -1,5 +1,5 @@
 import type { SupervisorTask } from "./supervisor-control";
-import { historicalCertificate, historicalPages, reconciliationDigest, HISTORICAL_AUX_KEYS } from "./supervisor-reconciliation";
+import { historicalCertificate, historicalPages, reconciliationDigest, HISTORICAL_AUX_KEYS, CONSUMED_PILOT_ID, consumedArchiveExempts } from "./supervisor-reconciliation";
 
 /**
  * R3-T03: bounded census under the same Durable Object storage transaction as
@@ -49,6 +49,7 @@ export async function auditLegacyCapacity(
   slots: Record<string, unknown>
 ): Promise<AdmissionCapacityEvidence> {
   const cert=await historicalCertificate(tx);
+  const consumedExempt=await consumedArchiveExempts(tx,slots);
   // Preserve the original bounded STOP for uncertified histories. After
   // quiescence use paginated exact-row validation, not a 101-row ceiling.
   const indexed = cert ? undefined : await tx.list<SupervisorTask>({prefix:"supervisor:task:",limit:LIMIT});
@@ -67,6 +68,7 @@ export async function auditLegacyCapacity(
     if (!/^[a-f0-9]{16}$/.test(id) || !task || task.id !== id)
       throw Error("ADMISSION_TASK_INVENTORY_INVALID");
     if (Object.hasOwn(slots,id)) continue; // already counted as a slot
+    if (id===CONSUMED_PILOT_ID&&consumedExempt) continue; // exact P02 archive only
     if(cert&&Object.hasOwn(cert.taskDigests,id)){
       if(await reconciliationDigest(task)===cert.taskDigests[id])continue;
       untrackedManagedTasks++;continue; // modified historical evidence is not exempt

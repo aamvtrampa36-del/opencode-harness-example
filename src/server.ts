@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { recoveryMode, assertRecoveryWorkAllowed, recoveryHttpAllowed } from "./metralla-m08-recovery-mode";
 import { PersonalSettings } from "./personal-settings";
 export { PersonalSettings };
 export { OpenCodeSupervisorWorkflow } from "./supervisor-workflow";
@@ -22,11 +23,12 @@ import { Lifecycle } from "agents/lifecycle";
 import { createAI } from "agents/models/opencode";
 import { WebSockets } from "agents/websockets";
 import { OpenCodeSessionSockets } from "./sockets";
-import { collectSupervisorDirectory, supervisorTaskCount } from "./supervisor-directory";
+import { putProjectedSupervisorTask, readTaskProjection, projectedTaskDirectory, logicalEventSource, importProjectionCursorKey, readLogicalReceiptPage } from "./metralla-m08-task-projection";
+import { REMOTE_SCHEMA, projectRemoteProgress, validateStatus } from "./staging-control-mcp/p08-remote";
 import { foldSupervisorToolLog, validSupervisorToolCounts, EMPTY_SUPERVISOR_TOOL_COUNTS, type SupervisorToolCounts } from "./supervisor-metrics";
 // Progress is read from the bounded supervisor ledger, never raw SDK log().
 import { requireMeteredDiagnosticAdmission } from "./supervisor-legacy-capacity";
-import { parseFreezeManifest, reconciliationFromFrozenWorkflow, historicalCertificate, publicHistoricalCertificate, retiredHistoricalTask, observeNativeQuiescence } from "./supervisor-reconciliation";
+import { parseFreezeManifest, reconciliationFromFrozenWorkflow, historicalCertificate, publicHistoricalCertificate, retiredHistoricalTask, observeNativeQuiescence, inspectConsumedPilot, archiveConsumedPilot, type ConsumedEvidence, type ConsumedClosure, type ConsumedAuthorization } from "./supervisor-reconciliation";
 import {
   reserveSupervisorAdmission, supervisorBeginExternalEffect,
   supervisorConfirmExternalEffect, supervisorAdmissionSlot,
@@ -34,6 +36,7 @@ import {
   reconcileSupervisorCreatedSession, supervisorCommitCreatedSession,
   reserveSupervisorContinuation, recordSupervisorContinuationReceipt,
   reconcileSupervisorTurnEffect, inspectSupervisorAdmissionCapacity,
+  beginSupervisorCancellation, settleSupervisorCancelledTurn, matchingSupervisorTurnJournal,
   reconcileSupervisorSubmittedEffect, supervisorGrantStillOwned, type StartGrant, type AdmissionDecision,
   supervisorVerifyReadOnlySource, supervisorBeginReadOnlyEffect, supervisorConfirmReadOnlyEffect,
   supervisorRecordReadOnlyFailure, inspectSupervisorReadOnlyAdmission, reconcileSupervisorReadOnlyPreparation, reconcileHistoricalSupervisor
@@ -52,17 +55,24 @@ import { getOpenRouterCatalogue } from "./openrouter-catalog";
 import { assertOpenRouterImageModel, generateOpenRouterImage, getOpenRouterImageModels } from "./openrouter-images";
 import { assertOpenRouterModelSupportsTools } from "./openrouter-catalog";
 import { GitHubBridge, type GitHubAction } from "./github";
+import { parseNormalApproval, parseNormalBudgetPreparation, approvedNormalTask, assertNormalTaskPin, assertNormalGitHubFence } from "./metralla-m08-normal-approval";
+import { makeNormalMeteredBinding, normalMeteredPlugin, type NormalContext } from "./metralla-m08-normal-binding";
+import { assertNormalBudgetReady, inspectConsumedBudget, inspectUninitializedNormalBudget, inspectNormalBudgetReady, inspectPreparedNormalBudget, prepareConsumedBudget, normalBudgetTransitionSnapshot, transitionConsumedBudget, readProviderReceipts, type BudgetTransition } from "./supervisor-inference-budget";
+import { signedConsumedVerifier, verifyNormalClose, verifyBudgetTransitionSignature, type NormalCloseEvidence } from "./metralla-m08-signed-evidence";
+import { operatorConsumedVerifier } from "./metralla-m09-operator-attestation";
+import { releasePhysicallyClosedNormal } from "./supervisor-admission";
+import { type GitHubSourcePin, assertPinnedGitHubAction } from "./metralla-m05-source";
 import { DurableGitHubPublicationGate, assertSupervisedPublicationScope } from "./github-publication-durable";
 import { verifyG8Proofs, G8_PROOFS } from "./g8-smoke";
 import { assessG8LiveHistory, g8LivePrompt, G8_LIVE_CHECK_VERSION, type G8LiveCheck } from "./g8-live-agent";
 import { G9_PROOF_VERSION, G9_REPO, G9_BRANCH, G9_PROJECT, G9_SOURCE, G9_TEST_PATH, G9_BROKEN, G9_FIXED, G9_TEST_SOURCE, assessG9History, g9AgentPrompt, assertG9BoundGitHubOperation, type G9ProofState } from "./g9-selfdev";
-import { assertScopedTool, requireSameScope, scopeStorageKey, validateProjectScope, type ProjectScope, type ScopedToolAction } from "./project-scope";
+import { assertScopedTool, requireSameScope, scopeStorageKey, validateProjectScope, bindPinnedGitHubScope, requirePinnedGitHubScope, type ProjectScope, type ScopedToolAction } from "./project-scope";
 import { remoteMcpPlugin } from "./mcp-plugin";
 import { assessAgentToolEvidence, hasUnfinishedAgentCheck, isUnlimitedDevAgentCheck, isAgentCheckModel, explainAgentCheckFailure, isAgentCheckKind, repairSeedCommand, repairIsVerified, REPAIR_SOURCE_BROKEN, REPAIR_TEST, agentCheckStorageKeys, DEFAULT_AGENT_CHECK_STORAGE_KEYS, OPENROUTER_BUN_CHECK_STORAGE_KEYS, type AgentCheckStorageKeys } from "./agent-check";
 import { inlinePreviewAssets } from "./preview-inline";
 import { BUN_RUNTIME_VERSION } from "./dev-runtime";
 import { classifyAgentFailure, observeLinux, type IncidentObservation } from "./incident-diagnostics";
-import { renderConversationMarkdown, validateExportIdentity, sessionExportResponse } from "./session-export";
+import { renderConversationMarkdown, validateExportIdentity, sessionExportResponse, taskArtifactExportResponse } from "./session-export";
 import { archiveDownloadResponse, archiveError } from "./download-response";
 import { githubRepositoryDownload } from "./github-download";
 import { checkIsolation } from "./isolation-check";
@@ -80,11 +90,11 @@ import {
 } from "./supervisor-control";
 
 import {
-  validateCaptureRequest, captureInspectedArtifact, artifactKey, artifactIndexKey,
-  artifactView, artifactIsOwnedBy, verifiedArtifactDownload, artifactErrorResponse,
-  assertArtifactId, TASK_ARTIFACT_MAX_PER_TASK, TASK_ARTIFACT_SCHEMA,
-  type StoredTaskArtifact
+  validateCaptureRequest, captureInspectedArtifact, persistTaskArtifact, readTaskArtifactPage,
+  artifactView, TASK_ARTIFACT_MAX_PER_TASK, TASK_ARTIFACT_SCHEMA
 } from "./task-output-artifacts";
+import { parseArtifactQuery, scopedArtifactDownload } from "./metralla-m06-artifact-http";
+import { handleMobileArtifactRead, type MobileOwnerEnv } from "./metralla-m08-mobile-auth";
 
 import { createSupervisorMemoryProbe, type PhaseProbe } from "./supervisor-phase-telemetry";
 
@@ -128,6 +138,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
   /** Remote supervisor tasks use a single dedicated DO, never arbitrary user workspaces. */
   async startSupervisedTask(raw: unknown): Promise<unknown> {
+    assertRecoveryWorkAllowed(this.env);
     this.assertStagingRemote();
     const trace = this.phaseProbe();
     const start = await trace.run("admission", "validate", async () =>
@@ -159,7 +170,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         error: busy === undefined ? "LEGACY_BUSY_STATE_UNVERIFIED" : "LEGACY_OPERATION_ID_MISSING",
         updatedAt: Date.now()
       };
-      await this.ctx.storage.put(key, legacy);
+      await this.ctx.storage.transaction(tx=>putProjectedSupervisorTask(tx,key,legacy));
       return this.supervisorTaskReceipt(legacy, true);
     }
     if (old && ["finished", "failed", "cancel_requested", "cancelled", "unanswered"].includes(old.status)) {
@@ -188,6 +199,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
       sessionCreationAttempted: false, sessionIdPolicy: "deterministic-v1", revision: 0,
       model: start.model ?? "economy", ...(start.sourceSession ? { forkedFrom: start.sourceSession } : {})
     };
+    if(!pilotLane&&!start.mode){
+      try{const approval=this.normalApproval();job.githubSource=approvedNormalTask(approval,job).pin;job.normalWorkUntil=approval.policy.normal!.validUntil;job.normalReleaseSha=approval.releaseSha;job.normalImageDigest=approval.containerImageDigest;job.normalCloseUntil=approval.closeUntil;
+        await assertNormalBudgetReady(this.ctx.storage,approval.policy,approval.preflight);}
+      catch{return {id:start.requestId,accepted:false,confirmed:false,stop:true,reason:"NORMAL_METERED_APPROVAL_OR_BUDGET_STOP"};}
+    }
     const pilotClaim = pilotApproval ? {approval:pilotApproval,instance:this.pilotInstance,
       objectId:this.ctx.id.toString(),startedAt:job.createdAt} : undefined;
     let nativeQuiescence:Awaited<ReturnType<OpenCodeAgent["observeHistoricalNative"]>>|undefined;
@@ -356,7 +372,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           !await supervisorGrantStillOwned(tx, grant))
         throw Error("ADMISSION_FENCE_REJECTED");
       const next = { ...change(fresh), revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-      await tx.put(key, next);
+      await putProjectedSupervisorTask(tx,key,next);
       return next;
     });
   }
@@ -495,16 +511,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const key = supervisorTaskKey(job.id);
     try {
       if(this.pilotLaneId())await this.requirePilotTask(job);
+      else {const approval=this.normalApproval();assertNormalTaskPin(approval,job);await assertNormalBudgetReady(this.ctx.storage,approval.policy,approval.preflight);}
       if (!job.baseCommit) {
         // The deterministic branch reservation safely recovers after a lost GitHub response.
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "github_branch");
         const branchResult = await trace.run("github_branch", "ensure", () =>
-          this.githubRunner.ensureSupervisorBranch(job.repository, job.branch, job.pilotInstance?job:undefined));
-        const sha = supervisorBaseCommit(branchResult, job.repository);
+          this.githubRunner.ensureSupervisorBranch(job.repository, job.branch, job, grant));
+        const sha = job.githubSource ? branchResult.sha : supervisorBaseCommit(branchResult, job.repository);
+        if(job.githubSource&&(sha!==job.githubSource.commit||branchResult.source!==job.githubSource.base||branchResult.branch!==job.githubSource.branch))throw Error("NORMAL_BRANCH_RECEIPT_MISMATCH");
         await supervisorConfirmExternalEffect(this.ctx.storage, grant, "github_branch", { confirmed: true });
         job = await this.updatePreparingSupervisorTask(grant, fresh => {
           if (fresh.baseCommit && fresh.baseCommit !== sha) throw Error("SUPERVISOR_BASE_CHANGED");
-          return { ...fresh, baseCommit: sha };
+          return { ...fresh, baseCommit: sha, ...(fresh.githubSource?{sourceTree:fresh.githubSource.tree}:{}) };
         });
       }
       if(this.pilotLaneId())await this.requirePilotTask(job);
@@ -542,7 +560,17 @@ export class OpenCodeAgent extends DurableObject<Env> {
           project: job.project, repository: job.repository
         });
       }
-      await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
+      if(job.githubSource){const pin=assertNormalTaskPin(this.normalApproval(),job);await this.ctx.storage.transaction(async tx=>{
+        const fresh=await tx.get<SupervisorTask>(key);
+        if(!fresh||fresh.session!==job.session||!await supervisorGrantStillOwned(tx,grant))throw Error("ADMISSION_FENCE_REJECTED");
+        assertNormalTaskPin(this.normalApproval(),fresh);
+        const scope=await tx.get<ProjectScope>(scopeStorageKey(job.session!));
+        if(!scope||scope.project!==fresh.project)throw Error("NORMAL_SCOPE_MISSING");
+        const reverse=await tx.get<string>("supervisor:session:"+job.session);
+        if(reverse&&reverse!==job.id)throw Error("NORMAL_SCOPE_CONFLICT");
+        await tx.put(scopeStorageKey(job.session!),bindPinnedGitHubScope(scope,pin));
+        await tx.put("supervisor:session:"+job.session,job.id);
+      });}else await this.ctx.storage.put("supervisor:session:" + job.session, job.id);
       if(this.pilotLaneId()){
         await this.requirePilotTask(job);
         if(job.pilotPreparation)throw Error("PILOT_PREPARATION_NO_REPLAY");
@@ -563,7 +591,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (!job.operationId) {
         await supervisorBeginExternalEffect(this.ctx.storage, grant, "configure");
         await trace.run("configure", "setAgent", () => handle.setAgent("build"));
-        const model = resolveModelSelection(job.model ?? "economy");
+        const model = job.githubSource ? {providerID:"cloudflare",id:PILOT_GLM} : resolveModelSelection(job.model ?? "economy");
         await trace.run("configure", "setModel", () => handle.setModel(model));
         await supervisorConfirmExternalEffect(this.ctx.storage, grant, "configure", { confirmed: true });
         // Atomically retain any concurrent cancellation or turn cursor.
@@ -575,7 +603,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           const updated: SupervisorTask = { ...fresh,
             operationId: supervisorStartOperationId(job.id), status: "running",
             revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-          await tx.put(key, updated);
+          await putProjectedSupervisorTask(tx,key,updated);
           return updated;
         });
         if (!prepared || prepared.operationId !== supervisorStartOperationId(job.id))
@@ -610,7 +638,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           error: uncertainCreate ? "SUPERVISOR_SESSION_CREATION_UNCONFIRMED: " + detail :
             uncertainEffect ? "ADMISSION_EXTERNAL_EFFECT_UNCONFIRMED: " + detail : detail,
           revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-        await tx.put(key, updated);
+        await putProjectedSupervisorTask(tx,key,updated);
         return updated;
       });
     }
@@ -640,7 +668,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
             !await supervisorGrantStillOwned(tx, grant)) return fresh;
         const updated: SupervisorTask = { ...fresh, status: "running",
           error: undefined, revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-        await tx.put(key, updated);
+        await putProjectedSupervisorTask(tx,key,updated);
         return updated;
       });
       return { ...this.supervisorTaskReceipt(committed, reused),
@@ -663,7 +691,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
             !await supervisorGrantStillOwned(tx, grant)) return fresh;
         const updated: SupervisorTask = { ...fresh, status: "unknown",
           error: detail, revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-        await tx.put(key, updated);
+        await putProjectedSupervisorTask(tx,key,updated);
         return updated;
       });
       return this.supervisorTaskReceipt(committed, reused);
@@ -681,14 +709,12 @@ export class OpenCodeAgent extends DurableObject<Env> {
   /** Remote status must never enumerate all SDK session objects in the shared DO. */
   async remoteSupervisorStatus(): Promise<unknown> {
     this.assertStagingRemote();
-    const index = await this.ctx.storage.list<SupervisorTask>({
-      prefix: "supervisor:task:", limit: 101
-    });
-    const count = supervisorTaskCount(index, 100);
+    const projection=await projectedTaskDirectory(this.ctx.storage);
+    const count={supervisedSessions:projection.entries.length,countComplete:false,limited:projection.limited};
     const admissionCapacity = await inspectSupervisorAdmissionCapacity(this.ctx.storage);
     const freeze=this.r4FreezeManifest();
     return {
-      environment: "staging", worker: "opencode-g1-staging", ready: true,
+      environment: "staging", worker: "opencode-g1-staging", ready: !recoveryMode(this.env), recoveryMode:recoveryMode(this.env),
       admissionCapacity,
       r4Freeze:freeze?{schema:"r4-freeze-v1",releaseSha:freeze.releaseSha,
         requestId:freeze.requestId,approvalRef:freeze.approvalRef,
@@ -737,6 +763,147 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const manifest=reconciliationFromFrozenWorkflow(freeze,raw);
     return reconcileHistoricalSupervisor(this.ctx.storage,manifest,this.ctx.id.toString(),
       ()=>this.observeHistoricalNative(Math.min(manifest.expiresAt,Date.now()+120_000)));
+  }
+
+  /** Account Workflow only; never accepts a model or MCP-provided trust root. */
+  async workflowConsumedPilot(raw:unknown):Promise<unknown>{
+    this.assertStagingRemote();
+    const freeze=this.r4FreezeManifest();if(!freeze)throw Error("HISTORICAL_FREEZE_REQUIRED");
+    const args=raw as {action:string;approvalRef:string;evidence:ConsumedEvidence;closure:ConsumedClosure;authorization:ConsumedAuthorization;signatures?:unknown;operatorAttestation?:unknown};
+    if(!args||args.approvalRef!==freeze.approvalRef||JSON.stringify(args).length>12000)throw Error("CONSUMED_WORKFLOW_SCOPE");
+    if(args.action==="metralla_inspect_consumed"){
+      const identity=await inspectConsumedPilot(this.ctx.storage);
+      const budget=await inspectConsumedBudget(this.ctx.storage);
+      const after=await inspectConsumedPilot(this.ctx.storage);
+      if(after.snapshotDigest!==identity.snapshotDigest)throw Error("P02_SNAPSHOT_CHANGED");
+      return {...identity,budget};
+    }
+    if(args.action!=="metralla_archive_consumed"||args.authorization?.approvalRef!==freeze.approvalRef||
+      args.authorization?.expiresAt>freeze.expiresAt)throw Error("CONSUMED_WORKFLOW_SCOPE");
+    const cfg=this.env as Env & {OPENCODE_M08_CONSUMED_ROOTS?:string;OPENCODE_M09_OPERATOR_ARCHIVE_KEY?:string};
+    const operator=cfg.OPENCODE_M09_OPERATOR_ARCHIVE_KEY;
+    if(operator!==undefined&&(cfg.OPENCODE_M08_CONSUMED_ROOTS!==undefined||args.signatures!==undefined||!recoveryMode(this.env)))
+      throw Error("M09_OPERATOR_AUTHORITY_CONFLICT");
+    if(operator===undefined&&args.operatorAttestation!==undefined)throw Error("M09_OPERATOR_AUTHORITY_UNCONFIGURED");
+    const verifier=operator!==undefined
+      ?await operatorConsumedVerifier(operator,freeze,args.operatorAttestation)
+      :await signedConsumedVerifier(cfg.OPENCODE_M08_CONSUMED_ROOTS,freeze.releaseSha,args.signatures);
+    return archiveConsumedPilot(this.ctx.storage,args.evidence,args.closure,args.authorization,verifier);
+  }
+  /** Only account Workflow, frozen pilot lane, exact pre-authorized normal policy.
+   * No billing action, no clear of outstanding or unknown exposure. */
+  async workflowM09Preflight(raw:unknown):Promise<unknown>{
+    this.assertStagingRemote();assertRecoveryWorkAllowed(this.env);
+    const cfg=this.env as Env & {OPENCODE_NORMAL_AUTHORIZATION?:string;OPENCODE_PILOT_AUTHORIZATION?:string};
+    const q=raw as {action:string;releaseSha:string;imageDigest:string};
+    if(this.ctx.id.name!==SUPERVISOR_WORKSPACE||this.pilotLaneId()||cfg.OPENCODE_NORMAL_AUTHORIZATION!==undefined||cfg.OPENCODE_PILOT_AUTHORIZATION!==undefined||
+      !q||Object.keys(q).sort().join(",")!=="action,imageDigest,releaseSha"||q.action!=="metralla_preflight_idle"||
+      q.releaseSha!==__OPENCODE_RELEASE_SHA__||!/^sha256:[a-f0-9]{64}$/.test(q.imageDigest))throw Error("M09_IDLE_PREFLIGHT_SCOPE");
+    const capacity=await inspectSupervisorAdmissionCapacity(this.ctx.storage);
+    if(capacity.activeSlots!==0||!capacity.inventoryComplete||capacity.stopReason)throw Error("M09_IDLE_PREFLIGHT_CAPACITY");
+    const budget=await inspectUninitializedNormalBudget(this.ctx.storage);
+    const image=await this.env.DEV.getByName(projectContainerName("supervised-42574cb3f5ee0cbf")).preflightM09Image(q.releaseSha,q.imageDigest);
+    const after=await inspectSupervisorAdmissionCapacity(this.ctx.storage);
+    if(after.activeSlots!==0||!after.inventoryComplete||after.stopReason)throw Error("M09_IDLE_PREFLIGHT_CAPACITY");
+    const finalBudget=await inspectUninitializedNormalBudget(this.ctx.storage);
+    if(JSON.stringify(budget)!==JSON.stringify(finalBudget))throw Error("M09_IDLE_PREFLIGHT_CHANGED");
+    return {schema:"metralla-m09-idle-preflight-v1",releaseSha:q.releaseSha,capacity:after,budget:finalBudget,image,dispatchPerformed:false,dispatchAuthorized:false};
+  }
+  async workflowBudgetTransition(raw:unknown):Promise<unknown>{
+    this.assertStagingRemote();const freeze=this.r4FreezeManifest();
+    const preparationCfg=this.env as Env & {OPENCODE_M09_NORMAL_PREPARATION?:string;OPENCODE_NORMAL_AUTHORIZATION?:string;OPENCODE_M08_BUDGET_TRANSITION_KEY?:string};
+    if(preparationCfg.OPENCODE_M09_NORMAL_PREPARATION!==undefined){
+      // Separate non-generative authority. Reject mixed deployment configuration;
+      // no normalApproval() bypass and no new public/MCP entrypoint.
+      if(preparationCfg.OPENCODE_NORMAL_AUTHORIZATION!==undefined||this.ctx.id.name!==SUPERVISOR_WORKSPACE)
+        throw Error("NORMAL_PREPARATION_WRONG_AUTHORITY");
+      const release=typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"";
+      const prep=parseNormalBudgetPreparation(preparationCfg.OPENCODE_M09_NORMAL_PREPARATION,release);
+      const q=raw as {action:string;approvalRef:string;authority:BudgetTransition;signature:string};
+      if(!q||q.approvalRef!==prep.approvalRef||JSON.stringify(q).length>12000)
+        throw Error("NORMAL_PREPARATION_SCOPE");
+      if(freeze){
+        if(freeze.approvalRef!==prep.approvalRef)throw Error("NORMAL_PREPARATION_SCOPE");
+        if(q.action==="metralla_inspect_budget"&&Object.keys(q).length===2)
+          return normalBudgetTransitionSnapshot(this.ctx.storage,prep.policy);
+        if(q.action!=="metralla_transition_budget"||Object.keys(q).sort().join(",")!=="action,approvalRef,authority,signature"||
+          q.authority?.approvalRef!==prep.approvalRef||q.authority?.releaseSha!==release||
+          q.authority?.expiresAt>Math.min(freeze.expiresAt,prep.expiresAt,prep.policy.normal!.validUntil))
+          throw Error("NORMAL_PREPARATION_SCOPE");
+        return prepareConsumedBudget(this.ctx.storage,prep.policy,q.authority,
+          a=>verifyBudgetTransitionSignature(preparationCfg.OPENCODE_M08_BUDGET_TRANSITION_KEY,release,q.signature,a));
+      }
+      assertRecoveryWorkAllowed(this.env);
+      if(this.pilotLaneId()||q.action!=="metralla_inspect_budget"||Object.keys(q).sort().join(",")!=="action,approvalRef")
+        throw Error("NORMAL_PREPARATION_SCOPE");
+      const capacity=await inspectSupervisorAdmissionCapacity(this.ctx.storage);
+      if(capacity.activeSlots!==0||!capacity.inventoryComplete||capacity.stopReason)throw Error("BUDGET_TRANSITION_NOT_DRAINED");
+      return {releaseSha:release,approvalRef:prep.approvalRef,budget:await inspectPreparedNormalBudget(this.ctx.storage,prep.policy),
+        capacity,dispatchPerformed:false,dispatchAuthorized:false,providerPreflightVerified:false};
+    }
+    // The existing private account Workflow can verify the live normal ledger
+    // after promotion without dispatching, reserving or changing any data.
+    if(!freeze){
+      const q=raw as {action?:unknown;approvalRef?:unknown};
+      if(!q||q.action!=="metralla_inspect_budget"||JSON.stringify(q).length>12000||
+        Object.keys(q).some(k=>k!=="action"&&k!=="approvalRef"))throw Error("BUDGET_TRANSITION_FREEZE_REQUIRED");
+      const approval=this.normalApproval();
+      if(q.approvalRef!==approval.approvalRef)throw Error("BUDGET_TRANSITION_SCOPE");
+      const capacity=await inspectSupervisorAdmissionCapacity(this.ctx.storage);
+      if(capacity.activeSlots!==0||!capacity.inventoryComplete||capacity.stopReason)throw Error("BUDGET_TRANSITION_NOT_DRAINED");
+      return {releaseSha:approval.releaseSha,approvalRef:approval.approvalRef,
+        budget:await inspectNormalBudgetReady(this.ctx.storage,approval.policy,approval.preflight),capacity,dispatchPerformed:false};
+    }
+    const cfg=this.env as Env & {OPENCODE_NORMAL_AUTHORIZATION?:string;OPENCODE_M08_BUDGET_TRANSITION_KEY?:string};
+    const release=typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"";
+    const approval=parseNormalApproval(cfg.OPENCODE_NORMAL_AUTHORIZATION,release);
+    const args=raw as {action:string;authority:BudgetTransition;signature:string;approvalRef:string};
+    if(!args||args.approvalRef!==freeze.approvalRef||JSON.stringify(args).length>12000)throw Error("BUDGET_TRANSITION_SCOPE");
+    if(args.action==="metralla_inspect_budget")return normalBudgetTransitionSnapshot(this.ctx.storage,approval.policy);
+    if(args.action!=="metralla_transition_budget"||args.authority?.approvalRef!==approval.approvalRef||args.authority?.releaseSha!==release||args.authority?.expiresAt>Math.min(freeze.expiresAt,approval.expiresAt))
+      throw Error("BUDGET_TRANSITION_SCOPE");
+    return transitionConsumedBudget(this.ctx.storage,approval.policy,approval.preflight,args.authority,
+      a=>verifyBudgetTransitionSignature(cfg.OPENCODE_M08_BUDGET_TRANSITION_KEY,release,args.signature,a));
+  }
+  /** Private account observer readback only; does not start a VM or sign
+   * observations. The reader must independently correlate platform evidence. */
+  async workflowNativeEvidence(raw:unknown):Promise<unknown>{
+    this.assertStagingRemote();
+    if(this.ctx.id.name!==SUPERVISOR_WORKSPACE)throw Error("NATIVE_RECEIPT_SCOPE");
+    const q=raw as {action:string;id:string;session:string;operation:string;releaseSha:string;source:string;after:string|null};
+    if(!q||q.action!=="metralla_native_evidence"||JSON.stringify(q).length>2000||!["do","container","provider"].includes(q.source)||typeof q.id!=="string"||!/^[a-f0-9]{16}$/.test(q.id))throw Error("NATIVE_RECEIPT_SCOPE");
+    const task=await this.supervisedRecord(q.id);
+    if(!task.githubSource||task.normalReleaseSha!==q.releaseSha||q.releaseSha!==__OPENCODE_RELEASE_SHA__||task.session!==q.session||task.operationId!==q.operation||
+      q.session!=="ses_r2_"+q.id||q.operation!=="rc-start-"+q.id)throw Error("NATIVE_RECEIPT_SCOPE");
+    if(q.source==="provider")return readProviderReceipts(this.ctx.storage,task,q.after);
+    if(q.source==="container")return this.env.DEV.getByName(projectContainerName(task.project)).readNativeLinuxReceipts(task.project,q.releaseSha,q.after);
+    return readLogicalReceiptPage(this.ctx.storage,task,q.after);
+  }
+  async workflowRequestNormalClose(raw:unknown):Promise<unknown>{
+    this.assertStagingRemote();
+    if(this.ctx.id.name!==SUPERVISOR_WORKSPACE||this.pilotLaneId())throw Error("NORMAL_CLOSE_WRONG_AUTHORITY");
+    const q=raw as {id:string;releaseSha:string;generation:number;action:string};
+    if(q.action!=="metralla_request_close"||!/^[a-f0-9]{16}$/.test(q.id)||q.releaseSha!==__OPENCODE_RELEASE_SHA__)throw Error("NORMAL_CLOSE_SCOPE");
+    const task=await this.supervisedRecord(q.id),slot=await supervisorAdmissionSlot(this.ctx.storage,q.id);
+    const {normalTaskAccountingClosed}=await import("./supervisor-inference-budget");
+    const {githubPublicationIdle}=await import("./github-publication-durable");
+    if(!task.githubSource||task.normalReleaseSha!==q.releaseSha||!["finished","failed","cancelled"].includes(task.status)||task.pendingTurn||task.cancelAmbiguous||slot?.phase!=="running"||slot.effect||slot.generation!==q.generation||
+       !await normalTaskAccountingClosed(this.ctx.storage,q.id)||!await githubPublicationIdle(this.ctx.storage,task.githubSource.repo,task.githubSource.base))throw Error("NORMAL_CLOSE_OUTSTANDING_EFFECT");
+    return this.env.DEV.getByName(projectContainerName(task.project)).requestNormalClose(task.project,q.generation,q.releaseSha);
+  }
+  async workflowNormalClose(raw:unknown):Promise<unknown>{
+    this.assertStagingRemote();
+    if(this.ctx.id.name!==SUPERVISOR_WORKSPACE||this.pilotLaneId())throw Error("NORMAL_CLOSE_WRONG_AUTHORITY");
+    const args=raw as {action:string;evidence:NormalCloseEvidence;signature:string};
+    if(!args||args.action!=="metralla_normal_close"||JSON.stringify(args).length>12000)throw Error("NORMAL_CLOSE_SCOPE");
+    const e=args.evidence;
+    const task=await this.supervisedRecord(e.requestId);
+    if(!task.githubSource||task.project!=="supervised-"+e.requestId)throw Error("NORMAL_CLOSE_SCOPE");
+    const close=await this.env.DEV.getByName(projectContainerName(task.project)).readCloseReceipt(task.project);
+    if(!close)throw Error("NORMAL_CLOSE_RECORD_MISSING");
+    await verifyNormalClose((this.env as Env & {OPENCODE_M08_NATIVE_CLOSE_KEY?:string}).OPENCODE_M08_NATIVE_CLOSE_KEY,
+      typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"",args.signature,e,close);
+    return releasePhysicallyClosedNormal(this.ctx.storage,e);
   }
 
   async remoteSupervisorModels(): Promise<unknown> {
@@ -788,12 +955,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
    */
   async remoteSupervisorSessions(): Promise<unknown> {
     this.assertStagingRemote();
-    const index = await this.ctx.storage.list<SupervisorTask>({
-      prefix: "supervisor:task:", limit: 101
-    });
-    const result = await collectSupervisorDirectory(index,
-      session => this.harness.session(session).busy(), 100, 4);
-    return { environment: "staging", ...result };
+    const result=await projectedTaskDirectory(this.ctx.storage);
+    return {environment:"staging",sessions:result.entries.map(p=>({session:p.session,taskId:p.key.slice("supervisor:task:".length),status:p.status,busy:true,busyVerified:false})),limited:result.limited,countComplete:false,scope:"NORMAL_PROJECTED_TASKS_ONLY",historicalCoverage:false,nativeOperationsMeasured:false};
   }
 
   async remoteSupervisorInspectSession(id: string): Promise<unknown> {
@@ -815,9 +978,11 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async remoteSupervisorSelectModel(id: string, model: string): Promise<unknown> {
+    assertRecoveryWorkAllowed(this.env);
     if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     this.assertStagingRemote();
     const task = await this.supervisedRecord(id);
+    if(task.githubSource)throw Error("NORMAL_MODEL_CHANGE_REQUIRES_NEW_APPROVAL");
     if (task.mode === "read_only") throw Error("SUPERVISOR_READ_ONLY_MODEL_CHANGE_FORBIDDEN");
     const selected = await this.supervisorModel(model);
     if (!task.session || ["cancelled", "cancel_requested", "failed"].includes(task.status)) {
@@ -831,7 +996,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (!fresh || fresh.session !== task.session || fresh.revision !== task.revision ||
           fresh.status !== task.status || fresh.operationId !== task.operationId || fresh.pendingTurn)
         throw Error("SUPERVISOR_MODEL_CHANGE_RECONCILIATION_REQUIRED");
-      await tx.put(supervisorTaskKey(id), { ...fresh, model: selected.selection,
+      await putProjectedSupervisorTask(tx,supervisorTaskKey(id), { ...fresh, model: selected.selection,
         revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() });
     });
     return { environment: "staging", taskId: id, session: task.session,
@@ -839,6 +1004,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async remoteSupervisorContinue(raw: unknown): Promise<unknown> {
+    assertRecoveryWorkAllowed(this.env);
     if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     this.assertStagingRemote();
     const trace = this.phaseProbe();
@@ -857,6 +1023,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const prompt = v.prompt.trim();
     const operationId = supervisorTurnOperationId(id, turnId);
     const initial = await this.supervisedRecord(id);
+    if(initial.githubSource)throw Error("NORMAL_CONTINUATION_REQUIRES_NEW_OPERATION_APPROVAL");
     if (initial.mode === "read_only") {
       await this.requireReadOnlyTaskScope(initial, initial.session!);
       return { taskId: id, accepted: false, confirmed: false, stop: true,
@@ -943,6 +1110,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async remoteSupervisorMcpCall(input: { server: string; name: string; arguments?: Record<string, unknown> }): Promise<unknown> {
+    assertRecoveryWorkAllowed(this.env);
     if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     this.assertStagingRemote();
     const host = createDynamicMcpHost(() => this.personalConfig.getRemoteMcps());
@@ -962,6 +1130,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async remoteSupervisorAgentCheckStatus(scope?: "openrouter"): Promise<unknown> {
+    assertRecoveryWorkAllowed(this.env);
     this.assertStagingRemote();
     if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     return scope === "openrouter" ? this.openRouterAgentCheckStatus() : this.agentCheckStatus();
@@ -997,6 +1166,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
    * This never accepts data/file/https URLs, binary blobs, or arbitrary /bundle.
    */
   async supervisedArtifactCapture(id: string, raw: unknown): Promise<unknown> {
+    assertRecoveryWorkAllowed(this.env);
     const trace = this.phaseProbe();
     const task = await this.scopedArtifactTask(id);
     const request = validateCaptureRequest(raw);
@@ -1009,73 +1179,40 @@ export class OpenCodeAgent extends DurableObject<Env> {
       requestId: task.id, ownerProject: task.project, ownerSession: task.session,
       repository: task.repository, request, inspected
     }));
-    const idKey = artifactKey(id, prepared.artifactId);
-    const indexKey = artifactIndexKey(id);
-    const saved = await this.ctx.storage.transaction(async tx => {
-      const existing = await tx.get<StoredTaskArtifact>(idKey);
-      if (existing && existing.expiresAt > Date.now()) {
-        if (existing.sha256 !== prepared.sha256 ||
-            !artifactIsOwnedBy(existing, task)) throw new Error("ARTIFACT_CONFLICT");
-        return existing;
-      }
-      if (existing) await tx.delete(idKey);
-      const index = (await tx.get<string[]>(indexKey)) ?? [];
-      if (!Array.isArray(index) || index.length > TASK_ARTIFACT_MAX_PER_TASK)
-        throw new Error("ARTIFACT_INDEX_INVALID");
-      const live: string[] = [];
-      const now = Date.now();
-      for (const priorId of index) {
-        const key = artifactKey(id, priorId);
-        const value = await tx.get<StoredTaskArtifact>(key);
-        if (value && artifactIsOwnedBy(value, task, now)) live.push(priorId);
-        else await tx.delete(key); // Opportunistic retention cleanup.
-      }
-      if (live.length >= TASK_ARTIFACT_MAX_PER_TASK) throw new Error("ARTIFACT_TASK_LIMIT");
-      await tx.put(idKey, prepared);
-      await tx.put(indexKey, [...live, prepared.artifactId]);
-      return prepared;
-    });
+    const saved = await this.ctx.storage.transaction(tx => persistTaskArtifact(tx, task, prepared));
     return artifactView(saved);
   }
 
   /** A bounded manifest: no transcript, raw paths, stored bytes or credentials. */
-  async supervisedTaskArtifacts(id: string): Promise<unknown> {
+  async supervisedTaskArtifacts(id: string, after?: string, limit = TASK_ARTIFACT_MAX_PER_TASK): Promise<unknown> {
     const task = await this.scopedArtifactTask(id);
-    // Artifact manifest GET must not reconcile an operation or inspect SDK logs.
     const status = await this.remoteSupervisorTaskStatusSnapshot(id) as { status?: string; operationId?: string };
-    const index = (await this.ctx.storage.get<string[]>(artifactIndexKey(id))) ?? [];
-    if (!Array.isArray(index) || index.length > TASK_ARTIFACT_MAX_PER_TASK) {
-      throw new Error("ARTIFACT_INDEX_INVALID");
-    }
-    const records = await Promise.all(index.map(key =>
-      this.ctx.storage.get<StoredTaskArtifact>(artifactKey(id, key))));
-    const now = Date.now();
+    const page = await readTaskArtifactPage(this.ctx.storage, task, after, limit);
     return {
       schema: TASK_ARTIFACT_SCHEMA, requestId: id, status: status.status ?? "unknown",
-      artifacts: records.filter(x => artifactIsOwnedBy(x, task, now)).map(x => artifactView(x!)),
-      summary: { text: "", available: false, truncated: false },
-      errors: [],
+      artifacts: page.artifacts, nextAfter: page.nextAfter, scanned: page.scanned,
+      summary: { text: "", available: false, truncated: false }, errors: [],
       evidence: { sessionId: task.session, operationId: status.operationId ?? null,
         projectId: task.project, byteReadback: "captured", collectorVerification: "pending" },
       passed: false, verified: false, reviewRequired: true
     };
   }
 
-  /** Bytes survive a DO restart (SQLite storage), but expired records fail closed. */
-  async supervisedTaskArtifactDownload(id: string, artifactId: string): Promise<Response> {
-    const trace = this.phaseProbe();
+  async supervisedTaskArtifactExport(id: string, format: "text" | "json", after?: string, limit = 2): Promise<Response> {
     const task = await this.scopedArtifactTask(id);
-    assertArtifactId(artifactId);
-    const record = await trace.run("cleanup", "artifactStoredRead", () =>
-      this.ctx.storage.get<StoredTaskArtifact>(artifactKey(id, artifactId)));
-    if (!record) return artifactErrorResponse("ARTIFACT_NOT_FOUND", 404);
-    if (Date.now() >= record.expiresAt) {
-      await this.ctx.storage.delete(artifactKey(id, artifactId));
-      return artifactErrorResponse("ARTIFACT_EXPIRED", 410);
-    }
-    if (record.artifactId !== artifactId || record.requestId !== id ||
-        !artifactIsOwnedBy(record, task)) return artifactErrorResponse("ARTIFACT_NOT_FOUND", 404);
-    return await trace.run("cleanup", "artifactVerify", () => verifiedArtifactDownload(record));
+    return taskArtifactExportResponse(this.ctx.storage, task, format, after, limit);
+  }
+
+  /** Owner browser route: the session comes from the independently retrieved manifest. */
+  async supervisedMobileArtifactDownload(id: string, session: string, artifactId: string, expiresAt: number, range: string | null): Promise<Response> {
+    const task = await this.scopedArtifactTask(id);
+    if (task.session !== session) return new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } });
+    return scopedArtifactDownload(this.ctx.storage, task, artifactId, expiresAt, range);
+  }
+
+  async supervisedTaskArtifactDownload(id: string, artifactId: string, expiresAt: number, range: string | null): Promise<Response> {
+    const task = await this.scopedArtifactTask(id);
+    return scopedArtifactDownload(this.ctx.storage, task, artifactId, expiresAt, range);
   }
 
   async closePilotTask(id:string){
@@ -1149,10 +1286,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     } finally {
       clearTimeout(waitTimer);
     }
-    if (job.operationId && operation &&
-        (operation.status === "done" ||
-          operation.status === "unanswered" && operation.reason !== "not_found")) {
-      await reconcileSupervisorSubmittedEffect(this.ctx.storage, id, job.operationId, operation);
+    if(job.operationId&&operation&&r2TerminalNativeReceipt(operation)){
+      await reconcileSupervisorSubmittedEffect(this.ctx.storage,id,job.operationId,operation,job.session);
     }
     // Never materialize a complete tool transcript in the supervisor's
     // memory-constrained Durable Object on every status poll. The durable
@@ -1166,6 +1301,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const saved = await this.ctx.storage.get<SupervisorToolCounts>(metricsKey);
       if (saved && !validSupervisorToolCounts(saved)) throw new Error("SUPERVISOR_METRICS_INVALID");
       const prior = saved ?? EMPTY_SUPERVISOR_TOOL_COUNTS;
+      if(job.githubSource)throw Error("SUPERVISOR_NATIVE_EVENT_COVERAGE_UNAVAILABLE");
       const scan = await trace.run("status", "logFold", () =>
         foldSupervisorToolLog(handle.log({after: prior.cursor, follow: false}), prior, 256));
       const committed = await this.ctx.storage.transaction(async tx => {
@@ -1189,33 +1325,38 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const reconciled = await this.ctx.storage.transaction(async tx => {
       const fresh = await tx.get<SupervisorTask>(supervisorTaskKey(id));
       if (!fresh) throw new Error("Tarea del supervisor inexistente");
-      if (!job.operationId || fresh.operationId !== job.operationId ||
-          fresh.status === "cancelled") return fresh;
-      // Persist an authentic SDK terminal receipt with the turn journal.
-      // not_found and timeouts are explicitly NOT settled outcomes.
-      const turnPrefix = "rc-turn-" + id + "-";
-      if (fresh.operationId?.startsWith(turnPrefix) && r2TerminalNativeReceipt(operation)) {
-        const turnId = fresh.operationId.slice(turnPrefix.length);
-        if (/^[a-f0-9]{16}$/.test(turnId)) {
-          const turnKey = r2TurnJournalKey(id, turnId);
-          const journal = await tx.get<R2TurnJournal>(turnKey);
-          if (journal?.operationId === fresh.operationId && journal.phase !== "settled") {
-            // Native terminal evidence also reconciles a prior lost
-            // continuation-submit receipt in T03's global capacity ledger.
-            await reconcileSupervisorTurnEffect(tx, id, job.operationId, operation!);
-            await tx.put(turnKey, { ...journal, phase: "settled" as const,
-              receiptStatus: operation!.status, receiptReason: operation!.reason?.slice(0, 120),
-              settledAt: Date.now() });
+      if (!job.operationId || !job.session || fresh.operationId !== job.operationId ||
+          fresh.session!==job.session || fresh.status === "cancelled") return fresh;
+      if(fresh.status==="cancel_requested"&&fresh.cancelAmbiguous){
+        const settled=await settleSupervisorCancelledTurn(tx,id,job.session,job.operationId,operation,busy);
+        return settled??fresh;
+      }
+      let turnReceiptBound=false;
+      if(fresh.pendingTurn&&operation&&r2TerminalNativeReceipt(operation)){
+        const match=await matchingSupervisorTurnJournal(tx,id,fresh,job.operationId);
+        if(match){
+          if(match.journal.phase==="settled"){
+            const slot=await supervisorAdmissionSlot(tx,id);
+            turnReceiptBound=slot?.phase==="running"&&!slot.effect&&match.journal.receiptStatus===operation.status&&
+              match.journal.receiptReason===operation.reason?.slice(0,120);
+          }else{
+            await reconcileSupervisorTurnEffect(tx, id, job.operationId, operation);
+            const slot=await supervisorAdmissionSlot(tx,id);
+            if(slot?.phase==="running"&&!slot.effect){
+              await tx.put(match.key,{...match.journal,phase:"settled" as const,receiptStatus:operation.status,
+                receiptReason:operation.reason?.slice(0,120),settledAt:Date.now()});
+              turnReceiptBound=true;
+            }
           }
         }
       }
-      const settlePending = r2PendingTurnReconcileAllowed(fresh, job.operationId, operation);
+      const settlePending = turnReceiptBound&&r2PendingTurnReconcileAllowed(fresh, job.operationId, operation);
       if (fresh.pendingTurn && !settlePending) return fresh;
       if (!settlePending && !r2StatusWriteAllowed(fresh, job.operationId)) return fresh;
       const state = settlePending ? { ...fresh, pendingTurn: undefined } : fresh;
       let status = classifySupervisorOperation(state, busy, operation);
       if (status === "cancelled" &&
-          (!r2CancelledByReceipt(state, job.operationId, operation) || state.cancelAmbiguous)) {
+          (busy!==false || !r2CancelledByReceipt(state, job.operationId, operation) || state.cancelAmbiguous)) {
         status = "unknown"; // no false terminal for an ambiguous concurrent steer
       }
       if (state.cancelAmbiguous && status === "finished") status = "unknown";
@@ -1225,7 +1366,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (!settlePending && status === state.status && nextError === state.error) return fresh;
       const next: SupervisorTask = { ...state, status, error: nextError,
         revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-      await tx.put(supervisorTaskKey(id), next);
+      await putProjectedSupervisorTask(tx,supervisorTaskKey(id),next);
       return next;
     });
     return { ...base, operationId: reconciled.operationId, updatedAt: reconciled.updatedAt,
@@ -1240,6 +1381,25 @@ export class OpenCodeAgent extends DurableObject<Env> {
       passed: false, verified: false };
   }
 
+  private projectionPrincipal(verifiedPrincipal?:string){
+    this.assertStagingRemote();if(this.ctx.id.name!==SUPERVISOR_WORKSPACE)throw Error("REMOTE_SCOPE_FORBIDDEN");
+    const cfg=this.env as Env & {OPENCODE_REMOTE_OWNER_SHA256?:string};
+    if(typeof cfg.OPENCODE_REMOTE_OWNER_SHA256!=="string"||!/^[a-f0-9]{64}$/.test(cfg.OPENCODE_REMOTE_OWNER_SHA256))throw Error("REMOTE_OWNER_UNCONFIGURED");
+    if(verifiedPrincipal!==cfg.OPENCODE_REMOTE_OWNER_SHA256)throw Error("REMOTE_OWNER_AUTH_REQUIRED");
+    return verifiedPrincipal;
+  }
+  async remoteSupervisorStatusV1(id:string,afterRevision:number|null,verifiedPrincipal?:string){
+    this.projectionPrincipal(verifiedPrincipal);const p=await readTaskProjection(this.ctx.storage,id);
+    return validateStatus({schema:REMOTE_SCHEMA,id,workspace:null,revision:p.revision,status:p.status},{id,workspace:null},afterRevision);
+  }
+  async remoteSupervisorProgressV1(id:string,cursor?:string,verifiedPrincipal?:string){
+    const principal=this.projectionPrincipal(verifiedPrincipal),workspace=SUPERVISOR_WORKSPACE;
+    const p=await readTaskProjection(this.ctx.storage,id);if(!p.session)throw Error("REMOTE_SESSION_NOT_BOUND");
+    const key=await importProjectionCursorKey((this.env as Env & {OPENCODE_REMOTE_CURSOR_KEY?:string}).OPENCODE_REMOTE_CURSOR_KEY);
+    const digest=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(JSON.stringify([principal,id])))),b=>b.toString(16).padStart(2,"0")).join("");
+    return {...await projectRemoteProgress({id,workspace:null},cursor,async()=>({principal,workspace,session:p.session!,key,
+      source:logicalEventSource(this.ctx.storage,p,{principal:digest,workspace,session:p.session!,view:"progress"})})),source:"logical-supervisor-transitions"};
+  }
   async remoteSupervisorProgress(id: string, after = 0): Promise<unknown> {
     this.assertStagingRemote();
     if (!Number.isSafeInteger(after) || after < 0)
@@ -1271,7 +1431,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         const fresh=await tx.get<SupervisorTask>(supervisorTaskKey(id));
         if(!fresh||fresh.operationId)return false;
         if(!["failed","cancelled","finished","unanswered"].includes(fresh.status))
-          await tx.put(supervisorTaskKey(id),{...fresh,status:"cancel_requested",cancelAmbiguous:true,
+          await putProjectedSupervisorTask(tx,supervisorTaskKey(id),{...fresh,status:"cancel_requested",cancelAmbiguous:true,
             revision:(fresh.revision??0)+1,updatedAt:Date.now()});
         return true;
       });
@@ -1281,6 +1441,18 @@ export class OpenCodeAgent extends DurableObject<Env> {
         return {id,status:"cancel_requested",confirmed:false,container,reason:"PILOT_PREPARATION_CLOSED_OR_PENDING"};
       }
       job=await this.supervisedRecord(id);
+    }
+    if(job.sessionIdPolicy==="deterministic-v1"&&job.mode!=="read_only"&&!job.pilotInstance){
+      const intent=await beginSupervisorCancellation(this.ctx.storage,id);
+      if(intent.kind==="confirmed")return {id,status:"cancelled",confirmed:true,reason:"logical pre-start fence"};
+      if(intent.kind==="terminal")return {id,status:intent.task.status};
+      if(intent.kind!=="abort")return {id,status:intent.task.status,confirmed:false,reason:"ABORT_RECEIPT_RECONCILIATION_PENDING"};
+      let abortAccepted=false,abortError:string|undefined;
+      try{abortAccepted=await this.harness.session(intent.task.session!).abort(intent.task.operationId!);}
+      catch(error){abortError=error instanceof Error?error.message.slice(0,200):"Abort failed";}
+      const current=await this.supervisedTaskStatus(id) as {status?:string;operationReason?:string};
+      return {id,status:current.status??"cancel_requested",confirmed:current.status==="cancelled",
+        abortAccepted,abortError,operationReason:current.operationReason};
     }
     if (["cancelled", "failed", "finished", "unanswered"].includes(job.status))
       return { id, status: job.status };
@@ -1300,7 +1472,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
             // effects were cancelled or clear the unknown admission slot.
             const next: SupervisorTask = { ...fresh, status: "cancel_requested",
               cancelAmbiguous: true, revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-            await tx.put(key, next);
+            await putProjectedSupervisorTask(tx,key,next);
             return { kind: "uncertain" as const, task: next };
           }
           return { kind: "uncertain" as const, task: fresh };
@@ -1309,7 +1481,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           return { kind: "terminal" as const, task: fresh };
         }
         const stopped = { ...fresh, status: "cancelled" as const, updatedAt: Date.now() };
-        await tx.put(key, stopped);
+        await putProjectedSupervisorTask(tx,key,stopped);
         return { kind: "confirmed" as const, task: stopped };
       });
       if (outcome.kind === "confirmed") {
@@ -1335,7 +1507,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
           ...(fresh.mode === "read_only" ? { cancelAmbiguous: true } : {}),
           error: "OpenCode operation id missing",
           revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-        await tx.put(supervisorTaskKey(id), uncertain);
+        await putProjectedSupervisorTask(tx,supervisorTaskKey(id),uncertain);
         return { kind: "uncertain" as const, task: uncertain };
       }
       if (fresh.status === "cancel_requested")
@@ -1343,7 +1515,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
       const next: SupervisorTask = { ...fresh, status: "cancel_requested",
         cancelAmbiguous: Boolean(fresh.cancelAmbiguous || fresh.pendingTurn),
         revision: (fresh.revision ?? 0) + 1, updatedAt: Date.now() };
-      await tx.put(supervisorTaskKey(id), next);
+      await putProjectedSupervisorTask(tx,supervisorTaskKey(id),next);
       return { kind: "abort" as const, task: next };
     });
     if (intent.kind === "terminal") return { id, status: intent.task.status };
@@ -1387,12 +1559,14 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async refreshMcps(): Promise<{ refreshed: boolean }> {
+    assertRecoveryWorkAllowed(this.env);
     if (!this.mcpLifecycle.reload) return { refreshed: false };
     await this.mcpLifecycle.reload();
     return { refreshed: true };
   }
 
   async installTokenEconomizer(): Promise<{ installed: true; commit: string }> {
+    assertRecoveryWorkAllowed(this.env);
     return this.env.DEV.getByName("connector-host-v1").installTokenEconomizer();
   }
 
@@ -1489,6 +1663,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   private async startSubagent(parentSession: string, task: string, kind: "analysis" | "decision"): Promise<{ session: string }> {
+    assertRecoveryWorkAllowed(this.env);
     if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     // Delegation must not bypass the source pin or admission accounting.
     // T04 may replace this fail-closed guard with an audited inherited scope.
@@ -1618,6 +1793,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   private async denyReadOnlySessionEffect(sessionID: string): Promise<void> {
+    assertRecoveryWorkAllowed(this.env);
     if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
     if (this.ctx.id?.name === SUPERVISOR_WORKSPACE && !scope) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
@@ -1625,11 +1801,13 @@ export class OpenCodeAgent extends DurableObject<Env> {
   }
 
   async enforceSessionScope(sessionID: string, action: ScopedToolAction): Promise<void> {
+    assertRecoveryWorkAllowed(this.env);
     if(this.pilotLaneId())await this.pilotContext(sessionID);
     const retiredOwner=await this.ctx.storage.get<string>("supervisor:session:"+sessionID);
     if(retiredOwner&&await retiredHistoricalTask(this.ctx.storage,retiredOwner))throw Error("HISTORICAL_TASK_QUARANTINED");
     const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
     if (this.ctx.id?.name === SUPERVISOR_WORKSPACE && !scope) throw Error("SUPERVISOR_SCOPE_TASK_UNAVAILABLE");
+    if(scope?.githubSource&&action.kind==="github"&&action.operation==="read"&&!action.ref)action={...action,ref:scope.githubSource.commit};
     assertScopedTool(scope, action);
     const readOnly = await this.readOnlyTaskForScope(scope, sessionID);
     if (readOnly) {
@@ -1935,6 +2113,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     const match = /^opencode\/staging-([a-f0-9]{16})$/.exec(input.branch);
     const task = match
       ? await this.ctx.storage.get<SupervisorTask>(supervisorTaskKey(match[1])) : undefined;
+    if(!this.pilotLaneId())throw Error("NORMAL_PUBLICATION_REQUIRES_PINNED_ROUTE");
     if (task?.mode === "read_only") throw Error("SUPERVISOR_READ_ONLY_PUBLICATION_FORBIDDEN");
     assertSupervisedPublicationScope(input, sessionID, task);
     const pilot=this.pilotLaneId()?await this.pilotContext(sessionID):undefined;
@@ -1952,6 +2131,31 @@ export class OpenCodeAgent extends DurableObject<Env> {
       }),pilot?{branch:input.branch,sha:task!.baseCommit!,base:PILOT_BASE}:undefined).execute(input);
   }
 
+  private normalApproval(){
+    assertRecoveryWorkAllowed(this.env);
+    this.assertStagingRemote();if(this.ctx.id.name!==SUPERVISOR_WORKSPACE||this.pilotLaneId())throw Error("NORMAL_WRONG_AUTHORITY");
+    return parseNormalApproval((this.env as Env & {OPENCODE_NORMAL_AUTHORIZATION?:string}).OPENCODE_NORMAL_AUTHORIZATION,
+      typeof __OPENCODE_RELEASE_SHA__==="string"?__OPENCODE_RELEASE_SHA__:"");
+  }
+  private async normalContext(session:string):Promise<NormalContext>{
+    const approval=this.normalApproval();const match=/^ses_r2_([a-f0-9]{16})$/.exec(session);if(!match)throw Error("NORMAL_SESSION_REQUIRED");
+    const id=match[1];const task=await this.supervisedRecord(id),pin=assertNormalTaskPin(approval,task);
+    const slot=await supervisorAdmissionSlot(this.ctx.storage,id);if(!slot)throw Error("NORMAL_ADMISSION_REQUIRED");
+    const grant={id,token:slot.token,generation:slot.generation};assertNormalGitHubFence(task,slot,grant,pin,"mutation",session);
+    const scope=await this.ctx.storage.get<ProjectScope>(scopeStorageKey(session));requirePinnedGitHubScope(scope,pin);
+    if(await this.ctx.storage.get<string>("supervisor:session:"+session)!==id)throw Error("NORMAL_SESSION_SCOPE");
+    await assertNormalBudgetReady(this.ctx.storage,approval.policy,approval.preflight);
+    const selection=task.model??"economy";return {storage:this.ctx.storage,grant,policy:approval.policy,preflight:approval.preflight,selection,operationId:task.operationId!,contextBoundEvidence:approval.contextBoundEvidence[selection]};
+  }
+  private normalPublicationGate(grant:StartGrant,pin:GitHubSourcePin,phase:"branch"|"mutation",session?:string){
+    return new DurableGitHubPublicationGate(this.ctx.storage,Date.now,async(tx,scope)=>{
+      const fresh=await tx.get<SupervisorTask>(supervisorTaskKey(grant.id));
+      if(!fresh||scope.repo.toLowerCase()!==pin.repo||scope.base!==pin.base||scope.branch!==pin.branch)throw Error("NORMAL_PUBLICATION_SCOPE");
+      assertNormalTaskPin(this.normalApproval(),fresh);
+      assertNormalGitHubFence(fresh,await supervisorAdmissionSlot(tx,grant.id),grant,pin,phase,session);
+      if(session){requirePinnedGitHubScope(await tx.get<ProjectScope>(scopeStorageKey(session)),pin);if(await tx.get<string>("supervisor:session:"+session)!==grant.id)throw Error("NORMAL_SESSION_SCOPE");}
+    });
+  }
   private readonly githubRunner = {
     execute: async (input: Parameters<GitHubBridge["execute"]>[0], sessionID?: string) => {
       const pilot=this.pilotLaneId()?await this.pilotContext(sessionID??""):undefined;
@@ -1967,6 +2171,17 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if (sessionID) {
         const scope = await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID));
         const task = await this.readOnlyTaskForScope(scope, sessionID);
+        if(scope?.githubSource){
+          const pin=scope.githubSource;const ctx=await this.normalContext(sessionID);
+          if(input.action==="branch")throw Error("NORMAL_BRANCH_PRECREATED");
+          if(input.action==="read"&&!input.ref)input={...input,ref:pin.commit};
+          assertPinnedGitHubAction(pin,{...input,operation:input.action});
+          const key=(this.env as Env & {GITHUB_TOKEN?:string}).GITHUB_TOKEN||await this.personalConfig.getGitHubKey();
+          if(!key)throw Error("GITHUB_AUTH_REQUIRED");
+          return new GitHubBridge(key,(url,init)=>globalThis.fetch(url,init),await this.personalConfig.getAllowedRepositories(),
+            this.normalPublicationGate(ctx.grant,pin,"mutation",sessionID),undefined,pin).execute(input);
+        }
+        if(!this.pilotLaneId()&&this.ctx.id.name===SUPERVISOR_WORKSPACE&&scope?.project.startsWith("supervised-")&&!task)throw Error("NORMAL_PIN_REQUIRED");
         if (task) {
           await this.requireReadOnlySourceReceipt(task);
           assertSupervisorBoundGitHubOperation(input.action, "branch" in input ? input.branch : undefined, task.branch, task.mode);
@@ -1983,6 +2198,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
             ref: "ref" in input ? input.ref : undefined });
         }
       }
+      if(!this.pilotLaneId()&&["branch","write","pr"].includes(input.action)&&"branch" in input&&/^opencode\/(?:staging|supervised)-[a-f0-9]{16}$/.test(input.branch))throw Error("NORMAL_PIN_REQUIRED");
       // The shared supervisor DO is the only allowed publisher of its Staging
       // branches. A project DO cannot create an independent storage lock.
       if (input.action === "pr" &&
@@ -2008,9 +2224,15 @@ export class OpenCodeAgent extends DurableObject<Env> {
       return new GitHubBridge(key, (url, init) => globalThis.fetch(url, init),
         await this.personalConfig.getAllowedRepositories()).resolveReadOnlySource(repo, sourceCommit, sourceTree);
     },
-    ensureSupervisorBranch: async (repo: string, branch: string, pilotTask?:SupervisorTask) => {
-      const proof=pilotTask?await this.requirePilotTask(pilotTask):undefined;
-      const approval=pilotTask?this.pilotApproval(pilotTask.createdAt):undefined;
+    ensureSupervisorBranch: async (repo: string, branch: string, task:SupervisorTask, grant:StartGrant) => {
+      if(task.githubSource){const pin=assertNormalTaskPin(this.normalApproval(),task);
+        const key=(this.env as Env & {GITHUB_TOKEN?:string}).GITHUB_TOKEN||await this.personalConfig.getGitHubKey();if(!key)throw Error("GITHUB_AUTH_REQUIRED");
+        return new GitHubBridge(key,(url,init)=>globalThis.fetch(url,init),await this.personalConfig.getAllowedRepositories(),this.normalPublicationGate(grant,pin,"branch"),undefined,pin).ensureSupervisorBranch(repo,branch);
+      }
+      const pilotTask=task.pilotInstance?task:undefined;
+      if(!pilotTask)throw Error("NORMAL_PIN_REQUIRED");
+      const proof=await this.requirePilotTask(pilotTask);
+      const approval=this.pilotApproval(pilotTask.createdAt);
       if(this.pilotLaneId()&&(!proof||!approval))throw Error("PILOT_BRANCH_AUTHORIZATION");
       const key = (this.env as Env & { GITHUB_TOKEN?: string }).GITHUB_TOKEN
         || await this.personalConfig.getGitHubKey();
@@ -2024,7 +2246,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
     return Boolean(envKey || await this.personalConfig.getOpenRouterKey());
   }
   async refreshOpenRouter(): Promise<{ active: boolean }> {
-    if(this.pilotLaneId())throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
+    assertRecoveryWorkAllowed(this.env);
+    if(this.pilotLaneId()||this.ctx.id.name===SUPERVISOR_WORKSPACE)throw Error("PILOT_ALTERNATE_EFFECT_FORBIDDEN");
     const key = (this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
       || await this.personalConfig.getOpenRouterKey();
     if (!key || !this.providerConnection.connect) return { active: false };
@@ -2245,6 +2468,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
   // The deployment owner supplies independently reviewed receipt digests
   // only in a separately authorized Staging version. No binding in source.
   private pilotApproval(now=Date.now()){
+    assertRecoveryWorkAllowed(this.env);
     const id=this.pilotLaneId();
     if(!id)return undefined;
     this.assertStagingRemote();
@@ -2293,7 +2517,8 @@ export class OpenCodeAgent extends DurableObject<Env> {
   readonly ai = createAI({ binding: this.pilotLaneId() ?
     makePilotHybridBinding(this.env.AI,session=>this.pilotContext(session),
       async()=> (this.env as Env & {OPENROUTER_API_KEY?:string}).OPENROUTER_API_KEY || await this.personalConfig.getOpenRouterKey())
-    : this.env.AI });
+    : this.ctx.id.name===SUPERVISOR_WORKSPACE ? makeNormalMeteredBinding(this.env.AI,id=>this.normalContext(id),
+      async()=> (this.env as Env & {OPENROUTER_API_KEY?:string}).OPENROUTER_API_KEY || await this.personalConfig.getOpenRouterKey()) : this.env.AI });
   // Register every native preset BEFORE the harness initializes. A plain
   // {providerID, id} selector does not add a model to OpenCode's provider.
   private readonly registeredWorkersModels = NATIVE_WORKERS_AI_MODELS.filter(id=>!this.pilotLaneId() || id===PILOT_GLM).map(id => this.ai(id));
@@ -2371,7 +2596,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         if (task.mode === "read_only") {
           await this.requireReadOnlySourceReceipt(task);
           sourceTree = task.sourceTree;
-        }
+        }else if(task.githubSource){const pin=assertNormalTaskPin(this.normalApproval(),task);requirePinnedGitHubScope(scope,pin);sourceTree=pin.tree;}
       }
     }
     const pilot=this.pilotLaneId()?await this.pilotContext(sessionID??""):undefined;
@@ -2384,6 +2609,10 @@ export class OpenCodeAgent extends DurableObject<Env> {
       if(!task.pilotPreparation)throw Error("PILOT_PREPARATION_REQUIRED");
       sourceTree=task.pilotPreparation.input.sourceTree;
     }
+    if(scope?.githubSource){
+      const ctx=await this.normalContext(sessionID!);const task=await this.supervisedRecord(ctx.grant.id);
+      await dev.bindNormalExecution({source:{project,repository:task.repository,commit:scope.githubSource.commit,tree:scope.githubSource.tree},requestId:task.id,generation:ctx.grant.generation,token:ctx.grant.token,releaseSha:task.normalReleaseSha!,imageDigest:task.normalImageDigest!,workUntil:task.normalWorkUntil!,closeUntil:task.normalCloseUntil!});
+    }
     if (scope?.repository) {
       const receipt = await dev.prepareRepository(project, scope.repository, sourceCommit, sourceTree);
       if (readOnly) assertCertifiedReadOnlyImport(readOnly, receipt);
@@ -2394,7 +2623,23 @@ export class OpenCodeAgent extends DurableObject<Env> {
   readonly linuxRunner = {
     run: async (project: string, command: string, sessionID?: string) => {
       try {
-        const result = await (await this.isolatedProject(project, sessionID)).run(project, command);
+        const scope=sessionID?await this.ctx.storage.get<ProjectScope>(scopeStorageKey(sessionID)):undefined;
+        let result;
+        if(scope?.githubSource){
+          const ctx=await this.normalContext(sessionID!);
+          const task=await this.supervisedRecord(ctx.grant.id);
+          const pin=assertNormalTaskPin(this.normalApproval(),task);
+          if(task.project!==project)throw Error("NORMAL_LINUX_SCOPE");
+          const source={project,repository:task.repository,commit:pin.commit,tree:pin.tree};
+          const dev=await this.isolatedProject(project,sessionID);
+          const boot=await dev.executionBoot(source);
+          await this.normalContext(sessionID!);
+          const slot=await supervisorAdmissionSlot(this.ctx.storage,task.id);
+          const fresh=await this.supervisedRecord(task.id);
+          assertNormalGitHubFence(fresh,slot,ctx.grant,pin,"mutation",sessionID);
+          const lease={requestId:task.id,project,generation:slot!.generation,token:slot!.token,expiresAt:Math.min(fresh.normalWorkUntil!,this.normalApproval().expiresAt,Date.now()+180000)};
+          result=await dev.runFenced({source,boot,lease},lease,command,crypto.randomUUID(),fresh.normalReleaseSha!);
+        }else result=await (await this.isolatedProject(project, sessionID)).run(project, command);
         const incident = observeLinux(result);
         if (incident) await this.noteIncident(incident);
         return result;
@@ -2423,7 +2668,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
         config: { default_agent: "build" },
         // Native OpenRouter discovery is opt-in and only activated when
         // the private Cloudflare Secret is available.
-        models: { fetch: !this.pilotLaneId() },
+        models: { fetch: !this.pilotLaneId() && this.ctx.id.name!==SUPERVISOR_WORKSPACE },
         // OpenCode is silent unless given a log writer.
         log: {
           level: "warn",
@@ -2436,14 +2681,14 @@ export class OpenCodeAgent extends DurableObject<Env> {
         },
         plugins: [
           this.ai.plugin,
-          ...(this.pilotLaneId() ? [pilotHybridPlugin(r2SessionId(this.pilotLaneId()!),id=>this.pilotContext(id))] : []),
+          ...(this.pilotLaneId() ? [pilotHybridPlugin(r2SessionId(this.pilotLaneId()!),id=>this.pilotContext(id))] : this.ctx.id.name===SUPERVISOR_WORKSPACE?[normalMeteredPlugin(id=>this.normalContext(id))]:[]),
           tokenEconomizerAdapter(
-            async () => !this.pilotLaneId() && (await this.personalConfig.connectorSettings()).tokenEconomizerEnabled,
+            async () => !this.pilotLaneId() && this.ctx.id.name!==SUPERVISOR_WORKSPACE && (await this.personalConfig.connectorSettings()).tokenEconomizerEnabled,
             (connectorID, event) => this.runConnector(connectorID, event),
             sessionID => this.sessionProject(sessionID)
           ),
           openRouterCredentialPlugin(
-            async () => this.pilotLaneId() ? undefined : ((this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
+            async () => this.pilotLaneId() || this.ctx.id.name===SUPERVISOR_WORKSPACE ? undefined : ((this.env as Env & { OPENROUTER_API_KEY?: string }).OPENROUTER_API_KEY
               || await this.personalConfig.getOpenRouterKey()),
             (connect) => { this.providerConnection.connect = connect; }
           ),
@@ -2473,7 +2718,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
     // Low effort: with more, the model sometimes writes its whole answer
     // into its reasoning.
     defaults: {
-      model: this.ai(this.pilotLaneId()?PILOT_GLM:MODEL_ID),
+      model: this.ai(this.pilotLaneId()||this.ctx.id.name===SUPERVISOR_WORKSPACE?PILOT_GLM:MODEL_ID),
       agent: "build"
     }
   });
@@ -2513,6 +2758,7 @@ export class OpenCodeAgent extends DurableObject<Env> {
 
   /** Host startup, after the harness has opened OpenCode. */
   async onStart(): Promise<void> {
+    if(recoveryMode(this.env))return;
     await this.sockets.reattach();
   }
 }
@@ -2521,6 +2767,8 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const url = new URL(request.url);
+      if(recoveryMode(env)&&!recoveryHttpAllowed(request.method,url.pathname))
+        return Response.json({error:"M08_RECOVERY_NEW_EFFECT_FORBIDDEN"},{status:503,headers:{"Cache-Control":"no-store"}});
       const pilot=(env as Env & {OPENCODE_PILOT_HYBRID_REQUEST_ID?:string}).OPENCODE_PILOT_HYBRID_REQUEST_ID;
       if(pilot&&!url.pathname.startsWith(SUPERVISOR_API_PREFIX+"/")&&!(url.pathname==="/api/health"&&request.method==="GET"))
         return Response.json({error:"PILOT_EXCLUSIVE_WORKSPACE"},{status:503});
@@ -2548,6 +2796,16 @@ export default {
         const enabled = (env as Env & { OPENCODE_SUPERVISOR_ENABLED?: string })
           .OPENCODE_SUPERVISOR_ENABLED === "true";
         if (!enabled) return new Response("Not found", { status: 404 });
+        // Separate owner-identity browser read bridge; all legacy supervisor routes
+        // below retain their mandatory bearer. No service-token or cookie-only bypass.
+        if (url.pathname.startsWith(SUPERVISOR_API_PREFIX + "/mobile/")) {
+          if (pilot) return supervisorResponse({ error: "PILOT_EXCLUSIVE_WORKSPACE" }, 503);
+          return handleMobileArtifactRead(request, env as Env & MobileOwnerEnv, {
+            manifest: id => env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE).supervisedTaskArtifacts(id),
+            download: (id, session, artifactId, expiresAt, range) =>
+              env.OpenCodeAgent.getByName(SUPERVISOR_WORKSPACE).supervisedMobileArtifactDownload(id, session, artifactId, expiresAt, range)
+          });
+        }
         const secret = (env as Env & { OPENCODE_SUPERVISOR_TOKEN?: string })
           .OPENCODE_SUPERVISOR_TOKEN ?? "";
         if (secret.length < 32) return supervisorResponse({ error: "Supervisor no configurado" }, 503);
@@ -2585,19 +2843,24 @@ export default {
         // Clients must send the bearer in a header, never in the URL.
         const artifact = url.pathname.match(/^\/api\/supervisor\/v1\/tasks\/([a-f0-9]{16})\/artifacts(?:\/([a-f0-9]{32}))?$/);
         if (artifact) {
-          if (url.search) return supervisorResponse({ error: "ARTIFACT_QUERY_NOT_ALLOWED" }, 400);
           try {
-            if (!artifact[2] && request.method === "GET")
-              return supervisorResponse(await host.supervisedTaskArtifacts(artifact[1]));
+            if (!artifact[2] && request.method === "GET") {
+              const q = parseArtifactQuery(url.search, false);
+              if (q.format) return await host.supervisedTaskArtifactExport(artifact[1], q.format, q.after, q.limit);
+              return supervisorResponse(await host.supervisedTaskArtifacts(artifact[1], q.after, q.limit));
+            }
             if (!artifact[2] && request.method === "POST") {
+              if (url.search) return supervisorResponse({ error: "ARTIFACT_QUERY_NOT_ALLOWED" }, 400);
               if (!request.headers.get("Content-Type")?.toLowerCase().startsWith("application/json"))
                 return supervisorResponse({ error: "JSON obligatorio" }, 415);
               const input = await request.text();
               if (input.length > 1_000) return supervisorResponse({ error: "Solicitud demasiado grande" }, 413);
               return supervisorResponse(await host.supervisedArtifactCapture(artifact[1], JSON.parse(input)));
             }
-            if (artifact[2] && request.method === "GET")
-              return await host.supervisedTaskArtifactDownload(artifact[1], artifact[2]);
+            if (artifact[2] && request.method === "GET") {
+              const q = parseArtifactQuery(url.search, true);
+              return await host.supervisedTaskArtifactDownload(artifact[1], artifact[2], q.expiresAt!, request.headers.get("Range"));
+            }
             return supervisorResponse({ error: "Método no permitido" }, 405);
           } catch (error) {
             const reason = error instanceof Error ? error.message : "ARTIFACT_UNAVAILABLE";

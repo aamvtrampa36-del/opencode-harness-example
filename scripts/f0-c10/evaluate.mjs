@@ -60,6 +60,8 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     return { pass: false, failures: [{ code: 'INVALID_TRACE', detail: 'missing tasks/events' }] };
   }
   const { tasks, events } = trace;
+  const artifactLayout = trace.metadata?.artifactLayout ?? 'legacy-t10';
+  if (!['legacy-t10','m06-dist-v1'].includes(artifactLayout)) fail('ARTIFACT_LAYOUT_INVALID', artifactLayout);
   let journalEvidence = null;
   if (mode === 'live') {
     const attestation = verifyLiveEvidence(trace, trustedKeys, limits);
@@ -103,7 +105,7 @@ export function evaluateTrace(trace, { mode = 'offline', limits = mode === 'live
     if (done.atMs - first.atMs > limits.maxTaskDurationMs) fail('DURATION_LIMIT', task.requestId);
     if (stream.filter((e) => e.type === 'retry').length > limits.maxRetriesPerTask) fail('RETRY_LIMIT', task.requestId);
     const output = stream.find((e) => e.type === 'output');
-    if (!output || output.projectId !== task.projectId || !output.artifact || output.artifact.projectId !== task.projectId || output.artifact.path !== 'tmp/f0-c10/' + task.requestId + '/' + task.kind + '.json') {
+    if (!output || output.projectId !== task.projectId || !output.artifact || output.artifact.projectId !== task.projectId || output.artifact.path !== (artifactLayout === 'm06-dist-v1' ? 'dist/' + task.kind + '.json' : 'tmp/f0-c10/' + task.requestId + '/' + task.kind + '.json')) {
       fail('OUTPUT_ISOLATION', task.requestId);
     } else {
       bytes += Buffer.byteLength(output.artifact.content || '', 'utf8');

@@ -4,6 +4,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { evaluateTrace, evaluateCampaign } from './evaluate.mjs';
+import { verifyIntegratedRound, verifyIntegratedCampaign } from './metralla-m07/integrated-round.mjs';
 
 const args = process.argv.slice(2);
 const option = (name) => { const i = args.indexOf(name); return i < 0 ? null : args[i + 1]; };
@@ -20,13 +21,26 @@ try {
   const { parsed: trustedKeys } = await readJson(option('--trust'), 32_000);
   const traced = await Promise.all(paths.map((p) => readJson(p)));
   const traces = traced.map((v) => v.parsed);
-  const result = traces.length === 1
-    ? evaluateTrace(traces[0], { mode: 'live', limits, trustedKeys })
-    : evaluateCampaign(traces, limits, { trustedKeys });
+  let result;
+  const legacy=args.includes('--legacy-t10'), evidencePaths=(option('--round-evidence')||'').split(',').map(x=>x.trim()).filter(Boolean);
+  let evidenceFilesSha256=[];
+  if(legacy){
+    // Historical T10 verification only, never a Metralla acceptance report.
+    if(evidencePaths.length||traces.some(t=>t.metadata?.artifactLayout==='m06-dist-v1'))throw Error('M07_LEGACY_BYPASS_FORBIDDEN');
+    result=traces.length===1?evaluateTrace(traces[0],{mode:'live',limits,trustedKeys}):evaluateCampaign(traces,limits,{trustedKeys});
+  }else{
+    if(evidencePaths.length!==traces.length)throw Error('M07_ROUND_EVIDENCE_REQUIRED');
+    const evidence=await Promise.all(evidencePaths.map(p=>readJson(p)));
+    evidenceFilesSha256=evidence.map(e=>e.sha256);
+    const entries=traces.map((trace,i)=>({trace,approval:evidence[i].parsed.approval,supplement:evidence[i].parsed.supplement,journalSeals:evidence[i].parsed.journalSeals}));
+    result=entries.length===1?verifyIntegratedRound(entries[0].trace,{...entries[0],limits,trustedKeys}):verifyIntegratedCampaign(entries,{limits,trustedKeys});
+  }
   const report = {
     schema: 'f0-c10-live-evaluation-v1',
     pass: result.pass === true,
-    mode: 'signed-live-trace-offline-verification',
+    mode: legacy?'historical-t10-only':'metralla-m07-signed-evidence-verification',
+    metrallaAccepted:!legacy&&result.livePass===true,
+    evidenceFilesSha256,
     remoteCallsMade: 0,
     sourceFilesSha256: traced.map((t) => t.sha256),
     evaluatedExperimentIds: traces.map((t) => t.metadata?.experimentId || null),

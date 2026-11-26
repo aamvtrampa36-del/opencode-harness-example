@@ -1,6 +1,6 @@
 import { normalizeOwnedRepository, OPENCODE_STAGING_BASE } from "./github";
 import { isModelSelection, type ModelSelectionID } from "./model-presets";
-import type { R2PendingTurn } from "./supervisor-r2";
+import { r2TerminalNativeReceipt, type R2PendingTurn } from "./supervisor-r2";
 
 /**
  * The remote MCP authenticates at Cloudflare Access. Every Durable Object
@@ -58,6 +58,13 @@ export type SupervisorTask = {
     "cancel_requested" | "cancelled" | "unknown";
   /** Immutable source commit used to seed this task's isolated Linux project. */
   baseCommit?: string;
+  /** Server-approved immutable normal-lane pin, committed with admission. */
+  githubSource?: import("./metralla-m05-source").GitHubSourcePin;
+  /** Exact server-approved work deadline, distinct from the pre-effect admission TTL. */
+  normalWorkUntil?: number;
+  normalReleaseSha?: string;
+  normalImageDigest?: string;
+  normalCloseUntil?: number;
   /** Immutable requested pins; baseCommit alone records the verified commit. */
   mode?: SupervisorMode;
   sourceCommit?: string;
@@ -102,6 +109,7 @@ export function classifySupervisorOperation(
   const task = typeof stored === "string" ? undefined : stored;
   const status = task?.status ?? stored as SupervisorTask["status"];
   const receipt = task && !task.operationId ? undefined : operation;
+  if(receipt&&!r2TerminalNativeReceipt(receipt))return "unknown";
   if (receipt?.status === "done") return "finished";
   if (receipt?.status === "unanswered") {
     if (receipt.reason === "interrupted" && status === "cancel_requested") return "cancelled";

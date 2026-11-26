@@ -128,3 +128,216 @@ test("concurrent maintenance calls and lost responses preserve the first immutab
  await expect(reconcileHistoricalSupervisor(db.asDO(),{...manifest,externalDrainReceipt:"0".repeat(64)},object,()=>native(),()=>now)).rejects.toThrow("HISTORICAL_RECONCILIATION_ALREADY_RECORDED");
  expect(calls).toBeLessThanOrEqual(2);
 });
+
+import {CONSUMED_PILOT_ID,inspectConsumedPilot,classifyConsumedPilot,archiveConsumedPilot,
+ type ConsumedEvidence,type ConsumedClosure,type ConsumedAuthorization,type ConsumedVerifier} from "./supervisor-reconciliation";
+const pid=CONSUMED_PILOT_ID, ck="supervisor:pilot:single-use-v1", lk="supervisor:admission:v1", tk="supervisor:task:"+pid;
+const ak="supervisor:consumed-pilot:archive:v1:"+pid, h="a".repeat(64), sh="b".repeat(40), uuid="11111111-1111-4111-8111-111111111111";
+const trust:ConsumedVerifier=async()=>true; // fixture ONLY
+async function consumedFixture(effect:"github_branch"|"session_create"|"submit"="github_branch"){
+ const db=new DB();
+ const claim={approval:{schema:"pilot-release-v2",environment:"staging",requestId:pid,releaseSha:sh,sourceCommit:sh,sourceTree:sh,fingerprint:h},instance:uuid,objectId:h,startedAt:10};
+ const job={...task(1),id:pid,project:"supervised-"+pid,branch:"opencode/staging-"+pid,fingerprint:h,createdAt:10,pilotInstance:uuid,
+  sessionIdPolicy:"deterministic-v1",sessionCreationAttempted:effect!=="github_branch",session:effect==="submit"?"ses_r2_"+pid:undefined,
+  operationId:effect==="submit"?"rc-start-"+pid:undefined,status:"cancel_requested",cancelAmbiguous:true};
+ const slot={token:uuid,generation:2,expiresAt:5,phase:"effect_unknown",effect};
+ await db.put(ck,claim);await db.put(tk,job);await db.put(lk,{version:1,slots:{[pid]:slot,[id(9)]:{...slot,generation:3}}});
+ const identity=await inspectConsumedPilot(db.asDO());
+ const present:ConsumedEvidence={identity,kind:"present",exactIdentity:true,observedAt:now-1,receiptDigest:h,branchCommit:sh,nativeStatus:"done"};
+ const absent:ConsumedEvidence={identity,kind:"absent",authoritativeNegative:true,complete:true,writerDrained:true,observedAt:now-1,receiptDigest:h};
+ const proof=async(e:ConsumedEvidence)=>{
+  const c:ConsumedClosure={snapshotDigest:identity.snapshotDigest,evidenceDigest:await reconciliationDigest(e),observedAt:now,
+   drainReceipt:h,closureReceipt:h,budgetReceipt:h,noOutstandingEffects:true,writerFenced:true};
+  const a:ConsumedAuthorization={action:"archive-consumed-pilot-and-release-reservation",environment:"staging",snapshotDigest:identity.snapshotDigest,
+   evidenceDigest:c.evidenceDigest,closureDigest:await reconciliationDigest(c),approvalRef:"offline-fixture",notBefore:now-100,expiresAt:now+1000};
+  return {c,a};
+ };
+ return {db,claim,job,identity,present,absent,proof};
+}
+for(const effect of ["github_branch","session_create","submit"] as const){
+ test("P02 lost "+effect+" response: exact presence, positive absence, failed read",async()=>{
+  const f=await consumedFixture(effect);
+  expect(await classifyConsumedPilot(f.identity,f.present,trust,now)).toBe("materialized");
+  expect(await classifyConsumedPilot(f.identity,f.absent,trust,now)).toBe("not_materialized");
+  expect(await classifyConsumedPilot(f.identity,f.absent,async()=>{throw Error("timeout");},now)).toBe("unknown");
+  expect(await classifyConsumedPilot(f.identity,{...f.absent,writerDrained:false} as unknown as ConsumedEvidence,trust,now)).toBe("unknown");
+  expect(await classifyConsumedPilot(f.identity,{...f.present,identity:{...f.identity,project:"other"}},trust,now)).toBe("unknown");
+  const {c,a}=await f.proof(f.absent);
+  const one=await archiveConsumedPilot(f.db.asDO(),f.absent,c,a,trust,()=>now);
+  expect(one).toMatchObject({outcome:"not_materialized",reused:false,replayAllowed:false});
+  expect(await f.db.get(ck)).toEqual(f.claim);expect(await f.db.get(tk)).toEqual(f.job);
+  expect(await f.db.get(lk)).toEqual({version:1,slots:{[id(9)]:{token:uuid,generation:3,expiresAt:5,phase:"effect_unknown",effect}}});
+  expect((await archiveConsumedPilot(f.db.asDO(),f.absent,c,a,trust,()=>now+2000)).digest).toBe(one.digest);
+  await expect(archiveConsumedPilot(f.db.asDO(),f.present,c,a,trust,()=>now)).rejects.toThrow("P02_ARCHIVE_CONFLICT");
+  await expect(reconcile(f.db)).rejects.toThrow("HISTORICAL_PILOT_ALREADY_CONSUMED");
+ });
+}
+test("P02 incompatible receipts never settle or release",async()=>{
+ const f=await consumedFixture("github_branch");
+ expect(await classifyConsumedPilot(f.identity,{...f.present,branchCommit:"c".repeat(40)} as ConsumedEvidence,trust,now)).toBe("unknown");
+ const s=await consumedFixture("submit");
+ expect(await classifyConsumedPilot(s.identity,{...s.present,nativeStatus:"unanswered",reason:"not_found"} as ConsumedEvidence,trust,now)).toBe("unknown");
+ const {c,a}=await f.proof(f.absent);
+ const before=await f.db.get(lk);
+ for(const fail of ["effect","closure","authorization"]){
+  await expect(archiveConsumedPilot(f.db.asDO(),f.absent,c,a,async p=>p!==fail,()=>now)).rejects.toThrow();
+  expect(await f.db.get(lk)).toEqual(before);expect(await f.db.get(ak)).toBeUndefined();
+ }
+ await expect(archiveConsumedPilot(f.db.asDO(),f.absent,c,{...a,expiresAt:now},trust,()=>now)).rejects.toThrow("P02_AUTHORIZATION_REQUIRED");
+});
+test("P02 concurrent snapshot change fails CAS; no archive or slot release",async()=>{
+ const f=await consumedFixture(),{c,a}=await f.proof(f.present);
+ const before=await f.db.get(lk);
+ await expect(archiveConsumedPilot(f.db.asDO(),f.present,c,a,async p=>{
+  if(p==="authorization")await f.db.put(tk,{...f.job,revision:2});return true;
+ },()=>now)).rejects.toThrow("P02_SNAPSHOT_CHANGED");
+ expect(await f.db.get(lk)).toEqual(before);expect(await f.db.get(ak)).toBeUndefined();
+});
+test("P02 concurrent identical archival is idempotent and does not disturb history",async()=>{
+ const f=await consumedFixture();await f.db.put("supervisor:turn:"+pid+":"+id(4),{phase:"settled"});
+ const {c,a}=await f.proof(f.present);
+ const both=await Promise.all([archiveConsumedPilot(f.db.asDO(),f.present,c,a,trust,()=>now),archiveConsumedPilot(f.db.asDO(),f.present,c,a,trust,()=>now)]);
+ expect(both[0].digest).toBe(both[1].digest);expect(both.filter(x=>x.reused).length).toBe(1);
+ expect(await f.db.get("supervisor:turn:"+pid+":"+id(4))).toEqual({phase:"settled"});
+});
+
+import {inspectUninitializedNormalBudget,inspectNormalBudgetReady,inspectPreparedNormalBudget,prepareConsumedBudget,normalBudgetTransitionSnapshot,transitionConsumedBudget,pilotBudgetPolicy,PILOT_FREE,PILOT_GLM,type BudgetPolicy,type PaidPreflight,type BudgetTransition} from "./supervisor-inference-budget";
+const globalKey="supervisor:inference:budget:v1",newId=id(800);
+function nextPolicy():BudgetPolicy{
+ return {experimentId:newId,totalMicroUsd:10000,taskMicroUsd:10000,maxAttempts:1,
+ selections:{cloudflare:{providerID:"cloudflare",modelID:PILOT_GLM,price:{inputMicroUsdPerMillion:100000,outputMicroUsdPerMillion:100000,revision:"fixture"}}},
+ normal:{validUntil:now+10000,maxCalls:2,maxCallsPerTask:2,maxInflight:1,rounds:{one:{taskIds:[newId],maxMicroUsd:10000,maxCalls:2,maxInflight:1}},
+ routes:{cloudflare:{providerID:"cloudflare",modelID:PILOT_GLM,tools:true,registered:true,evidenceId:h,validUntil:now+10000,maxInputTokens:1000,maxOutputTokens:100,maxWireBytes:10000,maxResponseBytes:10000,timeoutMs:1000,requestsPerMinute:2}}}};
+}
+const budgetProof:PaidPreflight={now,exclusiveLeaseVerified:true,actualSdkInterceptorVerified:true,noUncontrolledRoutesVerified:true,disposabilityVerified:true,
+ services:Object.fromEntries(["workers_ai","openrouter","workers","durable_objects","containers","github_actions"].map(k=>[k,{active:true,routeBound:true,hardStopProven:true,exclusiveAccount:true,measuredAt:now-1,validUntil:now+10000,remainingMicroUsd:10000,worstInFlightMicroUsd:1000}]))};
+async function migrationFixture(mode:"none"|"settled"|"unknown"|"paymentBlocked"="settled"){
+ const f=await consumedFixture();
+ const db=f.db;
+ // Independent fixture setup: only the exact consumed slot exists.
+ const ledger=await db.get<{version:number;slots:Record<string,unknown>}>(lk);
+ await db.put(lk,{version:1,slots:{[pid]:ledger!.slots[pid]}});
+ const policy=pilotBudgetPolicy(pid,uuid,10);
+ if(mode!=="none"){
+  const call="fixture",key="supervisor:inference:call:"+pid+":"+call;
+  await db.put(key,{requestId:pid,callId:call,attempts:1,state:mode==="unknown"?"unknown":"settled",exposure:0,charge:0,providerID:"openrouter",receiptId:"fixture_receipt",selection:PILOT_FREE,modelID:"openrouter/free",price:policy.selections[PILOT_FREE].price,inputTokenCeiling:100,outputTokenCeiling:100,inputTokens:10,outputTokens:2});
+  await db.put("supervisor:inference:receipt:openrouter:fixture_receipt",key);
+  const counter={confirmed:0,reserved:0,unknown:mode==="unknown"?20:0};
+  await db.put("supervisor:inference:task:"+pid,counter);
+  // Match canonical snapshot ordering used by actual budget journal.
+  const {selections,...rest}=policy;
+  const snapshot=JSON.stringify({experimentId:rest.experimentId,totalMicroUsd:rest.totalMicroUsd,taskMicroUsd:rest.taskMicroUsd,maxAttempts:rest.maxAttempts,
+    selections:Object.fromEntries(Object.keys(selections).sort().map(k=>[k,selections[k]])),hybrid:policy.hybrid});
+  await db.put(globalKey,{version:1,policy:snapshot,paymentBlocked:mode==="paymentBlocked",...counter,hybrid:{calls:1,paidCalls:0,selection:PILOT_FREE,...(mode==="unknown"?{pending:call}:{})}});
+ }
+ const identity=await inspectConsumedPilot(db.asDO()),e:ConsumedEvidence={...f.present,identity};
+ const c:ConsumedClosure={snapshotDigest:identity.snapshotDigest,evidenceDigest:await reconciliationDigest(e),observedAt:now,drainReceipt:h,closureReceipt:h,budgetReceipt:h,noOutstandingEffects:true,writerFenced:true};
+ const auth:ConsumedAuthorization={action:"archive-consumed-pilot-and-release-reservation",environment:"staging",snapshotDigest:identity.snapshotDigest,evidenceDigest:c.evidenceDigest,closureDigest:await reconciliationDigest(c),approvalRef:"offline-fixture",notBefore:now-1,expiresAt:now+1000};
+ await archiveConsumedPilot(db.asDO(),e,c,auth,trust,()=>now);
+ const next=nextPolicy(),s=await normalBudgetTransitionSnapshot(db.asDO(),next);
+ const a:BudgetTransition={schema:"metralla-budget-transition-v1",releaseSha:release,approvalRef:"offline-fixture",previousDigest:s.previousDigest,nextPolicyDigest:s.nextPolicyDigest,archiveDigest:s.archiveDigest!,notBefore:now-1,expiresAt:now+1000};
+ return {db,next,a};
+}
+for(const mode of ["none","settled"] as const)test("M08 budget transition "+mode+" preserves historical rows, idempotent CAS",async()=>{
+ const {db,next,a}=await migrationFixture(mode),before=new Map(structuredClone([...db.rows]));
+ const results=await Promise.all([transitionConsumedBudget(db.asDO(),next,budgetProof,a,async()=>true,()=>now),transitionConsumedBudget(db.asDO(),next,budgetProof,a,async()=>true,()=>now)]);
+ expect(results[0].digest).toBe(results[1].digest);expect(results.filter(x=>x.reused).length).toBe(1);
+ for(const [key,value] of before)if(key!==globalKey)expect(await db.get(key)).toEqual(value);
+ const saved=await db.get<any>("supervisor:inference:transition:v1:"+newId);
+ expect(saved.previous).toEqual(before.get(globalKey)??null);expect(saved.digest).toBe(results[0].digest);
+ expect((await db.get<any>(globalKey)).normal.active).toBe(0);
+ const after=structuredClone([...db.rows]);
+ const ready=await inspectNormalBudgetReady(db.asDO(),next,budgetProof,()=>now);
+ expect(ready.accountingReady).toBe(true);expect(ready.archiveDigest).toBe(a.archiveDigest);
+ expect(ready.policyDigest).toBe(a.nextPolicyDigest);expect([...db.rows]).toEqual(after);
+ await db.put(globalKey,{...await db.get<any>(globalKey),unknown:1});
+ const blocked=structuredClone([...db.rows]);
+ await expect(inspectNormalBudgetReady(db.asDO(),next,budgetProof,()=>now)).rejects.toThrow("NORMAL_LEDGER_NOT_READY");
+ expect([...db.rows]).toEqual(blocked);
+});
+test("M08 budget transition refuses unknown charge, blocked payment, stale digest, live slot and reused ID without mutation",async()=>{
+ for(const mode of ["unknown","paymentBlocked"] as const){
+  const {db,next,a}=await migrationFixture(mode),before=structuredClone([...db.rows]);
+  await expect(transitionConsumedBudget(db.asDO(),next,budgetProof,a,async()=>true,()=>now)).rejects.toThrow("BUDGET_TRANSITION_OLD_UNSETTLED");
+  expect([...db.rows]).toEqual(before);
+ }
+ for(const bad of ["digest","signature","active","reused"]){
+  const {db,next,a}=await migrationFixture();
+  if(bad==="digest")a.previousDigest="0".repeat(64);
+  if(bad==="active")await db.put(lk,{version:1,slots:{[newId]:{phase:"running"}}});
+  if(bad==="reused")await db.put("supervisor:task:"+newId,task(800));
+  const before=structuredClone([...db.rows]);
+  await expect(transitionConsumedBudget(db.asDO(),next,budgetProof,a,async()=>bad!=="signature",()=>now)).rejects.toThrow();
+  expect([...db.rows]).toEqual(before);
+ }
+});
+
+import {parseNormalApproval,parseNormalBudgetPreparation} from "./metralla-m08-normal-approval";
+test("M09 signed accounting preparation is not paid preflight or dispatch approval",async()=>{
+ const {db,next,a}=await migrationFixture("settled"),before=structuredClone([...db.rows]);
+ const stop={...budgetProof,exclusiveLeaseVerified:false};
+ await expect(transitionConsumedBudget(db.asDO(),next,stop,a,async()=>true,()=>now)).rejects.toThrow("BUDGET_TRANSITION_AUTHORIZATION");
+ expect([...db.rows]).toEqual(before);
+ await expect(prepareConsumedBudget(db.asDO(),next,a,async()=>false,()=>now)).rejects.toThrow("BUDGET_TRANSITION_AUTHORIZATION");
+ expect([...db.rows]).toEqual(before);
+ const prepared=await prepareConsumedBudget(db.asDO(),next,a,async()=>true,()=>now);
+ expect(prepared.reused).toBe(false);
+ expect((await prepareConsumedBudget(db.asDO(),next,a,async()=>true,()=>now)).reused).toBe(true);
+ const snapshot=structuredClone([...db.rows]);
+ const accounting=await inspectPreparedNormalBudget(db.asDO(),next);
+ expect(accounting.schema).toBe("metralla-normal-budget-accounting-v1");expect(accounting.policyDigest).toBe(a.nextPolicyDigest);
+ await expect(inspectNormalBudgetReady(db.asDO(),next,stop,()=>now)).rejects.toThrow("PAID_PREFLIGHT_STOP");
+ expect([...db.rows]).toEqual(snapshot);
+ const prep={schema:"metralla-normal-prepare-v1",environment:"staging",releaseSha:release,approvalRef:a.approvalRef,
+   notBefore:now-1,expiresAt:now+20000,policy:next};
+ expect(parseNormalBudgetPreparation(JSON.stringify(prep),release,now).policy).toEqual(next);
+ expect(()=>parseNormalApproval(JSON.stringify(prep),release,now)).toThrow("NORMAL_APPROVAL_INVALID");
+ expect(()=>parseNormalBudgetPreparation(JSON.stringify({...prep,tasks:[]}),release,now)).toThrow("NORMAL_PREPARATION_INVALID");
+ expect(()=>parseNormalBudgetPreparation(JSON.stringify(prep),"0".repeat(40),now)).toThrow("NORMAL_PREPARATION_INVALID");
+});
+test("M09 accounting preparation preserves unknown spend and rejects stale snapshot",async()=>{
+ const f=await migrationFixture("unknown"),before=structuredClone([...f.db.rows]);
+ await expect(prepareConsumedBudget(f.db.asDO(),f.next,f.a,async()=>true,()=>now)).rejects.toThrow("BUDGET_TRANSITION_OLD_UNSETTLED");
+ expect([...f.db.rows]).toEqual(before);
+ const g=await migrationFixture("settled"),old=structuredClone([...g.db.rows]);
+ await expect(prepareConsumedBudget(g.db.asDO(),g.next,{...g.a,previousDigest:"0".repeat(64)},async()=>true,()=>now)).rejects.toThrow("BUDGET_TRANSITION_SNAPSHOT_CHANGED");
+ expect([...g.db.rows]).toEqual(old);
+});
+
+import {operatorAttestationMessage,operatorConsumedVerifier,type OperatorAttestation} from "./metralla-m09-operator-attestation";
+import type {FreezeManifest} from "./supervisor-reconciliation";
+test("M09 administrator attestation exercises real archive transaction and preserves all other records",async()=>{
+ const f=await consumedFixture(),{c,a}=await f.proof(f.absent);
+ const freeze:FreezeManifest={schema:"r4-freeze-v1",environment:"staging",releaseSha:release,requestId:pid,approvalRef:a.approvalRef,notBefore:now-100,expiresAt:now+1000};
+ const body:Omit<OperatorAttestation,"signature">={schema:"metralla-m09-operator-attestation-v1",environment:"staging",releaseSha:release,requestId:pid,approvalRef:a.approvalRef,expiresAt:now+1000,digests:{effect:await reconciliationDigest(f.absent),closure:await reconciliationDigest(c),authorization:await reconciliationDigest(a)}};
+ const pair=await crypto.subtle.generateKey("Ed25519",true,["sign","verify"]) as CryptoKeyPair;
+ const toHex=(b:ArrayBuffer)=>Array.from(new Uint8Array(b),x=>x.toString(16).padStart(2,"0")).join("");
+ const root=toHex(await crypto.subtle.exportKey("raw",pair.publicKey));
+ const attestation={...body,signature:toHex(await crypto.subtle.sign("Ed25519",pair.privateKey,await operatorAttestationMessage(body)))};
+ const verify=await operatorConsumedVerifier(root,freeze,attestation,()=>now);
+ const before=new Map(structuredClone([...f.db.rows]));
+ await expect(archiveConsumedPilot(f.db.asDO(),f.absent,{...c,closureReceipt:"0".repeat(64)},a,verify,()=>now)).rejects.toThrow();
+ expect([...f.db.rows]).toEqual([...before]);
+ const receipt=await archiveConsumedPilot(f.db.asDO(),f.absent,c,a,verify,()=>now);
+ expect(receipt).toMatchObject({outcome:"not_materialized",replayAllowed:false});
+ expect(await f.db.get(ck)).toEqual(f.claim);expect(await f.db.get(tk)).toEqual(f.job);
+ const l=await f.db.get<{slots:Record<string,unknown>}>(lk);
+ expect(Object.keys(l!.slots)).toEqual([id(9)]);
+ expect((await archiveConsumedPilot(f.db.asDO(),f.absent,c,a,verify,()=>now)).digest).toBe(receipt.digest);
+});
+test("M09 idle normal budget does not materialize policy, grant or task",async()=>{
+ const {db,a}=await migrationFixture("none"),before=structuredClone([...db.rows]);
+ const r=await inspectUninitializedNormalBudget(db.asDO());
+ expect(r).toMatchObject({archiveDigest:a.archiveDigest,ledgerPresent:false,accountingReady:true,confirmedMicroUsd:0,reservedMicroUsd:0,unknownMicroUsd:0,dispatchAuthorized:false,providerPreflightVerified:false});
+ expect(await db.get(globalKey)).toBeUndefined();
+ expect([...db.rows]).toEqual(before);
+ for(const prefix of ["supervisor:inference:call:","supervisor:inference:task:","supervisor:inference:receipt:"]){
+  const k=prefix+newId;await db.put(k,{unexpected:true});
+  await expect(inspectUninitializedNormalBudget(db.asDO())).rejects.toThrow("NORMAL_ORPHAN_HISTORY");
+  await db.delete(k);
+ }
+ await db.put(lk,{version:1,slots:{[newId]:{phase:"running"}}});
+ await expect(inspectUninitializedNormalBudget(db.asDO())).rejects.toThrow("BUDGET_TRANSITION_NOT_DRAINED");
+ const settled=await migrationFixture("settled");
+ await expect(inspectUninitializedNormalBudget(settled.db.asDO())).rejects.toThrow("NORMAL_LEDGER_ALREADY_PRESENT");
+});

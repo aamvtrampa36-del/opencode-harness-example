@@ -78,3 +78,15 @@ export function usableModelSelection(selection: ModelSelectionID, openRouterAvai
     ? "cloudflare" : selection;
 }
 
+
+/** Metered tasks must use explicit, fresh provider capability evidence.
+ * The legacy UI convenience fallback above is not an authorization. */
+export function resolveAuthorizedMeteredSelection(selection:ModelSelectionID,evidence:{
+  providerID:string;modelID:string;registered:boolean;tools:boolean;validUntil:number;evidenceId:string
+},now=Date.now()){
+  const resolved=resolveModelSelection(selection);
+  if(!evidence||evidence.providerID!==resolved.providerID||evidence.modelID!==resolved.id||
+    evidence.registered!==true||evidence.tools!==true||!Number.isSafeInteger(evidence.validUntil)||
+    evidence.validUntil<=now||!(/^[a-f0-9]{64}$/).test(evidence.evidenceId))throw Error("METERED_MODEL_CAPABILITY_UNVERIFIED");
+  return resolved;
+}
